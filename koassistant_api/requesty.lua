@@ -34,9 +34,15 @@ function RequestyHandler:customizeHeaders(headers, config)
 end
 
 function RequestyHandler:customizeRequestBody(body, config)
-    -- Add reasoning object (Requesty forwards it to the backend provider)
-    if config.api_params and config.api_params.requesty_reasoning then
-        body.reasoning = { effort = config.api_params.requesty_reasoning.effort }
+    -- Add reasoning object (Requesty forwards it to the backend provider).
+    -- enabled=false disables reasoning on disable-capable backends; effort sets the level.
+    local rq_reasoning = config.api_params and config.api_params.requesty_reasoning
+    if rq_reasoning then
+        if rq_reasoning.enabled == false then
+            body.reasoning = { enabled = false }
+        elseif rq_reasoning.effort then
+            body.reasoning = { effort = rq_reasoning.effort }
+        end
     end
 
     return body

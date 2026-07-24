@@ -487,13 +487,38 @@ ModelConstraints.reasoning_profiles = {
           stance_map = { minimal = { state = "off" }, maximum = { state = "on" } } },
     },
     openrouter = {
-        -- Universal effort; "off" = don't request reasoning (backends may still reason).
+        -- OpenRouter is a meta-provider: reasoning-disable support varies by backend, so
+        -- families are matched before the catch-all (first match wins). Reasoning-MANDATORY
+        -- backends reject reasoning.enabled=false (verified 2026-07-24: google/gemini-3* →
+        -- "Reasoning is mandatory for this endpoint and cannot be disabled"; effort dial
+        -- still works — low=284 vs high=816 reasoning tokens). These carry can_disable=false
+        -- so the minimal stance resolves to lowest EFFORT, never an (illegal) hard off.
+        { match = "google/gemini-3", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
+          options = { "low", "medium", "high" }, default_option = "high",
+          stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
+        { match = "openai/gpt-5.5", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
+          options = { "low", "medium", "high" }, default_option = "medium",
+          stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
+        { match = "perplexity/", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
+          options = { "low", "medium", "high" }, default_option = "high",
+          stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
+        -- Catch-all: disable-CAPABLE backends (deepseek, gpt-5.4/5.6, claude, glm, …).
+        -- off emits reasoning.enabled=false (verified: deepseek/deepseek-v4-flash → 0 tokens).
         { match = "", axis = "effort", default_state = "off", can_disable = true, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "high" } } },
     },
     requesty = {
-        -- Universal effort; "off" = don't request reasoning (backends may still reason).
+        -- Same meta-provider caveat as openrouter (mirrors it; forwards to the same backends).
+        { match = "google/gemini-3", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
+          options = { "low", "medium", "high" }, default_option = "high",
+          stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
+        { match = "openai/gpt-5.5", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
+          options = { "low", "medium", "high" }, default_option = "medium",
+          stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
+        { match = "perplexity/", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
+          options = { "low", "medium", "high" }, default_option = "high",
+          stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
         { match = "", axis = "effort", default_state = "off", can_disable = true, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "high" } } },
@@ -1082,9 +1107,13 @@ function ModelConstraints.applyReasoningParams(provider, api_params, decision)
     elseif provider == "sambanova" then
         api_params.sambanova_thinking = on
     elseif provider == "openrouter" then
-        if on then api_params.openrouter_reasoning = { effort = decision.effort } end
+        -- off reaches here only for disable-CAPABLE backends (mandatory families carry
+        -- can_disable=false so their minimal stance resolves to lowest effort, never off).
+        if on then api_params.openrouter_reasoning = { effort = decision.effort }
+        else api_params.openrouter_reasoning = { enabled = false } end
     elseif provider == "requesty" then
-        if on then api_params.requesty_reasoning = { effort = decision.effort } end
+        if on then api_params.requesty_reasoning = { effort = decision.effort }
+        else api_params.requesty_reasoning = { enabled = false } end
     elseif provider == "groq" then
         if on then api_params.groq_reasoning = { effort = decision.effort } end
     elseif provider == "together" then

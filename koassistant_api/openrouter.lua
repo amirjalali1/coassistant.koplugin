@@ -63,9 +63,15 @@ function OpenRouterHandler:customizeRequestBody(body, config)
         body.model = body.model:gsub(":online$", "")
     end
 
-    -- Add reasoning object (OpenRouter auto-translates to backend provider format)
-    if config.api_params and config.api_params.openrouter_reasoning then
-        body.reasoning = { effort = config.api_params.openrouter_reasoning.effort }
+    -- Add reasoning object (OpenRouter auto-translates to backend provider format).
+    -- enabled=false disables reasoning on disable-capable backends; effort sets the level.
+    local or_reasoning = config.api_params and config.api_params.openrouter_reasoning
+    if or_reasoning then
+        if or_reasoning.enabled == false then
+            body.reasoning = { enabled = false }
+        elseif or_reasoning.effort then
+            body.reasoning = { effort = or_reasoning.effort }
+        end
     end
 
     return body
