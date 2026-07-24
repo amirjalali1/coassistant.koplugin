@@ -1,6 +1,6 @@
 -- Model lists for each provider
 -- SINGLE SOURCE OF TRUTH for all model data
--- Last updated: 2026-07-05
+-- Last updated: 2026-07-24
 --
 -- Structure:
 --   ModelLists[provider] = array of model IDs (for backward compat & dropdowns)
@@ -16,21 +16,28 @@ local ModelLists = {
 
     anthropic = {
         -- Claude 5 / 4.x (current generation)
-        "claude-sonnet-5",              -- flagship (default); adaptive thinking on by default, rejects sampling params
+        "claude-sonnet-5",              -- default (balanced speed/cost); adaptive thinking on, rejects sampling params
+        "claude-fable-5",               -- most capable / frontier; adaptive thinking ALWAYS-ON (no disable), rejects sampling, premium price
         "claude-sonnet-4-6",            -- previous flagship (kept available), 1M context
-        "claude-opus-4-8",              -- reasoning (most capable, adaptive thinking only)
+        "claude-opus-4-8",              -- deep reasoning / agentic (adaptive thinking)
         "claude-haiku-4-5-20251001",    -- fast
     },
 
     openai = {
-        -- GPT-5.5 (current flagship)
-        "gpt-5.5",                      -- flagship (default), reasons by default (medium)
-        -- GPT-5.4 (concurrent affordable tier)
+        -- GPT-5.6 (current generation), tiered by price/perf: sol (flagship) >
+        -- terra (balanced) > luna (cost). Default = terra (balanced), not the priciest.
+        -- All: reasoning opt-in (OFF by default; none..xhigh, NO max), 128K output,
+        -- tools + web search (Responses API), ~1M context, temperature=1.0 only.
+        "gpt-5.6-terra",                -- balanced (default)
+        "gpt-5.6-sol",                  -- flagship (most capable)
+        "gpt-5.6-luna",                 -- cost-optimized
+        -- GPT-5.5 (previous flagship; reasons by default at medium, cannot disable)
+        "gpt-5.5",
+        -- GPT-5.4 (affordable tier)
         "gpt-5.4",
         "gpt-5.4-mini",                 -- standard
         "gpt-5.4-nano",                 -- fast/ultrafast
-        -- NOTE: gpt-5.5-pro / gpt-5.4-pro are NOT chat-completions models
-        -- (v1/responses only) — excluded so they don't 404 here.
+        -- NOTE: *-pro variants are v1/responses only (not chat-completions) — excluded.
     },
 
     deepseek = {
@@ -41,9 +48,11 @@ local ModelLists = {
 
     gemini = {
         -- Gemini 3.x (current generation)
-        "gemini-3.5-flash",             -- standard (default), free tier
-        "gemini-3.1-pro-preview",       -- flagship, reasoning (paid only)
-        "gemini-3.1-flash-lite",        -- ultrafast, free tier
+        "gemini-3.6-flash",             -- standard (default), newest flash
+        "gemini-3.5-flash",             -- previous flash (kept available)
+        "gemini-3.1-pro-preview",       -- flagship, reasoning (paid only; no 3.5/3.6 pro yet)
+        "gemini-3.5-flash-lite",        -- ultrafast (newest lite)
+        "gemini-3.1-flash-lite",        -- ultrafast (previous)
         -- Gemini 2.5 (kept for popularity)
         "gemini-2.5-flash",             -- still popular, free tier
         "gemini-2.5-pro",               -- GA deep-reasoning (paid)
@@ -127,19 +136,23 @@ local ModelLists = {
 
         -- Anthropic
         "anthropic/claude-sonnet-5",    -- default (flagship); slug confirmed on openrouter.ai
+        "anthropic/claude-fable-5",     -- most capable / frontier
         "anthropic/claude-sonnet-4.6",
         "anthropic/claude-opus-4.8",
         "anthropic/claude-haiku-4.5",
 
-        -- OpenAI
+        -- OpenAI (gpt-5.6: sol > terra > luna)
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5.6-terra",
+        "openai/gpt-5.6-luna",
         "openai/gpt-5.5",
-        "openai/gpt-5.5-pro",
         "openai/gpt-5.4",
         "openai/gpt-5.4-mini",
 
         -- Google
+        "google/gemini-3.6-flash",
         "google/gemini-3.5-flash",
-        "google/gemini-3-flash-preview",
+        "google/gemini-3.5-flash-lite",
 
         -- DeepSeek
         "deepseek/deepseek-v4-pro",
@@ -304,9 +317,9 @@ local ModelLists = {
         -- Models with explicit thinking/reasoning traces
         reasoning = {
             anthropic = "claude-opus-4-8",
-            openai = "gpt-5.5",
+            openai = "gpt-5.6-sol",
             deepseek = "deepseek-v4-pro",
-            gemini = "gemini-3.5-flash",             -- Pro models are paid-only (Apr 2026); keep tier free-tier usable
+            gemini = "gemini-3.6-flash",             -- Pro models are paid-only; keep tier free-tier usable (3.6 flash assumed free-tier)
             groq = "openai/gpt-oss-120b",            -- OpenAI open-weight
             mistral = "magistral-medium-latest",
             xai = "grok-4.5",
@@ -327,9 +340,9 @@ local ModelLists = {
         -- Provider's most capable general-purpose model
         flagship = {
             anthropic = "claude-sonnet-5",
-            openai = "gpt-5.5",
+            openai = "gpt-5.6-sol",
             deepseek = "deepseek-v4-pro",
-            gemini = "gemini-3.5-flash",             -- Pro models are paid-only (Apr 2026); keep tier free-tier usable
+            gemini = "gemini-3.6-flash",             -- Pro models are paid-only; keep tier free-tier usable (3.6 flash assumed free-tier)
             groq = "llama-3.3-70b-versatile",
             mistral = "mistral-large-latest",
             xai = "grok-4.5",
@@ -350,9 +363,9 @@ local ModelLists = {
         -- Balanced performance and cost
         standard = {
             anthropic = "claude-sonnet-5",
-            openai = "gpt-5.4-mini",
+            openai = "gpt-5.6-terra",  -- standard/default
             deepseek = "deepseek-v4-flash",
-            gemini = "gemini-3.5-flash",
+            gemini = "gemini-3.6-flash",
             groq = "llama-3.3-70b-versatile",
             mistral = "mistral-medium-latest",
             xai = "grok-4.20-0309-non-reasoning",
@@ -373,9 +386,9 @@ local ModelLists = {
         -- Optimized for speed and lower cost
         fast = {
             anthropic = "claude-haiku-4-5-20251001",
-            openai = "gpt-5.4-nano",
+            openai = "gpt-5.6-luna",
             deepseek = "deepseek-v4-flash",
-            gemini = "gemini-3.5-flash",
+            gemini = "gemini-3.6-flash",
             groq = "llama-3.1-8b-instant",
             mistral = "mistral-small-latest",
             xai = "grok-4.20-0309-non-reasoning",
@@ -398,7 +411,7 @@ local ModelLists = {
             anthropic = "claude-haiku-4-5-20251001",
             openai = "gpt-5.4-nano",
             deepseek = "deepseek-v4-flash",
-            gemini = "gemini-3.1-flash-lite",
+            gemini = "gemini-3.5-flash-lite",
             groq = "llama-3.1-8b-instant",
             mistral = "mistral-small-latest",
             xai = "grok-4.20-0309-non-reasoning",

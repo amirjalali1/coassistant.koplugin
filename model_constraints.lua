@@ -8,6 +8,7 @@ local ModelConstraints = {
     openai = {
         -- Models requiring temperature=1.0 (reject other values)
         -- Discovered via: lua tests/run_tests.lua --models openai
+        ["gpt-5.6"] = { temperature = 1.0 },   -- luna/sol/terra (prefix); rejects temp!=1 (verified 2026-07-24)
         ["gpt-5.5"] = { temperature = 1.0 },
         ["gpt-5.4"] = { temperature = 1.0 },
         ["gpt-5.4-mini"] = { temperature = 1.0 },
@@ -30,6 +31,7 @@ ModelConstraints.capabilities = {
         -- Models that support adaptive thinking (4.6+)
         -- New mode: thinking = {type = "adaptive"}, output_config = {effort = "..."}
         adaptive_thinking = {
+            "claude-fable-5",         -- Fable 5 (frontier; adaptive ALWAYS-ON, no disable)
             "claude-sonnet-5",        -- 5 Sonnet
             "claude-opus-4-8",        -- 4.8 Opus
             "claude-opus-4-7",        -- 4.7 Opus (prefix-matched for safety)
@@ -37,8 +39,9 @@ ModelConstraints.capabilities = {
             "claude-opus-4-6",        -- 4.6 Opus (prefix-matched for safety)
         },
         -- Models that REJECT sampling params (temperature/top_p/top_k → HTTP 400)
-        -- Opus 4.7+ and Sonnet 5 removed sampling params entirely; the builder strips them.
+        -- Opus 4.7+, Sonnet 5, and Fable 5 removed sampling params entirely; the builder strips them.
         no_sampling_params = {
+            "claude-fable-5",
             "claude-sonnet-5",
             "claude-opus-4-8",
             "claude-opus-4-7",
@@ -51,24 +54,27 @@ ModelConstraints.capabilities = {
         },
         -- Function calling for the book-tool workflows (universal on Claude; list families).
         tools = {
-            "claude-opus-4", "claude-sonnet-4", "claude-sonnet-5", "claude-haiku-4",
+            "claude-opus-4", "claude-sonnet-4", "claude-sonnet-5", "claude-haiku-4", "claude-fable-5",
         },
     },
     openai = {
         -- Models that support reasoning.effort parameter
         reasoning = {
+            "gpt-5.6",                              -- luna/sol/terra (prefix)
             "gpt-5.5",
             "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
         },
         -- Models where reasoning is opt-in (default=none from OpenAI)
-        -- GPT-5.4 defaults reasoning_effort=none (off); gated by master toggle + openai_reasoning sub-toggle.
+        -- GPT-5.4 + GPT-5.6 default reasoning_effort=none (off; verified 2026-07-24 — 0 reasoning
+        -- tokens with nothing sent); gated by master toggle + openai_reasoning sub-toggle.
         -- GPT-5.5 reasons at medium by default (NOT gated — always reasons at factory default).
         reasoning_gated = {
+            "gpt-5.6",
             "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
         },
-        -- Function calling for the book-tool workflows (prefix match covers -mini/-nano).
+        -- Function calling for the book-tool workflows (prefix match covers -mini/-nano/-sol/etc.).
         tools = {
-            "gpt-5.5", "gpt-5.4",
+            "gpt-5.6", "gpt-5.5", "gpt-5.4",
         },
         -- Responses API (/v1/responses) eligibility — the openai handler routes
         -- web-search-on requests (R1: Chat Completions has NO native search) AND
@@ -76,7 +82,7 @@ ModelConstraints.capabilities = {
         -- (responses_api_plan.md). Also the web-search UI gate via
         -- _web_search_providers below. Prefix match covers -mini/-nano.
         responses_web_search = {
-            "gpt-5.5", "gpt-5.4",
+            "gpt-5.6", "gpt-5.5", "gpt-5.4",
         },
     },
     deepseek = {
@@ -95,18 +101,18 @@ ModelConstraints.capabilities = {
     },
     gemini = {
         -- Gemini 3 models use thinkingLevel (minimal/low/medium/high)
-        thinking = { "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite" },
+        thinking = { "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite" },
         -- Gemini 2.5 models use thinkingBudget (0=off, -1=dynamic, 128-24576)
         thinking_budget = { "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite" },
         -- Google Search grounding
         google_search = {
-            "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite",
+            "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite",
             "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite",
         },
         -- Function calling for the book-tool workflows (same models as google_search).
         -- The runner's shouldUse gates on this + a tool_wire.lua adapter being registered.
         tools = {
-            "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite",
+            "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite",
             "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite",
         },
     },
@@ -340,6 +346,15 @@ ModelConstraints.reasoning_defaults = {
 --   budget_map     budget axis only: option key -> numeric budget
 ModelConstraints.reasoning_profiles = {
     anthropic = {
+        -- Fable 5: frontier model. Adaptive thinking is ALWAYS ON (thinking.type:disabled is
+        -- rejected — verified 2026-07-24), rejects sampling params, full effort ladder incl.
+        -- xhigh/max (max accepted). can_disable=false → minimal stance drops to lowest effort,
+        -- not off. default_state="on" also triggers the display=summarized carve-out.
+        { match = "claude-fable-5", axis = "adaptive_effort", default_state = "on",
+          can_disable = false, can_enable = true,
+          options = { "low", "medium", "high", "xhigh", "max" }, default_option = "high",
+          stance_map = { minimal = { option = "low" }, maximum = { state = "on", option = "max" } },
+          needs_no_sampling = true },
         -- Opus 4.8 / 4.7: adaptive-only, reject sampling params, default off (we only
         -- think when `thinking` is sent), full Opus effort ladder incl. xhigh/max.
         { match = "claude-opus-4-8", axis = "adaptive_effort", default_state = "off",
@@ -381,6 +396,12 @@ ModelConstraints.reasoning_profiles = {
           needs_temp_1 = true },
     },
     openai = {
+        -- GPT-5.6 (luna/sol/terra): gated — reasoning OFF by default (verified 0 reasoning
+        -- tokens with nothing sent, 2026-07-24). Opt-in effort none..xhigh (NO max — rejected).
+        { match = "gpt-5.6", axis = "effort", default_state = "off",
+          can_disable = true, can_enable = true,
+          options = { "low", "medium", "high", "xhigh" }, default_option = "medium",
+          stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "xhigh" } } },
         -- GPT-5.5: reasons by default (medium), cannot be fully disabled.
         { match = "gpt-5.5", axis = "effort", default_state = "on",
           can_disable = false, can_enable = true,
@@ -406,6 +427,17 @@ ModelConstraints.reasoning_profiles = {
           can_disable = false, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
+        -- gemini-3.6-flash + gemini-3.5-flash-lite mirror the 3.5-flash effort profile.
+        -- flash-lite MUST precede gemini-3.5-flash (prefix match: "gemini-3.5-flash" would
+        -- otherwise swallow "gemini-3.5-flash-lite" — same profile here, but order kept correct).
+        { match = "gemini-3.6-flash", axis = "effort", default_state = "on",
+          can_disable = false, can_enable = true,
+          options = { "minimal", "low", "medium", "high" }, default_option = "high",
+          stance_map = { minimal = { option = "minimal" }, maximum = { option = "high" } } },
+        { match = "gemini-3.5-flash-lite", axis = "effort", default_state = "on",
+          can_disable = false, can_enable = true,
+          options = { "minimal", "low", "medium", "high" }, default_option = "high",
+          stance_map = { minimal = { option = "minimal" }, maximum = { option = "high" } } },
         { match = "gemini-3.5-flash", axis = "effort", default_state = "on",
           can_disable = false, can_enable = true,
           options = { "minimal", "low", "medium", "high" }, default_option = "high",
