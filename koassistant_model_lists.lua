@@ -313,6 +313,37 @@ local ModelLists = {
     -- Tiers: reasoning > flagship > standard > fast > ultrafast
     ---------------------------------------------------------------------------
 
+    -- Every id we have EVER shipped as a provider's array default (mined from git history
+    -- 2026-07-25; newest first). Purpose: `features.model` CONFLATES a default auto-baked on
+    -- provider switch with a model the user deliberately picked, so it cannot be refreshed
+    -- safely on its own. If the persisted id appears here, it was almost certainly baked by
+    -- us rather than chosen — which makes it safe to move to the current default when we
+    -- bump one (defaults_propagation_plan.md §3). APPEND the outgoing id whenever a default
+    -- changes; never remove entries (that would strand the users we are trying to migrate).
+    -- Explicit picks are recorded in features.model_explicit from 2026-07-25 onward, so this
+    -- heuristic only has to cover users who predate that.
+    _shipped_defaults = {
+        anthropic  = { "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929" },
+        openai     = { "gpt-5.6-terra", "gpt-5.5", "gpt-5.4", "gpt-5.2" },
+        gemini     = { "gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-3-flash-preview" },
+        deepseek   = { "deepseek-v4-pro", "deepseek-chat" },
+        ollama     = { "llama4", "llama3.3" },
+        groq       = { "llama-3.3-70b-versatile" },
+        mistral    = { "mistral-large-latest" },
+        xai        = { "grok-4.5", "grok-4.3", "grok-4.20-beta-0309-non-reasoning", "grok-4-1-fast-non-reasoning" },
+        openrouter = { "anthropic/claude-sonnet-5", "anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.5" },
+        requesty   = { "openai/gpt-4o-mini" },
+        qwen       = { "qwen3-max" },
+        kimi       = { "kimi-k2.6", "kimi-k2.5", "kimi-k2-0905-preview" },
+        together   = { "deepseek-ai/DeepSeek-V4-Pro", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8" },
+        fireworks  = { "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/llama4-maverick-instruct-basic" },
+        sambanova  = { "Llama-4-Maverick-17B-128E-Instruct", "Meta-Llama-4-Maverick-17B-128E-Instruct" },
+        cohere     = { "command-a-plus-05-2026", "command-a-03-2025" },
+        doubao     = { "doubao-seed-2.0-pro-32k", "doubao-1.8-pro-32k" },
+        perplexity = { "sonar-pro", "sonar" },
+        zai        = { "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5" },
+    },
+
     _tiers = {
         -- Models with explicit thinking/reasoning traces
         reasoning = {
@@ -675,6 +706,55 @@ end
 -- @return table|nil - {api_list, docs, curl, ...}
 function ModelLists.getDocs(provider)
     return ModelLists._docs[provider]
+end
+
+--- Decide what to do with a persisted `features.model` when the provider's default may have
+--- moved on, or when the id no longer exists (defaults_propagation_plan.md §3, gaps G2/G3).
+--- PURE: no settings/UI access, so it is unit-testable and safe to call on every load.
+---
+--- Decision order:
+---   nil/empty model           -> keep    (nil already resolves to the provider default)
+---   explicit user pick        -> keep    (never clobber a deliberate choice)
+---   no current default        -> keep    (custom providers may have none)
+---   already the default       -> keep
+---   matches a shipped default -> refresh (it was auto-baked by a provider switch)
+---   not a known valid id      -> reset   (stale id: would 404; G3 safety net)
+---   otherwise                 -> keep    (user picked a non-default model at some point)
+---
+--- @param opts table {
+---   model            string|nil  persisted features.model
+---   current_default  string|nil  the provider's default today
+---   explicit         boolean|nil user explicitly picked a model for this provider
+---   known_models     table|nil   valid ids for this provider (built-ins + user customs)
+---   shipped_defaults table|nil   ids ever shipped as this provider's default
+--- }
+--- @return string action  "keep" | "refresh" | "reset"
+--- @return string|nil new_model  the id to move to (nil when action == "keep")
+function ModelLists.resolveModelRefresh(opts)
+    opts = opts or {}
+    local model = opts.model
+    if type(model) ~= "string" or model == "" then return "keep", nil end
+    if opts.explicit then return "keep", nil end
+
+    local current_default = opts.current_default
+    if type(current_default) ~= "string" or current_default == "" then return "keep", nil end
+    if model == current_default then return "keep", nil end
+
+    for _idx, id in ipairs(opts.shipped_defaults or {}) do
+        if id == model then return "refresh", current_default end
+    end
+
+    -- Unknown ids are only treated as stale when we actually have a list to judge against;
+    -- an empty/absent list must never trigger a reset (custom providers, unseeded callers).
+    local known = opts.known_models
+    if type(known) == "table" and #known > 0 then
+        for _idx, id in ipairs(known) do
+            if id == model then return "keep", nil end
+        end
+        return "reset", current_default
+    end
+
+    return "keep", nil
 end
 
 return ModelLists

@@ -1810,6 +1810,42 @@ function AskGPT:initSettings()
       needs_save = true
     end
 
+    -- Model default refresh (defaults_propagation_plan.md §3, gaps G2/G3). NOT guarded by a
+    -- one-time flag: it must re-evaluate whenever we bump a provider default. Safe to repeat
+    -- because an explicit pick sets features.model_explicit[provider], which pins it forever.
+    -- Two outcomes: an auto-baked old default moves to the current one, and a model id that
+    -- no longer exists is reset instead of 404ing. The decision itself is pure + unit-tested
+    -- (ModelLists.resolveModelRefresh).
+    do
+      local provider = features.provider or self.configuration.provider or "anthropic"
+      local is_custom_provider = self:isCustomProvider(provider)
+      -- Custom providers own their default and have no shipped history — leave them alone.
+      if features.model and not is_custom_provider then
+        local known = {}
+        for _idx, id in ipairs(ModelLists[provider] or {}) do table.insert(known, id) end
+        for _idx, id in ipairs((features.custom_models or {})[provider] or {}) do
+          table.insert(known, id)
+        end
+        local action, new_model = ModelLists.resolveModelRefresh({
+          model = features.model,
+          current_default = self:getEffectiveDefaultModel(provider),
+          explicit = (features.model_explicit or {})[provider],
+          known_models = known,
+          shipped_defaults = ModelLists._shipped_defaults[provider],
+        })
+        if action ~= "keep" and new_model then
+          logger.info(string.format("KOAssistant: model %s '%s' -> '%s' (%s)",
+            action, tostring(features.model), tostring(new_model), provider))
+          -- Surfaced once by the UI so the switch is never silent (cost/behavior change).
+          if action == "refresh" then
+            features._model_switch_notice = { from = features.model, to = new_model }
+          end
+          features.model = new_model
+          needs_save = true
+        end
+      end
+    end
+
     if needs_save then
       self.settings:saveSetting("features", features)
       logger.info("KOAssistant: Migrated settings")
@@ -1824,6 +1860,24 @@ function AskGPT:initSettings()
 
   -- Update the configuration with settings values
   self:updateConfigFromSettings()
+
+  -- Tell the user once when we moved them onto a provider's new default model — a model
+  -- change affects cost and behavior, so it must never be silent (defaults_propagation_plan.md
+  -- §3 guardrails). Deferred: the UI does not exist yet this early in init.
+  local notice = (self.settings:readSetting("features") or {})._model_switch_notice
+  if notice and notice.to then
+    UIManager:scheduleIn(3, function()
+      UIManager:show(InfoMessage:new{
+        text = T(_("Model updated to %1.\n\nYour provider's default changed (you were on %2). Pick a different model any time in Settings."),
+          notice.to, notice.from or "?"),
+        timeout = 8,
+      })
+    end)
+    local f = self.settings:readSetting("features") or {}
+    f._model_switch_notice = nil
+    self.settings:saveSetting("features", f)
+    self.settings:flush()
+  end
 end
 
 function AskGPT:updateConfigFromSettings()
@@ -2018,6 +2072,9 @@ function AskGPT:removeCustomModel(provider, model)
       -- If removed model was selected, reset to effective default
       if self:getCurrentModel() == model then
         features.model = self:getEffectiveDefaultModel(provider)
+        -- Baked a default, not a user pick: clear the explicitness flag so future
+        -- default bumps can still refresh it (defaults_propagation_plan.md §3).
+        if features.model_explicit then features.model_explicit[provider] = nil end
         self.settings:saveSetting("features", features)
         self.settings:flush()
         self:updateConfigFromSettings()
@@ -2310,6 +2367,8 @@ function AskGPT:buildProviderMenu(simplified, show_all)
       -- Reset model to new provider's effective default when provider changes
       if old_provider ~= prov_id then
         features.model = self_ref:getEffectiveDefaultModel(prov_id)
+        -- Baked, not chosen -> the new provider's model is refreshable again.
+        if features.model_explicit then features.model_explicit[prov_id] = nil end
       end
 
       features.provider = prov_id
@@ -2981,6 +3040,11 @@ function AskGPT:buildModelMenu(simplified)
       callback = function()
         local f = self_ref.settings:readSetting("features") or {}
         f.model = model_copy
+        -- Mark this as a DELIBERATE pick so default bumps never overwrite it
+        -- (defaults_propagation_plan.md §3 — features.model alone can't tell an
+        -- explicit choice from one auto-baked on provider switch).
+        f.model_explicit = f.model_explicit or {}
+        f.model_explicit[provider] = true
         self_ref.settings:saveSetting("features", f)
         self_ref.settings:flush()
         self_ref:updateConfigFromSettings()
@@ -3033,9 +3097,12 @@ function AskGPT:buildModelMenu(simplified)
                     if new_model and new_model ~= "" then
                       local success, err = self_ref:saveCustomModel(provider, new_model)
                       if success then
-                        -- Select the new model
+                        -- Select the new model (a hand-added model is by definition a
+                        -- deliberate pick — never auto-refresh away from it)
                         local f = self_ref.settings:readSetting("features") or {}
                         f.model = new_model
+                        f.model_explicit = f.model_explicit or {}
+                        f.model_explicit[provider] = true
                         self_ref.settings:saveSetting("features", f)
                         self_ref.settings:flush()
                         self_ref:updateConfigFromSettings()
@@ -3146,6 +3213,7 @@ function AskGPT:showManageCustomModelsMenu(provider)
           -- If current model was custom, reset to effective default
           if was_custom then
             features.model = self_ref:getEffectiveDefaultModel(provider)
+            if features.model_explicit then features.model_explicit[provider] = nil end
           end
 
           self_ref.settings:saveSetting("features", features)
