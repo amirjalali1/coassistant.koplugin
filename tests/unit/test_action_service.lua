@@ -682,6 +682,66 @@ local function runFileBrowserTests()
 end
 
 -- =============================================================================
+-- Input-context curated default injection (defaults sweep F2, 2026-07-25)
+-- =============================================================================
+
+local function runInputInjectionTests()
+    print("\n--- Input-context curated injection ---")
+
+    -- Saved highlight list missing a curated default (as if the default was added
+    -- after the user's list was saved) — must be injected on read.
+    TestRunner:test("curated default added later is injected", function()
+        local data = {
+            input_highlight_actions = { "translate", "explain", "eli5" },
+        }
+        local service = createService(data)
+        local result = service:getInputActions("highlight")
+        local found = false
+        for _i, id in ipairs(result) do
+            if id == "counterpoint" then found = true end
+        end
+        TestRunner:assertEqual(found, true, "counterpoint should be injected from default_ids")
+    end)
+
+    TestRunner:test("dismissed default is NOT resurrected", function()
+        local data = {
+            input_highlight_actions = { "translate", "explain", "eli5" },
+            _dismissed_input_highlight_actions = { "counterpoint" },
+        }
+        local service = createService(data)
+        local result = service:getInputActions("highlight")
+        for _i, id in ipairs(result) do
+            if id == "counterpoint" then
+                error("dismissed counterpoint must not be re-injected")
+            end
+        end
+    end)
+
+    TestRunner:test("non-default eligible actions are NOT injected into curated lists", function()
+        local data = {
+            input_highlight_actions = { "translate", "explain", "eli5" },
+        }
+        local service = createService(data)
+        local result = service:getInputActions("highlight")
+        for _i, id in ipairs(result) do
+            if id == "grammar" then
+                error("grammar is eligible but not a curated default; must not be injected")
+            end
+        end
+    end)
+
+    TestRunner:test("saved order preserved, injections appended", function()
+        local data = {
+            input_highlight_actions = { "eli5", "translate" },
+        }
+        local service = createService(data)
+        local result = service:getInputActions("highlight")
+        TestRunner:assertEqual(result[1], "eli5", "user order kept")
+        TestRunner:assertEqual(result[2], "translate", "user order kept")
+    end)
+end
+
+-- =============================================================================
 -- Run All Tests
 -- =============================================================================
 
@@ -694,6 +754,7 @@ local function runAll()
     runDuplicateNameTests()
     runCreateDuplicateTests()
     runFileBrowserTests()
+    runInputInjectionTests()
 
     print(string.format("\n=== Results: %d passed, %d failed ===\n", TestRunner.passed, TestRunner.failed))
     return TestRunner.failed == 0

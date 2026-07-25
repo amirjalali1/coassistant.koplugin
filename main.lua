@@ -1494,6 +1494,11 @@ function AskGPT:initSettings()
       -- Behavior settings (new system v0.6+)
       selected_behavior = "standard",  -- Behavior ID: "mini", "standard", "full", or custom ID
       behavior_migrated = true,    -- Mark as already on new system
+      -- Fresh installs are NOT migration candidates: without this stamp the
+      -- tools_posture migration below fires on the very first launch (all its keys
+      -- are nil on a fresh table) and bakes "manual", making the schema default
+      -- "auto" unreachable for everyone (defaults sweep M5, 2026-07-25).
+      _tools_posture_migrated = true,
     })
   end
 

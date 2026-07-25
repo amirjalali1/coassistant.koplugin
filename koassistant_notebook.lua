@@ -389,10 +389,10 @@ end
 ---
 --- @param data table Entry data: action_name, highlighted_text, follow_up, response, model_name
 --- @param page_info table Page info from getPageInfo()
---- @param content_format string "response" | "qa" | "full_qa" (default: "qa")
+--- @param content_format string "response" | "qa" | "full_qa" (default: "full_qa", the schema default)
 --- @return string entry The formatted markdown entry
 function Notebook.formatEntry(data, page_info, content_format)
-    content_format = content_format or "qa"
+    content_format = content_format or "full_qa"
     local parts = {}
 
     -- Line 1: Date and time (bold)
@@ -561,7 +561,7 @@ end
 --- @param history table MessageHistory object
 --- @param highlighted_text string|nil Selected text (if any)
 --- @param ui table|nil ReaderUI instance
---- @param content_format string|nil "response" | "qa" | "full_qa" (default: "qa")
+--- @param content_format string|nil "response" | "qa" | "full_qa" (default: "full_qa", the schema default)
 --- @param model_name string|nil Model name to include in entry (e.g. "claude-sonnet-4-20250514")
 --- @return boolean success Whether save succeeded
 --- @return string|nil error Error message if failed
@@ -581,7 +581,7 @@ function Notebook.saveChat(document_path, history, highlighted_text, ui, content
     end
 
     local page_info = Notebook.getPageInfo(ui)
-    content_format = content_format or "qa"
+    content_format = content_format or "full_qa"
 
     -- Extract messages from history
     -- The message structure is:

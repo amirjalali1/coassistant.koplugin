@@ -2024,7 +2024,7 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
                 end)
             end,
             save_callback = function()
-                if config.features.auto_save_all_chats then
+                if config.features.auto_save_all_chats ~= false then
                     UIManager:show(InfoMessage:new{
                         text = _("Auto-save is enabled in settings"),
                         timeout = 2,
@@ -2367,7 +2367,7 @@ function ChatHistoryDialog:showExportOptions(document_path, chat_id, chat_histor
         local Export = require("koassistant_export")
 
         -- Get directory setting
-        local dir_option = features.export_save_directory or "book_folder"
+        local dir_option = features.export_save_directory or "exports_folder"
 
         local buttons = {
             {

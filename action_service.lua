@@ -2099,14 +2099,17 @@ function ActionService:_processInputList(ctx_name, saved)
         end
     end
 
-    -- For non-curated contexts: inject new eligible actions not yet in list and not dismissed
-    if not ctx.default_ids then
-        local current_set = {}
-        for _, id in ipairs(pruned) do current_set[id] = true end
-        for _, id in ipairs(eligible_ids) do
-            if not current_set[id] and not dismissed_set[id] then
-                table.insert(pruned, id)
-            end
+    -- Inject unseen actions so new defaults reach existing users (defaults sweep F2,
+    -- 2026-07-25). Non-curated contexts inject every eligible action; curated contexts
+    -- inject only ids from their default_ids list. Safe without a migration: dismissal
+    -- tracking shipped with this feature (e3d6e1b), so an undismissed gap can only be a
+    -- default added after the user's list was saved — removals are always in dismissed.
+    local current_set = {}
+    for _, id in ipairs(pruned) do current_set[id] = true end
+    local inject_from = ctx.default_ids or eligible_ids
+    for _, id in ipairs(inject_from) do
+        if eligible_set[id] and not current_set[id] and not dismissed_set[id] then
+            table.insert(pruned, id)
         end
     end
 

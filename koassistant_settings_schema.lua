@@ -259,7 +259,11 @@ local SettingsSchema = {
                             type = "toggle",
                             text = _("Align Quick Actions"),
                             path = "features.qa_left_align",
-                            default = true,
+                            -- Deliberately false while qs_left_align is true (maintainer
+                            -- 2026-07-25): the QA panel has always rendered centered by
+                            -- default; the old default=true here only made the toggle
+                            -- DISPLAY on while code behaved off (defaults sweep M8).
+                            default = false,
                             help_text = _("Left-align button text in the Quick Actions panel instead of centering. Also available from the panel's gear menu."),
                         },
                     },
@@ -1306,7 +1310,7 @@ local SettingsSchema = {
                     help_text = _("Character count above which text is considered 'long'. Used when Original Text is set to 'Hide Long'."),
                     enabled_func = function(plugin)
                         local f = plugin.settings:readSetting("features") or {}
-                        return f.translate_hide_highlight_mode == "hide_long"
+                        return (f.translate_hide_highlight_mode or "hide_long") == "hide_long"
                     end,
                 },
                 {
@@ -2217,7 +2221,7 @@ local SettingsSchema = {
                                 }
                                 return T(_("Web Search Effort: %1"), labels[effort] or effort)
                             end,
-                            help_text = _("How much web searching the AI may do per question.\n\nLight: fewest searches — fastest and cheapest.\nStandard: balanced (provider defaults).\nThorough: most searches and context — slower and costlier.\n\nApplies where the provider offers control: Anthropic (up to 2/5/10 searches), OpenAI and Perplexity (search context size), OpenRouter (3/5/10 results). Gemini and xAI decide automatically."),
+                            help_text = _("How much web searching the AI may do per question.\n\nLight: fewest searches — fastest and cheapest.\nStandard: balanced (provider defaults).\nThorough: most searches and context — slower and costlier.\n\nApplies where the provider offers control: Anthropic (up to 2/5/10 searches), OpenAI and Perplexity (search context size), OpenRouter (3/5/10 results), Z.AI (result count and snippet size). Gemini and xAI decide automatically."),
                             path = "features.web_search_effort",
                             default = "standard",
                             options = {
@@ -2717,7 +2721,15 @@ function SettingsSchema.applyDefaults(features, preserve)
     for path, default in pairs(defaults) do
         local key = path:match("^features%.(.+)$")
         if key then
-            new_features[key] = default
+            -- One level of nesting (features.reasoning_prefs.stance) — a dotted key
+            -- must land in a subtable, not as a junk flat key (audit settings MEDIUM).
+            local parent, child = key:match("^([^%.]+)%.(.+)$")
+            if parent then
+                if type(new_features[parent]) ~= "table" then new_features[parent] = {} end
+                new_features[parent][child] = default
+            else
+                new_features[key] = default
+            end
         end
     end
 

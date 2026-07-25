@@ -143,7 +143,7 @@ function DeepSeekHandler:query(message_history, config)
     local base_url = built.url
 
     -- Check if streaming is enabled
-    local use_streaming = config.features and config.features.enable_streaming
+    local use_streaming = config.features and config.features.enable_streaming ~= false
 
     -- Debug: Print request body
     if config and config.features and config.features.debug then

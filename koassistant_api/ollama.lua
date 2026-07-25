@@ -106,7 +106,7 @@ function OllamaHandler:query(message_history, config)
     }
 
     -- Check if streaming is enabled
-    local use_streaming = config.features and config.features.enable_streaming
+    local use_streaming = config.features and config.features.enable_streaming ~= false
 
     -- Set stream parameter based on config
     request_body.stream = use_streaming and true or false

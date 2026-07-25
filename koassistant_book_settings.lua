@@ -655,7 +655,7 @@ function BookSettings.showToolsPosture(opts)
     local doc_settings = resolveDocSettings(ui, document_path)
     local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
     local book_val = doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOLS) or nil
-    local global_val = features.tools_posture or "manual"
+    local global_val = features.tools_posture or "auto"
     local book_effort = doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOL_EFFORT) or nil
     local global_effort = features.tool_lookup_effort or "standard"
 
@@ -1554,7 +1554,7 @@ function BookSettings.show(opts)
             UIManager:close(picker)
             BookSettings.show(opts)
         end
-        local global_label = BookSettings.toolsPostureLabel(features.tools_posture or "manual")
+        local global_label = BookSettings.toolsPostureLabel(features.tools_posture or "auto")
         local rows = {
             {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), global_label),
                 callback = function() setVal(nil) end }},

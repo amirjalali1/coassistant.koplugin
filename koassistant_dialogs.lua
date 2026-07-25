@@ -1447,7 +1447,7 @@ local function createSaveDialog(document_path, history, chat_history_manager, is
                                 end
                                 if active_viewer.button_table then
                                     local will_auto_save = features and (
-                                        features.auto_save_all_chats or
+                                        features.auto_save_all_chats ~= false or
                                         features.auto_save_chats ~= false
                                     )
                                     local button_text = will_auto_save and _("Autosaved") or _("Saved")
@@ -2233,7 +2233,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                     -- Determine if auto-save should apply:
                     -- auto_save_all_chats = always, OR auto_save_chats + chat already saved once
                     local should_auto_save = cfg.features and (
-                        cfg.features.auto_save_all_chats or
+                        cfg.features.auto_save_all_chats ~= false or
                         (cfg.features.auto_save_chats ~= false and cfg.features.chat_saved)
                     )
 
@@ -2525,7 +2525,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                     end
                     -- Button text: "Autosaved" if auto-save will handle future replies, else "Saved"
                     local will_auto_save = viewer_features and (
-                        viewer_features.auto_save_all_chats or
+                        viewer_features.auto_save_all_chats ~= false or
                         viewer_features.auto_save_chats ~= false
                     )
                     local button_text = will_auto_save and _("Autosaved") or _("Saved")
@@ -2543,7 +2543,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                         timeout = 2,
                     })
                 end
-            elseif temp_config and temp_config.features and temp_config.features.auto_save_all_chats then
+            elseif temp_config and temp_config.features and temp_config.features.auto_save_all_chats ~= false then
                 UIManager:show(InfoMessage:new{
                     text = T("Auto-save all chats is on - this can be changed in the settings"),
                     timeout = 3,
@@ -2804,7 +2804,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
     UIManager:show(chatgpt_viewer)
 
     -- Auto-save if enabled
-    if temp_config and temp_config.features and temp_config.features.auto_save_all_chats then
+    if temp_config and temp_config.features and temp_config.features.auto_save_all_chats ~= false then
         -- Schedule auto-save to run after viewer is displayed
         UIManager:scheduleIn(0.1, function()
             local is_general_context = temp_config.features.is_general_context or false
@@ -3098,7 +3098,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         if hide_mode == "always_hide" then
             temp_config.features.translate_hide_quote = true
         elseif hide_mode == "hide_long" then
-            local threshold = f.translate_long_highlight_threshold or 200
+            local threshold = f.translate_long_highlight_threshold or 280
             local text_length = highlightedText and #highlightedText or 0
             temp_config.features.translate_hide_quote = (text_length > threshold)
         elseif hide_mode == "follow_global" then
@@ -3106,14 +3106,14 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             local text_length = highlightedText and #highlightedText or 0
             local global_threshold = f.long_highlight_threshold or 280
             temp_config.features.translate_hide_quote = f.hide_highlighted_text or
-                (f.hide_long_highlights and text_length > global_threshold)
+                (f.hide_long_highlights ~= false and text_length > global_threshold)
         elseif hide_mode == "never_hide" then
             temp_config.features.translate_hide_quote = false
         end
 
         -- Full page translate override: checkbox is the ultimate override when checked
         -- This ONLY affects full page translations, not regular highlight translations
-        if is_full_page and f.translate_hide_full_page == true then
+        if is_full_page and f.translate_hide_full_page ~= false then
             temp_config.features.translate_hide_quote = true
         end
     end

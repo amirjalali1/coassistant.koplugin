@@ -1231,7 +1231,7 @@ function ChatGPTViewer:init()
       -- auto_save_all_chats, OR auto_save_chats + already saved once
       local features = self.configuration and self.configuration.features
       local auto_save = features and (
-        features.auto_save_all_chats or
+        features.auto_save_all_chats ~= false or
         (features.auto_save_chats ~= false and features.chat_saved)
       )
       local skip_save = features and features.storage_key == "__SKIP__"
@@ -1408,7 +1408,7 @@ function ChatGPTViewer:init()
       local highlight_text = self.original_highlighted_text or ""
       local threshold = self.configuration.features.long_highlight_threshold or 280
       self.hide_highlighted_text = self.configuration.features.hide_highlighted_text or
-        (self.configuration.features.hide_long_highlights and string.len(highlight_text) > threshold)
+        (self.configuration.features.hide_long_highlights ~= false and string.len(highlight_text) > threshold)
     end
     -- Compact view settings (used by dictionary bypass and popup actions)
     if self.configuration.features.compact_view then
@@ -2673,7 +2673,7 @@ function ChatGPTViewer:init()
   -- Expanded-from-skip chats should also allow manual save initially
   local features = self.configuration and self.configuration.features
   local auto_save_active = features and (
-    features.auto_save_all_chats or
+    features.auto_save_all_chats ~= false or
     (features.auto_save_chats ~= false and features.chat_saved)
   )
   local skip_save = features and features.storage_key == "__SKIP__"
@@ -4268,7 +4268,7 @@ function ChatGPTViewer:saveToNotebook(format_override)
   -- Content format: an explicit pick (Add (choose format)...) wins over the
   -- notebook_content_format setting default.
   local features = self.configuration and self.configuration.features or {}
-  local content_format = format_override or features.notebook_content_format or "qa"
+  local content_format = format_override or features.notebook_content_format or "full_qa"
 
   -- Save to notebook
   local model_name = self.configuration and self.configuration.model
@@ -4485,7 +4485,7 @@ function ChatGPTViewer:showExportDialog()
 
   -- Save to file directly (no copy-or-save choice — Copy button handles clipboard)
   local function performSave(selected_content)
-    local dir_option = features.export_save_directory or "book_folder"
+    local dir_option = features.export_save_directory or "exports_folder"
 
     if dir_option == "ask" then
       -- Show PathChooser

@@ -598,7 +598,7 @@ function ImageGenerator._generateImpl(word, config_table, settings, book_info)
         if status then status.close() end
         phase_text = text
         status = StreamHandler.showToolStatusDialog({
-            settings = { large_stream_dialog = false, response_font_size = features.response_font_size },
+            settings = { large_stream_dialog = false, response_font_size = features.markdown_font_size },
             title = _("Generating image"),
             initial_text = statusText(),
             on_stop = cancelRequest,

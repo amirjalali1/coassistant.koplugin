@@ -453,7 +453,7 @@ function MessageHistory:createResultText(highlightedText, config)
     -- Check if we should show the highlighted text
     local should_hide = config and config.features and (
         config.features.hide_highlighted_text or
-        (config.features.hide_long_highlights and highlightedText and
+        (config.features.hide_long_highlights ~= false and highlightedText and
          string.len(highlightedText) > (config.features.long_highlight_threshold or 280))
     )
 
