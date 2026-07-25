@@ -45,10 +45,11 @@ function QuizPrompt.build(quiz)
       "type": "multiple_choice",
       "question": "What is the main theme explored in this section?",
       "options": {"A": "Option text", "B": "Option text", "C": "Option text", "D": "Option text"},
-      "correct": "B",
-      "explanation": "Brief explanation of why B is correct."
+      "correct": "C",
+      "explanation": "Brief explanation of why the correct option is correct."
     }]])
         table.insert(rules, '- Multiple choice: always 4 options (A-D), "correct" is the letter, include "explanation"')
+        table.insert(rules, '- Vary which letter is correct across questions (roughly even A/B/C/D, no pattern); the letter in the example above is formatting only')
     end
     if sa then
         table.insert(type_list, "short_answer")
