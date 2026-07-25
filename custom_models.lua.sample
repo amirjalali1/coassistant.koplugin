@@ -1,0 +1,96 @@
+-- Custom Model Definitions for KOAssistant
+-- Copy this file to custom_models.lua and modify as needed.
+--
+-- Lets you grant/deny CAPABILITIES (tools, web search gating, thinking wire),
+-- declare REASONING PROFILES, and set PARAMETER CONSTRAINTS for any model —
+-- including models on custom providers — without waiting for a plugin update.
+-- Your entries win over the plugin's built-in lists and over auto-detected
+-- provider metadata.
+--
+-- Provider keys:
+--   Built-in providers use their id: "anthropic", "openai", "gemini",
+--   "openrouter", "deepseek", ...
+--   Custom providers use the generated id shown in their settings — always
+--   "custom_" followed by the lowercased name, e.g. "custom_lm_studio".
+--
+-- Model matching is by id PREFIX ("gpt-6" matches "gpt-6-turbo-2027…").
+-- The empty prefix "" matches EVERY model of that provider. When several
+-- prefixes match, the longest wins (capabilities/constraints) or the first
+-- listed wins (reasoning profiles).
+--
+-- Sections (all optional):
+--
+--   capabilities[provider][capability][prefix] = true | false
+--     Capability names used by the plugin:
+--       "tools"                - book-tool workflows (search_book/toc/read_around)
+--       "google_search"        - Gemini search grounding (gemini only)
+--       "responses_web_search" - OpenAI/xAI Responses-API web search
+--       "thinking", "thinking_budget", "adaptive_thinking", "extended_thinking",
+--       "reasoning", "no_sampling_params" - reasoning/param wiring for built-ins
+--     NOTE: granting web-search capabilities only helps on providers that have a
+--     web-search mechanism (see the provider table in CLAUDE/docs). Custom
+--     providers have none — a grant there does nothing.
+--
+--   reasoning_profiles[provider] = { { profile }, { profile }, ... }
+--     Same shape as the built-in profiles in model_constraints.lua:
+--       match          - model id prefix ("" = all models)
+--       axis           - "none" | "binary" | "effort" | "budget" | "adaptive_effort"
+--       default_state  - "on" | "off" (model's behavior when nothing is sent)
+--       can_disable / can_enable
+--       options        - ordered levels, e.g. { "low", "medium", "high" }
+--       default_option - level used for plain "on"
+--       stance_map     - { minimal = {state=/option=}, maximum = {state=/option=} }
+--       needs_temp_1   - force temperature 1.0 while reasoning is on
+--     CUSTOM PROVIDERS ONLY — add `wire` to say how to put the decision on the
+--     OpenAI-compatible request body:
+--       wire = "effort"          -> sends reasoning_effort = "<level>"
+--                                   (vLLM, many gateways/proxies)
+--       wire = "enable_thinking" -> sends chat_template_kwargs = { enable_thinking = true/false }
+--                                   (vLLM/SGLang Qwen-style thinking toggle)
+--
+--   constraints[provider][prefix] = { param = forced_value }
+--     e.g. { temperature = 1.0 } for models that reject other temperatures.
+--
+--   max_output_tokens[provider][prefix] = number
+--     Output-token ceiling (prevents HTTP 400 from oversized max_tokens).
+
+return {
+    -----------------------------------------------------------------------
+    -- EXAMPLE 1: Local LM Studio/vLLM provider running a Qwen-style thinking
+    -- model: enable book tools + a thinking toggle for every model it serves.
+    -----------------------------------------------------------------------
+    -- capabilities = {
+    --     custom_lm_studio = {
+    --         tools = { [""] = true },
+    --     },
+    -- },
+    -- reasoning_profiles = {
+    --     custom_lm_studio = {
+    --         { match = "", axis = "binary", default_state = "on",
+    --           can_disable = true, can_enable = true, wire = "enable_thinking",
+    --           stance_map = { minimal = { state = "off" }, maximum = { state = "on" } } },
+    --     },
+    -- },
+
+    -----------------------------------------------------------------------
+    -- EXAMPLE 2: Grant book tools to an OpenRouter model the plugin doesn't
+    -- know yet (usually unnecessary — OpenRouter capabilities are auto-detected
+    -- when you add a custom model — but this always wins).
+    -----------------------------------------------------------------------
+    -- capabilities = {
+    --     openrouter = {
+    --         tools = { ["moonshotai/kimi-k2"] = true },
+    --     },
+    -- },
+
+    -----------------------------------------------------------------------
+    -- EXAMPLE 3: A brand-new OpenAI model that rejects custom temperatures
+    -- and caps output at 64K.
+    -----------------------------------------------------------------------
+    -- constraints = {
+    --     openai = { ["gpt-6"] = { temperature = 1.0 } },
+    -- },
+    -- max_output_tokens = {
+    --     openai = { ["gpt-6"] = 65536 },
+    -- },
+}

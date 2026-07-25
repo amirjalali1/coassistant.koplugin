@@ -45,6 +45,27 @@ function CustomOpenAIHandler:customizeRequestBody(body, config)
         body.max_completion_tokens = body.max_tokens
         body.max_tokens = nil
     end
+
+    -- Reasoning for custom providers (item 19): a user profile in custom_models.lua
+    -- names an OpenAI-compatible wire via `wire`; applyReasoningParams emits the
+    -- neutral api_params.custom_reasoning record, translated here.
+    --   "effort"          -> reasoning_effort = <level>  (vLLM, gateways; off_option if declared)
+    --   "enable_thinking" -> chat_template_kwargs.enable_thinking = <bool> (vLLM/SGLang Qwen-style)
+    local cr = config.api_params and config.api_params.custom_reasoning
+    if cr then
+        if cr.wire == "effort" then
+            if cr.on then
+                body.reasoning_effort = cr.effort
+            elseif cr.off_option then
+                body.reasoning_effort = cr.off_option
+            end
+        elseif cr.wire == "enable_thinking" then
+            body.chat_template_kwargs = { enable_thinking = cr.on and true or false }
+        end
+        if cr.on and cr.needs_temp_1 and body.temperature and body.temperature ~= 1.0 then
+            body.temperature = 1.0
+        end
+    end
     return body
 end
 

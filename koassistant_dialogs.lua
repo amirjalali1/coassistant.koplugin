@@ -1125,7 +1125,7 @@ local REASONING_WIRE_KEYS = {
     "deepseek_thinking", "zai_thinking", "sambanova_thinking",
     "openrouter_reasoning", "requesty_reasoning", "groq_reasoning",
     "together_reasoning", "fireworks_reasoning", "xai_reasoning",
-    "perplexity_reasoning", "_reasoning",
+    "perplexity_reasoning", "custom_reasoning", "_reasoning",
 }
 
 -- Reply-time Quick overrides (controls parity §8c, "live parts only" decision

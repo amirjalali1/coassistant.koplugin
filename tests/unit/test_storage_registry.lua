@@ -145,9 +145,10 @@ end)
 --------------------------------------------------------------------------------
 TestRunner:suite("Accessors match pre-refactor lists (no behavior change)")
 
-TestRunner:test("updateFiles() == old USER_FILES", function()
+TestRunner:test("updateFiles() == old USER_FILES + custom_models", function()
     assertListEqual(Registry.updateFiles(),
-        { "apikeys.lua", "configuration.lua", "custom_actions.lua" }, "updateFiles")
+        { "apikeys.lua", "configuration.lua", "custom_actions.lua", "custom_models.lua" },
+        "updateFiles")
 end)
 
 TestRunner:test("updateDirs() == old USER_DIRS", function()

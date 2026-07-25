@@ -152,6 +152,13 @@ Registry.entries = {
         reset_in = { "wipe_all" }, uninstall = true,
     },
     {
+        id = "model_caps_cache", label = "Model capability cache",
+        location = "settings_dir", ref = "koassistant_model_caps.lua",
+        category = "internal", backup = false,
+        reset_in = { "wipe_all" }, uninstall = true,
+        notes = "Machine-owned cache of provider-reported model metadata (OpenRouter supported_parameters). Safe to delete; re-fetched on demand.",
+    },
+    {
         id = "pinned_general", label = "Pinned (general)",
         location = "settings_dir", ref = "koassistant_pinned_general.lua",
         category = "artifacts", backup = true,
@@ -322,6 +329,13 @@ Registry.entries = {
         location = "plugin_file", ref = "custom_actions.lua",
         category = "assets", backup = true,
         update_preserve = true, uninstall = true,
+    },
+    {
+        id = "custom_models", label = "Custom model definitions file",
+        location = "plugin_file", ref = "custom_models.lua",
+        category = "assets", backup = true,
+        update_preserve = true, uninstall = true,
+        notes = "User overrides for model capabilities/reasoning profiles/constraints (item 19). See custom_models.lua.sample.",
     },
 
     --========================= Plugin-folder dirs (USER_DIRS) =================

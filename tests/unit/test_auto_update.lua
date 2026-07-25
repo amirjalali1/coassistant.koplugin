@@ -108,7 +108,7 @@ end
 -- These mirror the actual functions for testability
 -- ============================================================================
 
-local USER_FILES = { "apikeys.lua", "configuration.lua", "custom_actions.lua" }
+local USER_FILES = { "apikeys.lua", "configuration.lua", "custom_actions.lua", "custom_models.lua" }
 local USER_DIRS = { "behaviors", "domains" }
 
 local function verifyExtractedPlugin(staging_dir, expected_version)
@@ -457,7 +457,7 @@ function TestAutoUpdate:runAll()
     -- ---- USER_FILES/USER_DIRS constants ----
 
     self:test("USER_FILES contains expected files", function()
-        local expected = { "apikeys.lua", "configuration.lua", "custom_actions.lua" }
+        local expected = { "apikeys.lua", "configuration.lua", "custom_actions.lua", "custom_models.lua" }
         self:assertEquals(#USER_FILES, #expected, "Should have " .. #expected .. " user files")
         for i, name in ipairs(expected) do
             self:assertEquals(USER_FILES[i], name, "File " .. i .. " should be " .. name)

@@ -5,6 +5,7 @@
 /custom_actions.lua
 custom_prompts.lua
 custom_actions.lua
+/custom_models.lua
 CLAUDE.md
 /.claude
 plan.md

@@ -184,14 +184,27 @@ ToolWire.adapters.mistral = ToolWire.adapters.openai
 ToolWire.adapters.groq = ToolWire.adapters.openai
 ToolWire.adapters.xai = ToolWire.adapters.openai
 
+-- Custom providers (ids always "custom_<slug>", generated in main.lua) speak the
+-- OpenAI chat wire by construction — same dialect as the wave-1 aliases above, and
+-- their parser key is "openai" (custom_openai.lua), which already emits the neutral
+-- _tool_calls shape. They reach tools only when the user grants the capability in
+-- custom_models.lua (the supportsCapability half of the runner's gate).
+local function adapterFor(provider)
+    if provider == nil then return nil end
+    local adapter = ToolWire.adapters[provider]
+    if adapter then return adapter end
+    if provider:match("^custom_") then return ToolWire.adapters.openai end
+    return nil
+end
+
 --- Whether a provider can wire tool turns (membership gate for the runner's shouldUse).
 function ToolWire.hasAdapter(provider)
-    return provider ~= nil and ToolWire.adapters[provider] ~= nil
+    return adapterFor(provider) ~= nil
 end
 
 --- Append one completed tool turn to the message history in the provider's native shape.
 function ToolWire.appendToolTurn(provider, messages, raw_assistant_turn, executed)
-    local adapter = ToolWire.adapters[provider]
+    local adapter = adapterFor(provider)
     if adapter and adapter.appendToolTurn then
         adapter.appendToolTurn(messages, raw_assistant_turn, executed)
     end

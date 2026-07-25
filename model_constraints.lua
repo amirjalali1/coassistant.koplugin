@@ -3,6 +3,14 @@
 -- Add new constraints here as they are discovered via --models testing
 --
 -- Also defines model capabilities (reasoning/thinking support)
+--
+-- Capability RESOLUTION ORDER (agenda item 19, docs/model_capability_resolution_plan.md):
+--   user override (custom_models.lua) → curated lists below (specific entries first)
+--   → derived provider metadata (OpenRouter supported_parameters cache)
+--   → family-prefix fallback entries (appended after the specifics).
+-- The non-curated layers live in koassistant_model_overrides.lua.
+
+local ModelOverrides = require("koassistant_model_overrides")
 
 local ModelConstraints = {
     openai = {
@@ -59,10 +67,12 @@ ModelConstraints.capabilities = {
     },
     openai = {
         -- Models that support reasoning.effort parameter
+        -- ("gpt-5" = family fallback, item 19a: new 5.x minors inherit)
         reasoning = {
             "gpt-5.6",                              -- luna/sol/terra (prefix)
             "gpt-5.5",
             "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
+            "gpt-5",
         },
         -- Models where reasoning is opt-in (default=none from OpenAI)
         -- GPT-5.4 + GPT-5.6 default reasoning_effort=none (off; verified 2026-07-24 — 0 reasoning
@@ -72,22 +82,27 @@ ModelConstraints.capabilities = {
             "gpt-5.6",
             "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
         },
-        -- Function calling for the book-tool workflows (prefix match covers -mini/-nano/-sol/etc.).
+        -- Function calling for the book-tool workflows (prefix match covers -mini/-nano/-sol/etc.;
+        -- "gpt-5" = family fallback).
         tools = {
             "gpt-5.6", "gpt-5.5", "gpt-5.4",
+            "gpt-5",
         },
         -- Responses API (/v1/responses) eligibility — the openai handler routes
         -- web-search-on requests (R1: Chat Completions has NO native search) AND
         -- book-tool sessions (R3: reasoning persists across tool rounds) there
         -- (responses_api_plan.md). Also the web-search UI gate via
-        -- _web_search_providers below. Prefix match covers -mini/-nano.
+        -- _web_search_providers below. Prefix match covers -mini/-nano;
+        -- "gpt-5" = family fallback.
         responses_web_search = {
             "gpt-5.6", "gpt-5.5", "gpt-5.4",
+            "gpt-5",
         },
     },
     deepseek = {
         -- V4: both models support thinking toggle (type: enabled/disabled), ON by default
-        thinking = { "deepseek-v4-pro", "deepseek-v4-flash" },
+        -- ("deepseek" = family fallback — the toggle is universal since V3.2)
+        thinking = { "deepseek-v4-pro", "deepseek-v4-flash", "deepseek" },
         -- Keep reasoning list for tier system (which models are "reasoning-class")
         reasoning = { "deepseek-v4-pro" },
         -- Function calling for the book-tool workflows (tools wave 1; both V4 models
@@ -97,23 +112,28 @@ ModelConstraints.capabilities = {
         -- "required" (our gather rounds) — "Thinking mode does not support this
         -- tool_choice" — and V4 thinks by DEFAULT, so deepseek.lua forces
         -- thinking={type=disabled} on any tool session.
-        tools = { "deepseek-v4" },
+        -- ("deepseek" = family fallback — function calling universal since V3.2)
+        tools = { "deepseek-v4", "deepseek" },
     },
     gemini = {
-        -- Gemini 3 models use thinkingLevel (minimal/low/medium/high)
-        thinking = { "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite" },
+        -- Gemini 3 models use thinkingLevel (minimal/low/medium/high).
+        -- "gemini-3" = FAMILY FALLBACK (item 19a): new 3.x minors inherit without a
+        -- plugin update; the specific entries stay for documentation value.
+        thinking = { "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite", "gemini-3" },
         -- Gemini 2.5 models use thinkingBudget (0=off, -1=dynamic, 128-24576)
         thinking_budget = { "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite" },
-        -- Google Search grounding
+        -- Google Search grounding ("gemini-3" = family fallback)
         google_search = {
             "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite",
             "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite",
+            "gemini-3",
         },
         -- Function calling for the book-tool workflows (same models as google_search).
         -- The runner's shouldUse gates on this + a tool_wire.lua adapter being registered.
         tools = {
             "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite",
             "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite",
+            "gemini-3",
         },
     },
     -- Note: Z.AI web search only works via a separate endpoint (/api/paas/v4/tools),
@@ -129,6 +149,8 @@ ModelConstraints.capabilities = {
         -- Returns reasoning_content field in responses (like DeepSeek)
         -- IMPORTANT: Z.AI requires temperature=1.0 when thinking is enabled
         -- (enforced in zai.lua handler, not here — thinking is togglable)
+        -- (No bare "glm" family fallback — it would wrongly cover pre-4.5
+        -- non-thinking ids like glm-4-plus; "glm-5" already covers 5.x minors.)
         thinking = {
             "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5",
             "glm-4.7", "glm-4.7-flash",
@@ -194,16 +216,20 @@ ModelConstraints.capabilities = {
         -- Responses endpoint (/v1/responses, OpenAI-compatible wire — the old
         -- chat-completions live search returns 410 Gone since 2026-01-12).
         -- Routing in xai.lua; also the web-search UI gate via _web_search_providers.
-        -- Prefix match: "grok-4.20" covers both -0309 slugs.
+        -- Prefix match: "grok-4.20" covers both -0309 slugs. "grok-4" = family fallback.
         responses_web_search = {
             "grok-4.5", "grok-4.3", "grok-4.20",
+            "grok-4",
         },
         -- Function calling for the book-tool workflows (tools wave 1) — on the CHAT
         -- wire: xai.lua's Responses routing bails when config.tools is set. Per-model
         -- "Function calling: Yes" on docs.x.ai (grok-4.5 + grok-build confirm chat
         -- completions explicitly; 4.3/4.20 pages are less explicit — live test).
+        -- "grok-4" = family fallback. (NOT added to `reasoning` — the non-reasoning
+        -- grok-4.20-0309 slug would collide.)
         tools = {
             "grok-4.5", "grok-4.3", "grok-4.20", "grok-build",
+            "grok-4",
         },
     },
     perplexity = {
@@ -214,7 +240,8 @@ ModelConstraints.capabilities = {
     mistral = {
         -- Magistral models always think (no toggle, extraction only)
         -- Returns structured content blocks with type: "thinking"
-        thinking = { "magistral-medium", "magistral-small" },
+        -- ("magistral" = family fallback, item 19a)
+        thinking = { "magistral-medium", "magistral-small", "magistral" },
         -- Function calling for the book-tool workflows (tools wave 1; all current
         -- families per docs.mistral.ai/capabilities/function_calling). Magistral
         -- included: tool_calls coexists with structured thinking content, though a
@@ -412,12 +439,23 @@ ModelConstraints.reasoning_profiles = {
           can_disable = true, can_enable = true,
           options = { "low", "medium", "high", "xhigh" }, default_option = "medium",
           stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "xhigh" } } },
+        -- FAMILY FALLBACK (item 19a): a brand-new gpt-5.x minor inherits a
+        -- conservative gated profile (off by default, no xhigh/max guesses) until
+        -- probed/curated; custom_models.lua corrects if it differs.
+        { match = "gpt-5", axis = "effort", default_state = "off",
+          can_disable = true, can_enable = true,
+          options = { "low", "medium", "high" }, default_option = "medium",
+          stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "high" } } },
     },
     deepseek = {
         { match = "deepseek-v4-pro", axis = "binary", default_state = "on",
           can_disable = true, can_enable = true,
           stance_map = { minimal = { state = "off" }, maximum = { state = "on" } } },
         { match = "deepseek-v4-flash", axis = "binary", default_state = "on",
+          can_disable = true, can_enable = true,
+          stance_map = { minimal = { state = "off" }, maximum = { state = "on" } } },
+        -- FAMILY FALLBACK (item 19a): the binary thinking toggle is universal since V3.2.
+        { match = "deepseek", axis = "binary", default_state = "on",
           can_disable = true, can_enable = true,
           stance_map = { minimal = { state = "off" }, maximum = { state = "on" } } },
     },
@@ -463,6 +501,13 @@ ModelConstraints.reasoning_profiles = {
           options = { "dynamic", "low", "medium", "high", "max" }, default_option = "dynamic",
           budget_map = { dynamic = -1, low = 1024, medium = 8192, high = 16384, max = 24576 },
           stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "max" } } },
+        -- FAMILY FALLBACK (item 19a): a new gemini-3.x id inherits the effort
+        -- profile with the option subset both pro and flash accept (no "minimal" —
+        -- pro rejects it).
+        { match = "gemini-3", axis = "effort", default_state = "on",
+          can_disable = false, can_enable = true,
+          options = { "low", "medium", "high" }, default_option = "high",
+          stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
     },
     zai = {
         -- GLM-4.5+: thinking on by default, disableable; temp must be 1.0 when on.
@@ -479,6 +524,8 @@ ModelConstraints.reasoning_profiles = {
           needs_temp_1 = true, stance_map = { minimal = { state = "off" }, maximum = { state = "on" } } },
         { match = "glm-4.7-flash", axis = "binary", default_state = "on", can_disable = true, can_enable = true,
           needs_temp_1 = true, stance_map = { minimal = { state = "off" }, maximum = { state = "on" } } },
+        -- (No bare "glm" family fallback — pre-4.5 ids like glm-4-plus don't think;
+        -- "glm-5" above already covers 5.x minors.)
     },
     sambanova = {
         { match = "DeepSeek-V3.1", axis = "binary", default_state = "on", can_disable = true, can_enable = true,
@@ -504,7 +551,9 @@ ModelConstraints.reasoning_profiles = {
           stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
         -- Catch-all: disable-CAPABLE backends (deepseek, gpt-5.4/5.6, claude, glm, …).
         -- off emits reasoning.enabled=false (verified: deepseek/deepseek-v4-flash → 0 tokens).
-        { match = "", axis = "effort", default_state = "off", can_disable = true, can_enable = true,
+        -- generic=true: derived metadata saying the backend model has NO reasoning
+        -- (supported_parameters without "reasoning") downgrades this to passthrough.
+        { match = "", generic = true, axis = "effort", default_state = "off", can_disable = true, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "high" } } },
     },
@@ -519,7 +568,7 @@ ModelConstraints.reasoning_profiles = {
         { match = "perplexity/", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
-        { match = "", axis = "effort", default_state = "off", can_disable = true, can_enable = true,
+        { match = "", generic = true, axis = "effort", default_state = "off", can_disable = true, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "high" } } },
     },
@@ -570,6 +619,14 @@ ModelConstraints.reasoning_profiles = {
         { match = "grok-4.20-0309-reasoning", axis = "effort", default_state = "on", can_disable = true, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high", off_option = "none",
           stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "high" } } },
+        -- Shim: the bare grok-4.20-0309 slug is NON-reasoning — must sit before the
+        -- family fallback below or it would inherit an effort profile it rejects.
+        { match = "grok-4.20-0309", axis = "none", default_state = "off",
+          can_disable = false, can_enable = false },
+        -- FAMILY FALLBACK (item 19a): new grok-4.x ids inherit the effort profile.
+        { match = "grok-4", axis = "effort", default_state = "on", can_disable = true, can_enable = true,
+          options = { "low", "medium", "high" }, default_option = "high", off_option = "none",
+          stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "high" } } },
     },
     perplexity = {
         -- Always-on (web-grounded); effort only, cannot fully disable.
@@ -579,11 +636,17 @@ ModelConstraints.reasoning_profiles = {
         { match = "sonar-deep-research", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
+        -- FAMILY FALLBACK (item 19a): covers bare sonar-reasoning + future variants.
+        { match = "sonar-reasoning", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
+          options = { "low", "medium", "high" }, default_option = "high",
+          stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
     },
     mistral = {
         -- Magistral: always thinks, no control (extraction only).
+        -- ("magistral" = family fallback, item 19a)
         { match = "magistral-medium", axis = "none", default_state = "on", can_disable = false, can_enable = false },
         { match = "magistral-small", axis = "none", default_state = "on", can_disable = false, can_enable = false },
+        { match = "magistral", axis = "none", default_state = "on", can_disable = false, can_enable = false },
     },
 }
 
@@ -663,20 +726,39 @@ local function prefixMatch(model, pattern)
     return model == pattern or model:match("^" .. pattern:gsub("%-", "%%-")) ~= nil
 end
 
+-- Capabilities that can be granted by derived provider metadata after a curated
+-- miss, mapped to the wire-parameter name the metadata reports (OpenRouter
+-- supported_parameters). Derived data never overrides a curated grant.
+local DERIVED_PARAM_FOR_CAP = {
+    tools = "tools",
+}
+
 --- Check if a model supports a specific capability
+--- Resolution: user override (grant/deny) → curated lists → derived metadata.
 --- @param provider string: Provider name (e.g., "anthropic", "openai")
 --- @param model string: Model name (e.g., "claude-sonnet-4-5-20250929")
 --- @param capability string: Capability name (e.g., "extended_thinking", "reasoning")
 --- @return boolean: true if model supports the capability
 function ModelConstraints.supportsCapability(provider, model, capability)
-    local caps = ModelConstraints.capabilities[provider]
-    if not caps or not caps[capability] then
-        return false
+    local override = ModelOverrides.capabilityOverride(provider, model, capability)
+    if override ~= nil then
+        return override
     end
 
-    for _, supported in ipairs(caps[capability]) do
-        if prefixMatch(model, supported) then
-            return true
+    local caps = ModelConstraints.capabilities[provider]
+    if caps and caps[capability] then
+        for _, supported in ipairs(caps[capability]) do
+            if prefixMatch(model, supported) then
+                return true
+            end
+        end
+    end
+
+    local wire_param = DERIVED_PARAM_FOR_CAP[capability]
+    if wire_param then
+        local derived = ModelOverrides.derivedParam(provider, model, wire_param)
+        if derived ~= nil then
+            return derived
         end
     end
 
@@ -701,14 +783,11 @@ function ModelConstraints.apply(provider, model, params)
 
     -- Check provider-level constraints
     local provider_constraints = ModelConstraints[provider]
-    if not provider_constraints then
-        return params, adjustments
-    end
 
     -- Check model-specific constraints (prefix match for versioned models)
     -- e.g., "o3-mini" matches "o3-mini", "o3-mini-high", "o3-mini-2025-01-31"
     local model_constraints = nil
-    for constraint_model, constraints in pairs(provider_constraints) do
+    for constraint_model, constraints in pairs(provider_constraints or {}) do
         -- Skip special keys starting with _
         if type(constraint_model) == "string" and not constraint_model:match("^_") then
             -- Check for exact match or prefix match
@@ -728,8 +807,22 @@ function ModelConstraints.apply(provider, model, params)
         end
     end
 
+    -- User-declared constraints (custom_models.lua) — applied on top, so they also
+    -- work for providers with no builtin table (custom providers) and can correct
+    -- a builtin value.
+    local user_constraints = ModelOverrides.constraintsFor(provider, model)
+    if user_constraints then
+        for param, required_value in pairs(user_constraints) do
+            if params[param] ~= nil and params[param] ~= required_value then
+                adjustments[param] = { from = params[param], to = required_value,
+                    reason = "custom_models.lua" }
+                params[param] = required_value
+            end
+        end
+    end
+
     -- Check provider-level max temperature (e.g., Anthropic max 1.0)
-    local max_temp = provider_constraints._provider_max_temperature
+    local max_temp = provider_constraints and provider_constraints._provider_max_temperature
     if max_temp and params.temperature and params.temperature > max_temp then
         adjustments.temperature = {
             from = params.temperature,
@@ -774,6 +867,14 @@ end
 --- @return number|nil: Clamped value, or original if no cap applies
 function ModelConstraints.clampMaxTokens(provider, model, value)
     if not value then return value end
+
+    -- User-declared ceiling (custom_models.lua) wins over the builtin one — the
+    -- override exists to correct stale caps in either direction.
+    local user_cap = ModelOverrides.maxOutputTokens(provider, model)
+    if user_cap then
+        return math.min(value, user_cap)
+    end
+
     local provider_caps = ModelConstraints._max_output_tokens[provider]
     if not provider_caps then return value end
 
@@ -871,16 +972,26 @@ end
 --------------------------------------------------------------------------------
 
 --- Look up the reasoning profile for a provider/model.
---- Returns the first prefix match, or a synthetic passthrough profile for
+--- Resolution: user profile (custom_models.lua, first match) → builtin list (first
+--- prefix match; a `generic = true` catch-all yields to derived metadata that says
+--- the model has NO controllable reasoning) → synthetic passthrough for
 --- unknown/custom models (axis="none" => resolver emits nothing => request untouched).
 --- @param provider string|nil
 --- @param model string|nil
 --- @return table profile
 function ModelConstraints.getReasoningProfile(provider, model)
+    local user_profile = ModelOverrides.findProfile(provider, model)
+    if user_profile then
+        return user_profile
+    end
     local list = provider and ModelConstraints.reasoning_profiles[provider]
     if list then
         for _, p in ipairs(list) do
             if prefixMatch(model, p.match) then
+                if p.generic
+                        and ModelOverrides.derivedParam(provider, model, "reasoning") == false then
+                    break  -- meta-provider catch-all, but the backend model can't reason
+                end
                 return p
             end
         end
@@ -1128,6 +1239,21 @@ function ModelConstraints.applyReasoningParams(provider, api_params, decision)
         end
     elseif provider == "perplexity" then
         if on then api_params.perplexity_reasoning = { effort = decision.effort } end
+    else
+        -- Custom providers (no builtin branch): a user profile from custom_models.lua
+        -- may name an OpenAI-compatible wire via `wire`. Emit a neutral record;
+        -- custom_openai.lua translates it onto the request body. Key must stay listed
+        -- in REASONING_WIRE_KEYS (koassistant_dialogs.lua).
+        local wire = decision.profile and decision.profile.wire
+        if wire then
+            api_params.custom_reasoning = {
+                wire = wire,
+                on = on,
+                effort = decision.effort,
+                off_option = decision.off_option,
+                needs_temp_1 = decision.needs_temp_1,
+            }
+        end
     end
 end
 

@@ -8,7 +8,7 @@ Pattern follows: koassistant_ui/constants.lua (UI sizing constants)
 
 Usage:
     local Constants = require("koassistant_constants")
-    for _, ctx in ipairs(Constants.getAllContexts()) do
+    for _idx, ctx in ipairs(Constants.getAllContexts()) do
         -- Process each context
     end
 ]]
@@ -78,12 +78,12 @@ end
 --- @return boolean: true if valid context (standard or compound)
 function Constants.isValidContext(context)
     -- Check standard contexts
-    for _, ctx in ipairs(Constants.getAllContexts()) do
+    for _idx, ctx in ipairs(Constants.getAllContexts()) do
         if context == ctx then return true end
     end
 
     -- Check compound contexts
-    for _, compound in pairs(Constants.COMPOUND_CONTEXTS) do
+    for _idx, compound in pairs(Constants.COMPOUND_CONTEXTS) do
         if context == compound then return true end
     end
 

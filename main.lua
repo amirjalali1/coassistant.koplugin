@@ -2108,6 +2108,39 @@ function AskGPT:removeCustomModel(provider, model)
   return false
 end
 
+-- Fetch OpenRouter's per-model metadata (supported_parameters) and record it in the
+-- derived capability cache (item 19 auto-derive, docs/model_capability_resolution_plan.md).
+-- ~2 KB endpoint; synchronous — only called behind explicit user actions (add custom
+-- model / refresh row). Returns true when metadata was fetched and recorded.
+function AskGPT:fetchDerivedModelCaps(provider, model)
+  if provider ~= "openrouter" or not model or model == "" then return false end
+  local BaseHandler = require("koassistant_api.base")
+  local json = require("json")
+  local ModelOverrides = require("koassistant_model_overrides")
+  local url = "https://openrouter.ai/api/v1/models/" .. model .. "/endpoints"
+  local code, body = BaseHandler.fetchInSubprocess(url, { timeout = 8 })
+  if tonumber(code) ~= 200 or type(body) ~= "string" or body == "" then return false end
+  local ok, decoded = pcall(json.decode, body)
+  -- Type-check every level: luajson decodes JSON null to a truthy function sentinel.
+  if not ok or type(decoded) ~= "table" or type(decoded.data) ~= "table"
+      or type(decoded.data.endpoints) ~= "table" then
+    return false
+  end
+  -- Union across endpoints: OpenRouter routes a request to an endpoint that supports
+  -- the params it carries, so "any endpoint supports it" is the correct semantics.
+  local params, seen = {}, false
+  for _idx, ep in ipairs(decoded.data.endpoints) do
+    if type(ep) == "table" and type(ep.supported_parameters) == "table" then
+      seen = true
+      for _j, p in ipairs(ep.supported_parameters) do
+        if type(p) == "string" then params[p] = true end
+      end
+    end
+  end
+  if not seen then return false end
+  return ModelOverrides.recordDerived(provider, model, params)
+end
+
 -- Helper: Check if a model is a custom model for the current provider
 function AskGPT:isCustomModel(provider, model)
   local custom_models = self:getCustomModels(provider)
@@ -3133,6 +3166,21 @@ function AskGPT:buildModelMenu(simplified)
                           text = T(_("Added: %1"), new_model),
                           timeout = 1.5,
                         })
+                        -- OpenRouter: derive capabilities (tools/reasoning) from the
+                        -- provider's per-model metadata so the new model works beyond
+                        -- the curated lists. Delayed so the notification paints first;
+                        -- offline failure is silent (family fallbacks still apply,
+                        -- retry via Manage custom models -> Refresh).
+                        if provider == "openrouter" then
+                          UIManager:scheduleIn(0.2, function()
+                            if self_ref:fetchDerivedModelCaps(provider, new_model) then
+                              UIManager:show(Notification:new{
+                                text = _("Model capabilities detected"),
+                                timeout = 1.5,
+                              })
+                            end
+                          end)
+                        end
                       else
                         UIManager:show(Notification:new{
                           text = err or _("Failed to add model"),
@@ -3211,6 +3259,27 @@ function AskGPT:showManageCustomModelsMenu(provider)
               timeout = 1.5,
             })
           end,
+        })
+      end,
+    }})
+  end
+
+  -- OpenRouter: re-fetch derived capabilities for all custom models (item 19
+  -- auto-derive) — covers models added before the feature existed and offline adds.
+  if provider == "openrouter" then
+    table.insert(buttons, {{
+      text = _("Refresh model capabilities"),
+      callback = function()
+        UIManager:close(self_ref._manage_models_dialog)
+        local updated = 0
+        for _idx, model in ipairs(custom_models) do
+          if self_ref:fetchDerivedModelCaps(provider, model) then
+            updated = updated + 1
+          end
+        end
+        UIManager:show(Notification:new{
+          text = T(_("Capabilities updated for %1 of %2 model(s)"), updated, #custom_models),
+          timeout = 2,
         })
       end,
     }})

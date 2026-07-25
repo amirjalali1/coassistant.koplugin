@@ -179,6 +179,17 @@ package.loaded["datastorage"] = {
     getSettingsDir = function() return "/tmp/koreader/settings" end,
 }
 
+-- Keep unit tests hermetic: the capability resolution layer must never read the
+-- developer's real custom_models.lua / derived caps cache (false = "loaded, empty";
+-- tests inject their own layers via the _set*ForTests seams).
+do
+    local mo_ok, ModelOverrides = pcall(require, "koassistant_model_overrides")
+    if mo_ok and type(ModelOverrides) == "table" and ModelOverrides._setUserForTests then
+        ModelOverrides._setUserForTests(false)
+        ModelOverrides._setDerivedForTests(false)
+    end
+end
+
 -- Verification message
 if VERBOSE_MOCKS then
     print("[MOCK] KOReader mocks loaded successfully")
