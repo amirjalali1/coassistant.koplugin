@@ -1,6 +1,6 @@
 -- Model lists for each provider
 -- SINGLE SOURCE OF TRUTH for all model data
--- Last updated: 2026-07-24
+-- Last updated: 2026-07-25
 --
 -- Structure:
 --   ModelLists[provider] = array of model IDs (for backward compat & dropdowns)
@@ -17,6 +17,7 @@ local ModelLists = {
     anthropic = {
         -- Claude 5 / 4.x (current generation)
         "claude-sonnet-5",              -- default (balanced speed/cost); adaptive thinking on, rejects sampling params
+        "claude-opus-5",                -- deep reasoning flagship (2026-07-24, $5/$25 like Opus 4.8); adaptive thinking on, disable ok, rejects sampling
         "claude-fable-5",               -- most capable / frontier; adaptive thinking ALWAYS-ON (no disable), rejects sampling, premium price
         "claude-sonnet-4-6",            -- previous flagship (kept available), 1M context
         "claude-opus-4-8",              -- deep reasoning / agentic (adaptive thinking)
@@ -136,6 +137,7 @@ local ModelLists = {
 
         -- Anthropic
         "anthropic/claude-sonnet-5",    -- default (flagship); slug confirmed on openrouter.ai
+        "anthropic/claude-opus-5",      -- deep reasoning flagship (a -fast variant exists at 2x price; not listed)
         "anthropic/claude-fable-5",     -- most capable / frontier
         "anthropic/claude-sonnet-4.6",
         "anthropic/claude-opus-4.8",
@@ -347,7 +349,7 @@ local ModelLists = {
     _tiers = {
         -- Models with explicit thinking/reasoning traces
         reasoning = {
-            anthropic = "claude-opus-4-8",
+            anthropic = "claude-opus-5",
             openai = "gpt-5.6-sol",
             deepseek = "deepseek-v4-pro",
             gemini = "gemini-3.6-flash",             -- Pro models are paid-only; keep tier free-tier usable (3.6 flash assumed free-tier)

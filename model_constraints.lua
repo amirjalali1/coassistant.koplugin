@@ -39,6 +39,7 @@ ModelConstraints.capabilities = {
         -- Models that support adaptive thinking (4.6+)
         -- New mode: thinking = {type = "adaptive"}, output_config = {effort = "..."}
         adaptive_thinking = {
+            "claude-opus-5",          -- Opus 5 (adaptive ON at API default, disable accepted)
             "claude-fable-5",         -- Fable 5 (frontier; adaptive ALWAYS-ON, no disable)
             "claude-sonnet-5",        -- 5 Sonnet
             "claude-opus-4-8",        -- 4.8 Opus
@@ -47,8 +48,11 @@ ModelConstraints.capabilities = {
             "claude-opus-4-6",        -- 4.6 Opus (prefix-matched for safety)
         },
         -- Models that REJECT sampling params (temperature/top_p/top_k → HTTP 400)
-        -- Opus 4.7+, Sonnet 5, and Fable 5 removed sampling params entirely; the builder strips them.
+        -- Opus 4.7+, Sonnet 5, Opus 5, and Fable 5 removed sampling params entirely
+        -- (Opus 5: "temperature is deprecated for this model", verified 2026-07-25);
+        -- the builder strips them.
         no_sampling_params = {
+            "claude-opus-5",
             "claude-fable-5",
             "claude-sonnet-5",
             "claude-opus-4-8",
@@ -60,9 +64,12 @@ ModelConstraints.capabilities = {
             "claude-sonnet-4-6",      -- 4.6 Sonnet (also adaptive; budget mode still works)
             "claude-haiku-4-5",       -- 4.5 Haiku
         },
-        -- Function calling for the book-tool workflows (universal on Claude; list families).
+        -- Function calling for the book-tool workflows. Tool use is universal on Claude,
+        -- so "claude" is a safe FAMILY FALLBACK (unlike the reasoning-adjacent lists above,
+        -- where old ids collide across param boundaries — no family entries there). Added
+        -- 2026-07-25 after claude-opus-5 launched with tools dead on the native provider.
         tools = {
-            "claude-opus-4", "claude-sonnet-4", "claude-sonnet-5", "claude-haiku-4", "claude-fable-5",
+            "claude",
         },
     },
     openai = {
@@ -259,6 +266,7 @@ ModelConstraints.capabilities = {
 -- Models with known output token ceilings (prevents API 400 errors)
 ModelConstraints._max_output_tokens = {
     anthropic = {
+        ["claude-opus-5"] = 128000,      -- 128K max output (API error text, verified 2026-07-25)
         ["claude-sonnet-5"] = 128000,    -- 128K max output
         ["claude-opus-4-8"] = 128000,    -- 128K max output
         ["claude-sonnet-4-6"] = 64000,
@@ -381,6 +389,17 @@ ModelConstraints.reasoning_profiles = {
           can_disable = false, can_enable = true,
           options = { "low", "medium", "high", "xhigh", "max" }, default_option = "high",
           stance_map = { minimal = { option = "low" }, maximum = { state = "on", option = "max" } },
+          needs_no_sampling = true },
+        -- Opus 5: deep-reasoning flagship (2026-07-24, $5/$25). Same shape as Sonnet 5
+        -- (probed 2026-07-25): adaptive thinking ON at the API default (thinking block
+        -- returned with nothing sent), disable accepted, rejects sampling ("temperature
+        -- is deprecated for this model"), full effort ladder incl. xhigh/max (both
+        -- verified), budget mode rejected. default_state="on" also triggers the
+        -- display=summarized carve-out in anthropic_request.lua.
+        { match = "claude-opus-5", axis = "adaptive_effort", default_state = "on",
+          can_disable = true, can_enable = true,
+          options = { "low", "medium", "high", "xhigh", "max" }, default_option = "high",
+          stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "max" } },
           needs_no_sampling = true },
         -- Opus 4.8 / 4.7: adaptive-only, reject sampling params, default off (we only
         -- think when `thinking` is sent), full Opus effort ladder incl. xhigh/max.

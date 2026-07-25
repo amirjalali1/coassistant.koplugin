@@ -816,6 +816,36 @@ TestRunner:test("Minimal on Sonnet 5 -> explicit disable param (not omission)", 
     TestRunner:assertEqual(params.thinking.type, "disabled", "thinking type disabled")
 end)
 
+TestRunner:test("Opus 5 mirrors Sonnet 5 shape (probed 2026-07-25)", function()
+    -- Adaptive ON at API default, disable accepted, rejects sampling, ladder to max,
+    -- 128K output cap. Verified live: temperature 400s ("deprecated for this model"),
+    -- bare request returns a thinking block, thinking=disabled returns 200.
+    local d = ModelConstraints.resolveReasoning("anthropic", "claude-opus-5", { global_stance = "maximum" })
+    TestRunner:assertEqual(d.mode, "on", "on")
+    TestRunner:assertEqual(d.effort, "max", "max effort supported")
+    TestRunner:assertTrue(d.needs_no_sampling, "needs_no_sampling")
+    TestRunner:assertFalse(d.needs_temp_1, "must NOT force temp=1.0 (sampling is stripped)")
+
+    d = ModelConstraints.resolveReasoning("anthropic", "claude-opus-5", { global_stance = "default" })
+    TestRunner:assertTrue(d.send_nothing, "default stance emits nothing")
+    TestRunner:assertEqual(d.mode, "on", "natural state reported as on (thinks by default)")
+
+    d = ModelConstraints.resolveReasoning("anthropic", "claude-opus-5", { global_stance = "minimal" })
+    TestRunner:assertEqual(d.mode, "off", "minimal disables (unlike Fable 5)")
+    local params = {}
+    ModelConstraints.applyReasoningParams("anthropic", params, d)
+    TestRunner:assertEqual(params.thinking.type, "disabled", "explicit disable (default-on model)")
+
+    TestRunner:assertTrue(ModelConstraints.supportsCapability("anthropic", "claude-opus-5", "adaptive_thinking"),
+        "adaptive_thinking capability")
+    TestRunner:assertTrue(ModelConstraints.supportsCapability("anthropic", "claude-opus-5", "tools"),
+        "tools via claude family entry")
+    TestRunner:assertFalse(ModelConstraints.supportsCapability("anthropic", "claude-opus-5", "extended_thinking"),
+        "budget mode rejected by the API")
+    TestRunner:assertEqual(ModelConstraints.clampMaxTokens("anthropic", "claude-opus-5", 200000), 128000,
+        "128K output ceiling")
+end)
+
 TestRunner:test("Minimal on Gemini 2.5 -> thinking_budget 0", function()
     local d = ModelConstraints.resolveReasoning("gemini", "gemini-2.5-flash", { global_stance = "minimal" })
     TestRunner:assertEqual(d.mode, "off", "off")
