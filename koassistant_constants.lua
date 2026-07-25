@@ -172,6 +172,53 @@ Constants.QS_ITEMS_DEFAULT_ORDER = {
 -- QS items that only appear when a book is open (dynamic)
 Constants.QS_DYNAMIC_ITEMS = { new_book_chat = true, quick_actions = true }
 
+-- Session chips shown above the input field, in CANONICAL render order (order is fixed;
+-- only membership is user-configurable, via the input dialog's gear menu → "Toolbar
+-- buttons"). Membership persists in features.session_chips, removals in
+-- features._dismissed_session_chips.
+--
+-- ADDING A CHIP: append the id here and it reaches existing users automatically —
+-- resolveSessionChips() injects any id they have never seen. Do NOT write a
+-- `_session_chips_*` migration; that pattern is retired (defaults_propagation_plan.md G1,
+-- which is exactly the bug this registry removes: three hand-written migrations were needed
+-- for scope/attach/quick, and forgetting one silently hid the chip forever).
+Constants.SESSION_CHIP_IDS = {
+    "domain", "web_search", "book_tools", "quick", "scope", "attach", "spoiler",
+}
+
+--- Reconcile a saved session-chip membership list against the canonical registry.
+--- PURE (no settings/UI access) so it is unit-testable and safe to call on every render.
+---
+--- Mirrors the auto-injection that action lists already get from action_service's
+--- processActionList: unseen ids are added, deliberately removed ids stay removed, unknown
+--- ids (a chip we deleted) are dropped, and the result is always in canonical order.
+---
+--- @param saved table|nil     features.session_chips (nil = never customized → full default)
+--- @param dismissed table|nil features._dismissed_session_chips (ids the user turned off)
+--- @return table ordered array of chip ids to render
+function Constants.resolveSessionChips(saved, dismissed)
+    -- Never customized: everything on.
+    if type(saved) ~= "table" then
+        local all = {}
+        for _idx, id in ipairs(Constants.SESSION_CHIP_IDS) do all[#all + 1] = id end
+        return all
+    end
+
+    local member = {}
+    for _idx, id in ipairs(saved) do member[id] = true end
+    local is_dismissed = {}
+    for _idx, id in ipairs(dismissed or {}) do is_dismissed[id] = true end
+
+    local result = {}
+    for _idx, id in ipairs(Constants.SESSION_CHIP_IDS) do
+        -- Saved membership wins; anything the user has never decided on is injected.
+        if member[id] or not is_dismissed[id] then
+            result[#result + 1] = id
+        end
+    end
+    return result
+end
+
 --- Get display text for a Quick Settings item
 --- @param id string: QS item ID
 --- @param _ function: gettext function

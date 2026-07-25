@@ -90,6 +90,7 @@ Registry.SETTINGS_SUBKEYS = {
         "custom_actions", "custom_prompts",                 -- top-level (see TOPLEVEL_SUBKEYS)
         "custom_behaviors", "custom_domains",
         "custom_providers", "custom_models", "provider_default_models",
+        "model_explicit",                                   -- which providers have a deliberate model pick
     },
     languages = {
         "translation_language", "dictionary_language",
@@ -98,7 +99,7 @@ Registry.SETTINGS_SUBKEYS = {
     preferences = {
         "selected_behavior", "selected_domain", "trusted_providers",
         "gesture_actions", "markdown_font_size", "export_custom_path",
-        "session_chips",
+        "session_chips", "_dismissed_session_chips",
     },
     internal = {
         "languages_migrated", "behavior_migrated", "prompts_migrated_v2",
@@ -106,6 +107,7 @@ Registry.SETTINGS_SUBKEYS = {
         "_tools_posture_migrated", "_session_chips_migrated", "_session_chips_scope_v2",
         "_session_chips_attach_v1", "_session_chips_quick_v1",
         "_highlight_context_migrated", "_web_search_effort_migrated",
+        "_session_chips_registry_v1", "_model_switch_notice",
         "_quiz_chapter_level_reset", "_language_prompt_shown",
         "setup_wizard_completed",                            -- top-level (see TOPLEVEL_SUBKEYS)
     },

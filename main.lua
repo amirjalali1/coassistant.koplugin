@@ -1810,6 +1810,29 @@ function AskGPT:initSettings()
       needs_save = true
     end
 
+    -- FINAL session-chips migration (defaults_propagation_plan.md G1). Chip membership moved
+    -- to the auto-injecting registry in koassistant_constants.lua, so from here on a NEW chip
+    -- reaches existing users with no migration at all. One transition step is still needed:
+    -- users who deliberately turned a chip OFF have it absent from session_chips but no
+    -- dismissal record, and auto-injection would resurrect it. Seed the dismissal list from
+    -- the current gap (canonical ids minus saved membership) to preserve their choice.
+    if not features._session_chips_registry_v1 then
+      if type(features.session_chips) == "table" then
+        local member = {}
+        for _idx, id in ipairs(features.session_chips) do member[id] = true end
+        local dismissed = {}
+        for _idx, id in ipairs(Constants.SESSION_CHIP_IDS) do
+          if not member[id] then table.insert(dismissed, id) end
+        end
+        if #dismissed > 0 then
+          features._dismissed_session_chips = dismissed
+          logger.info("KOAssistant: Seeded session-chip dismissals from existing membership")
+        end
+      end
+      features._session_chips_registry_v1 = true
+      needs_save = true
+    end
+
     -- Model default refresh (defaults_propagation_plan.md §3, gaps G2/G3). NOT guarded by a
     -- one-time flag: it must re-evaluate whenever we bump a provider default. Safe to repeat
     -- because an explicit pick sets features.model_explicit[provider], which pins it forever.

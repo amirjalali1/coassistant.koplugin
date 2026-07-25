@@ -220,12 +220,15 @@ end
 -- ("Chat Buttons…"), stored as an ordered array in features.session_chips. nil = the
 -- default set (the one-time migration in main.lua seeds it, folding the old
 -- show_spoiler_toggle bool into "spoiler" membership).
-local SESSION_CHIP_IDS = { "domain", "web_search", "book_tools", "quick", "scope", "attach", "spoiler" }
-local SESSION_CHIPS_DEFAULT = { "domain", "web_search", "book_tools", "quick", "scope", "attach", "spoiler" }
+-- Canonical order + the membership registry now live in koassistant_constants.lua so a NEW
+-- chip reaches existing users automatically (defaults_propagation_plan.md G1). Chips used to
+-- be the only membership list with no auto-injection, which is why scope/attach/quick each
+-- needed a hand-written `_session_chips_*` migration; that pattern is retired.
+local SESSION_CHIP_IDS = Constants.SESSION_CHIP_IDS
 local function getSessionChips(features)
-    local chips = features and features.session_chips
-    if type(chips) ~= "table" then return SESSION_CHIPS_DEFAULT end
-    return chips
+    return Constants.resolveSessionChips(
+        features and features.session_chips,
+        features and features._dismissed_session_chips)
 end
 
 -- Surrounding-context extraction for highlight/dictionary requests.
@@ -7875,12 +7878,20 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                     for _j, cid in ipairs(SESSION_CHIP_IDS) do
                         if enabled[cid] then table.insert(new_list, cid) end
                     end
+                    -- Record the OFF chips so auto-injection cannot resurrect a chip the
+                    -- user deliberately turned off (defaults_propagation_plan.md G1).
+                    local new_dismissed = {}
+                    for _j, cid in ipairs(SESSION_CHIP_IDS) do
+                        if not enabled[cid] then table.insert(new_dismissed, cid) end
+                    end
                     if configuration and configuration.features then
                         configuration.features.session_chips = new_list
+                        configuration.features._dismissed_session_chips = new_dismissed
                     end
                     if plugin and plugin.settings then
                         local f = plugin.settings:readSetting("features") or {}
                         f.session_chips = new_list
+                        f._dismissed_session_chips = new_dismissed
                         plugin.settings:saveSetting("features", f)
                         plugin.settings:flush()
                     end
