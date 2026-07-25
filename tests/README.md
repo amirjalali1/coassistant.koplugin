@@ -92,6 +92,37 @@ lua tests/run_tests.lua --models
 lua tests/run_tests.lua -v
 ```
 
+### Model Audit & Capability Probe (`model_audit.lua`)
+
+Discovery + empirical probing for model updates (agenda item 20). Fetches each
+keyed provider's live model list, diffs it against `koassistant_model_lists.lua`
+(noise-filtered, snapshots/`-latest` aliases collapsed), then probes chosen
+models for the facts `/models` never reports — temperature acceptance, reasoning
+default, effort ladder, disable support, output ceiling, tools — and emits DRAFT
+`model_constraints.lua` stanzas annotated against the current resolution layer.
+Never auto-applies anything; tier placement stays human.
+
+```bash
+eval "$(luarocks --lua-version 5.5 path)"   # required first: real HTTP + dkjson
+
+# Discovery diff (list GETs only, no generation cost)
+lua tests/model_audit.lua
+lua tests/model_audit.lua anthropic gemini
+
+# Probe battery on one model (~10-14 live micro-requests, fractions of a cent)
+lua tests/model_audit.lua --probe anthropic claude-opus-5
+
+# Probe everything the diff found (capped at 10 per run)
+lua tests/model_audit.lua --probe-new
+
+lua tests/model_audit.lua --verbose   # full error bodies + ignored-id lists
+```
+
+OpenRouter runs in marketplace mode (verifies curated ids exist + cross-checks
+their `supported_parameters` against our resolution instead of listing hundreds
+of "new" backends). Pure helpers are unit-tested in
+`tests/unit/test_model_audit.lua`; the probe engine itself is live-only.
+
 ### Request Inspector (`inspect.lua`)
 
 Visualize exactly what requests are sent to each provider.
