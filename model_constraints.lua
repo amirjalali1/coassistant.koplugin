@@ -170,8 +170,15 @@ ModelConstraints.capabilities = {
         -- Function calling for the book-tool workflows. OpenRouter normalizes the OpenAI
         -- tools format across backends; seeded with frontier families whose function
         -- calling is universal — expand only after live verification per family.
+        -- 2026-07-25: expanded to every curated-array family whose endpoints report
+        -- `tools` in supported_parameters (verified live via tests/model_audit.lua
+        -- marketplace cross-check). Prefixes kept generation-scoped where older
+        -- siblings might differ (deepseek-v4, grok-4, kimi-k2, minimax-m2).
         tools = {
             "anthropic/claude", "openai/gpt-5", "google/gemini-3", "google/gemini-2.5",
+            "deepseek/deepseek-v4", "x-ai/grok-4", "meta-llama/llama-3.3-70b-instruct",
+            "mistralai/mistral-large", "mistralai/mistral-medium", "qwen/qwen3",
+            "moonshotai/kimi-k2", "minimax/minimax-m2",
         },
     },
     requesty = {
@@ -484,25 +491,29 @@ ModelConstraints.reasoning_profiles = {
           can_disable = false, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
-        -- gemini-3.6-flash + gemini-3.5-flash-lite mirror the 3.5-flash effort profile.
+        -- gemini-3.6-flash mirrors the 3.5-flash effort profile.
         -- flash-lite MUST precede gemini-3.5-flash (prefix match: "gemini-3.5-flash" would
-        -- otherwise swallow "gemini-3.5-flash-lite" — same profile here, but order kept correct).
+        -- otherwise swallow "gemini-3.5-flash-lite").
+        -- flash-lite variants do NOT think by default (probed 2026-07-25 via model_audit:
+        -- bare math prompt → thoughtsTokenCount=0 on 3.5-flash-lite AND 3.1-flash-lite,
+        -- vs 729 on 3.5-flash — the earlier "mirrors flash exactly" note was wrong about
+        -- the default). Effort levels still work; gated shape like gpt-5.6.
         { match = "gemini-3.6-flash", axis = "effort", default_state = "on",
           can_disable = false, can_enable = true,
           options = { "minimal", "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { option = "minimal" }, maximum = { option = "high" } } },
-        { match = "gemini-3.5-flash-lite", axis = "effort", default_state = "on",
-          can_disable = false, can_enable = true,
+        { match = "gemini-3.5-flash-lite", axis = "effort", default_state = "off",
+          can_disable = true, can_enable = true,
           options = { "minimal", "low", "medium", "high" }, default_option = "high",
-          stance_map = { minimal = { option = "minimal" }, maximum = { option = "high" } } },
+          stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "high" } } },
         { match = "gemini-3.5-flash", axis = "effort", default_state = "on",
           can_disable = false, can_enable = true,
           options = { "minimal", "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { option = "minimal" }, maximum = { option = "high" } } },
-        { match = "gemini-3.1-flash-lite", axis = "effort", default_state = "on",
-          can_disable = false, can_enable = true,
+        { match = "gemini-3.1-flash-lite", axis = "effort", default_state = "off",
+          can_disable = true, can_enable = true,
           options = { "minimal", "low", "medium", "high" }, default_option = "high",
-          stance_map = { minimal = { option = "minimal" }, maximum = { option = "high" } } },
+          stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "high" } } },
         -- Gemini 2.5 (thinkingBudget): thinks by default (dynamic), can disable via 0.
         -- flash-lite listed before flash so the more-specific id matches first.
         { match = "gemini-2.5-flash-lite", axis = "budget", default_state = "on",
@@ -565,9 +576,14 @@ ModelConstraints.reasoning_profiles = {
         { match = "openai/gpt-5.5", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "medium",
           stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
-        { match = "perplexity/", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
+        -- Perplexity: ONLY sonar-reasoning* models reason; the plain sonar/sonar-pro
+        -- rows below stop them falling through to the effort catch-all (their
+        -- endpoints report no `reasoning` — a whole-vendor "perplexity/" prefix
+        -- wrongly gave sonar-pro a reasoning dial; caught by model_audit 2026-07-25).
+        { match = "perplexity/sonar-reasoning", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
+        { match = "perplexity/", axis = "none" },
         -- Catch-all: disable-CAPABLE backends (deepseek, gpt-5.4/5.6, claude, glm, …).
         -- off emits reasoning.enabled=false (verified: deepseek/deepseek-v4-flash → 0 tokens).
         -- generic=true: derived metadata saying the backend model has NO reasoning
@@ -584,9 +600,11 @@ ModelConstraints.reasoning_profiles = {
         { match = "openai/gpt-5.5", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "medium",
           stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
-        { match = "perplexity/", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
+        -- Same sonar split as openrouter (requesty uses "perplexity/" ids too).
+        { match = "perplexity/sonar-reasoning", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
+        { match = "perplexity/", axis = "none" },
         { match = "", generic = true, axis = "effort", default_state = "off", can_disable = true, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "high" } } },

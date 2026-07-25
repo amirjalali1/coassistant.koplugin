@@ -846,6 +846,63 @@ TestRunner:test("Opus 5 mirrors Sonnet 5 shape (probed 2026-07-25)", function()
         "128K output ceiling")
 end)
 
+TestRunner:test("OpenRouter tools families (model_audit findings 2026-07-25)", function()
+    -- Every curated-array id whose endpoints report `tools` in supported_parameters
+    -- (verified live via the marketplace cross-check) must resolve tools=true.
+    for _i, id in ipairs({
+        "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash",
+        "x-ai/grok-4.3", "x-ai/grok-4.20", "meta-llama/llama-3.3-70b-instruct",
+        "mistralai/mistral-large-2512", "mistralai/mistral-medium-3.1",
+        "qwen/qwen3-max", "qwen/qwen3-235b-a22b",
+        "moonshotai/kimi-k2-thinking", "minimax/minimax-m2.1",
+    }) do
+        TestRunner:assertTrue(ModelConstraints.supportsCapability("openrouter", id, "tools"),
+            "tools granted: " .. id)
+    end
+    -- Generation-scoped prefixes: older siblings / toolless backends stay ungranted
+    TestRunner:assertFalse(ModelConstraints.supportsCapability("openrouter", "deepseek/deepseek-r1", "tools"),
+        "deepseek-r1 outside the v4 prefix")
+    TestRunner:assertFalse(ModelConstraints.supportsCapability("openrouter", "perplexity/sonar-pro", "tools"),
+        "sonar backends have no tools")
+end)
+
+TestRunner:test("Sonar split: only sonar-reasoning reasons on openrouter/requesty", function()
+    -- The old whole-vendor "perplexity/" prefix wrongly gave sonar-pro a reasoning
+    -- dial (endpoints report no `reasoning`; caught by model_audit 2026-07-25).
+    for _i, provider in ipairs({ "openrouter", "requesty" }) do
+        TestRunner:assertEqual(
+            ModelConstraints.getReasoningProfile(provider, "perplexity/sonar-reasoning-pro").axis,
+            "effort", provider .. ": sonar-reasoning-pro keeps the effort dial")
+        TestRunner:assertEqual(
+            ModelConstraints.getReasoningProfile(provider, "perplexity/sonar-pro").axis,
+            "none", provider .. ": sonar-pro gets no reasoning dial")
+        TestRunner:assertEqual(
+            ModelConstraints.getReasoningProfile(provider, "perplexity/sonar").axis,
+            "none", provider .. ": sonar gets no reasoning dial")
+        local d = ModelConstraints.resolveReasoning(provider, "perplexity/sonar-pro",
+            { global_stance = "maximum" })
+        TestRunner:assertTrue(d.send_nothing, provider .. ": sonar-pro emits nothing even on maximum")
+    end
+end)
+
+TestRunner:test("Gemini flash-lite gated off by default (probed 2026-07-25)", function()
+    -- Bare math prompt: thoughtsTokenCount=0 on both lites vs 729 on 3.5-flash.
+    for _i, id in ipairs({ "gemini-3.5-flash-lite", "gemini-3.1-flash-lite" }) do
+        local p = ModelConstraints.getReasoningProfile("gemini", id)
+        TestRunner:assertEqual(p.default_state, "off", id .. ": default off")
+        local d = ModelConstraints.resolveReasoning("gemini", id, { global_stance = "minimal" })
+        TestRunner:assertEqual(d.mode, "off", id .. ": minimal -> off")
+        local params = {}
+        ModelConstraints.applyReasoningParams("gemini", params, d)
+        TestRunner:assertNil(params.thinking_level, id .. ": off emits no thinkingLevel")
+        d = ModelConstraints.resolveReasoning("gemini", id, { global_stance = "maximum" })
+        TestRunner:assertEqual(d.effort, "high", id .. ": maximum -> high")
+    end
+    TestRunner:assertEqual(
+        ModelConstraints.getReasoningProfile("gemini", "gemini-3.5-flash").default_state,
+        "on", "3.5-flash itself still thinks by default")
+end)
+
 TestRunner:test("Minimal on Gemini 2.5 -> thinking_budget 0", function()
     local d = ModelConstraints.resolveReasoning("gemini", "gemini-2.5-flash", { global_stance = "minimal" })
     TestRunner:assertEqual(d.mode, "off", "off")

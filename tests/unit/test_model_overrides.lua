@@ -250,9 +250,11 @@ p = ModelConstraints.getReasoningProfile("openrouter", "google/gemini-3-flash-pr
 TestRunner:check("curated family profile bypasses the generic gate",
     p.axis == "effort" and p.can_disable == false)
 
--- Derived data is exact-id only
+-- Derived data is exact-id only ("somevendor/reasoner" is in the fixture; an
+-- extended id must NOT inherit its grant. kimi-k2 no longer works for this
+-- check - it gained a curated family entry in the 2026-07-25 tools round.)
 TestRunner:check("derived never prefix-matches",
-    not ModelConstraints.supportsCapability("openrouter", "moonshotai/kimi-k2", "tools"))
+    not ModelConstraints.supportsCapability("openrouter", "somevendor/reasoner-v2", "tools"))
 
 --==========================================================================
 TestRunner:suite("recordDerived round-trip")

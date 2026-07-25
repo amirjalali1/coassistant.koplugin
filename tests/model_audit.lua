@@ -331,7 +331,9 @@ local DISCOVERY = {
         end,
     },
     xai = { headers = bearerHeaders, parse = parseOpenAIShapedList },
-    zai = { headers = bearerHeaders, parse = parseOpenAIShapedList },
+    -- zai's list endpoint OMITS some serving ids (glm-4.7-flash probed alive
+    -- 2026-07-25 while absent from the list) - soften REMOVED to verify-first.
+    zai = { headers = bearerHeaders, parse = parseOpenAIShapedList, incomplete_list = true },
     gemini = {
         query = function(key) return "?key=" .. key .. "&pageSize=1000" end,
         parse = function(data)
@@ -462,10 +464,19 @@ local function runDiscovery(provider, api_key, verbose)
             C.dim, table.concat(diff.stale, ", "), C.off)
     end
     if #diff.removed > 0 then
-        printf("  %sREMOVED%s (curated but absent from the live list):", C.red, C.off)
-        for _i, id in ipairs(diff.removed) do
-            printf("    - %s  %s!! users' saved picks will 400 - verify, plan migration%s",
-                id, C.red, C.off)
+        if DISCOVERY[provider].incomplete_list then
+            printf("  %sABSENT FROM LIST%s (this provider's list endpoint is known-incomplete):",
+                C.yellow, C.off)
+            for _i, id in ipairs(diff.removed) do
+                printf("    - %s  %sverify: lua tests/model_audit.lua --probe %s %s%s",
+                    id, C.dim, provider, id, C.off)
+            end
+        else
+            printf("  %sREMOVED%s (curated but absent from the live list):", C.red, C.off)
+            for _i, id in ipairs(diff.removed) do
+                printf("    - %s  %s!! users' saved picks will 400 - verify, plan migration%s",
+                    id, C.red, C.off)
+            end
         end
     end
     if #diff.new == 0 and #diff.removed == 0 then
@@ -504,9 +515,25 @@ local function newFacts(family, provider, model)
              efforts = {}, probes = {} }
 end
 
+-- HTTP 429 (quota/rate limit) proves nothing about a capability — record it as
+-- inconclusive (nil) rather than rejection, so quota noise can't poison a draft
+-- (bit a gemini-3.5-flash battery: free-tier per-minute quota mid-ladder).
+local function verdict(code)
+    if code == 200 then return true end
+    if code == 429 then return nil end
+    return false
+end
+
 local function recordProbe(facts, name, ok, detail)
     table.insert(facts.probes, { name = name, ok = ok, detail = detail })
-    local mark = ok and (C.green .. "OK" .. C.off) or (C.red .. "REJECTED" .. C.off)
+    local mark
+    if ok then
+        mark = C.green .. "OK" .. C.off
+    elseif ok == nil then
+        mark = C.yellow .. "INCONCLUSIVE (quota/rate limit - retry)" .. C.off
+    else
+        mark = C.red .. "REJECTED" .. C.off
+    end
     printf("  [%2d] %-38s %s  %s%s%s",
         #facts.probes, name, mark, C.dim, tostring(detail or ""):sub(1, 90), C.off)
 end
@@ -546,13 +573,13 @@ local function probeAnthropic(model, api_key, verbose)
 
     -- 2. sampling params
     local tcode, tdec, traw = req({ temperature = 0.7 })
-    facts.temp_ok = (tcode == 200)
+    facts.temp_ok = verdict(tcode)
     if not facts.temp_ok then facts.temp_err = ModelAudit.errText(tdec, traw) end
     recordProbe(facts, "temperature=0.7", facts.temp_ok, facts.temp_err)
 
     -- 3. explicit disable
     local dcode, ddec, draw = req({ thinking = { type = "disabled" } })
-    facts.disable_ok = (dcode == 200)
+    facts.disable_ok = verdict(dcode)
     if not facts.disable_ok then facts.disable_err = ModelAudit.errText(ddec, draw) end
     recordProbe(facts, 'thinking={type="disabled"}', facts.disable_ok, facts.disable_err)
 
@@ -563,9 +590,9 @@ local function probeAnthropic(model, api_key, verbose)
             thinking = { type = "adaptive" },
             output_config = { effort = effort },
         })
-        facts.efforts[effort] = (ecode == 200)
+        facts.efforts[effort] = verdict(ecode)
         if ecode == 200 then facts.adaptive_ok = true end
-        recordProbe(facts, "adaptive effort=" .. effort, ecode == 200,
+        recordProbe(facts, "adaptive effort=" .. effort, verdict(ecode),
             ecode ~= 200 and ModelAudit.errText(edec, eraw) or nil)
     end
     if facts.adaptive_ok == nil then facts.adaptive_ok = false end
@@ -573,13 +600,16 @@ local function probeAnthropic(model, api_key, verbose)
     -- 5. legacy budget mode
     local bcode, bdec, braw = req({
         thinking = { type = "enabled", budget_tokens = 2048 } }, 4096)
-    facts.budget_ok = (bcode == 200)
+    facts.budget_ok = verdict(bcode)
     if not facts.budget_ok then facts.budget_err = ModelAudit.errText(bdec, braw) end
     recordProbe(facts, "extended thinking (budget_tokens)", facts.budget_ok, facts.budget_err)
 
     -- 6. output ceiling from oversized max_tokens error text
     local ccode, cdec, craw = req(nil, ABSURD_MAX_TOKENS)
-    if ccode ~= 200 then
+    if ccode == 429 then
+        recordProbe(facts, "output ceiling (oversized max_tokens)", nil,
+            ModelAudit.errText(cdec, craw))
+    elseif ccode ~= 200 then
         local err = ModelAudit.errText(cdec, craw)
         facts.ceiling = ModelAudit.parseCeiling(err, ABSURD_MAX_TOKENS)
         recordProbe(facts, "output ceiling (oversized max_tokens)", facts.ceiling ~= nil,
@@ -594,7 +624,7 @@ local function probeAnthropic(model, api_key, verbose)
         tools = { { name = "ping", description = "Connectivity test.",
                     input_schema = { type = "object", properties = dummyProps() } } },
     })
-    facts.tools_ok = (wcode == 200)
+    facts.tools_ok = verdict(wcode)
     if not facts.tools_ok then facts.tools_err = ModelAudit.errText(wdec, wraw) end
     recordProbe(facts, "tools (minimal function def)", facts.tools_ok, facts.tools_err)
 
@@ -676,7 +706,7 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
 
     -- 2. temperature
     local tcode, tdec, traw = req({ temperature = 0.7 }, 32)
-    facts.temp_ok = (tcode == 200)
+    facts.temp_ok = verdict(tcode)
     if not facts.temp_ok then facts.temp_err = ModelAudit.errText(tdec, traw) end
     recordProbe(facts, "temperature=0.7", facts.temp_ok, facts.temp_err)
 
@@ -685,19 +715,19 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
         facts.ladder = OPENAI_LADDER
         for _i, effort in ipairs(OPENAI_LADDER) do
             local ecode, edec, eraw = req({ [fam.effort_key] = effort })
-            facts.efforts[effort] = (ecode == 200)
-            recordProbe(facts, fam.effort_key .. "=" .. effort, ecode == 200,
+            facts.efforts[effort] = verdict(ecode)
+            recordProbe(facts, fam.effort_key .. "=" .. effort, verdict(ecode),
                 ecode ~= 200 and ModelAudit.errText(edec, eraw) or nil)
         end
-        facts.disable_ok = facts.efforts.none or false
+        facts.disable_ok = facts.efforts.none
     elseif fam.binary_key then
         facts.binary = true
         local oncode, ondec, onraw = req({ [fam.binary_key] = { type = "enabled" } })
-        facts.binary_on_ok = (oncode == 200)
+        facts.binary_on_ok = verdict(oncode)
         recordProbe(facts, fam.binary_key .. '={type="enabled"}', facts.binary_on_ok,
             not facts.binary_on_ok and ModelAudit.errText(ondec, onraw) or nil)
         local offcode, offdec, offraw = req({ [fam.binary_key] = { type = "disabled" } })
-        facts.binary_off_ok = (offcode == 200)
+        facts.binary_off_ok = verdict(offcode)
         facts.disable_ok = facts.binary_off_ok
         recordProbe(facts, fam.binary_key .. '={type="disabled"}', facts.binary_off_ok,
             not facts.binary_off_ok and ModelAudit.errText(offdec, offraw) or nil)
@@ -705,19 +735,22 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
         facts.ladder = OPENAI_LADDER
         for _i, effort in ipairs(OPENAI_LADDER) do
             local ecode, edec, eraw = req({ reasoning = { effort = effort } })
-            facts.efforts[effort] = (ecode == 200)
-            recordProbe(facts, "reasoning.effort=" .. effort, ecode == 200,
+            facts.efforts[effort] = verdict(ecode)
+            recordProbe(facts, "reasoning.effort=" .. effort, verdict(ecode),
                 ecode ~= 200 and ModelAudit.errText(edec, eraw) or nil)
         end
         local offcode, offdec, offraw = req({ reasoning = { enabled = false } })
-        facts.disable_ok = (offcode == 200)
+        facts.disable_ok = verdict(offcode)
         recordProbe(facts, "reasoning.enabled=false", facts.disable_ok,
             not facts.disable_ok and ModelAudit.errText(offdec, offraw) or nil)
     end
 
     -- 4. output ceiling
     local ccode, cdec, craw = req(nil, ABSURD_MAX_TOKENS)
-    if ccode ~= 200 then
+    if ccode == 429 then
+        recordProbe(facts, "output ceiling (oversized " .. token_key .. ")", nil,
+            ModelAudit.errText(cdec, craw))
+    elseif ccode ~= 200 then
         local err = ModelAudit.errText(cdec, craw)
         facts.ceiling = ModelAudit.parseCeiling(err, ABSURD_MAX_TOKENS)
         recordProbe(facts, "output ceiling (oversized " .. token_key .. ")",
@@ -733,7 +766,7 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
                     ["function"] = { name = "ping", description = "Connectivity test.",
                                      parameters = { type = "object", properties = dummyProps() } } } },
     })
-    facts.tools_ok = (wcode == 200)
+    facts.tools_ok = verdict(wcode)
     if not facts.tools_ok then facts.tools_err = ModelAudit.errText(wdec, wraw) end
     recordProbe(facts, "tools (minimal function def)", facts.tools_ok, facts.tools_err)
 
@@ -816,7 +849,7 @@ local function probeGemini(model, api_key, verbose)
 
     -- 2. temperature (metadata usually allows; probe confirms)
     local tcode, tdec, traw = req({ temperature = 0.7 }, nil, 32)
-    facts.temp_ok = (tcode == 200)
+    facts.temp_ok = verdict(tcode)
     if not facts.temp_ok then facts.temp_err = ModelAudit.errText(tdec, traw) end
     recordProbe(facts, "temperature=0.7", facts.temp_ok, facts.temp_err)
 
@@ -825,20 +858,20 @@ local function probeGemini(model, api_key, verbose)
     local any_level = false
     for _i, level in ipairs(GEMINI_LEVELS) do
         local ecode, edec, eraw = req({ thinkingConfig = { thinkingLevel = level:upper() } }, nil, 32)
-        facts.efforts[level] = (ecode == 200)
+        facts.efforts[level] = verdict(ecode)
         if ecode == 200 then any_level = true end
-        recordProbe(facts, "thinkingLevel=" .. level:upper(), ecode == 200,
+        recordProbe(facts, "thinkingLevel=" .. level:upper(), verdict(ecode),
             ecode ~= 200 and ModelAudit.errText(edec, eraw) or nil)
     end
     facts.adaptive_ok = any_level  -- effort-style control accepted
 
     -- 4. thinkingBudget (2.5 budget axis; 0 = disable)
     local zcode, zdec, zraw = req({ thinkingConfig = { thinkingBudget = 0 } }, nil, 32)
-    facts.disable_ok = (zcode == 200)
+    facts.disable_ok = verdict(zcode)
     recordProbe(facts, "thinkingBudget=0 (disable)", facts.disable_ok,
         not facts.disable_ok and ModelAudit.errText(zdec, zraw) or nil)
     local bcode, bdec, braw = req({ thinkingConfig = { thinkingBudget = 1024 } }, nil, 32)
-    facts.budget_ok = (bcode == 200)
+    facts.budget_ok = verdict(bcode)
     recordProbe(facts, "thinkingBudget=1024", facts.budget_ok,
         not facts.budget_ok and ModelAudit.errText(bdec, braw) or nil)
 
@@ -847,7 +880,7 @@ local function probeGemini(model, api_key, verbose)
         tools = { { functionDeclarations = { { name = "ping", description = "Connectivity test.",
                     parameters = { type = "object", properties = dummyProps() } } } } },
     }, 32)
-    facts.tools_ok = (wcode == 200)
+    facts.tools_ok = verdict(wcode)
     if not facts.tools_ok then facts.tools_err = ModelAudit.errText(wdec, wraw) end
     recordProbe(facts, "tools (functionDeclarations)", facts.tools_ok, facts.tools_err)
     printf("  %sgoogle_search grounding: not probed (separate quota) - set per family/docs%s",
