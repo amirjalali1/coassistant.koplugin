@@ -111,6 +111,16 @@ local function harvestWebSources(event, prov)
         end
     end
 
+    -- Z.AI: web_search results array ({link, title, content, refer, ...}) rides the
+    -- FINAL chunk of a streamed response (alongside usage) — harvested once at end
+    if type(event.web_search) == "table" then
+        for _idx, item in ipairs(event.web_search) do
+            if type(item) == "table" then
+                addSource(item.link or item.url, item.title)
+            end
+        end
+    end
+
     -- OpenAI Responses API: url_citation annotations stream as their own events…
     if event.type == "response.output_text.annotation.added"
         and type(event.annotation) == "table"
@@ -1217,6 +1227,11 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                             -- Capture Perplexity citations (top-level array in SSE events)
                             if event.citations and type(event.citations) == "table" and #event.citations > 0 then
                                 perplexity_citations = event.citations
+                                web_search_used = true
+                            end
+
+                            -- Z.AI: web_search results array on the final chunk
+                            if type(event.web_search) == "table" and #event.web_search > 0 then
                                 web_search_used = true
                             end
 

@@ -695,8 +695,11 @@ ModelConstraints.reasoning_profiles = {
 -- Mechanisms today: anthropic (web_search_20250305 tool), openrouter (:online / Exa),
 -- perplexity (built-in Sonar, always on), gemini (googleSearch grounding, capable models),
 -- openai + xai (web_search tool on their Responses APIs — the handlers route web-on
--- requests to /v1/responses, responses_api_plan.md). Everything else (DeepSeek, Mistral,
--- Groq, etc.) has NO web search via the Chat Completions API the plugin uses.
+-- requests to /v1/responses, responses_api_plan.md), zai (web_search tool on the chat
+-- wire — server-side search, results array echoed back; verified live 2026-07-25 on
+-- glm-5.2 + glm-4.7-flash). Everything else has NO web search via the Chat Completions
+-- API the plugin uses (probed 2026-07-25: deepseek rejects the tool type outright,
+-- mistral's WebSearchTool connector is agents-API-only).
 ModelConstraints._web_search_providers = {
     { id = "anthropic",  label = "Anthropic",  mode = "all" },
     { id = "gemini",     label = "Gemini",     mode = "capability:google_search" },
@@ -704,6 +707,7 @@ ModelConstraints._web_search_providers = {
     { id = "xai",        label = "xAI",        mode = "capability:responses_web_search" },
     { id = "perplexity", label = "Perplexity", mode = "all" },
     { id = "openrouter", label = "OpenRouter", mode = "all" },
+    { id = "zai",        label = "Z.AI",       mode = "all" },
 }
 
 --- Check if a provider/model can actually perform web search in this plugin.

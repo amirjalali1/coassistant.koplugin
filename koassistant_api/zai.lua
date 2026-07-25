@@ -67,9 +67,41 @@ function ZaiHandler:customizeRequestBody(body, config)
         end
     end
 
-    -- Note: Z.AI web search only works via a separate endpoint (/api/paas/v4/tools)
-    -- and NOT via the chat completions tools parameter (silently ignored).
-    -- Web search is not supported for this provider.
+    -- Web search: the chat completions wire accepts a web_search tool; Z.AI runs
+    -- the search server-side, injects results into the prompt, and echoes a
+    -- web_search results array (link/title/content) in the response — on the
+    -- final chunk when streaming. Verified live 2026-07-25 on glm-5.2 AND
+    -- glm-4.7-flash (an older note here claimed only /api/paas/v4/tools worked;
+    -- no longer true). search_result=true is what makes the results array come
+    -- back — required for "Show Sources" provenance.
+    -- Override-first read, same layering as openrouter.lua.
+    local enable_web_search = false
+    if config.enable_web_search ~= nil then
+        enable_web_search = config.enable_web_search
+    elseif config.features and config.features.enable_web_search then
+        enable_web_search = true
+    end
+    if enable_web_search then
+        -- Engine choice matters: the API default (search_std) is a Chinese-web
+        -- index that returns SEO junk for international queries (field report
+        -- 2026-07-25; all six engines probed — jina/bing return real sources,
+        -- GitHub/Reddit vs translation-spam). Overridable for Chinese-language
+        -- use via Settings → Advanced → Provider Settings (zai_search_engine).
+        local engine = (config.features and config.features.zai_search_engine)
+            or "search_pro_jina"
+        local web_search = { enable = true, search_result = true, search_engine = engine }
+        -- Effort dial: count IS honored (probed: count=3 → 3 sources; values
+        -- above the 10 default clamp silently, so thorough can't raise the
+        -- result count — it asks for fuller snippets instead).
+        local effort = ModelConstraints.webSearchEffort(config.features)
+        if effort == "light" then
+            web_search.count = 3
+        elseif effort == "thorough" then
+            web_search.content_size = "high"
+        end
+        body.tools = body.tools or {}
+        table.insert(body.tools, { type = "web_search", web_search = web_search })
+    end
 
     return body
 end

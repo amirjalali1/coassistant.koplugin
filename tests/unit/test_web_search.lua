@@ -787,7 +787,8 @@ end)
 TestRunner:suite("Model Constraints: supportsWebSearch matrix")
 
 -- Providers that support web search for ALL models
-for _idx, p in ipairs({ "anthropic", "openrouter", "perplexity" }) do
+-- (zai joined 2026-07-25: web_search tool on the chat wire, verified live)
+for _idx, p in ipairs({ "anthropic", "openrouter", "perplexity", "zai" }) do
     TestRunner:test(p .. " supports web search (any model)", function()
         TestRunner:assertTrue(
             ModelConstraints.supportsWebSearch(p, "any-model"),
@@ -830,7 +831,7 @@ end)
 -- Providers WITHOUT web search (toggle is a no-op there) — root cause of issue #81
 for _idx, p in ipairs({ "deepseek", "xai", "mistral", "groq",
                         "qwen", "kimi", "together", "fireworks", "sambanova",
-                        "cohere", "doubao", "zai", "ollama", "requesty" }) do
+                        "cohere", "doubao", "ollama", "requesty" }) do
     TestRunner:test(p .. " does NOT support web search", function()
         TestRunner:assertFalse(
             ModelConstraints.supportsWebSearch(p, "any-model"),
@@ -845,7 +846,7 @@ end)
 
 TestRunner:test("getWebSearchProvidersLabel lists supported providers (single source)", function()
     local label = ModelConstraints.getWebSearchProvidersLabel()
-    for _idx, name in ipairs({ "Anthropic", "Gemini", "OpenAI", "Perplexity", "OpenRouter" }) do
+    for _idx, name in ipairs({ "Anthropic", "Gemini", "OpenAI", "Perplexity", "OpenRouter", "Z.AI" }) do
         TestRunner:assertNotNil(label:find(name, 1, true), name .. " should appear in label")
     end
 end)
@@ -900,6 +901,85 @@ TestRunner:test("Gemini skips grounding for unsupported model", function()
         features = { enable_web_search = true },
     })
     TestRunner:assertNil(result.body.tools, "tools should NOT be present for unsupported model")
+end)
+
+TestRunner:suite("Request building: Z.AI web_search tool (chat wire)")
+
+local ZaiHandler = require("zai")
+
+TestRunner:test("Z.AI adds web_search tool when enabled (features fallback)", function()
+    local result = ZaiHandler:buildRequestBody({ { role = "user", content = "hi" } }, {
+        api_key = "test-key",
+        model = "glm-5.2",
+        api_params = {},
+        features = { enable_web_search = true },
+    })
+    TestRunner:assertNotNil(result.body.tools, "tools should be present")
+    TestRunner:assertEqual(result.body.tools[1].type, "web_search", "web_search tool injected")
+    TestRunner:assertTrue(result.body.tools[1].web_search.search_result,
+        "search_result=true (needed for the provenance results array)")
+    TestRunner:assertEqual(result.body.tools[1].web_search.search_engine, "search_pro_jina",
+        "international engine by default (search_std returns Chinese SEO junk)")
+    TestRunner:assertNil(result.body.tools[1].web_search.count, "standard effort sends no count")
+end)
+
+TestRunner:test("Z.AI search engine setting overrides the default", function()
+    local result = ZaiHandler:buildRequestBody({ { role = "user", content = "hi" } }, {
+        api_key = "test-key",
+        model = "glm-5.2",
+        api_params = {},
+        features = { enable_web_search = true, zai_search_engine = "search_pro_quark" },
+    })
+    TestRunner:assertEqual(result.body.tools[1].web_search.search_engine, "search_pro_quark",
+        "zai_search_engine setting respected")
+end)
+
+TestRunner:test("Z.AI effort dial: light -> count=3, thorough -> content_size=high", function()
+    local light = ZaiHandler:buildRequestBody({ { role = "user", content = "hi" } }, {
+        api_key = "test-key", model = "glm-5.2", api_params = {},
+        features = { enable_web_search = true, web_search_effort = "light" },
+    })
+    TestRunner:assertEqual(light.body.tools[1].web_search.count, 3, "light caps results at 3")
+    local thorough = ZaiHandler:buildRequestBody({ { role = "user", content = "hi" } }, {
+        api_key = "test-key", model = "glm-5.2", api_params = {},
+        features = { enable_web_search = true, web_search_effort = "thorough" },
+    })
+    TestRunner:assertNil(thorough.body.tools[1].web_search.count,
+        "thorough sends no count (>10 clamps silently - can't raise)")
+    TestRunner:assertEqual(thorough.body.tools[1].web_search.content_size, "high",
+        "thorough asks for fuller snippets")
+end)
+
+TestRunner:test("Z.AI top-level override wins over global (layering)", function()
+    local result = ZaiHandler:buildRequestBody({ { role = "user", content = "hi" } }, {
+        api_key = "test-key",
+        model = "glm-5.2",
+        enable_web_search = false,
+        api_params = {},
+        features = { enable_web_search = true },
+    })
+    TestRunner:assertNil(result.body.tools, "override-off must beat global-on")
+end)
+
+TestRunner:test("Z.AI omits web_search tool when off", function()
+    local result = ZaiHandler:buildRequestBody({ { role = "user", content = "hi" } }, {
+        api_key = "test-key",
+        model = "glm-5.2",
+        api_params = {},
+        features = {},
+    })
+    TestRunner:assertNil(result.body.tools, "tools should NOT be present")
+end)
+
+TestRunner:test("Z.AI web tool coexists with thinking param", function()
+    local result = ZaiHandler:buildRequestBody({ { role = "user", content = "hi" } }, {
+        api_key = "test-key",
+        model = "glm-5.2",
+        api_params = { zai_thinking = { type = "enabled" } },
+        features = { enable_web_search = true },
+    })
+    TestRunner:assertNotNil(result.body.thinking, "thinking kept")
+    TestRunner:assertEqual(result.body.tools[1].type, "web_search", "web tool kept")
 end)
 
 --------------------------------------------------------------------------------
@@ -1151,6 +1231,24 @@ TestRunner:test("harvests Gemini grounding metadata and dedupes across events", 
     StreamHandler.harvestWebSources(event, prov)  -- repeated chunk in later event
     TestRunner:assertEqual(#prov.sources, 1, "sources deduped across events")
     TestRunner:assertEqual(#prov.queries, 1, "queries deduped across events")
+end)
+
+TestRunner:test("harvests Z.AI web_search array from the final chunk", function()
+    local prov = newProv()
+    local final_chunk = {
+        choices = { { index = 0, finish_reason = "stop", delta = { role = "assistant", content = "" } } },
+        usage = { prompt_tokens = 2814, completion_tokens = 28 },
+        web_search = {
+            { refer = "ref_1", title = "KOReader", link = "http://koreader.rocks/",
+              content = "KOReader is a document viewer...", media = "", icon = "" },
+            { refer = "ref_2", title = "Releases", link = "https://github.com/koreader/koreader/releases" },
+        },
+    }
+    StreamHandler.harvestWebSources(final_chunk, prov)
+    StreamHandler.harvestWebSources(final_chunk, prov)  -- repeated event must dedupe
+    TestRunner:assertEqual(#prov.sources, 2, "both results harvested, deduped")
+    TestRunner:assertEqual(prov.sources[1].url, "http://koreader.rocks/", "link field mapped to url")
+    TestRunner:assertEqual(prov.sources[1].title, "KOReader", "title harvested")
 end)
 
 TestRunner:test("harvests OpenRouter delta annotations", function()

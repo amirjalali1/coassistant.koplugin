@@ -2404,6 +2404,34 @@ local SettingsSchema = {
                             },
                         },
                         {
+                            id = "zai_search_engine",
+                            type = "radio",
+                            text_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                local engine = f.zai_search_engine or "search_pro_jina"
+                                local labels = {
+                                    search_pro_jina = _("Jina (international)"),
+                                    search_pro_bing = _("Bing (international)"),
+                                    search_pro_quark = _("Quark (Chinese web)"),
+                                    search_pro_sogou = _("Sogou (Chinese web)"),
+                                    search_pro = _("Pro (Chinese web)"),
+                                    search_std = _("Basic (Chinese web)"),
+                                }
+                                return T(_("Z.AI Search Engine: %1"), labels[engine] or engine)
+                            end,
+                            help_text = _("Search engine used for Z.AI web search.\n\nThe international engines (Jina, Bing) return much better sources for non-Chinese queries. The Chinese-web engines suit Chinese-language content."),
+                            path = "features.zai_search_engine",
+                            default = "search_pro_jina",
+                            options = {
+                                { value = "search_pro_jina", text = _("Jina (international, default)") },
+                                { value = "search_pro_bing", text = _("Bing (international)") },
+                                { value = "search_pro_quark", text = _("Quark (Chinese web)") },
+                                { value = "search_pro_sogou", text = _("Sogou (Chinese web)") },
+                                { value = "search_pro", text = _("Pro (Chinese web)") },
+                                { value = "search_std", text = _("Basic (Chinese web)") },
+                            },
+                        },
+                        {
                             id = "qwen_region",
                             type = "radio",
                             text_func = function(plugin)

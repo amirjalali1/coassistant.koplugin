@@ -119,6 +119,44 @@ function ModelAudit.isNoise(provider, id)
     return hit(ModelAudit.NOISE.common) or hit(ModelAudit.NOISE[provider])
 end
 
+-- Ids we LOOKED AT and decided not to curate (menu bloat, superseded, rolling
+-- aliases whose constraints would silently go stale when the provider repoints
+-- them). They print dim with the reason instead of flooding NEW on every run.
+-- DELETE an entry to resurface the id. Reviewed 2026-07-25.
+ModelAudit.DELIBERATE_SKIPS = {
+    anthropic = {
+        ["claude-opus-4-6"] = "superseded by opus-4-8 (custom-add if wanted)",
+        ["claude-opus-4-7"] = "superseded by opus-4-8 (custom-add if wanted)",
+    },
+    gemini = {
+        ["gemini-3-flash-preview"] = "3.0 preview, superseded by 3.1+ stable",
+        ["gemini-3-pro-preview"] = "3.0 preview, superseded by 3.1+ stable",
+        ["gemini-3.1-flash-lite-preview"] = "preview of curated 3.1-flash-lite",
+        ["gemini-flash-latest"] = "rolling alias - curated constraints would go stale invisibly",
+        ["gemini-flash-lite-latest"] = "rolling alias - curated constraints would go stale invisibly",
+        ["gemini-pro-latest"] = "rolling alias - curated constraints would go stale invisibly",
+        ["gemini-2.0-flash"] = "old generation",
+        ["gemini-2.0-flash-001"] = "old generation",
+        ["gemini-2.0-flash-lite"] = "old generation",
+        ["gemini-2.0-flash-lite-001"] = "old generation",
+    },
+    openai = {
+        ["chat-latest"] = "ChatGPT-tuned rolling alias",
+        ["gpt-5.3-chat-latest"] = "ChatGPT-tuned rolling alias",
+    },
+    mistral = {
+        ["mistral-medium"] = "curated via mistral-medium-latest",
+        ["mistral-medium-3"] = "curated via mistral-medium-latest",
+        ["mistral-medium-3-5"] = "curated via mistral-medium-latest",
+        ["mistral-medium-3.5"] = "curated via mistral-medium-latest",
+        ["mistral-tiny-latest"] = "legacy tiny tier",
+        ["mistral-tiny-2407"] = "legacy tiny tier",
+    },
+    xai = {
+        ["grok-4.20-multi-agent-0309"] = "specialised multi-agent variant",
+    },
+}
+
 -- Dated/numbered snapshots and -latest aliases of an id we already curate are
 -- not "new models" (gpt-4o vs gpt-4o-2024-08-06, gemini -001, mistral -2509).
 -- Each candidate base is also checked against the curated "-latest" alias,
@@ -158,11 +196,13 @@ ModelAudit.RECENT_SECONDS = 180 * 86400  -- uncurated ids older than this go to 
 
 -- curated: array of ids; fetched: map id -> meta; now: os.time() (nil = no
 -- staleness split, everything uncurated lands in `new`).
--- Returns { new={}, stale={}, removed={}, snapshots={}, ignored={}, known=n }.
+-- Returns { new={}, stale={}, removed={}, snapshots={}, ignored={}, deliberate={}, known=n }.
 function ModelAudit.diffLists(provider, curated, fetched, now)
-    local result = { new = {}, stale = {}, removed = {}, snapshots = {}, ignored = {}, known = 0 }
+    local result = { new = {}, stale = {}, removed = {}, snapshots = {}, ignored = {},
+                     deliberate = {}, known = 0 }
     local curated_set = {}
     for _i, id in ipairs(curated) do curated_set[id] = true end
+    local skips = ModelAudit.DELIBERATE_SKIPS[provider] or {}
 
     local fetched_ids = {}
     for id in pairs(fetched) do table.insert(fetched_ids, id) end
@@ -175,6 +215,8 @@ function ModelAudit.diffLists(provider, curated, fetched, now)
             table.insert(result.snapshots, id)
         elseif ModelAudit.isNoise(provider, id) then
             table.insert(result.ignored, id)
+        elseif skips[id] then
+            table.insert(result.deliberate, { id = id, reason = skips[id] })
         else
             -- No timestamp = assume recent (loud beats silent for a discovery tool)
             local ts = ModelAudit.modelTimestamp(fetched[id])
@@ -462,6 +504,13 @@ local function runDiscovery(provider, api_key, verbose)
     if #diff.stale > 0 then
         printf("  %solder uncurated (released >180d ago, deliberate skips?): %s%s",
             C.dim, table.concat(diff.stale, ", "), C.off)
+    end
+    if #diff.deliberate > 0 then
+        printf("  %sdeliberately skipped (see ModelAudit.DELIBERATE_SKIPS; delete an entry to resurface):%s",
+            C.dim, C.off)
+        for _i, entry in ipairs(diff.deliberate) do
+            printf("    %s. %-38s %s%s", C.dim, entry.id, entry.reason, C.off)
+        end
     end
     if #diff.removed > 0 then
         if DISCOVERY[provider].incomplete_list then

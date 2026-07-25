@@ -117,6 +117,13 @@ local diff_no_now = ModelAudit.diffLists("openai", { "m-a", "m-b" }, fetched, ni
 TestRunner:check("without `now` everything uncurated is new",
     #diff_no_now.new == 3 and #diff_no_now.stale == 0)
 
+local skip_diff = ModelAudit.diffLists("anthropic", { "claude-opus-4-8" },
+    { ["claude-opus-4-6"] = {}, ["claude-opus-4-8"] = {} }, NOW)
+TestRunner:check("deliberate skip bucketed with its reason",
+    #skip_diff.deliberate == 1 and skip_diff.deliberate[1].id == "claude-opus-4-6"
+    and type(skip_diff.deliberate[1].reason) == "string")
+TestRunner:check("deliberate skip stays out of new", #skip_diff.new == 0)
+
 --==========================================================================
 TestRunner:suite("modelTimestamp")
 
