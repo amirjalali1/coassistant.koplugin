@@ -177,7 +177,9 @@ end
 --- @param opts table|nil { limit = ring depth, OR features = settings table to
 ---   resolve the user's xray_versions_kept from (pass one of them — omitting
 ---   both falls back to the schema default and ignores a user's 0 = "stop
----   archiving" choice); refresh_fn = background pre-filter resync callback }
+---   archiving" choice); prev = the live entry when the caller JUST read it
+---   (skips a full cache reload — e-ink; pass only a fresh read);
+---   refresh_fn = background pre-filter resync callback }
 --- @return boolean success
 function WriteBack.commitXray(document_path, cache_json, progress_decimal, meta, opts)
     if not document_path or not cache_json then return false end
@@ -188,7 +190,10 @@ function WriteBack.commitXray(document_path, cache_json, progress_decimal, meta,
         limit = ActionCache.checkpointLimitFromFeatures(opts.features)
     end
 
-    local prev = ActionCache.getXrayCache(document_path)
+    local prev = opts.prev
+    if prev == nil then
+        prev = ActionCache.getXrayCache(document_path)
+    end
     if prev and prev.result and prev.result ~= cache_json and limit ~= 0
         and not ActionCache.isXrayLadderRung(document_path, prev) then
         ActionCache.pushXrayCheckpoint(document_path, prev, limit)

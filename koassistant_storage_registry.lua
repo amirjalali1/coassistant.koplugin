@@ -253,7 +253,7 @@ Registry.entries = {
         opt_in_reset = true,
     },
     {
-        id = "sidecar_user_aliases", label = "Per-book X-Ray search terms",
+        id = "sidecar_user_aliases", label = "Per-book X-Ray search terms + never-merge pairs",
         location = "sidecar_file", ref = "koassistant_user_aliases.lua",
         category = "artifacts", backup = "opt_in",
         index_key = "koassistant_artifact_index",  -- best-effort: shares the artifact sidecar dir; has no dedicated index

@@ -896,6 +896,14 @@ function ActionCache.getWikiEntries(document_path)
     return entries
 end
 
+-- Reserved key inside koassistant_user_aliases.lua holding the entity
+-- never-merge pair list (xray_ecosystem_plan.md §6 slice 4):
+-- { { "Name A", "Name B" }, ... }. Same "user curation survives regeneration"
+-- contract as the alias entries — consulted by the duplicate scan and injected
+-- into the section-merge prompts. get/setUserAliases carry it through the
+-- normal get→modify→set round-trips untouched.
+ActionCache.NEVER_MERGE_KEY = "__never_merge"
+
 --- Get path to user aliases file for a document
 --- @param document_path string The document file path
 --- @return string|nil path Full path, or nil if not applicable
@@ -933,8 +941,11 @@ function ActionCache.getUserAliases(document_path)
     end
 
     -- Normalize: old format { [name] = { "a", "b" } } → { [name] = { add = { "a", "b" } } }
+    -- (never the reserved never-merge key — its value is an array of PAIRS,
+    -- and wrapping it as add-tables would crash the serializer on save)
     for name, entry in pairs(data) do
-        if type(entry) == "table" and not entry.add and not entry.ignore then
+        if name ~= ActionCache.NEVER_MERGE_KEY
+            and type(entry) == "table" and not entry.add and not entry.ignore then
             -- Old format: plain array of strings
             data[name] = { add = entry }
         end
@@ -950,10 +961,15 @@ function ActionCache.setUserAliases(document_path, aliases_table)
     local path = ActionCache.getUserAliasesPath(document_path)
     if not path then return false end
 
-    -- Remove entries with no content
+    -- Remove entries with no content (the reserved never-merge key holds an
+    -- array of pairs, not add/ignore lists — judged on its own emptiness)
     for name, entry in pairs(aliases_table) do
         if type(entry) ~= "table" then
             aliases_table[name] = nil
+        elseif name == ActionCache.NEVER_MERGE_KEY then
+            if #entry == 0 then
+                aliases_table[name] = nil
+            end
         else
             local add = entry.add or {}
             local ignore = entry.ignore or {}
@@ -996,20 +1012,105 @@ function ActionCache.setUserAliases(document_path, aliases_table)
     end
 
     file:write("return {\n")
-    for item_name, entry in pairs(aliases_table) do
-        file:write(string.format("    [%q] = { add = ", item_name))
-        write_array(file, entry.add)
-        if entry.ignore and #entry.ignore > 0 then
-            file:write(", ignore = ")
-            write_array(file, entry.ignore)
+    local never_pairs = aliases_table[ActionCache.NEVER_MERGE_KEY]
+    if type(never_pairs) == "table" and #never_pairs > 0 then
+        file:write(string.format("    [%q] = {", ActionCache.NEVER_MERGE_KEY))
+        for _idx, pair in ipairs(never_pairs) do
+            if type(pair) == "table" and type(pair[1]) == "string" and type(pair[2]) == "string" then
+                file:write(string.format(" { %q, %q },", pair[1], pair[2]))
+            end
         end
         file:write(" },\n")
+    end
+    for item_name, entry in pairs(aliases_table) do
+        if item_name ~= ActionCache.NEVER_MERGE_KEY then
+            file:write(string.format("    [%q] = { add = ", item_name))
+            write_array(file, entry.add)
+            if entry.ignore and #entry.ignore > 0 then
+                file:write(", ignore = ")
+                write_array(file, entry.ignore)
+            end
+            file:write(" },\n")
+        end
     end
     file:write("}\n")
     file:close()
 
     logger.info("KOAssistant ActionCache: Saved user aliases for", document_path)
     return true
+end
+
+--- Validated never-merge pair list from an already-loaded aliases table
+--- (callers holding a getUserAliases result skip a second file read). Pure.
+--- @param aliases_table table getUserAliases output
+--- @return table pairs Array of { name_a, name_b }
+function ActionCache.neverMergePairsFrom(aliases_table)
+    local raw = type(aliases_table) == "table" and aliases_table[ActionCache.NEVER_MERGE_KEY]
+    local list = {}
+    if type(raw) == "table" then
+        for _idx, pair in ipairs(raw) do
+            if type(pair) == "table" and type(pair[1]) == "string" and type(pair[2]) == "string" then
+                list[#list + 1] = { pair[1], pair[2] }
+            end
+        end
+    end
+    return list
+end
+
+--- Load the entity never-merge pair list (validated copy).
+--- @param document_path string The document file path
+--- @return table pairs Array of { name_a, name_b }
+function ActionCache.getNeverMergePairs(document_path)
+    return ActionCache.neverMergePairsFrom(ActionCache.getUserAliases(document_path))
+end
+
+--- Record a pair of entity names as never-merge (order/case-insensitive dedup).
+--- @return boolean success
+function ActionCache.addNeverMergePair(document_path, name_a, name_b)
+    if type(name_a) ~= "string" or type(name_b) ~= "string"
+        or name_a == "" or name_b == "" then
+        return false
+    end
+    local all = ActionCache.getUserAliases(document_path)
+    local list = all[ActionCache.NEVER_MERGE_KEY]
+    if type(list) ~= "table" then
+        list = {}
+        all[ActionCache.NEVER_MERGE_KEY] = list
+    end
+    local ka, kb = name_a:lower(), name_b:lower()
+    for _idx, pair in ipairs(list) do
+        if type(pair) == "table" and type(pair[1]) == "string" and type(pair[2]) == "string" then
+            local pa, pb = pair[1]:lower(), pair[2]:lower()
+            if (pa == ka and pb == kb) or (pa == kb and pb == ka) then
+                return true
+            end
+        end
+    end
+    list[#list + 1] = { name_a, name_b }
+    return ActionCache.setUserAliases(document_path, all)
+end
+
+--- Remove a never-merge pair (order/case-insensitive match).
+--- @return boolean success
+function ActionCache.removeNeverMergePair(document_path, name_a, name_b)
+    if type(name_a) ~= "string" or type(name_b) ~= "string" then return false end
+    local all = ActionCache.getUserAliases(document_path)
+    local list = all[ActionCache.NEVER_MERGE_KEY]
+    if type(list) ~= "table" then return true end
+    local ka, kb = name_a:lower(), name_b:lower()
+    local removed = false
+    for i = #list, 1, -1 do
+        local pair = list[i]
+        if type(pair) == "table" and type(pair[1]) == "string" and type(pair[2]) == "string" then
+            local pa, pb = pair[1]:lower(), pair[2]:lower()
+            if (pa == ka and pb == kb) or (pa == kb and pb == ka) then
+                table.remove(list, i)
+                removed = true
+            end
+        end
+    end
+    if not removed then return true end
+    return ActionCache.setUserAliases(document_path, all)
 end
 
 -- =============================================================================

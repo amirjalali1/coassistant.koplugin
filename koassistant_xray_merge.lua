@@ -10,11 +10,12 @@ exactly what the into-main prompt asks for.
 
 WIRE-SAFETY INVARIANT (gate finding, 2026-07-26): artifact JSON must NEVER ride
 action.prompt — the early placeholder passes strip lines ("In context…"/{context})
-and substitute placeholder literals INSIDE it. The JSON payloads travel through
-config.features._merge_payload → message_data → the LATE-substituted channels
-({cached_result}, {entity_index}, {incremental_book_text}, {cached_progress}) —
-the same channels the incremental update uses, resolved after the destructive
-passes in message_builder.lua.
+and substitute placeholder literals INSIDE it — and must not ride the late
+{cached_result}-style channels either (the identity and cache-section passes
+rescan content injected there). The payloads travel through
+config.features._merge_payload → message_data → injectPayload, which splices
+them over brace-free @@KOA_MERGE_*@@ sentinel tokens AFTER MessageBuilder.build
+has finished (single left-to-right scan; nothing runs afterward).
 
 Three shapes, two write paths:
 - sections → EXISTING JSON main (DELTA): update-prompt shape → applyXray with
@@ -66,6 +67,8 @@ Output ONE complete merged JSON object using exactly the same JSON keys and stru
 - current_state / current_position: take it from the LAST section only
 - Do not invent entities or events that appear in no section
 
+@@KOA_MERGE_NEVER@@
+
 CRITICAL: Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values must follow your language instructions.]]
 
 XrayMerge.DELTA_PROMPT = [[Update this X-Ray for "{title}"{author_clause} by folding in the %COUNT% section X-Rays below.
@@ -86,6 +89,8 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 - To reference an existing entity, use the EXACT name from the entity list above
 - Include "current_state" (fiction) or "current_position" (nonfiction) ONLY if the sections extend past the previous analysis's coverage — otherwise omit it
 - Do not invent entities or events that appear in no section
+
+@@KOA_MERGE_NEVER@@
 
 CRITICAL: Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values must follow your language instructions.]]
 
@@ -131,25 +136,43 @@ function XrayMerge.coveragePhrase(main_entry)
     return "an earlier reading position"
 end
 
+--- Never-merge pair lines for the @@KOA_MERGE_NEVER@@ payload slot. The NAMES
+--- are artifact-derived content — they ride the sentinel payload, never the
+--- prompt (wire-safety invariant applies to them like any artifact text). Pure.
+--- @param never_pairs table|nil ActionCache.getNeverMergePairs output
+--- @return string lines ("" when none)
+function XrayMerge.neverLines(never_pairs)
+    if not never_pairs or #never_pairs == 0 then return "" end
+    local lines = {}
+    for _idx, pair in ipairs(never_pairs) do
+        lines[#lines + 1] = '- "' .. pair[1] .. '" and "' .. pair[2] .. '"'
+    end
+    return table.concat(lines, "\n")
+end
+
 --- One-shot complete merge prompt + its sentinel payload. Pure.
+--- @param never_pairs table|nil Reader-confirmed distinct pairs (§6 slice 4)
 --- @return string prompt, table payload (see injectPayload)
-function XrayMerge.buildCompletePrompt(sections)
+function XrayMerge.buildCompletePrompt(sections, never_pairs)
     return fillLiteral(XrayMerge.COMPLETE_PROMPT, "%COUNT%", tostring(#sections)), {
         inputs = XrayMerge.buildInputsBlock(sections),
+        never = XrayMerge.neverLines(never_pairs),
     }
 end
 
 --- Delta merge prompt + payload (fold sections into an existing JSON main).
 --- @param main_entry table Live main cache entry (JSON result)
 --- @param entity_index string XrayParser.buildEntityIndex output (may be "")
+--- @param never_pairs table|nil Reader-confirmed distinct pairs (§6 slice 4)
 --- @return string prompt, table payload
-function XrayMerge.buildDeltaPrompt(sections, main_entry, entity_index)
+function XrayMerge.buildDeltaPrompt(sections, main_entry, entity_index, never_pairs)
     local prompt = fillLiteral(XrayMerge.DELTA_PROMPT, "%COUNT%", tostring(#sections))
     prompt = fillLiteral(prompt, "%COVERAGE%", XrayMerge.coveragePhrase(main_entry))
     return prompt, {
         inputs = XrayMerge.buildInputsBlock(sections),
         main = main_entry.result or "",
         index = entity_index or "",
+        never = XrayMerge.neverLines(never_pairs),
     }
 end
 
@@ -161,7 +184,7 @@ end
 --- rescanned, by ANY token — sequential per-token passes would let a token
 --- literal inside one payload be replaced by a later token's pass. Pure.
 --- @param message string The built consolidated message
---- @param payload table { inputs, main, index } from the prompt builders
+--- @param payload table { inputs, main, index, never } from the prompt builders
 --- @return string message with payload injected
 function XrayMerge.injectPayload(message, payload)
     if type(message) ~= "string" or type(payload) ~= "table" then return message end
@@ -170,10 +193,16 @@ function XrayMerge.injectPayload(message, payload)
         -- Same framing as the incremental update path (message_builder.lua)
         index_block = "Existing entities in previous analysis:\n" .. payload.index
     end
+    local never_block = ""
+    if payload.never and payload.never ~= "" then
+        never_block = "These are DIFFERENT entities (reader-confirmed) — never merge them into one entry:\n"
+            .. payload.never
+    end
     local values = {
         ["@@KOA_MERGE_INPUTS@@"] = payload.inputs or "",
         ["@@KOA_MERGE_MAIN@@"] = payload.main or "",
         ["@@KOA_MERGE_INDEX@@"] = index_block,
+        ["@@KOA_MERGE_NEVER@@"] = never_block,
     }
     local out = {}
     local pos = 1
@@ -269,47 +298,15 @@ end
 
 -- ============================ execution ============================
 
---- Run the merge headlessly and write the result.
---- @param opts table { file, ui, plugin, configuration, sections (getSections
----   rows, sorted), target = "main"|"section", main_entry, delta_mode,
----   coverage_ratio (flow-aware 0..1 or nil), title, author, on_done(ok, err) }
-function XrayMerge.execute(opts)
-    local Dialogs = require("koassistant_dialogs")
-    local ActionCache = require("koassistant_action_cache")
-    local WriteBack = require("koassistant_artifact_writeback")
-    local XrayParser = require("koassistant_xray_parser")
-
-    local into_main = opts.target == "main"
-    local delta_mode = opts.delta_mode and into_main
-
-    local prompt_text, payload
-    if delta_mode then
-        local parsed_main = XrayParser.parse(opts.main_entry.result)
-        local entity_index = parsed_main and XrayParser.buildEntityIndex(parsed_main) or ""
-        prompt_text, payload = XrayMerge.buildDeltaPrompt(opts.sections, opts.main_entry, entity_index)
-    else
-        prompt_text, payload = XrayMerge.buildCompletePrompt(opts.sections)
-    end
-
-    -- Synthetic internal action: no extraction, no web, no chat storage, no
-    -- response-side caching (the write below is owned by the write-back seam)
-    local action = {
-        id = "xray_merge",
-        text = _("Merge X-Ray"),
-        context = "book",
-        prompt = prompt_text,
-        storage_key = "__SKIP__",
-        enable_web_search = false,
-        api_params = XrayMerge.API_PARAMS,
-        builtin = true,
-    }
-
-    -- Config copy (never the shared module table), wiki-call shape. The
-    -- book_metadata table must be a fresh copy too — the shared one leaks
-    -- cross-book identity otherwise (CLAUDE.md Config Copy Pattern).
-    if opts.plugin and opts.plugin.updateConfigFromSettings then
-        opts.plugin:updateConfigFromSettings()
-    end
+--- Config copy for a headless artifact request (never the shared module
+--- table; the nested book_metadata gets a fresh copy too — CLAUDE.md Config
+--- Copy Pattern), with the sentinel payload riding the consume-once
+--- _merge_payload transient. Shared with the entity dedup flow (§6 slice 4).
+--- Caller is responsible for updateConfigFromSettings beforehand.
+--- @param opts table { configuration, file, title, author }
+--- @param payload table injectPayload payload
+--- @return table config, table bm (the fresh book_metadata)
+function XrayMerge.buildHeadlessConfig(opts, payload)
     local config = {}
     for k, v in pairs(opts.configuration or {}) do config[k] = v end
     config.features = {}
@@ -327,8 +324,54 @@ function XrayMerge.execute(opts)
     bm.doi = nil
     bm.doi_clause = nil
     config.features.book_metadata = bm
-    -- Wire-safety: the JSON payloads ride the late channels, never action.prompt
+    -- Wire-safety: the payloads ride the late sentinel injection, never action.prompt
     config.features._merge_payload = payload
+    return config, bm
+end
+
+--- Run the merge headlessly and write the result.
+--- @param opts table { file, ui, plugin, configuration, sections (getSections
+---   rows, sorted), target = "main"|"section", main_entry, delta_mode,
+---   coverage_ratio (flow-aware 0..1 or nil), title, author, on_done(ok, err) }
+function XrayMerge.execute(opts)
+    local Dialogs = require("koassistant_dialogs")
+    local ActionCache = require("koassistant_action_cache")
+    local WriteBack = require("koassistant_artifact_writeback")
+    local XrayParser = require("koassistant_xray_parser")
+
+    local into_main = opts.target == "main"
+    local delta_mode = opts.delta_mode and into_main
+
+    -- Reader-confirmed distinct pairs steer the model's entity merging (§6
+    -- slice 4 — same list the duplicate scan consults)
+    local never_pairs = ActionCache.getNeverMergePairs(opts.file)
+
+    local prompt_text, payload
+    if delta_mode then
+        local parsed_main = XrayParser.parse(opts.main_entry.result)
+        local entity_index = parsed_main and XrayParser.buildEntityIndex(parsed_main) or ""
+        prompt_text, payload = XrayMerge.buildDeltaPrompt(opts.sections, opts.main_entry, entity_index, never_pairs)
+    else
+        prompt_text, payload = XrayMerge.buildCompletePrompt(opts.sections, never_pairs)
+    end
+
+    -- Synthetic internal action: no extraction, no web, no chat storage, no
+    -- response-side caching (the write below is owned by the write-back seam)
+    local action = {
+        id = "xray_merge",
+        text = _("Merge X-Ray"),
+        context = "book",
+        prompt = prompt_text,
+        storage_key = "__SKIP__",
+        enable_web_search = false,
+        api_params = XrayMerge.API_PARAMS,
+        builtin = true,
+    }
+
+    if opts.plugin and opts.plugin.updateConfigFromSettings then
+        opts.plugin:updateConfigFromSettings()
+    end
+    local config, bm = XrayMerge.buildHeadlessConfig(opts, payload)
 
     local input_entries = {}
     for _idx, sec in ipairs(opts.sections) do input_entries[#input_entries + 1] = sec.data end

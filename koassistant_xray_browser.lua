@@ -4052,6 +4052,28 @@ function XrayBrowser:showOptions()
         end
     end
 
+    -- Find duplicate entities (§6 slice 4, #90): main X-Ray views only, same
+    -- rationale as the merge row; the flow operates on disk truth
+    if not self.scope and not self.metadata.checkpoint
+        and self.metadata.plugin and self.metadata.book_file then
+        table.insert(buttons, {{
+            text = _("Find duplicate entities…"), align = "left",
+            callback = function()
+                closeOptions()
+                -- Close the browser: a merge rewrites the data this view renders
+                if self_ref.menu then UIManager:close(self_ref.menu) end
+                require("koassistant_xray_dedup").startFlow({
+                    file = self_ref.metadata.book_file,
+                    ui = self_ref.ui,
+                    plugin = self_ref.metadata.plugin,
+                    configuration = self_ref.metadata.configuration,
+                    title = self_ref.metadata.title,
+                    author = self_ref.metadata.book_author,
+                })
+            end,
+        }})
+    end
+
     -- Info
     local info_parts = {}
     if self.scope then
