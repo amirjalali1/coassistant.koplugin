@@ -57,9 +57,16 @@ local config_path = plugin_dir .. "configuration.lua"
 -- Track configuration.lua load errors to notify user in init()
 local config_load_error = nil
 
+-- Whether the user actually supplied a configuration.lua. NOT the same as
+-- "configuration has values": without the file, `configuration` stays the built-in
+-- literal above, which carries legacy keys (notably translate_to) that must never be
+-- treated as user intent — writing them to disk would fire legacy migrations.
+local user_config_loaded = false
+
 local ok, loaded_config = pcall(dofile, config_path)
 if ok and loaded_config then
     configuration = loaded_config
+    user_config_loaded = true
     logger.info("Loaded configuration from configuration.lua")
 else
     -- Distinguish "file doesn't exist" from "file exists but has errors"
@@ -1474,32 +1481,34 @@ function AskGPT:initSettings()
   end
   
   if not self.settings:has("features") then
-    local hll = configuration.features.hide_long_highlights
-    if hll == nil then hll = true end  -- schema default true; `or true` would swallow an explicit false
-    self.settings:saveSetting("features", {
-      hide_highlighted_text = configuration.features.hide_highlighted_text or false,
-      hide_long_highlights = hll,
-      long_highlight_threshold = configuration.features.long_highlight_threshold or 280,
-      translation_language = configuration.features.translation_language,
-      debug = configuration.features.debug or false,
-      show_debug_in_chat = false,  -- Whether to show debug in chat viewer (independent of console logging)
-      auto_save_all_chats = true,  -- Default to auto-save for new installs
-      auto_save_chats = true,      -- Default for continued chats
-      render_markdown = true,      -- Default to render markdown
-      enable_streaming = true,     -- Default to streaming for new installs
-      stream_auto_scroll = true,   -- Default to auto-scroll during streaming
-      stream_page_scroll = true,   -- Default to page-based scroll (e-ink friendly)
-      large_stream_dialog = true,  -- Default to full-screen streaming dialog
-      stream_display_interval = 250,  -- ms between display updates (performance tuning)
-      -- Behavior settings (new system v0.6+)
-      selected_behavior = "standard",  -- Behavior ID: "mini", "standard", "full", or custom ID
-      behavior_migrated = true,    -- Mark as already on new system
-      -- Fresh installs are NOT migration candidates: without this stamp the
-      -- tools_posture migration below fires on the very first launch (all its keys
-      -- are nil on a fresh table) and bakes "manual", making the schema default
-      -- "auto" unreachable for everyone (defaults sweep M5, 2026-07-25).
+    -- Seed ONLY what cannot come from read-through (defaults sweep D3, 2026-07-26):
+    -- migration markers, plus whatever the user pinned in a REAL configuration.lua.
+    -- Anything written here is materialized on disk forever, so a later schema
+    -- default change can never reach that install — the seed used to bake 14
+    -- schema-default-equal values and permanently froze them (finding F1).
+    -- configuration.lua overrides do NOT depend on this seed: updateConfigFromSettings
+    -- gap-fills them from config_file_defaults for any key absent from settings.
+    -- They are copied in anyway so the Settings menu displays the user's real value.
+    -- The user_config_loaded guard is load-bearing: without a configuration.lua,
+    -- config_file_defaults mirrors the built-in literal at the top of this file, whose
+    -- legacy `translate_to = "English"` would be seeded and then migrated into
+    -- translation_language — pinning English on every fresh install, in a key that
+    -- survives every reset preset.
+    local seed = {
+      -- Fresh installs are NOT migration candidates: without these stamps the
+      -- migrations below fire on the very first launch (all their keys are nil on a
+      -- fresh table). tools_posture would bake "manual", making the schema default
+      -- "auto" unreachable for everyone (defaults sweep M5, 2026-07-25); the behavior
+      -- migration would assign "full" instead of the "standard" default.
+      behavior_migrated = true,
       _tools_posture_migrated = true,
-    })
+    }
+    if user_config_loaded then
+      for k, v in pairs(config_file_defaults.features) do
+        seed[k] = v
+      end
+    end
+    self.settings:saveSetting("features", seed)
   end
 
   -- Migration for existing users: add new settings with defaults
@@ -1508,11 +1517,9 @@ function AskGPT:initSettings()
   if features then
     local needs_save = false
 
-    -- Add show_debug_in_chat if missing (separate from console debug)
-    if features.show_debug_in_chat == nil then
-      features.show_debug_in_chat = false
-      needs_save = true
-    end
+    -- (show_debug_in_chat is deliberately NOT backfilled — nil reads as "off"
+    -- everywhere it is consumed, and writing false here re-materialized the key for
+    -- every user on every launch, defeating read-through. Defaults sweep D3.)
 
     -- Migrate translate_to to translation_language
     if features.translate_to ~= nil then
@@ -1587,11 +1594,9 @@ function AskGPT:initSettings()
       logger.info("KOAssistant: Migrated translate_copy_translation_only to translate_copy_content")
     end
 
-    -- Ensure selected_behavior has a value
-    if not features.selected_behavior then
-      features.selected_behavior = "standard"
-      needs_save = true
-    end
+    -- (selected_behavior is deliberately NOT backfilled — every read site resolves
+    -- `features.selected_behavior or "standard"`, so writing it here only
+    -- re-materialized the key for every user on every launch. Defaults sweep D3.)
 
     -- ONE-TIME migration: old export directory options → new simplified options
     -- book_folder → exports_folder + checkbox
@@ -4296,7 +4301,9 @@ function AskGPT:buildDictionaryContextModeMenu()
       help_text = mode.help,
       checked_func = function()
         local f = self_ref.settings:readSetting("features") or {}
-        local current = f.dictionary_context_mode or "none"
+        -- Default must match BookSettings.resolveDictionaryContext (D1: "sentence"),
+        -- or the radio dot marks a mode the request isn't actually using.
+        local current = f.dictionary_context_mode or "sentence"
         return current == mode_copy
       end,
       radio = true,
@@ -10638,6 +10645,9 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
   -- The picker stays usable (it sets the defaults); we just annotate when N/A.
   local ModelConstraints = require("model_constraints")
   local web_search_supported = ModelConstraints.supportsWebSearch(provider, model)
+  -- Same annotate-don't-disable rule for temperature (item 19c): "rejected" models
+  -- have it stripped from the request, "forced" ones pin it to a fixed value.
+  local temp_mode = ModelConstraints.temperatureSupport(provider, model)
   local text_extraction = features.enable_book_text_extraction == true  -- Default false
 
   -- Get behavior display name (with source indicator)
@@ -10764,7 +10774,15 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
   }
 
   button_defs["temperature"] = {
-    text = E("\u{1F321}\u{FE0F}", T(_("Temp: %1"), string.format("%.1f", temp))),
+    text = (function()
+      local base = T(_("Temp: %1"), string.format("%.1f", temp))
+      if temp_mode == "rejected" then
+        base = base .. " \u{00B7} " .. T(_("N/A for %1"), model)
+      elseif temp_mode == "forced" then
+        base = base .. " \u{00B7} " .. T(_("fixed for %1"), model)
+      end
+      return E("\u{1F321}\u{FE0F}", base)
+    end)(),
     callback = function()
       opening_subdialog = true
       UIManager:close(dialog)
@@ -10783,6 +10801,15 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
           self_ref.settings:saveSetting("features", f)
           self_ref.settings:flush()
           self_ref:updateConfigFromSettings()
+          -- Saved as the global default, but say so if the ACTIVE model won't use it
+          if temp_mode ~= "free" then
+            UIManager:show(Notification:new{
+              text = temp_mode == "rejected"
+                and T(_("Saved as default. %1 ignores temperature."), model)
+                or T(_("Saved as default. %1 uses a fixed temperature."), model),
+              timeout = 3,
+            })
+          end
           reopenQuickSettings()
         end,
       }

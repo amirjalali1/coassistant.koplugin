@@ -385,9 +385,11 @@ end
 --- Content tiers:
 ---   - response: Just the AI response
 ---   - qa: Highlighted text + user input (if any) + response
----   - full_qa: Same as qa (no book info - notebooks are book-specific)
+---   - full_qa: qa plus anything the reader attached via the Attach chip
+---     (no book info — notebooks are book-specific)
 ---
---- @param data table Entry data: action_name, highlighted_text, follow_up, response, model_name
+--- @param data table Entry data: action_name, highlighted_text, follow_up, response,
+---   model_name, attachments
 --- @param page_info table Page info from getPageInfo()
 --- @param content_format string "response" | "qa" | "full_qa" (default: "full_qa", the schema default)
 --- @return string entry The formatted markdown entry
@@ -431,6 +433,16 @@ function Notebook.formatEntry(data, page_info, content_format)
         local quoted_text = "> " .. data.highlighted_text:gsub("\n", "\n> ")
         table.insert(parts, quoted_text)
         table.insert(parts, "")
+    end
+
+    -- Anything the reader attached via the Attach chip (full_qa only — this is the
+    -- one thing that makes full_qa differ from qa)
+    if content_format == "full_qa" and data.attachments and #data.attachments > 0 then
+        table.insert(parts, "**Attached:**")
+        for _idx, attachment in ipairs(data.attachments) do
+            table.insert(parts, attachment)
+            table.insert(parts, "")
+        end
     end
 
     -- User's additional input (only if provided)
@@ -589,14 +601,25 @@ function Notebook.saveChat(document_path, history, highlighted_text, ui, content
     --   2. Display user message (is_context=false, optional): Just the raw additional input (if any)
     --   3. Assistant message: The AI response
     -- We need to get [Additional user input] from the FIRST (context) user message
+    -- Attachments (Attach chip) ride as their OWN is_context messages after the
+    -- context message — those are the "context messages" (plural) the full_qa
+    -- setting promises, and they used to be dropped on the floor here.
+    -- Scoped to the FIRST exchange, matching where context_user_message (and so the
+    -- rendered follow_up) comes from. A multi-turn chat saves as first-question +
+    -- last-answer, so pooling attachments from every round would print a later
+    -- round's attachment next to the first round's question.
     local messages = history:getMessages() or {}
     local context_user_message, response = nil, nil
+    local attachments = {}
 
     for _idx, msg in ipairs(messages) do
         if msg.role == "user" then
             -- Get the FIRST user message (context one) which contains [Additional user input]
             if not context_user_message then
                 context_user_message = msg.content
+            elseif msg.is_context and msg.content and msg.content ~= ""
+                and not response then
+                table.insert(attachments, msg.content)
             end
         elseif msg.role == "assistant" then
             -- Get the last assistant response
@@ -637,6 +660,7 @@ function Notebook.saveChat(document_path, history, highlighted_text, ui, content
         action_name = history.prompt_action,
         highlighted_text = actual_highlighted,
         model_name = model_name,
+        attachments = attachments,
     }, page_info, content_format)
 
     return Notebook.append(notebook_path, entry)

@@ -126,6 +126,22 @@ local SettingsSchema = {
             step = 0.1,
             precision = "%.1f",
             info_text = _("Range: 0.0-2.0 (Anthropic max 1.0)\nLower = focused, deterministic\nHigher = creative, varied"),
+            -- Item 19c: a growing share of models ignore or pin temperature. Annotate
+            -- rather than disable — this is a GLOBAL default that still applies to every
+            -- other model the reader switches to (same rule as the QS web-search tile).
+            suffix_func = function(plugin)
+                local f = plugin.settings:readSetting("features") or {}
+                local mode = ModelConstraints.temperatureSupport(
+                    f.provider or "anthropic", plugin:getCurrentModel())
+                if mode == "rejected" then return _("ignored by this model") end
+                if mode == "forced" then return _("fixed by this model") end
+                return nil
+            end,
+            -- Static on purpose: settings_manager evaluates help_text ONCE at menu-build
+            -- time, so a model-specific string would go stale after switching models via
+            -- the Model row without leaving the menu. The live per-model state rides on
+            -- suffix_func above, which is re-evaluated on every render.
+            help_text = _("Applies to free-form chat — most built-in actions set their own temperature.\nSome models ignore this setting or accept only a fixed value; the row says so when the current model is one of them."),
             separator = true,
         },
         -- Display Settings submenu
@@ -1052,7 +1068,8 @@ local SettingsSchema = {
                     type = "submenu",
                     text_func = function(plugin)
                         local f = plugin.settings:readSetting("features") or {}
-                        local mode = f.dictionary_context_mode or "none"
+                        -- Must match BookSettings.resolveDictionaryContext (D1: "sentence")
+                        local mode = f.dictionary_context_mode or "sentence"
                         local labels = {
                             sentence = _("Sentence"),
                             paragraph = _("Paragraph"),
@@ -1489,7 +1506,7 @@ local SettingsSchema = {
                         { value = "qa", label = _("Q&A") },
                         { value = "full_qa", label = _("Full Q&A (recommended)") },
                     },
-                    help_text = _("What to include when saving to notebook.\nFull Q&A includes all context messages + highlighted text + question + response."),
+                    help_text = _("What to include when saving to notebook.\nQ&A includes the highlighted text + your question + the response. Full Q&A adds anything you attached with the paperclip (notes, artifacts, chats, files)."),
                 },
                 {
                     id = "notebook_viewer",

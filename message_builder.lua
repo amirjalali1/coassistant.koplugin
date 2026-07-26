@@ -202,7 +202,12 @@ function MessageBuilder.build(params)
     if data.dictionary_language then
         user_prompt = replace_placeholder(user_prompt, "{dictionary_language}", data.dictionary_language)
     end
-    if data.dictionary_context_mode == "none" then
+    -- Strip when context is switched off OR simply unavailable. The empty/nil case
+    -- matters since the dictionary default became "sentence" (D1): the substitute
+    -- branch below would otherwise leave a dangling "In context:" label with nothing
+    -- after it, and a nil context would leave the raw {context} placeholder in the
+    -- prompt. The {context_section} form is already guarded the same way.
+    if data.dictionary_context_mode == "none" or not data.context or data.context == "" then
         -- Context explicitly disabled: strip lines with {context} and "In context" markers
         local lines = {}
         for line in (user_prompt .. "\n"):gmatch("([^\n]*)\n") do
@@ -216,7 +221,7 @@ function MessageBuilder.build(params)
             table.remove(lines)
         end
         user_prompt = table.concat(lines, "\n")
-    elseif data.context then
+    else
         user_prompt = replace_placeholder(user_prompt, "{context}", data.context)
     end
 

@@ -2054,6 +2054,47 @@ local function runDictionaryContextTests()
         TestRunner:assertContains(result, "Define word")
         TestRunner:assertContains(result, "Make it simple")
     end)
+
+    -- D1 made "sentence" the default mode, so the non-"none" branch is now the one
+    -- reached when no context was actually extracted. It must strip, not substitute.
+    TestRunner:test("empty context strips the line instead of leaving a dangling label", function()
+        local result = MessageBuilder.build({
+            prompt = { prompt = "Define word.\nIn context: {context}\nMake it simple." },
+            context = "highlight",
+            data = {
+                context = "",
+                dictionary_context_mode = "sentence",
+            },
+        })
+        TestRunner:assertNotContains(result, "{context}")
+        TestRunner:assertNotContains(result, "In context")
+        TestRunner:assertContains(result, "Define word")
+        TestRunner:assertContains(result, "Make it simple")
+    end)
+
+    TestRunner:test("nil context does not leak the raw {context} placeholder", function()
+        local result = MessageBuilder.build({
+            prompt = { prompt = "Define word.\nIn context: {context}\nMake it simple." },
+            context = "highlight",
+            data = {
+                dictionary_context_mode = "sentence",
+            },
+        })
+        TestRunner:assertNotContains(result, "{context}")
+        TestRunner:assertContains(result, "Define word")
+    end)
+
+    TestRunner:test("non-empty context still substitutes under the sentence default", function()
+        local result = MessageBuilder.build({
+            prompt = { prompt = "Define word.\nIn context: {context}" },
+            context = "highlight",
+            data = {
+                context = "the surrounding sentence",
+                dictionary_context_mode = "sentence",
+            },
+        })
+        TestRunner:assertContains(result, "In context: the surrounding sentence")
+    end)
 end
 
 -- =============================================================================

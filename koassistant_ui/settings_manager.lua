@@ -282,6 +282,8 @@ function SettingsManager:createMenuItem(plugin, item, schema)
 
     elseif item.type == "spinner" then
         -- Spinner widget for numbers (like Temperature, Thinking Budget)
+        -- This branch owns text_func (a schema-declared one would be clobbered), so a
+        -- spinner that needs a live annotation declares `suffix_func` instead.
         menu_item.text_func = function()
             local value = self:getSettingValue(plugin, item.path or item.id) or item.default
             local formatted
@@ -290,7 +292,12 @@ function SettingsManager:createMenuItem(plugin, item, schema)
             else
                 formatted = tostring(value)
             end
-            return T(item.text .. ": %1", formatted)
+            local label = T(item.text .. ": %1", formatted)
+            local suffix = item.suffix_func and item.suffix_func(plugin)
+            if suffix and suffix ~= "" then
+                label = label .. " • " .. suffix
+            end
+            return label
         end
         menu_item.callback = function(touchmenu_instance)
             local SpinWidget = require("ui/widget/spinwidget")

@@ -840,15 +840,22 @@ TestRunner:test("resolveHighlightContext: per-book override > global > none", fu
         "sentence", "unknown stored value falls through to global")
 end)
 
-TestRunner:test("resolveDictionaryContext: per-book override > global > none", function()
+TestRunner:test("resolveDictionaryContext: per-book override > global > sentence", function()
     local ds = fakeDocSettings({ [BookSettings.KEY_DICTIONARY_CONTEXT] = "characters" })
     TestRunner:assertEqual(BookSettings.resolveDictionaryContext(ds, { dictionary_context_mode = "none" }),
         "characters", "per-book wins over global")
+    ds = fakeDocSettings({ [BookSettings.KEY_DICTIONARY_CONTEXT] = "none" })
+    TestRunner:assertEqual(BookSettings.resolveDictionaryContext(ds, { dictionary_context_mode = "sentence" }),
+        "none", "per-book none silences a global mode")
     ds = fakeDocSettings({})
     TestRunner:assertEqual(BookSettings.resolveDictionaryContext(ds, { dictionary_context_mode = "paragraph" }),
         "paragraph", "no override → global")
+    TestRunner:assertEqual(BookSettings.resolveDictionaryContext(ds, { dictionary_context_mode = "none" }),
+        "none", "explicit global none is honored")
     TestRunner:assertEqual(BookSettings.resolveDictionaryContext(ds, {}),
-        "none", "nothing set → none (matches schema default)")
+        "sentence", "nothing set → sentence (defaults sweep D1)")
+    TestRunner:assertEqual(BookSettings.resolveDictionaryContext(nil, nil),
+        "sentence", "nil-safe")
 end)
 
 TestRunner:suite("D3 smart retrieval — {document_context_section} (tools_ux_plan.md §4)")

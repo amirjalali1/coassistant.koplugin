@@ -113,6 +113,114 @@ local function runFormatSnippetTests()
         sep:sub(1, 6) == "\n---\n\n" and sep:sub(-1) == "\n", sep)
 end
 
+-- Defaults sweep D13: full_qa used to be byte-identical to qa even though the
+-- setting promised "all context messages". Attach-chip attachments are what makes
+-- it differ — these lock that in so it can't silently collapse back.
+local function runFormatEntryTests()
+    print("\n--- formatEntry content tiers (D13) ---")
+
+    local PAGE = { timestamp = TS, page = 12 }
+    local data = {
+        action_name = "Explain",
+        highlighted_text = "the selected phrase",
+        follow_up = "why does this matter?",
+        response = "Because of X.",
+        attachments = { "[Note from the reader]\nvillain's motive is revenge" },
+    }
+
+    local full = Notebook.formatEntry(data, PAGE, "full_qa")
+    check("full_qa renders an Attached section",
+        full:find("**Attached:**", 1, true) ~= nil, full)
+    check("full_qa includes the attachment text",
+        full:find("villain's motive is revenge", 1, true) ~= nil, full)
+    check("full_qa still has highlight, question and response",
+        full:find("the selected phrase", 1, true) and full:find("why does this matter?", 1, true)
+        and full:find("Because of X.", 1, true), full)
+
+    local qa = Notebook.formatEntry(data, PAGE, "qa")
+    check("qa does NOT render attachments",
+        qa:find("**Attached:**", 1, true) == nil
+        and qa:find("villain's motive", 1, true) == nil, qa)
+    check("qa keeps highlight + question + response",
+        qa:find("the selected phrase", 1, true) and qa:find("why does this matter?", 1, true)
+        and qa:find("Because of X.", 1, true), qa)
+
+    local response_only = Notebook.formatEntry(data, PAGE, "response")
+    check("response tier drops attachments, highlight and question",
+        response_only:find("**Attached:**", 1, true) == nil
+        and response_only:find("the selected phrase", 1, true) == nil
+        and response_only:find("why does this matter?", 1, true) == nil
+        and response_only:find("Because of X.", 1, true) ~= nil, response_only)
+
+    -- The common case: nothing attached. full_qa must stay identical to qa.
+    local bare = {
+        action_name = "Explain",
+        highlighted_text = "the selected phrase",
+        follow_up = "why?",
+        response = "Because.",
+    }
+    check("with no attachments, full_qa == qa (no stray heading)",
+        Notebook.formatEntry(bare, PAGE, "full_qa") == Notebook.formatEntry(bare, PAGE, "qa"))
+
+    check("empty attachments table is treated as none",
+        Notebook.formatEntry({ response = "R", attachments = {} }, PAGE, "full_qa")
+            :find("**Attached:**", 1, true) == nil)
+end
+
+-- saveChat renders a multi-turn chat as first-question + last-answer, so attachments
+-- must be scoped to the first exchange or a later round's attachment would be printed
+-- next to an unrelated question (review finding, 2026-07-26).
+local function runSaveChatScopeTests()
+    print("\n--- saveChat attachment scoping (D13) ---")
+
+    local function fakeHistory(messages)
+        return { prompt_action = "Explain", getMessages = function() return messages end }
+    end
+
+    local captured
+    local orig_format = Notebook.formatEntry
+    Notebook.formatEntry = function(data, ...) captured = data; return orig_format(data, ...) end
+
+    -- getPageInfo falls back to ReaderUI.instance when no ui is passed
+    local orig_readerui = package.loaded["apps/reader/readerui"]
+    package.loaded["apps/reader/readerui"] = { instance = nil }
+
+    local tmpdir = "/tmp/koassistant_savechat_test_" .. tostring(os.time())
+    os.execute("mkdir -p '" .. tmpdir .. "'")
+    local doc_path = "/tmp/books/scope_book.epub"
+    Notebook.init({ readSetting = function(_, key)
+        if key == "features" then
+            return { notebook_save_location = "custom", notebook_custom_path = tmpdir }
+        end
+    end })
+    grs_store["koassistant_notebook_index"] = { [doc_path] = { filename = "Scope Book.md" } }
+    local f = assert(io.open(tmpdir .. "/Scope Book.md", "w"))
+    f:write("# Notebook: Scope Book\n")
+    f:close()
+
+    -- Round 1 attaches a note; round 2 attaches a different one after the first answer.
+    Notebook.saveChat(doc_path, fakeHistory({
+        { role = "user", content = "[Context] ctx", is_context = true },
+        { role = "user", content = "ATTACH-ROUND-1", is_context = true },
+        { role = "user", content = "question 1", is_context = false },
+        { role = "assistant", content = "answer 1" },
+        { role = "user", content = "ATTACH-ROUND-2", is_context = true },
+        { role = "user", content = "question 2", is_context = false },
+        { role = "assistant", content = "answer 2" },
+    }), nil, nil, "full_qa", "test-model")
+
+    local joined = table.concat(captured.attachments or {}, "|")
+    check("first-round attachment is kept", joined:find("ATTACH-ROUND-1", 1, true) ~= nil, joined)
+    check("later-round attachment is NOT pooled in",
+        joined:find("ATTACH-ROUND-2", 1, true) == nil, joined)
+
+    Notebook.formatEntry = orig_format
+    package.loaded["apps/reader/readerui"] = orig_readerui
+    Notebook.init(nil)
+    grs_store["koassistant_notebook_index"] = nil
+    os.execute("rm -rf '" .. tmpdir .. "'")
+end
+
 local function runGuardTests()
     print("\n--- appendSnippet guards ---")
 
@@ -187,6 +295,8 @@ end
 local function runAll()
     print("=== test_notebook_snippet ===")
     runFormatSnippetTests()
+    runFormatEntryTests()
+    runSaveChatScopeTests()
     runGuardTests()
     runRoundTripTests()
     teardown()

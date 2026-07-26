@@ -1264,5 +1264,49 @@ TestRunner:test("Session off on a can't-disable model clamps to lowest (Gemini 3
     end
 end)
 
+--------------------------------------------------------------------------------
+
+TestRunner:suite("temperatureSupport (item 19c)")
+
+TestRunner:test("no_sampling_params models report rejected", function()
+    TestRunner:assertEqual(ModelConstraints.temperatureSupport("anthropic", "claude-opus-5"),
+        "rejected", "opus 5 has temperature stripped")
+    TestRunner:assertEqual(ModelConstraints.temperatureSupport("anthropic", "claude-fable-5"),
+        "rejected", "fable 5 has temperature stripped")
+    TestRunner:assertEqual(
+        ModelConstraints.temperatureSupport("anthropic", "claude-opus-4-8-20260115"),
+        "rejected", "prefix-matches dated ids")
+end)
+
+TestRunner:test("curated temperature constraints report forced with the pinned value", function()
+    local mode, info = ModelConstraints.temperatureSupport("openai", "gpt-5.5")
+    TestRunner:assertEqual(mode, "forced", "gpt-5.5 is pinned")
+    TestRunner:assertEqual(info.value, 1.0, "pinned to 1.0")
+end)
+
+TestRunner:test("ordinary models are free, and carry the provider ceiling", function()
+    local mode, info = ModelConstraints.temperatureSupport("anthropic", "claude-sonnet-4-6")
+    TestRunner:assertEqual(mode, "free", "sonnet 4.6 honours temperature")
+    TestRunner:assertEqual(info.max, 1.0, "anthropic provider max reported")
+    TestRunner:assertEqual(ModelConstraints.temperatureSupport("openai", "gpt-4o"),
+        "free", "gpt-4o honours temperature")
+end)
+
+TestRunner:test("needs_temp_1 is reported as a note, NOT a rejection", function()
+    -- These models honour temperature whenever reasoning is off — gating the UI on
+    -- needs_temp_1 would wrongly disable the control for them.
+    local mode, info = ModelConstraints.temperatureSupport("anthropic", "claude-sonnet-4-6")
+    TestRunner:assertEqual(mode, "free", "still free")
+    TestRunner:assertTrue(info.temp_1_when_reasoning, "flagged as conditional")
+end)
+
+TestRunner:test("unknown and custom models default to free, and nil args are safe", function()
+    TestRunner:assertEqual(ModelConstraints.temperatureSupport("openai", "totally-unknown-model"),
+        "free", "unknown model must not be reported as rejecting")
+    TestRunner:assertEqual(ModelConstraints.temperatureSupport("custom_lmstudio", "local-model"),
+        "free", "custom provider defaults to free")
+    TestRunner:assertEqual(ModelConstraints.temperatureSupport(nil, nil), "free", "nil-safe")
+end)
+
 -- Summary
 return TestRunner:summary()

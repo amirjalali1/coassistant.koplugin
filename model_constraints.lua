@@ -774,6 +774,22 @@ local DERIVED_PARAM_FOR_CAP = {
     tools = "tools",
 }
 
+--- The curated per-model constraint table for a provider (prefix-matched), e.g.
+--- ModelConstraints.openai["gpt-5.6"] = { temperature = 1.0 }. Shared by apply()
+--- and temperatureSupport() so the UI can never disagree with the wire.
+--- @return table|nil
+local function curatedConstraints(provider, model)
+    if not provider or not model then return nil end
+    for constraint_model, constraints in pairs(ModelConstraints[provider] or {}) do
+        -- Skip special keys starting with _
+        if type(constraint_model) == "string" and not constraint_model:match("^_")
+            and prefixMatch(model, constraint_model) then
+            return constraints
+        end
+    end
+    return nil
+end
+
 --- Check if a model supports a specific capability
 --- Resolution: user override (grant/deny) → curated lists → derived metadata.
 --- @param provider string: Provider name (e.g., "anthropic", "openai")
@@ -813,6 +829,51 @@ function ModelConstraints.getProviderCapabilities(provider)
     return ModelConstraints.capabilities[provider] or {}
 end
 
+--- How does this provider/model treat a user-set temperature? (item 19c)
+--- Built entirely on data that ALREADY drives the wire — the `no_sampling_params`
+--- capability (which anthropic_request.lua consults before deleting temperature) and
+--- the curated/user constraint tables apply() enforces — so the UI cannot drift from
+--- what actually gets sent. Deliberately NOT a `supportsCapability` capability:
+--- that returns false on a miss, and "honors temperature" must default to true.
+---
+--- STATIC per (provider, model). The reasoning-conditional temp=1.0 rule is reported
+--- separately as info.temp_1_when_reasoning and must not be treated as a rejection:
+--- those models honor temperature whenever reasoning is off.
+---
+--- KNOWN GAP: apply() runs only for openai and anthropic (openai_compatible.lua calls
+--- clampMaxTokens only), so a temperature constraint declared in custom_models.lua for
+--- some OTHER provider is reported "forced" here but never actually applied to the
+--- request. That is a hole in the apply path, not in this predicate — reporting the
+--- declared data is the honest answer, and special-casing providers here would just
+--- move the inconsistency somewhere harder to find.
+--- @param provider string|nil
+--- @param model string|nil
+--- @return string mode  "rejected" (stripped) | "forced" (pinned) | "free"
+--- @return table info   { value = number|nil, max = number|nil, temp_1_when_reasoning = boolean }
+function ModelConstraints.temperatureSupport(provider, model)
+    local info = { temp_1_when_reasoning = false }
+    if not provider or not model then return "free", info end
+
+    if ModelConstraints.supportsCapability(provider, model, "no_sampling_params") then
+        return "rejected", info
+    end
+
+    -- User constraints win over curated ones (apply() writes them last)
+    local user = ModelOverrides.constraintsFor(provider, model)
+    local curated = curatedConstraints(provider, model)
+    local pinned = (user and user.temperature) or (curated and curated.temperature)
+    if pinned ~= nil then
+        info.value = pinned
+        return "forced", info
+    end
+
+    local provider_constraints = ModelConstraints[provider]
+    info.max = provider_constraints and provider_constraints._provider_max_temperature or nil
+    local profile = ModelConstraints.getReasoningProfile(provider, model)
+    info.temp_1_when_reasoning = (profile and profile.needs_temp_1) == true
+    return "free", info
+end
+
 --- Apply model constraints to request parameters
 --- @param provider string: Provider name (e.g., "openai", "anthropic")
 --- @param model string: Model name (e.g., "gpt-5-mini")
@@ -825,19 +886,9 @@ function ModelConstraints.apply(provider, model, params)
     -- Check provider-level constraints
     local provider_constraints = ModelConstraints[provider]
 
-    -- Check model-specific constraints (prefix match for versioned models)
+    -- Model-specific constraints (prefix match for versioned models)
     -- e.g., "o3-mini" matches "o3-mini", "o3-mini-high", "o3-mini-2025-01-31"
-    local model_constraints = nil
-    for constraint_model, constraints in pairs(provider_constraints or {}) do
-        -- Skip special keys starting with _
-        if type(constraint_model) == "string" and not constraint_model:match("^_") then
-            -- Check for exact match or prefix match
-            if model == constraint_model or model:match("^" .. constraint_model:gsub("%-", "%%-")) then
-                model_constraints = constraints
-                break
-            end
-        end
-    end
+    local model_constraints = curatedConstraints(provider, model)
 
     if model_constraints then
         for param, required_value in pairs(model_constraints) do

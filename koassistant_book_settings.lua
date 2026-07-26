@@ -197,15 +197,22 @@ function BookSettings.resolveHighlightContext(doc_settings, features)
 end
 
 --- Resolve the effective dictionary-context mode (the {context_section} channel):
--- per-book override > global dictionary_context_mode > "none" (matches the schema
--- default). Pure.
+-- per-book override > global dictionary_context_mode > "sentence". Pure.
+-- The default lives here rather than in the schema (the settings entry is a submenu
+-- with no `path`, so applyDefaults drops the key on reset and this literal IS the
+-- post-reset default). Three other sites hardcode it for display — main.lua's radio
+-- checked_func, the schema submenu's text_func, and the "Follow global" label below;
+-- all four must move together or Settings will show a mode it isn't sending.
+-- Flipped "none" -> "sentence" by defaults sweep D1 (2026-07-26): the sentence is
+-- already extracted on every dictionary path, it was just withheld until the reader
+-- pressed Ctx. The Ctx button stays as the per-lookup toggle, now turn-it-OFF.
 -- @return "none" | "sentence" | "paragraph" | "characters"
 function BookSettings.resolveDictionaryContext(doc_settings, features)
     local per_book = doc_settings and doc_settings:readSetting(BookSettings.KEY_DICTIONARY_CONTEXT)
     if VALID_CONTEXT_MODES[per_book] then return per_book end
     local global = features and features.dictionary_context_mode
     if VALID_CONTEXT_MODES[global] then return global end
-    return "none"
+    return "sentence"
 end
 
 --- Translated label for a context-mode value (Book Settings rows + pickers).
@@ -1671,7 +1678,7 @@ function BookSettings.show(opts)
     addButton({ text = T(_("Dictionary context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_DICTIONARY_CONTEXT))),
         callback = function()
             showContextModeSubPicker(BookSettings.KEY_DICTIONARY_CONTEXT,
-                _("Dictionary context (this book)"), features.dictionary_context_mode or "none")
+                _("Dictionary context (this book)"), features.dictionary_context_mode or "sentence")
         end })
     addHeader(_("Identity"))
     addButton({ text = T(_("AI title: %1"), overrideLabel(title_ov)),
