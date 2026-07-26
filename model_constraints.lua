@@ -980,6 +980,10 @@ function ModelConstraints.clampMaxTokens(provider, model, value)
     return value
 end
 
+-- Leading text of the Gemini-3 grounding tip. Shared so the generic rate-limit tip can
+-- detect it and stay quiet — one error should never carry two tips saying the same thing.
+local GROUNDING_TIP_HEAD = "Tip: This is a Google quota limit"
+
 --- Append an actionable tip when a Gemini-3 grounded (web-search) request fails with a
 --- 429/quota error. Gemini-3 grounding uses a separate monthly quota shared across all
 --- Gemini-3 models, independent of 2.5's daily quota, so it can be exhausted while 2.5
@@ -1011,7 +1015,7 @@ function ModelConstraints.maybeAppendGemini3GroundingHint(err_msg, provider, mod
         return err_msg
     end
     return err_msg .. "\n\n" ..
-        "Tip: This is a Google quota limit, not a plugin error. Gemini 3 grounding can hit a " ..
+        GROUNDING_TIP_HEAD .. ", not a plugin error. Gemini 3 grounding can hit a " ..
         "free-tier limit of 0 even with billing attached, when your project's paid tier isn't " ..
         "provisioned for it. Workarounds: use a Gemini 2.5 model for web search, switch to " ..
         "Anthropic/Perplexity/OpenRouter, or enable paid-tier quota for Gemini 3 in Google AI Studio."
@@ -1057,6 +1061,150 @@ function ModelConstraints.maybeAppendContextLimitHint(err_msg, provider, model, 
             "A paid Groq tier or a larger-context provider avoids this."
     end
     return err_msg .. "\n\n" .. tip
+end
+
+--- Turn one google.rpc.QuotaFailure violation into a plain-language line.
+--- quotaId is a CamelCase token ("GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+--- "GenerateContentInputTokensPerModelPerMinute-FreeTier"); decode the parts we can and
+--- otherwise print it verbatim — a raw id the user can search for still beats no id.
+--- @param v table: one entry of details[].violations
+--- @return string|nil
+local function describeQuotaViolation(v)
+    local id = type(v.quotaId) == "string" and v.quotaId ~= "" and v.quotaId or nil
+    local value = (type(v.quotaValue) == "string" or type(v.quotaValue) == "number")
+        and tostring(v.quotaValue) or nil
+    if not id and not value then return nil end
+
+    local unit = id and ((id:find("InputToken") and "input tokens")
+        or (id:find("Request") and "requests")) or nil
+    local period = id and ((id:find("PerDay") and "per day")
+        or (id:find("PerMinute") and "per minute")) or nil
+    local tier = (id and id:find("FreeTier")) and " (free tier)" or ""
+
+    local line
+    if value and unit and period then
+        line = "Limit reached: " .. value .. " " .. unit .. " " .. period .. tier
+    elseif value and id then
+        line = "Limit reached: " .. id .. " = " .. value
+    else
+        line = "Limit reached: " .. (id or value)
+    end
+
+    local dims = type(v.quotaDimensions) == "table" and v.quotaDimensions or nil
+    local dim_model = dims and type(dims.model) == "string" and dims.model ~= "" and dims.model or nil
+    if dim_model then
+        line = line .. ", model " .. dim_model
+    end
+    return line .. "."
+end
+
+--- Extract the machine-readable quota facts from a Google-style error body.
+--- A 429 body carries a details[] array — google.rpc.QuotaFailure violations (quotaId,
+--- quotaValue, quotaDimensions.model) and google.rpc.RetryInfo (retryDelay) — naming the
+--- EXACT bucket that was hit: per-day vs per-minute, requests vs input tokens, free tier
+--- vs paid. error.message only ever says "You exceeded your current quota, please check
+--- your plan and billing details", so on its own it can't distinguish a 30-second speed
+--- bump from a 24-hour wall — or either from a plugin bug. We used to drop the array.
+--- Shape-gated, not provider-gated: any backend answering in google.rpc form gets it.
+--- Every field is type-checked — luajson decodes JSON null to a truthy sentinel.
+--- @param decoded table|nil: decoded error response body
+--- @return string|nil: lines to append to the user-facing message, nil if none
+function ModelConstraints.formatQuotaDetails(decoded)
+    if type(decoded) ~= "table" then return nil end
+    local err = type(decoded.error) == "table" and decoded.error or nil
+    local details = err and type(err.details) == "table" and err.details or nil
+    if not details then return nil end
+
+    local lines = {}
+    for _idx, d in ipairs(details) do
+        if type(d) == "table" then
+            if type(d.violations) == "table" then
+                for _vidx, v in ipairs(d.violations) do
+                    if type(v) == "table" then
+                        local line = describeQuotaViolation(v)
+                        if line then table.insert(lines, line) end
+                    end
+                end
+            end
+            if type(d.retryDelay) == "string" and d.retryDelay ~= "" then
+                table.insert(lines, "You can retry in " .. d.retryDelay .. ".")
+            end
+        end
+    end
+    if #lines == 0 then return nil end
+    return table.concat(lines, "\n")
+end
+
+--- True when an error message looks like a provider rate/quota refusal (HTTP 429 in its
+--- various wordings). Used for the tip below and to decide whether offering a retry at
+--- the display sites makes sense — rate limits are the one failure class where "try
+--- again" is the correct response.
+--- @param err_msg string|nil
+--- @return boolean
+function ModelConstraints.isRateLimitError(err_msg)
+    if type(err_msg) ~= "string" then return false end
+    local l = err_msg:lower()
+    return (l:find("429", 1, true)
+        or l:find("resource_exhausted", 1, true)
+        or l:find("quota", 1, true)
+        or l:find("rate limit", 1, true)
+        or l:find("rate_limit", 1, true)
+        or l:find("too many requests", 1, true)) and true or false
+end
+
+--- Append a provider-neutral explanation of what a 429 actually means. Free-tier
+--- allowances are counted PER MODEL, and per minute as well as per day — the part users
+--- can't infer from "quota exceeded for your plan": the same key answers one action and
+--- refuses the next, and picking a different model looks like it fixed the plugin.
+--- Skipped when the more specific grounding tip already fired.
+--- @param err_msg string: user-facing error message already built
+--- @param provider string|nil: provider id
+--- @param model string|nil: model id (unused; kept for signature parity with the other hints)
+--- @param config table|nil: unified request config (unused; parity)
+--- @return string
+function ModelConstraints.maybeAppendRateLimitHint(err_msg, provider, model, config)
+    if type(err_msg) ~= "string" or err_msg == "" then return err_msg end
+    if not ModelConstraints.isRateLimitError(err_msg) then return err_msg end
+    if err_msg:find(GROUNDING_TIP_HEAD, 1, true) then return err_msg end
+    local who = (type(provider) == "string" and provider ~= "") and provider or "the provider"
+    return err_msg .. "\n\n" ..
+        "Tip: this is " .. who .. "'s own rate limit, not a plugin error. These allowances are " ..
+        "counted per model, and per minute as well as per day, so one API key can answer a " ..
+        "request and refuse the next, and switching model can look like a fix. " ..
+        "Options: wait and try again, pick a different model, or switch provider."
+end
+
+--- Prefix an API failure with the provider/model it came from. Failures used to arrive
+--- context-free ("You exceeded your current quota"), so a user on a per-model limit
+--- couldn't see WHICH model refused — the most common source of "is it me or the
+--- plugin?" reports. No-ops when the prefix is already present (retries) or when there
+--- is no provider to name.
+--- @param err_msg string
+--- @param provider string|nil
+--- @param model string|nil
+--- @return string
+function ModelConstraints.prefixProviderModel(err_msg, provider, model)
+    if type(err_msg) ~= "string" or err_msg == "" then return err_msg end
+    if type(provider) ~= "string" or provider == "" then return err_msg end
+    local label = (type(model) == "string" and model ~= "") and (provider .. "/" .. model) or provider
+    if err_msg:sub(1, #label + 1) == label .. ":" then return err_msg end
+    return label .. ": " .. err_msg
+end
+
+--- Single decoration point for API request failures: name the model, then append
+--- whichever hints apply. The query sites call this instead of nesting maybeAppend*
+--- calls, so a new hint is wired in one place.
+--- @param err_msg string
+--- @param provider string|nil
+--- @param model string|nil
+--- @param config table|nil: unified request config
+--- @return string
+function ModelConstraints.decorateRequestError(err_msg, provider, model, config)
+    local out = ModelConstraints.prefixProviderModel(err_msg, provider, model)
+    out = ModelConstraints.maybeAppendGemini3GroundingHint(out, provider, model, config)
+    out = ModelConstraints.maybeAppendRateLimitHint(out, provider, model, config)
+    out = ModelConstraints.maybeAppendContextLimitHint(out, provider, model, config)
+    return out
 end
 
 --------------------------------------------------------------------------------

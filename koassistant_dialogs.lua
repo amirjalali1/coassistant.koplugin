@@ -165,6 +165,52 @@ local function closeLoadingDialog()
     end
 end
 
+-- ButtonDialog sizes its title to the text with no max-height clamp, so a long message
+-- would run off a small e-ink screen (InfoMessage instead shrinks the font to fit 95% of
+-- the screen). Past this length we keep the toast and lose the retry button rather than
+-- render a clipped, unreadable dialog. Sized for the worst realistic decorated 429
+-- (provider message + quota facts + retry delay + tip) on a 600x800 device.
+local ERROR_DIALOG_MAX_CHARS = 700
+
+--- Show a failed request. Rate/quota refusals get a persistent dialog with a retry
+--- button instead of the usual 3-second toast: they are the one failure class where
+--- trying again is the correct response (a per-minute limit recovers in seconds, and
+--- the message now says how long to wait), and a toast that vanishes leaves the reader
+--- with nothing to act on. Every other error keeps the toast — making all of them
+--- unmissable would be worse. `retry_fn` is optional; without one this is just a toast.
+--- @param err_text string: message to display (already decorated by ModelConstraints)
+--- @param retry_fn function|nil: re-runs the same request
+--- @param timeout number|nil: toast timeout in seconds (default 3; ignored by the dialog)
+local function showRequestError(err_text, retry_fn, timeout)
+    if retry_fn and type(err_text) == "string" and #err_text <= ERROR_DIALOG_MAX_CHARS
+            and ModelConstraints.isRateLimitError(err_text) then
+        local dialog
+        dialog = ButtonDialog:new{
+            title = err_text,
+            title_align = "left",
+            buttons = {{
+                {
+                    text = _("Close"),
+                    callback = function() UIManager:close(dialog) end,
+                },
+                {
+                    text = _("Try again"),
+                    callback = function()
+                        UIManager:close(dialog)
+                        retry_fn()
+                    end,
+                },
+            }},
+        }
+        UIManager:show(dialog)
+        return
+    end
+    UIManager:show(InfoMessage:new{
+        text = err_text,
+        timeout = timeout or 3,
+    })
+end
+
 -- Helper function to determine prompt context
 local function getPromptContext(config)
     if config and config.features then
@@ -7314,10 +7360,13 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             if recoverable then
                                 err_text = err_text .. "\n\n" .. _("Your typed input was saved. Reopen this dialog and tap the gear \u{2699}, then \"Restore last input\".")
                             end
-                            UIManager:show(InfoMessage:new{
-                                text = err_text,
-                                timeout = recoverable and 6 or 3,
-                            })
+                            -- Rate-limit retry: nothing was appended to this history on
+                            -- failure, so re-issuing is the same call (the query layer
+                            -- shows its own loading dialog).
+                            showRequestError(err_text, function()
+                                BookToolRunner.queryWith(queryChatGPT, history:getMessages(),
+                                    configuration, onResponseReady, plugin, ui_instance)
+                            end, recoverable and 6 or 3)
                         end
                     end
 
@@ -8729,6 +8778,11 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
         return
     end
 
+    -- Rate-limit retry (see showRequestError): re-runs this action from the same inputs.
+    -- Forward-declared because onComplete below closes over it, and assigned only after
+    -- the early-return paths (local handlers, cached artifacts) are out of the way.
+    local retryDirect
+
     -- Callback for when response is ready
     local function onComplete(history, temp_config_or_error)
         if history then
@@ -8988,10 +9042,7 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
             showResponseDialog(action.text, history, highlighted_text, addMessage, temp_config, document_path, plugin, book_metadata, nil, ui)
         else
             local error_msg = temp_config_or_error or "Unknown error"
-            UIManager:show(InfoMessage:new{
-                text = _("Error: ") .. error_msg,
-                timeout = 3
-            })
+            showRequestError(_("Error: ") .. error_msg, retryDirect)
         end
     end
 
@@ -9068,6 +9119,21 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
                 end
             end)
         return
+    end
+
+    -- Rate-limit retry: re-run the whole action so both dispatch paths below (smart
+    -- retrieval and the plain call) are covered. The selection-context window is a
+    -- consume-once transient and the selection itself died with the popup, so stash it
+    -- and put it back — otherwise a retried highlight action would silently lose its
+    -- ambient context. It is the only transient a direct entry consumes (attachments and
+    -- the quick-chip overrides are dialog-launch only).
+    local sc_window = configuration and configuration.features
+        and configuration.features._selection_context_window
+    retryDirect = function()
+        if configuration and configuration.features then
+            configuration.features._selection_context_window = sc_window
+        end
+        executeDirectAction(ui, action, highlighted_text, configuration, plugin)
     end
 
     -- Silent smart-retrieval default on direct entries (maintainer 2026-07-11): flagged
@@ -9311,10 +9377,12 @@ local function launchArtifactChat(user_question, artifact_content, artifact_type
 
             showResponseDialog(title, history, nil, addMessage, configuration, document_path, plugin, book_metadata, nil, ui)
         else
-            UIManager:show(InfoMessage:new{
-                text = _("Error: ") .. (err or "Unknown error"),
-                timeout = 3,
-            })
+            -- Rate-limit retry: the history/config are already built, so re-issuing is
+            -- literally the same call. Nothing was appended to the history on failure.
+            showRequestError(_("Error: ") .. (err or "Unknown error"), function()
+                BookToolRunner.queryWith(queryChatGPT, history:getMessages(), configuration,
+                    onResponseReady, plugin, ui)
+            end)
         end
     end
 

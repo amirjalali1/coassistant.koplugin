@@ -2221,7 +2221,13 @@ local SettingsSchema = {
                             type = "toggle",
                             text = _("Enable Web Search"),
                             help_text = T(_("Allow AI to search the web for current information.\n\nSupported providers: %1.\n\nGemini supports it only on Search-grounding-capable models; OpenAI on GPT-5 models and xAI on Grok-4 models (via their Responses APIs); Perplexity always searches (no toggle needed); OpenRouter works for any model via the :online suffix.\n\nOther providers currently ignore this setting.\n\nThis is a global default — per-request toggles (input dialog, chat viewer) adapt to the active provider.\n\nIncreases token usage/cost."),
-                                ModelConstraints.getWebSearchProvidersLabel()),
+                                ModelConstraints.getWebSearchProvidersLabel())
+                                -- Appended as its own sentence rather than folded into the
+                                -- string above so the existing translations survive. Field
+                                -- report 2026-07-26: a user read grounding 429s as "some
+                                -- plugin features are broken" -- search runs on a quota of
+                                -- its own, which nothing in the UI said.
+                                .. "\n\n" .. _("Note: on Gemini, web search means Google Search grounding, which is billed against its own quota -- separate from normal requests, and on the free tier sometimes zero. If searching actions fail with a quota error while plain ones work, that is the usual cause."),
                             path = "features.enable_web_search",
                             default = false,
                         },

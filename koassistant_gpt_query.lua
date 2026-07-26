@@ -242,13 +242,21 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
             local body = full_response:sub(1, marker_pos - 1):match("^%s*(.-)%s*$")
             if body and #body > 0 then
                 local decode_ok, j = pcall(json.decode, body)
-                if decode_ok and j then
-                    local err = (j.error and j.error.message) or j.message
-                    if err then
-                        finish(false, nil, ModelConstraints.maybeAppendContextLimitHint(
-                            ModelConstraints.maybeAppendGemini3GroundingHint(
-                                err, provider, config and config.model, config),
-                            provider, config and config.model, config))
+                if decode_ok and type(j) == "table" then
+                    -- Type-checked: luajson decodes JSON null to a truthy sentinel, which
+                    -- would survive the old `or` chain and blow up on concatenation below.
+                    local err = (type(j.error) == "table" and type(j.error.message) == "string"
+                            and j.error.message)
+                        or (type(j.message) == "string" and j.message)
+                        or nil
+                    if err and err ~= "" then
+                        -- 429 bodies name the exact bucket (per-day vs per-minute, requests
+                        -- vs tokens) and the retry delay in error.details[]; error.message
+                        -- alone says only "you exceeded your current quota".
+                        local detail = ModelConstraints.formatQuotaDetails(j)
+                        if detail then err = err .. "\n\n" .. detail end
+                        finish(false, nil, ModelConstraints.decorateRequestError(
+                            err, provider, config and config.model, config))
                         return
                     end
                 end
@@ -258,10 +266,8 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
             if err_msg then
                 err_msg = err_msg:gsub("^%s*", ""):gsub("%s*$", "")  -- trim
             end
-            finish(false, nil, ModelConstraints.maybeAppendContextLimitHint(
-                ModelConstraints.maybeAppendGemini3GroundingHint(
-                    err_msg ~= "" and err_msg or "Request failed",
-                    provider, config and config.model, config),
+            finish(false, nil, ModelConstraints.decorateRequestError(
+                err_msg ~= "" and err_msg or "Request failed",
                 provider, config and config.model, config))
             return
         end
@@ -519,10 +525,8 @@ local function queryChatGPT(message_history, temp_config, on_complete, settings)
                 end
 
                 if not stream_success then
-                    local emsg = ModelConstraints.maybeAppendContextLimitHint(
-                        ModelConstraints.maybeAppendGemini3GroundingHint(
-                            err or "Unknown streaming error", provider, config.model, config),
-                        provider, config.model, config)
+                    local emsg = ModelConstraints.decorateRequestError(
+                        err or "Unknown streaming error", provider, config.model, config)
                     if on_complete then on_complete(false, nil, emsg) end
                     return
                 end

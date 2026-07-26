@@ -27,7 +27,18 @@ local function extractApiError(text)
     if ok and type(j) == "table" then
         local err = j.error or (type(j[1]) == "table" and j[1].error)
         if type(err) == "table" then
-            return err.message or (err.code and ("API error " .. tostring(err.code))) or err.status
+            local msg = err.message or (err.code and ("API error " .. tostring(err.code))) or err.status
+            -- A 429 body carries the quota facts (which bucket, what limit, retry delay)
+            -- in error.details[] — without them error.message can't tell a per-minute
+            -- speed bump from a daily wall. Cold path: inline require keeps this file's
+            -- big closures away from the 60-upvalue cap.
+            if type(msg) == "string" and msg ~= "" then
+                -- Wrap `err` rather than passing `j`: Gemini also answers in the array
+                -- shape ([{"error":{...}}]), where the details live under j[1].error.
+                local detail = require("model_constraints").formatQuotaDetails({ error = err })
+                if detail then return msg .. "\n\n" .. detail end
+            end
+            return msg
         elseif type(err) == "string" then
             return err
         end
@@ -587,9 +598,16 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
             local endPos = json_candidate:reverse():find("}")
             if endPos and endPos > 0 then
                 local ok, j = pcall(json.decode, json_candidate:sub(1, #json_candidate - endPos + 1))
-                if ok then
-                    local err = (j.error and j.error.message) or j.message
-                    if err then
+                if ok and type(j) == "table" then
+                    -- Type-checked: luajson decodes JSON null to a truthy sentinel.
+                    local err = (type(j.error) == "table" and type(j.error.message) == "string"
+                            and j.error.message)
+                        or (type(j.message) == "string" and j.message)
+                        or nil
+                    if err and err ~= "" then
+                        -- Quota facts (bucket, limit, retry delay) live in error.details[].
+                        local detail = require("model_constraints").formatQuotaDetails(j)
+                        if detail then err = err .. "\n\n" .. detail end
                         if on_complete then on_complete(false, nil, err) end
                         return
                     end
