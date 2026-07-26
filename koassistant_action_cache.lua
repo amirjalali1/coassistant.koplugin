@@ -282,6 +282,9 @@ local function saveCache(document_path, cache)
             if entry.source_mode then
                 file:write(string.format("        source_mode = %q,\n", entry.source_mode))
             end
+            if entry.merged_from_sections then
+                file:write(string.format("        merged_from_sections = %s,\n", tostring(entry.merged_from_sections)))
+            end
             if entry.unavailable_data_text then
                 file:write(string.format("        unavailable_data_text = %q,\n", entry.unavailable_data_text))
             end
@@ -419,6 +422,9 @@ function ActionCache.set(document_path, action_id, result, progress_decimal, met
         updated_by_auto = metadata and metadata.updated_by_auto,
         -- Track source mode at generation time (for source indication in viewers)
         source_mode = metadata and metadata.source_mode,
+        -- Merge-engine provenance: how many section X-Rays were folded in
+        -- (xray_ecosystem_plan.md §6 slice 3; nil = not a merged artifact)
+        merged_from_sections = metadata and metadata.merged_from_sections,
         -- Track unavailable data at generation time (pre-formatted string for artifact viewer)
         unavailable_data_text = metadata and metadata.unavailable_data_text,
         -- Section X-Ray scope metadata

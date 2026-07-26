@@ -100,15 +100,20 @@ function WriteBack.coverageFromInputs(inputs, total_pages)
     table.sort(sorted, function(a, b) return a.start_page < b.start_page end)
     local gaps = {}
     local end_page = 0
-    for i, item in ipairs(sorted) do
-        local prev = sorted[i - 1]
-        if prev and item.start_page > prev.end_page + 1 then
+    local reach = nil  -- running maximum: nested inputs (a parent TOC span
+    local reach_label  -- containing its chapters) must not fake gaps
+    for _idx, item in ipairs(sorted) do
+        if reach and item.start_page > reach + 1 then
             gaps[#gaps + 1] = {
-                after_label = prev.label,
+                after_label = reach_label,
                 before_label = item.label,
-                from_page = prev.end_page + 1,
+                from_page = reach + 1,
                 to_page = item.start_page - 1,
             }
+        end
+        if not reach or item.end_page > reach then
+            reach = item.end_page
+            reach_label = item.label
         end
         if item.end_page > end_page then end_page = item.end_page end
     end

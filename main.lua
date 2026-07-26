@@ -8223,6 +8223,23 @@ function AskGPT:_showSectionXrayList(opts)
     }})
   end
 
+  -- Merge engine entry (§6 slice 3, #90): sections → main / combined span
+  table.insert(buttons, {{
+    text = _("Merge section X-Rays…"),
+    callback = function()
+      UIManager:close(section_dialog)
+      self_ref:updateConfigFromSettings()
+      require("koassistant_xray_merge").startFlow({
+        file = file,
+        ui = self_ref.ui,
+        plugin = self_ref,
+        configuration = configuration,
+        title = opts and opts.book_title,
+        author = opts and opts.book_author,
+      })
+    end,
+  }})
+
   table.insert(buttons, {{
     text = _("Cancel"),
     callback = function()

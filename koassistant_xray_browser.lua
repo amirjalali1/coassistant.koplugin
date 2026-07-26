@@ -3997,11 +3997,14 @@ function XrayBrowser:showOptions()
     end
 
     -- Archived versions (#73): main X-Ray only — sections have no ring, and an
-    -- archived view offering its own history would recurse
+    -- archived view offering its own history would recurse. Ring + ladder
+    -- rungs (§6 slice 1 — the list aggregates both).
     if not self.scope and not self.metadata.checkpoint
         and self.metadata.plugin and self.metadata.book_file then
         local ActionCache = require("koassistant_action_cache")
-        local cp_count = #ActionCache.getXrayCheckpoints(self.metadata.book_file)
+        -- O(1) header counts on both files (a menu row must not full-parse rings)
+        local cp_count = ActionCache.getXrayCheckpointCount(self.metadata.book_file)
+            + ActionCache.getXrayLadderCount(self.metadata.book_file)
         if cp_count > 0 then
             table.insert(buttons, {{
                 text = T(_("Previous versions (%1)…"), cp_count), align = "left",
@@ -4014,6 +4017,35 @@ function XrayBrowser:showOptions()
                         file = self_ref.metadata.book_file,
                         book_title = self_ref.metadata.title,
                         book_author = self_ref.metadata.book_author,
+                    })
+                end,
+            }})
+        end
+    end
+
+    -- Merge section X-Rays (§6 slice 3, #90): main X-Ray views only (a section
+    -- view merging its own peers would confuse the landing surface); archived
+    -- views stay read-only
+    if not self.scope and not self.metadata.checkpoint
+        and self.metadata.plugin and self.metadata.book_file then
+        local ActionCache = require("koassistant_action_cache")
+        local sec_count = ActionCache.getSectionCount(self.metadata.book_file,
+            ActionCache.SECTION_PREFIXES.xray)
+        if sec_count > 0 then
+            table.insert(buttons, {{
+                text = T(_("Merge section X-Rays (%1)…"), sec_count), align = "left",
+                callback = function()
+                    closeOptions()
+                    -- Close the browser: a successful into-main merge replaces the
+                    -- data this view renders
+                    if self_ref.menu then UIManager:close(self_ref.menu) end
+                    require("koassistant_xray_merge").startFlow({
+                        file = self_ref.metadata.book_file,
+                        ui = self_ref.ui,
+                        plugin = self_ref.metadata.plugin,
+                        configuration = self_ref.metadata.configuration,
+                        title = self_ref.metadata.title,
+                        author = self_ref.metadata.book_author,
                     })
                 end,
             }})

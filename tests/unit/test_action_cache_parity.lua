@@ -89,6 +89,7 @@ local FULL_METADATA = {
     used_research_mode = true,
     updated_by_auto = true,
     source_mode = "full_text",
+    merged_from_sections = 3,
     unavailable_data_text = "highlights (sharing off)",
     scope_label = "Chapter 3",
     scope_start_page = 40,

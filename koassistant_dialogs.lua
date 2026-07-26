@@ -3121,6 +3121,20 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         config.features._ladder_target_ratio = nil
         config.features._ladder_base = nil
     end
+    -- Merge engine (§6 slice 3): sentinel payload. Artifact JSON must NEVER pass
+    -- through the placeholder machinery (the early passes strip lines and
+    -- substitute placeholder literals INSIDE it; the late passes rescan injected
+    -- content) — it is injected into the BUILT message below, after
+    -- MessageBuilder.build has fully finished (XrayMerge.injectPayload).
+    local merge_payload = config and config.features and config.features._merge_payload
+    if config and config.features then
+        config.features._merge_payload = nil
+    end
+    if merge_payload and temp_config.features then
+        -- createTempConfig copied the features table before this consume — drop
+        -- the (potentially large) payload reference from the copy too
+        temp_config.features._merge_payload = nil
+    end
     if prompt.provider then
         if not temp_config.provider_settings[prompt.provider] then
             temp_config.provider_settings[prompt.provider] = {}
@@ -3331,6 +3345,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         _ladder_target = ladder_target,
         _ladder_base = ladder_base,
     }
+    message_data._merge_payload = merge_payload
     logger.info("KOAssistant: message_data.book_metadata=", message_data.book_metadata and "present" or "nil")
 
     -- Build dynamic quiz instructions from settings (for interactive quiz actions).
@@ -4176,6 +4191,14 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     -- Build and add the consolidated message
     -- System prompt and domain are now in config.system (unified approach)
     local consolidated_message = buildConsolidatedMessage(prompt, context, message_data, nil, nil, true)
+    -- Merge payload injection (§6 slice 3 wire-safety): the artifact JSON enters
+    -- the message ONLY here — after every placeholder pass has run — via
+    -- brace-free sentinel tokens (single-pass replace, inserted content never
+    -- rescanned). Inline require: no new file-local upvalues (60-upvalue cap).
+    if message_data._merge_payload then
+        consolidated_message = require("koassistant_xray_merge").injectPayload(
+            consolidated_message, message_data._merge_payload)
+    end
     history:addUserMessage(consolidated_message, true)
 
     -- Attach chip (attach_plan.md §4): staged attachments follow the action's

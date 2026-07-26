@@ -165,6 +165,27 @@ TestRunner:test("gap between non-adjacent sections is reported, unordered input 
     TestRunner:assertEqual(cov.end_page, 80, "end page from the later section")
 end)
 
+TestRunner:test("nested spans never fake gaps (running-max reach)", function()
+    -- A parent TOC span covering its own chapters (Part I ⊃ Ch. 2) must not
+    -- produce a "gap" between the child's end and the next sibling
+    local cov = WriteBack.coverageFromInputs({
+        { label = "Part I", start_page = 1, end_page = 100 },
+        { label = "Ch. 2", start_page = 20, end_page = 30 },
+        { label = "Part II", start_page = 101, end_page = 150 },
+    }, 150)
+    TestRunner:assertEqual(#cov.gaps, 0, "no fake gap inside the parent span")
+    TestRunner:assertEqual(cov.end_page, 150, "end page correct")
+    -- But a REAL gap beyond the parent's reach is still reported
+    local cov2 = WriteBack.coverageFromInputs({
+        { label = "Part I", start_page = 1, end_page = 100 },
+        { label = "Ch. 2", start_page = 20, end_page = 30 },
+        { label = "Part III", start_page = 120, end_page = 150 },
+    }, 150)
+    TestRunner:assertEqual(#cov2.gaps, 1, "real gap past the running max reported")
+    TestRunner:assertEqual(cov2.gaps[1].after_label, "Part I", "gap attributed to the furthest reach")
+    TestRunner:assertEqual(cov2.gaps[1].from_page, 101, "gap start from the reach")
+end)
+
 TestRunner:test("inputs without page fields are skipped; empty input is safe", function()
     local cov = WriteBack.coverageFromInputs({
         { label = "no-scope entry" },
