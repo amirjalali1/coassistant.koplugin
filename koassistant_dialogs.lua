@@ -4438,9 +4438,12 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     -- §5 decision 2). Read disk truth rather than message_data.cached_*:
                     -- it carries the full permission metadata and archives whatever entry
                     -- is actually being overwritten (a racing write may be newer than the
-                    -- one this run started from).
+                    -- one this run started from). SKIP when the outgoing entry is a ladder
+                    -- rung (shared archive rule, slice 2): a promoted rung getting
+                    -- ring-archived on the next update would dup it and evict real history.
                     local prev_xray = ActionCache.getXrayCache(cache_file)
-                    if prev_xray and prev_xray.result and prev_xray.result ~= cache_answer then
+                    if prev_xray and prev_xray.result and prev_xray.result ~= cache_answer
+                        and not ActionCache.isXrayLadderRung(cache_file, prev_xray) then
                         ActionCache.pushXrayCheckpoint(cache_file, prev_xray,
                             ActionCache.checkpointLimitFromFeatures(config.features))
                     end

@@ -1443,10 +1443,31 @@ function ActionCache.clearXrayLadder(document_path)
     return true
 end
 
+--- Is this cache entry one of the book's ladder rungs? (Identity: timestamp +
+--- progress.) THE shared archive rule: an entry that lives in the ladder is
+--- never ring-archived — the rung already preserves it, and dups would evict
+--- real ring history. Used by promotion, the write-back primitive, and the
+--- response path's checkpoint push.
+--- @param document_path string The document file path
+--- @param entry table|nil A cache entry (live or otherwise)
+--- @return boolean
+function ActionCache.isXrayLadderRung(document_path, entry)
+    if not entry or entry.timestamp == nil then return false end
+    local p = tonumber(entry.progress_decimal)
+    if not p then return false end
+    for _idx, rung in ipairs(ActionCache.getXrayLadder(document_path)) do
+        if rung.timestamp == entry.timestamp
+            and math.abs((tonumber(rung.progress_decimal) or -1) - p) < 1e-6 then
+            return true
+        end
+    end
+    return false
+end
+
 --- Promote a rung into the live X-Ray (COPY semantics — the rung stays in the
 --- ladder). The outgoing live entry is ring-archived ONLY when it is not itself
---- a ladder rung (identity: timestamp + progress) — otherwise every promotion
---- would fill the ring with rung duplicates. Writes BOTH cache keys, like
+--- a ladder rung (isXrayLadderRung) — otherwise every promotion would fill the
+--- ring with rung duplicates. Writes BOTH cache keys, like
 --- restoreXrayCheckpoint.
 --- @param document_path string The document file path
 --- @param rung table A rung entry from getXrayLadder
@@ -1457,20 +1478,9 @@ function ActionCache.promoteXrayLadderRung(document_path, rung, limit, opts)
     if not document_path or not rung or not rung.result then return false end
 
     local live = ActionCache.getXrayCache(document_path)
-    if live and live.result and live.result ~= rung.result and limit ~= 0 then
-        local ladder = ActionCache.getXrayLadder(document_path)
-        local live_is_rung = false
-        local live_p = tonumber(live.progress_decimal)
-        for _idx, r in ipairs(ladder) do
-            if r.timestamp ~= nil and r.timestamp == live.timestamp
-                and live_p and math.abs((tonumber(r.progress_decimal) or -1) - live_p) < 1e-6 then
-                live_is_rung = true
-                break
-            end
-        end
-        if not live_is_rung then
-            ActionCache.pushXrayCheckpoint(document_path, live, limit)
-        end
+    if live and live.result and live.result ~= rung.result and limit ~= 0
+        and not ActionCache.isXrayLadderRung(document_path, live) then
+        ActionCache.pushXrayCheckpoint(document_path, live, limit)
     end
 
     local function pickFlag(archived, fallback)
