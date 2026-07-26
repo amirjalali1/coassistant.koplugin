@@ -469,6 +469,172 @@ TestRunner:test("create mode: cached_progress 0 fires only inside the gap window
         "past max gap: first X-Ray stays manual")
 end)
 
+print("")
+print("  [version ladder]")
+
+TestRunner:test("planLadderRungs: spacing multiples above base, final 1.0, float-clean", function()
+    local from_zero = XrayAuto.planLadderRungs(0)
+    TestRunner:assertEqual(#from_zero, 10, "from nothing: 10 rungs")
+    TestRunner:assertEqual(from_zero[1], 0.1, "first rung 10%")
+    TestRunner:assertEqual(from_zero[3], 0.3, "no float drift (0.3 exact)")
+    TestRunner:assertEqual(from_zero[10], 1.0, "final rung 100%")
+
+    local mid = XrayAuto.planLadderRungs(0.37)
+    TestRunner:assertEqual(#mid, 7, "base 37%: 7 rungs (40..90 + 100)")
+    TestRunner:assertEqual(mid[1], 0.4, "first rung above base")
+    TestRunner:assertEqual(mid[7], 1.0, "ends at 100%")
+
+    -- Base ON a rung boundary starts at the NEXT one
+    TestRunner:assertEqual(XrayAuto.planLadderRungs(0.4)[1], 0.5, "boundary base skips its own rung")
+    -- Near-boundary float (0.4 stored as 0.39999...) treated as the boundary
+    TestRunner:assertEqual(XrayAuto.planLadderRungs(0.399)[1], 0.5, "tolerance absorbs float drift")
+
+    local tail = XrayAuto.planLadderRungs(0.95)
+    TestRunner:assertEqual(#tail, 1, "near the end: just the final rung")
+    TestRunner:assertEqual(tail[1], 1.0, "which is 100%")
+    TestRunner:assertEqual(#XrayAuto.planLadderRungs(1.0), 0, "complete base: nothing to build")
+end)
+
+TestRunner:test("pickPromotableRung: at-or-below position, ahead of live, complete excluded", function()
+    local ladder = {
+        { progress_decimal = 0.2, result = "a" },
+        { progress_decimal = 0.4, result = "b" },
+        { progress_decimal = 0.6, result = "c" },
+        { progress_decimal = 1.0, result = "d", full_document = true },
+    }
+    local pick = XrayAuto.pickPromotableRung(ladder, 0.2, 0.45)
+    TestRunner:assertEqual(pick and pick.progress_decimal, 0.4, "highest rung <= position, ahead of live")
+    TestRunner:assertEqual(XrayAuto.pickPromotableRung(ladder, 0.4, 0.45), nil,
+        "live already at the covering rung -> nothing")
+    pick = XrayAuto.pickPromotableRung(ladder, 0.4, 0.599)
+    TestRunner:assertEqual(pick and pick.progress_decimal, 0.6, "half-percent tolerance at the boundary")
+    TestRunner:assertEqual(XrayAuto.pickPromotableRung(ladder, 0.6, 1.0), nil,
+        "full-document rungs never promote")
+    pick = XrayAuto.pickPromotableRung(ladder, nil, 0.25)
+    TestRunner:assertEqual(pick and pick.progress_decimal, 0.2, "nil live treated as 0 (install case)")
+    TestRunner:assertEqual(XrayAuto.pickPromotableRung(ladder, 0.2, nil), nil, "no position -> nil")
+    TestRunner:assertEqual(XrayAuto.pickPromotableRung(nil, 0.2, 0.5), nil, "no ladder -> nil")
+end)
+
+TestRunner:test("ladder build state: begin/advance/cancel/end", function()
+    TestRunner:assertEqual(XrayAuto.ladderBuild(), nil, "idle by default")
+    XrayAuto.beginLadderBuild("/x.epub", { 0.4, 0.5, 1.0 })
+    local b = XrayAuto.ladderBuild()
+    TestRunner:assertEqual(b.idx, 1, "starts at rung 1")
+    TestRunner:assertEqual(b.total, 3, "total stamped")
+    TestRunner:assertEqual(XrayAuto.advanceLadderBuild(), 0.5, "advance returns next target")
+    TestRunner:assertEqual(XrayAuto.advanceLadderBuild(), 1.0, "then the last")
+    TestRunner:assertEqual(XrayAuto.advanceLadderBuild(), nil, "then nil (done)")
+    XrayAuto.requestLadderCancel()
+    TestRunner:assertEqual(XrayAuto.ladderBuild().cancel_requested, true, "cancel flag set")
+    XrayAuto.endLadderBuild()
+    TestRunner:assertEqual(XrayAuto.ladderBuild(), nil, "ended")
+end)
+
+TestRunner:test("ladder disk round-trip: ascending order, replace-within-tolerance, O(1) count", function()
+    ActionCache.clearXrayLadder(DOC_PATH)
+    -- Push out of order; expect ascending on read
+    for _idx, p in ipairs({ 0.4, 0.2, 0.6 }) do
+        local ok_push = ActionCache.pushXrayLadderRung(DOC_PATH, {
+            result = '{"rung": ' .. tostring(p) .. '}', progress_decimal = p,
+            progress_page = math.floor(p * 100), timestamp = 1700000000 + math.floor(p * 10),
+            used_book_text = true, model = "m",
+        })
+        TestRunner:assertEqual(ok_push, true, "push " .. tostring(p) .. " succeeds")
+    end
+    local ladder = ActionCache.getXrayLadder(DOC_PATH)
+    TestRunner:assertEqual(#ladder, 3, "three rungs")
+    TestRunner:assertEqual(ladder[1].progress_decimal, 0.2, "ascending: lowest first")
+    TestRunner:assertEqual(ladder[3].progress_decimal, 0.6, "highest last")
+    TestRunner:assertEqual(ActionCache.getXrayLadderCount(DOC_PATH), 3, "header count")
+    TestRunner:assertEqual(ActionCache.highestXrayLadderProgress(ladder), 0.6, "highest progress")
+
+    -- Same-progress re-push replaces, never duplicates (resume overlap)
+    ActionCache.pushXrayLadderRung(DOC_PATH, {
+        result = '{"rung": "0.4 v2"}', progress_decimal = 0.402, timestamp = 1700009999,
+    })
+    ladder = ActionCache.getXrayLadder(DOC_PATH)
+    TestRunner:assertEqual(#ladder, 3, "replaced within tolerance, not appended")
+    TestRunner:assertEqual(ladder[2].result, '{"rung": "0.4 v2"}', "newer rung content wins")
+
+    ActionCache.clearXrayLadder(DOC_PATH)
+    TestRunner:assertEqual(ActionCache.getXrayLadderCount(DOC_PATH), 0, "cleared -> 0")
+end)
+
+TestRunner:test("promoteXrayLadderRung: copy semantics, conditional ring push, flag fallback", function()
+    ActionCache.clearXrayLadder(DOC_PATH)
+    ActionCache.clearXrayCheckpoints(DOC_PATH)
+    ActionCache.clearXrayCache(DOC_PATH)
+    ActionCache.clear(DOC_PATH, "xray")
+
+    -- No live entry at all: promotion INSTALLS the rung (build-from-nothing case)
+    ActionCache.pushXrayLadderRung(DOC_PATH, {
+        result = '{"rung": "20"}', progress_decimal = 0.2, progress_page = 20,
+        timestamp = 1700000020, used_book_text = true, used_highlights = false, model = "m-20",
+    })
+    local ladder = ActionCache.getXrayLadder(DOC_PATH)
+    local ok_install = ActionCache.promoteXrayLadderRung(DOC_PATH, ladder[1], 5)
+    TestRunner:assertEqual(ok_install, true, "install succeeds without a live entry")
+    local live = ActionCache.getXrayCache(DOC_PATH)
+    TestRunner:assertEqual(live.result, '{"rung": "20"}', "rung is live (doc key)")
+    TestRunner:assertEqual(live.timestamp, 1700000020, "rung generation time preserved")
+    local pa = ActionCache.get(DOC_PATH, "xray")
+    TestRunner:assertEqual(pa and pa.result, '{"rung": "20"}', "per-action key updated too")
+    TestRunner:assertEqual(#ActionCache.getXrayCheckpoints(DOC_PATH), 0,
+        "no ring push when nothing was live")
+    TestRunner:assertEqual(#ActionCache.getXrayLadder(DOC_PATH), 1, "rung STAYS in the ladder (copy)")
+
+    -- Live == a ladder rung: promotion must NOT ring-archive it (dup guard)
+    ActionCache.pushXrayLadderRung(DOC_PATH, {
+        result = '{"rung": "40"}', progress_decimal = 0.4, progress_page = 40,
+        timestamp = 1700000040, used_book_text = true, model = "m-40",
+    })
+    ladder = ActionCache.getXrayLadder(DOC_PATH)
+    local ok_step = ActionCache.promoteXrayLadderRung(DOC_PATH, ladder[2], 5)
+    TestRunner:assertEqual(ok_step, true, "promotion over a rung-identical live succeeds")
+    TestRunner:assertEqual(#ActionCache.getXrayCheckpoints(DOC_PATH), 0,
+        "no ring dup: outgoing live was itself a rung")
+    TestRunner:assertEqual(ActionCache.getXrayCache(DOC_PATH).result, '{"rung": "40"}', "live moved forward")
+
+    -- Live NOT a rung (manual update happened): promotion ring-archives it
+    ActionCache.setXrayCache(DOC_PATH, '{"manual": "45"}', 0.45,
+        { model = "m-manual", used_book_text = true, used_highlights = true, progress_page = 45 })
+    ActionCache.set(DOC_PATH, "xray", '{"manual": "45"}', 0.45, { model = "m-manual" })
+    ActionCache.pushXrayLadderRung(DOC_PATH, {
+        result = '{"rung": "60"}', progress_decimal = 0.6, progress_page = 60,
+        timestamp = 1700000060, model = "m-60",
+        -- no used_* flags on this rung: promotion falls back to the live entry's
+    })
+    ladder = ActionCache.getXrayLadder(DOC_PATH)
+    local ok_over = ActionCache.promoteXrayLadderRung(DOC_PATH, ladder[3], 5)
+    TestRunner:assertEqual(ok_over, true, "promotion over a manual live succeeds")
+    local ring = ActionCache.getXrayCheckpoints(DOC_PATH)
+    TestRunner:assertEqual(#ring, 1, "manual live was ring-archived")
+    TestRunner:assertEqual(ring[1].result, '{"manual": "45"}', "with its content")
+    live = ActionCache.getXrayCache(DOC_PATH)
+    TestRunner:assertEqual(live.result, '{"rung": "60"}', "rung is live")
+    TestRunner:assertEqual(live.used_highlights, true, "missing rung flag falls back to live's (superset)")
+
+    ActionCache.clearXrayLadder(DOC_PATH)
+    ActionCache.clearXrayCheckpoints(DOC_PATH)
+    ActionCache.clearXrayCache(DOC_PATH)
+    ActionCache.clear(DOC_PATH, "xray")
+end)
+
+TestRunner:test("clearAll clears companion files (ladder resurrection guard)", function()
+    ActionCache.pushXrayLadderRung(DOC_PATH, {
+        result = '{"r": 1}', progress_decimal = 0.2, timestamp = 1700000001,
+    })
+    ActionCache.pushXrayCheckpoint(DOC_PATH, {
+        result = '{"c": 1}', progress_decimal = 0.1, timestamp = 1700000002,
+    })
+    ActionCache.clearAll(DOC_PATH)
+    TestRunner:assertEqual(ActionCache.getXrayLadderCount(DOC_PATH), 0,
+        "delete-all clears the ladder (no promotion resurrection)")
+    TestRunner:assertEqual(#ActionCache.getXrayCheckpoints(DOC_PATH), 0,
+        "delete-all clears the ring (no orphan)")
+end)
+
 os.execute(string.format("rm -rf %q", TMP_ROOT))
 
 local ok = TestRunner:summary()

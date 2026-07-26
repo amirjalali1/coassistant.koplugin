@@ -3108,6 +3108,19 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             require("koassistant_xray_auto").registerCancel(cancel)
         end
     end
+    -- Version ladder build (xray_ecosystem_plan.md §6 slice 1, ref #73 #90): consume
+    -- the chain's per-rung transients from the SOURCE config (the fire path passes a
+    -- config COPY, but consume defensively — same staleness rule as above). All
+    -- downstream reads go through message_data fields set below (message_data is
+    -- already captured by the closures here — 60-upvalue cap).
+    local ladder_build_flag = config and config.features and config.features._ladder_build
+    local ladder_target = config and config.features and tonumber(config.features._ladder_target_ratio)
+    local ladder_base = config and config.features and config.features._ladder_base
+    if config and config.features then
+        config.features._ladder_build = nil
+        config.features._ladder_target_ratio = nil
+        config.features._ladder_base = nil
+    end
     if prompt.provider then
         if not temp_config.provider_settings[prompt.provider] then
             temp_config.provider_settings[prompt.provider] = {}
@@ -3310,6 +3323,13 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         _background_request = background_request or nil,
         -- Auto-create marker (§5 decision 1): permits the fresh path in the §4 abort
         _background_create = background_create or nil,
+        -- Ladder chain markers (§6 slice 1): _ladder_build diverts saves to the
+        -- ladder file; _ladder_target re-anchors the request at the rung boundary;
+        -- _ladder_base seeds the incremental path with the previous rung instead of
+        -- the live cache (rungs never touch the live X-Ray until promotion)
+        _ladder_build = ladder_build_flag or nil,
+        _ladder_target = ladder_target,
+        _ladder_base = ladder_base,
     }
     logger.info("KOAssistant: message_data.book_metadata=", message_data.book_metadata and "present" or "nil")
 
@@ -3644,6 +3664,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 enable_advanced_stats = config.features and config.features.enable_advanced_stats,
                 library_scan_folders = config.features and config.features.library_scan_folders,
                 _session_scan_folders = plugin and plugin._session_scan_folders,
+                -- Ladder rung 1 (create from nothing): bound {book_text} extraction at
+                -- the rung boundary instead of the reader's position (§6 slice 1)
+                _ladder_target_ratio = message_data._ladder_target,
             })
             logger.info("KOAssistant: Extractor settings - enable_book_text_extraction=",
                        config.features and config.features.enable_book_text_extraction and "true" or "false/nil")
@@ -3659,11 +3682,23 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 -- a first generation IS the base prompt — it needs the to-position text
                 -- (bounded by the max-gap dial, same bound as an update's delta).
                 local extract_prompt = prompt or {}
-                if message_data._background_request and extract_prompt.use_book_text
-                    and not message_data._background_create then
+                local prune_book_text = message_data._background_request and extract_prompt.use_book_text
+                    and not message_data._background_create
+                -- Ladder rungs: highlights/annotations are position-UNBOUNDED (the whole
+                -- book's), which would leak post-rung material into a prefix version —
+                -- prune them for rung generation. The LIVE X-Ray keeps its highlight
+                -- enrichment through normal updates; rung permission metadata stays
+                -- honest via the sticky-true inheritance from the base.
+                local prune_highlights = message_data._ladder_build
+                    and (extract_prompt.use_highlights or extract_prompt.use_annotations)
+                if prune_book_text or prune_highlights then
                     local pruned = {}
                     for k, v in pairs(extract_prompt) do pruned[k] = v end
-                    pruned.use_book_text = false
+                    if prune_book_text then pruned.use_book_text = false end
+                    if prune_highlights then
+                        pruned.use_highlights = false
+                        pruned.use_annotations = false
+                    end
                     extract_prompt = pruned
                 end
                 local extracted = extractor:extractForAction(extract_prompt)
@@ -3867,6 +3902,20 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         message_data.progress_page = ui.document.info and ui.document.info.number_of_pages
     end
 
+    -- Ladder rung (§6 slice 1): generate AS IF the reader stood at the rung boundary.
+    -- This one override anchors everything downstream — prompt placeholders
+    -- ({reading_progress}, the spoiler line), the incremental extraction's to_page,
+    -- and the progress the rung is saved at.
+    if message_data._ladder_target and ui and ui.document then
+        local lt = message_data._ladder_target
+        message_data.progress_decimal = tostring(lt)
+        message_data.reading_progress = math.floor(lt * 100 + 0.5) .. "%"
+        local lt_total = ui.document.info and ui.document.info.number_of_pages
+        if lt_total and lt_total > 0 then
+            message_data.progress_page = math.max(1, math.floor(lt * lt_total))
+        end
+    end
+
     -- Get domain context if a domain is set (skip if action opts out)
     -- Priority: prompt.domain (locked) > book domain (DocSettings) > global selected_domain
     -- Book domain "_none" = explicit override to no domain (blocks global fallthrough)
@@ -3909,7 +3958,10 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
 
     if cache_enabled and not (config.features and config.features._full_document_xray) then
         local ActionCache = require("koassistant_action_cache")
-        local cached_entry = ActionCache.get(cache_file, prompt.id)
+        -- Ladder chain: rung N+1 continues from rung N (injected by the fire path),
+        -- never from the live cache — the live X-Ray tracks the reader throughout
+        -- the build (§6 slice 1)
+        local cached_entry = message_data._ladder_base or ActionCache.get(cache_file, prompt.id)
         cache_entry_existed = (cached_entry ~= nil and cached_entry.result ~= nil)
 
         if cached_entry and message_data.progress_decimal then
@@ -4250,7 +4302,13 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             -- update won the race; theirs is newer → discard. Disk-vs-disk compare with an
             -- epsilon — never against in-memory floats.
             local background_discard = false
-            if message_data._background_request and using_cache then
+            -- Ladder rungs never write the live cache, so the live-cache guards below
+            -- don't apply — a manual run racing a rung is fine (promotion re-checks
+            -- disk truth, and pickPromotableRung only ever moves the live entry
+            -- FORWARD past whatever won the race).
+            if message_data._ladder_build then --luacheck: ignore 542
+                -- no guard: the rung write below is additive
+            elseif message_data._background_request and using_cache then
                 local ActionCache = require("koassistant_action_cache")
                 local started_from = tonumber(message_data.cached_progress_decimal)
                 local function still_current(e)
@@ -4282,6 +4340,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             -- For progress actions: require progress_decimal (extraction must succeed)
             -- For non-progress actions (book_info, etc.): save with default 1.0 even without extraction
             if cache_enabled and original_action_id and not background_discard
+                    and not message_data._ladder_build
                     and (message_data.progress_decimal or not (prompt and prompt.use_reading_progress))
                     and not is_truncated and cache_answer then
                 local ActionCache = require("koassistant_action_cache")
@@ -4327,7 +4386,30 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 local progress = tonumber(message_data.progress_decimal) or 0
                 local model_name = ConfigHelper:getModelInfo(temp_config)
 
-                if action.cache_as_xray then
+                if action.cache_as_xray and message_data._ladder_build then
+                    -- Ladder rung (§6 slice 1): the rung goes to the ladder sidecar, never
+                    -- the live cache — the live X-Ray keeps tracking the reader while the
+                    -- chain runs ahead; promotion swaps rungs in locally later. Same
+                    -- sticky-true permission reconciliation as the live write below.
+                    local rung_used_highlights = (message_data.highlights and message_data.highlights ~= "")
+                    if using_cache and (message_data.cached_used_highlights == true
+                        or (message_data.cached_used_highlights == nil and message_data.cached_used_annotations == true)) then
+                        rung_used_highlights = true
+                    end
+                    local rung_ok = cache_answer and ActionCache.pushXrayLadderRung(cache_file, {
+                        result = cache_answer,
+                        progress_decimal = progress,
+                        progress_page = message_data.progress_page,
+                        timestamp = os.time(),
+                        model = model_name,
+                        used_highlights = rung_used_highlights,
+                        used_book_text = book_text_was_provided,
+                        flow_visible_pages = message_data.flow_visible_pages,
+                        source_mode = source_mode,
+                    })
+                    logger.info("KOAssistant: ladder rung", rung_ok and "saved" or "SAVE FAILED",
+                        "at", progress)
+                elseif action.cache_as_xray then
                     -- Track what data was used when building this cache
                     -- Reading the cache will only require permissions for data that was actually used
                     local used_highlights = (message_data.highlights and message_data.highlights ~= "")
@@ -8353,6 +8435,7 @@ local function openXrayBrowserFromCache(ui, data, cached, config, plugin, book_m
         ActionCache.clear(ui.document.file, "xray")
         ActionCache.clearWikiEntries(ui.document.file)
         ActionCache.clearXrayCheckpoints(ui.document.file)
+        ActionCache.clearXrayLadder(ui.document.file)
         UIManager:show(Notification:new{
             text = T(_("%1 deleted"), "X-Ray"),
             timeout = 2,
@@ -8929,6 +9012,7 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
                             ActionCache.clear(ui.document.file, "xray")
                             ActionCache.clearWikiEntries(ui.document.file)
                             ActionCache.clearXrayCheckpoints(ui.document.file)
+                            ActionCache.clearXrayLadder(ui.document.file)
                             UIManager:show(Notification:new{
                                 text = T(_("%1 deleted"), "X-Ray"),
                                 timeout = 2,

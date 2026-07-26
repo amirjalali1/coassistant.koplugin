@@ -191,4 +191,92 @@ function XrayAuto.eligibilityFromEntry(entry, is_json_fn)
   return true, p
 end
 
+-- ========================= Version ladder (create-ahead) =========================
+-- xray_ecosystem_plan.md §5 decisions 10/11 + §6 slice 1 (ref #73 #90). Pure rung
+-- math + the build-chain session state live here (same cross-instance rationale as
+-- the flight state above); ladder file I/O lives in koassistant_action_cache.lua.
+
+XrayAuto.LADDER_SPACING = 0.10   -- rung boundaries every 10% (v1 constant, no dial)
+XrayAuto.LADDER_TOLERANCE = 0.005
+
+--- Plan the rung targets for a build: multiples of `spacing` above
+--- `base_progress`, plus a final 1.0. Pure; rounded to 3 decimals so float drift
+--- never produces 0.30000000000000004-style targets. A rung within 1% of the
+--- base is not planned — the incremental update path only engages when the
+--- target exceeds the base by more than 0.01 (dialogs.lua), so a closer rung
+--- could never be built (the fire's skip rule uses the same threshold).
+--- @param base_progress number|nil 0..1 (nil/0 = build from nothing)
+--- @param spacing number|nil override (default LADDER_SPACING)
+--- @return table Ascending array of target ratios (empty when base is ~1.0)
+function XrayAuto.planLadderRungs(base_progress, spacing)
+  spacing = spacing or XrayAuto.LADDER_SPACING
+  local base = tonumber(base_progress) or 0
+  if base >= 1.0 - XrayAuto.LADDER_TOLERANCE then return {} end
+  local rungs = {}
+  local n = math.floor((base + 0.01 + 1e-9) / spacing) + 1
+  local target = math.floor(n * spacing * 1000 + 0.5) / 1000
+  while target < 1.0 - XrayAuto.LADDER_TOLERANCE do
+    rungs[#rungs + 1] = target
+    n = n + 1
+    target = math.floor(n * spacing * 1000 + 0.5) / 1000
+  end
+  rungs[#rungs + 1] = 1.0
+  return rungs
+end
+
+--- Pick the rung to promote into the live cache: the highest rung at-or-below
+--- the reading position (½% tolerance) that is AHEAD of the live entry. Rungs
+--- ahead of the reader never qualify (spoiler by definition — same rule as
+--- nearestCheckpointIndex); full-document entries never qualify.
+--- @param ladder table Rung array (any order)
+--- @param live_progress number|nil live cache progress 0..1
+--- @param position number|nil reading position 0..1
+--- @return table|nil rung entry
+function XrayAuto.pickPromotableRung(ladder, live_progress, position)
+  if type(position) ~= "number" then return nil end
+  local best, best_p
+  for _idx, rung in ipairs(ladder or {}) do
+    local p = tonumber(rung.progress_decimal)
+    if p and not rung.full_document
+        and p <= position + XrayAuto.LADDER_TOLERANCE
+        and p > (tonumber(live_progress) or 0) + XrayAuto.LADDER_TOLERANCE then
+      if not best_p or p > best_p then
+        best, best_p = rung, p
+      end
+    end
+  end
+  return best
+end
+
+-- Build-chain session state (module-local, survives instance teardown like the
+-- flight state — though a book close cancels the chain anyway). One build at a
+-- time, plugin-wide.
+local ladder_build = nil  -- { file, rungs = {targets}, idx, total, cancel_requested }
+
+--- @return table|nil the active build state (nil when idle)
+function XrayAuto.ladderBuild()
+  return ladder_build
+end
+
+function XrayAuto.beginLadderBuild(file, rungs)
+  ladder_build = { file = file, rungs = rungs, idx = 1, total = #rungs }
+end
+
+--- Advance to the next rung. Returns the next target ratio, or nil when done.
+function XrayAuto.advanceLadderBuild()
+  if not ladder_build then return nil end
+  ladder_build.idx = ladder_build.idx + 1
+  return ladder_build.rungs[ladder_build.idx]
+end
+
+function XrayAuto.endLadderBuild()
+  ladder_build = nil
+end
+
+--- Ask the chain to stop after the current rung completes (a rung mid-network
+--- additionally gets cancelInFlight from the caller).
+function XrayAuto.requestLadderCancel()
+  if ladder_build then ladder_build.cancel_requested = true end
+end
+
 return XrayAuto

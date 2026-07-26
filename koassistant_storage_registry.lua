@@ -274,6 +274,14 @@ Registry.entries = {
         opt_in_reset = true,
         notes = "Snapshot ring of pre-update X-Ray JSONs (max 5, newest first); deleted with the X-Ray.",
     },
+    {
+        id = "sidecar_xray_ladder", label = "Per-book X-Ray version ladder",
+        location = "sidecar_file", ref = "koassistant_xray_ladder.lua",
+        category = "artifacts", backup = "opt_in",
+        index_key = "koassistant_artifact_index",  -- best-effort: shares the artifact sidecar dir (like user_aliases)
+        opt_in_reset = true,
+        notes = "Create-ahead prefix versions (rungs, ascending by progress; xray_ecosystem_plan.md §6); promotion source; deleted with the X-Ray.",
+    },
 
     --========================= Sidecar DocSettings keys (per-book) ============
     {

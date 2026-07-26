@@ -1370,9 +1370,18 @@ function ContextExtractor:extractForAction(action)
             options.max_chars = action.max_book_text_chars
         end
 
-        -- {book_text} / {book_text_section} → extract to current position
+        -- {book_text} / {book_text_section} → extract to current position.
+        -- Ladder rung 1 (create from nothing, xray_ecosystem_plan.md §6 slice 1):
+        -- bound the extraction at the rung boundary instead of the reader's
+        -- position — the rung must only ever see text up to its own progress mark.
         if prompt:find("{book_text", 1, true) then
-            local book_text_result = self:getBookText(options)
+            local ladder_to = tonumber(self.settings._ladder_target_ratio)
+            local book_text_result
+            if ladder_to and ladder_to > 0 and ladder_to < 1 then
+                book_text_result = self:getBookTextRange(0, ladder_to, options)
+            else
+                book_text_result = self:getBookText(options)
+            end
             data.book_text = book_text_result.text
             -- Pass truncation metadata for UI notifications
             if book_text_result.truncated then

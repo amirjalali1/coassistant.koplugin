@@ -473,6 +473,12 @@ function ActionCache.clearAll(document_path)
         os.remove(path)
         logger.info("KOAssistant ActionCache: Cleared all cache for", document_path)
     end
+    -- Companion files die with the artifacts: the checkpoint ring would linger as
+    -- an orphan, and a surviving LADDER would silently RESURRECT a deleted X-Ray
+    -- through promotion (every delete-all surface must clear it — enforced here,
+    -- by construction, rather than at each call site)
+    ActionCache.clearXrayCheckpoints(document_path)
+    ActionCache.clearXrayLadder(document_path)
     updateArtifactIndex(document_path, nil)
     return true
 end
@@ -558,7 +564,9 @@ function ActionCache.getAvailableArtifacts(document_path, exclude_key, doc)
     -- opening the checkpoint list (no data payload).
     for i, art in ipairs(available) do
         if art.key == "_xray_cache" then
+            -- Ring + ladder: the checkpoint list aggregates both, so the count does too
             local cp_count = ActionCache.getXrayCheckpointCount(document_path)
+                + ActionCache.getXrayLadderCount(document_path)
             if cp_count > 0 then
                 table.insert(available, i + 1, {
                     name = T(_("Previous X-Ray Versions (%1)"), cp_count),
@@ -1296,6 +1304,196 @@ function ActionCache.clearXrayCheckpoints(document_path)
     local path = ActionCache.getXrayCheckpointsPath(document_path)
     if path then os.remove(path) end
     return true
+end
+
+-- =============================================================================
+-- X-Ray version ladder (create-ahead prefix versions — xray_ecosystem_plan.md
+-- §5 decisions 10/11 + §6 slice 1, ref #73 #90). SEPARATE file from the
+-- checkpoint ring above, deliberately: the ring trims to xray_versions_kept on
+-- EVERY push (one update after a 10-rung build would destroy rungs), and its
+-- restore is move-out. The ladder is an immutable, position-indexed rung SET —
+-- ascending by progress, copy-out semantics: viewing or promoting a rung never
+-- removes it. Same entry shape and serializer as the ring (count header
+-- included, so getXrayLadderCount stays O(1) on aggregation hot paths).
+-- =============================================================================
+
+ActionCache.XRAY_LADDER_FILE = "koassistant_xray_ladder.lua"
+-- Rungs within half a percent are the same rung (a resume/re-run replaces it)
+ActionCache.LADDER_TOLERANCE = 0.005
+
+--- Get path to the X-Ray ladder sidecar file
+--- @param document_path string The document file path
+--- @return string|nil path Full path, or nil if not applicable
+function ActionCache.getXrayLadderPath(document_path)
+    if not document_path
+        or document_path == "__GENERAL_CHATS__"
+        or document_path == "__LIBRARY_CHATS__" then
+        return nil
+    end
+    local sidecar_dir = DocSettings:getSidecarDir(document_path)
+    return sidecar_dir .. "/" .. ActionCache.XRAY_LADDER_FILE
+end
+
+--- Load the ladder for a book, ascending by progress.
+--- @param document_path string The document file path
+--- @return table Array of checkpoint-shaped rung entries (CHECKPOINT_COPY_FIELDS)
+function ActionCache.getXrayLadder(document_path)
+    local path = ActionCache.getXrayLadderPath(document_path)
+    if not path then return {} end
+
+    local attr = lfs.attributes(path)
+    if not attr or attr.mode ~= "file" then
+        if not migrateSidecarIfNeeded(document_path, path, ActionCache.XRAY_LADDER_FILE) then
+            return {}
+        end
+    end
+
+    local ok, data = pcall(dofile, path)
+    if not ok or type(data) ~= "table" then
+        logger.warn("KOAssistant ActionCache: Failed to load X-Ray ladder:", path)
+        return {}
+    end
+    -- Strip the save-time guard newline (same round-trip rule as loadCache)
+    for _idx, rung in ipairs(data) do
+        if type(rung) == "table" and type(rung.result) == "string"
+            and rung.result:sub(-1) == "\n" then
+            rung.result = rung.result:sub(1, -2)
+        end
+    end
+    table.sort(data, function(a, b)
+        return (tonumber(a.progress_decimal) or 0) < (tonumber(b.progress_decimal) or 0)
+    end)
+    return data
+end
+
+--- Cheap rung count for hot paths (count header; pre-header files full-parse).
+--- @param document_path string The document file path
+--- @return number count
+function ActionCache.getXrayLadderCount(document_path)
+    local path = ActionCache.getXrayLadderPath(document_path)
+    if not path then return 0 end
+    local attr = lfs.attributes(path)
+    if not attr or attr.mode ~= "file" then
+        if not migrateSidecarIfNeeded(document_path, path, ActionCache.XRAY_LADDER_FILE) then
+            return 0
+        end
+    end
+    local file = io.open(path, "r")
+    if not file then return 0 end
+    local first = file:read("*l")
+    file:close()
+    local n = first and first:match("^%-%- count: (%d+)$")
+    if n then return tonumber(n) end
+    return #ActionCache.getXrayLadder(document_path)
+end
+
+--- Highest rung progress in a loaded ladder (resume point for the build chain).
+--- Pure — takes the loaded array, not a path.
+--- @param ladder table Rung array (any order)
+--- @return number|nil progress 0..1, or nil for an empty ladder
+function ActionCache.highestXrayLadderProgress(ladder)
+    local best
+    for _idx, rung in ipairs(ladder or {}) do
+        local p = tonumber(rung.progress_decimal)
+        if p and (not best or p > best) then best = p end
+    end
+    return best
+end
+
+--- Save one rung. A rung within LADDER_TOLERANCE of an existing one replaces it
+--- (resume re-runs, never duplicates); otherwise inserted in ascending order.
+--- @param document_path string The document file path
+--- @param rung table Cache-entry-shaped source (see CHECKPOINT_COPY_FIELDS)
+--- @return boolean success
+function ActionCache.pushXrayLadderRung(document_path, rung)
+    if not document_path or not rung or not rung.result then return false end
+    local path = ActionCache.getXrayLadderPath(document_path)
+    if not path then return false end
+
+    local ladder = ActionCache.getXrayLadder(document_path)
+    local entry = buildCheckpointEntry(rung)
+    local p = tonumber(entry.progress_decimal) or 0
+    local replaced = false
+    for i, existing in ipairs(ladder) do
+        if math.abs((tonumber(existing.progress_decimal) or 0) - p) <= ActionCache.LADDER_TOLERANCE then
+            ladder[i] = entry
+            replaced = true
+            break
+        end
+    end
+    if not replaced then
+        table.insert(ladder, entry)
+        table.sort(ladder, function(a, b)
+            return (tonumber(a.progress_decimal) or 0) < (tonumber(b.progress_decimal) or 0)
+        end)
+    end
+
+    if not writeCheckpointRing(path, ladder) then return false end
+    logger.info("KOAssistant ActionCache: Saved X-Ray ladder rung at", tostring(p), "for", document_path)
+    return true
+end
+
+--- Remove the ladder file (whole-ladder delete; there is no per-rung delete —
+--- promotion continuity depends on the set staying intact).
+--- @param document_path string The document file path
+--- @return boolean success
+function ActionCache.clearXrayLadder(document_path)
+    local path = ActionCache.getXrayLadderPath(document_path)
+    if path then os.remove(path) end
+    return true
+end
+
+--- Promote a rung into the live X-Ray (COPY semantics — the rung stays in the
+--- ladder). The outgoing live entry is ring-archived ONLY when it is not itself
+--- a ladder rung (identity: timestamp + progress) — otherwise every promotion
+--- would fill the ring with rung duplicates. Writes BOTH cache keys, like
+--- restoreXrayCheckpoint.
+--- @param document_path string The document file path
+--- @param rung table A rung entry from getXrayLadder
+--- @param limit number|nil Ring depth (checkpointLimitFromFeatures; 0 = no archiving)
+--- @param opts table|nil { manual = true } → not marked "auto" in the popup trace
+--- @return boolean success
+function ActionCache.promoteXrayLadderRung(document_path, rung, limit, opts)
+    if not document_path or not rung or not rung.result then return false end
+
+    local live = ActionCache.getXrayCache(document_path)
+    if live and live.result and live.result ~= rung.result and limit ~= 0 then
+        local ladder = ActionCache.getXrayLadder(document_path)
+        local live_is_rung = false
+        local live_p = tonumber(live.progress_decimal)
+        for _idx, r in ipairs(ladder) do
+            if r.timestamp ~= nil and r.timestamp == live.timestamp
+                and live_p and math.abs((tonumber(r.progress_decimal) or -1) - live_p) < 1e-6 then
+                live_is_rung = true
+                break
+            end
+        end
+        if not live_is_rung then
+            ActionCache.pushXrayCheckpoint(document_path, live, limit)
+        end
+    end
+
+    local function pickFlag(archived, fallback)
+        if archived ~= nil then return archived end
+        return fallback
+    end
+    local meta = {
+        model = rung.model or (live and live.model),
+        timestamp = rung.timestamp,
+        progress_page = rung.progress_page,
+        full_document = rung.full_document,
+        flow_visible_pages = rung.flow_visible_pages,
+        source_mode = rung.source_mode or (live and live.source_mode),
+        used_highlights = pickFlag(rung.used_highlights, live and live.used_highlights),
+        used_annotations = pickFlag(rung.used_annotations, live and live.used_annotations),
+        used_book_text = pickFlag(rung.used_book_text, live and live.used_book_text),
+        updated_by_auto = not (opts and opts.manual) or nil,
+    }
+    local ok_doc = ActionCache.setXrayCache(document_path, rung.result, rung.progress_decimal or 0, meta)
+    local ok_action = ActionCache.set(document_path, "xray", rung.result, rung.progress_decimal or 0, meta)
+    logger.info("KOAssistant ActionCache: Promoted X-Ray ladder rung at",
+        tostring(rung.progress_decimal), "for", document_path)
+    return (ok_doc and ok_action) == true
 end
 
 -- =============================================================================

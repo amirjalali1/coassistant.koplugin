@@ -5171,8 +5171,9 @@ function AskGPT:showCacheViewer(cache_info)
         ActionCache.clear(file, "xray")
         -- Clear all per-item wiki entries (derived from X-Ray data)
         ActionCache.clearWikiEntries(file)
-        -- Checkpoint ring dies with the X-Ray
+        -- Checkpoint ring and version ladder die with the X-Ray
         ActionCache.clearXrayCheckpoints(file)
+        ActionCache.clearXrayLadder(file)
       elseif cache_key == "_analyze_cache" then
         ActionCache.clearAnalyzeCache(file)
         ActionCache.clear(file, "analyze_full_document")
@@ -6961,6 +6962,51 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         }})
       end
     end
+    -- Version ladder from nothing (§6 slice 1): build the full rung set up front —
+    -- reading then promotes rungs in for free, and every position has a
+    -- spoiler-correct version. Flowing docs only, like the background machinery.
+    local nc_xa = require("koassistant_xray_auto")
+    local nc_build = nc_xa.ladderBuild()
+    if nc_build then
+      table.insert(buttons, {{
+        text = T(_("Building ladder — version %1 of %2… (tap to cancel)"),
+          nc_build.idx, nc_build.total),
+        callback = function()
+          UIManager:close(dialog)
+          self_ref:_cancelXrayLadderBuild()
+        end,
+      }})
+    elseif self.ui and self.ui.document and self.ui.document.file
+        and not (self.ui.document.info and self.ui.document.info.has_pages) then
+      local nc_ac = require("koassistant_action_cache")
+      local nc_rungs = nc_ac.getXrayLadderCount(self.ui.document.file)
+      local nc_highest
+      if nc_rungs > 0 then
+        nc_highest = nc_ac.highestXrayLadderProgress(
+          nc_ac.getXrayLadder(self.ui.document.file))
+      end
+      if nc_rungs > 0 and (nc_highest or 0) >= 1.0 - 0.005 then
+        -- Complete from-nothing ladder with no live X-Ray yet (interrupted before
+        -- the install): the versions list is its only browse surface
+        table.insert(buttons, {{
+          text = T(_("Previous versions (%1)…"), nc_rungs),
+          callback = function()
+            UIManager:close(dialog)
+            self_ref:_showXrayCheckpointList(opts)
+          end,
+        }})
+      else
+        table.insert(buttons, {{
+          text = nc_rungs > 0
+              and T(_("Resume ladder build (%1 versions so far)…"), nc_rungs)
+              or _("Build version ladder…"),
+          callback = function()
+            UIManager:close(dialog)
+            self_ref:_startXrayLadderBuild()
+          end,
+        }})
+      end
+    end
     -- Per-book opt-in BEFORE the first X-Ray exists, when auto-create makes it
     -- actionable (§5 decision 1): opting in = "create early, then keep updated"
     local nc_af = self.settings:readSetting("features") or {}
@@ -7027,6 +7073,15 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         or (opts and opts.file)
     local doc = self.ui and self.ui.document
     local cp_ring = sx_file and ActionCache.getXrayCheckpoints(sx_file) or {}
+    -- Version ladder (§6 slice 1): rungs join the ring everywhere versions are
+    -- surfaced (nearest-version pick, count, browse list)
+    local ladder_rungs = sx_file and ActionCache.getXrayLadder(sx_file) or {}
+    local versions_all = cp_ring
+    if #ladder_rungs > 0 then
+      versions_all = {}
+      for _idx, cp in ipairs(cp_ring) do versions_all[#versions_all + 1] = cp end
+      for _idx, rung in ipairs(ladder_rungs) do versions_all[#versions_all + 1] = rung end
+    end
 
     table.insert(buttons, {{
       text = T(_("View %1"), action_name .. view_detail),
@@ -7038,12 +7093,12 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     -- Re-reader shortcut: when the live X-Ray is ahead of the reading position,
     -- offer the newest archived version that stays at-or-below it directly
     -- (spoiler-safe view — xray_ecosystem_plan.md W5)
-    if #cp_ring > 0 and doc and current_progress
+    if #versions_all > 0 and doc and current_progress
         and (cached_entry.full_document
           or (cached_entry.progress_decimal or 0) > current_progress.decimal + 0.01) then
-      local near_idx = ActionCache.nearestCheckpointIndex(cp_ring, current_progress.decimal)
+      local near_idx = ActionCache.nearestCheckpointIndex(versions_all, current_progress.decimal)
       if near_idx then
-        local near_cp = cp_ring[near_idx]
+        local near_cp = versions_all[near_idx]
         table.insert(buttons, {{
           text = T(_("View earlier version (%1)"), self:_xrayCheckpointLabel(near_cp)),
           callback = function()
@@ -7090,7 +7145,17 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       end
     end
     local XrayAuto = require("koassistant_xray_auto")
-    if XrayAuto.isInFlight() then
+    local ladder_building = XrayAuto.ladderBuild()
+    if ladder_building then
+      table.insert(buttons, {{
+        text = T(_("Building ladder — version %1 of %2… (tap to cancel)"),
+          ladder_building.idx, ladder_building.total),
+        callback = function()
+          UIManager:close(dialog)
+          self_ref:_cancelXrayLadderBuild()
+        end,
+      }})
+    elseif XrayAuto.isInFlight() then
       -- A manual run while a background one is in flight is safe (completion guard),
       -- just wasteful — surface the state instead of the Update button
       table.insert(buttons, {{ text = _("Auto-update in progress…"), enabled = false }})
@@ -7103,6 +7168,30 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           on_update()
         end,
       }})
+      -- Free local update from a pre-built rung (§6 slice 1) — offered alongside
+      -- the API update: the rung lands at-or-below the reader, the API update
+      -- lands exactly at them; the user picks
+      if current_progress and not cached_entry.full_document
+          and cached_entry.source_mode ~= "ai_knowledge" then
+        local promotable = XrayAuto.pickPromotableRung(ladder_rungs,
+          cached_entry.progress_decimal, current_progress.decimal)
+        if promotable then
+          table.insert(buttons, {{
+            text = T(_("Update from ladder (to %1%) — instant"),
+              math.floor((tonumber(promotable.progress_decimal) or 0) * 100 + 0.5)),
+            callback = function()
+              UIManager:close(dialog)
+              if not self_ref:_fireXrayLadderPromotion({ manual = true }) then
+                -- Disk moved between drawing the row and tapping it
+                UIManager:show(InfoMessage:new{
+                  text = _("Nothing to update from the ladder — the X-Ray moved in the meantime."),
+                  timeout = 3,
+                })
+              end
+            end,
+          }})
+        end
+      end
     end
     -- "Update to 100%": normal incremental update with progress override (same spoiler-free prompt)
     -- Only shown when reader isn't already near 100% (otherwise the regular Update button covers it)
@@ -7115,6 +7204,33 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           self_ref:_executeBookLevelActionDirect(action, action_id, { update_to_full = true })
         end,
       }})
+    end
+    -- Version ladder build/resume (§6 slice 1; ineligible types get the honest
+    -- explanation inside _startXrayLadderBuild). Flowing docs only, like the
+    -- background machinery.
+    if doc and not (doc.info and doc.info.has_pages) and not ladder_building
+        and self.ui and self.ui.document and self.ui.document.file == sx_file then
+      local highest_rung = ActionCache.highestXrayLadderProgress(ladder_rungs)
+      if #ladder_rungs == 0 then
+        if not cached_entry.full_document and cached_entry.source_mode ~= "ai_knowledge" then
+          table.insert(buttons, {{
+            text = _("Build version ladder…"),
+            callback = function()
+              UIManager:close(dialog)
+              self_ref:_startXrayLadderBuild()
+            end,
+          }})
+        end
+      elseif (highest_rung or 0) < 1.0 - 0.005 then
+        table.insert(buttons, {{
+          text = T(_("Resume ladder build (from %1%)…"),
+            math.floor((highest_rung or 0) * 100 + 0.5)),
+          callback = function()
+            UIManager:close(dialog)
+            self_ref:_startXrayLadderBuild()
+          end,
+        }})
+      end
     end
     -- Section X-Rays: list existing + new
     if sx_file then
@@ -7137,10 +7253,10 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           end,
         }})
       end
-      -- Archived pre-overwrite versions (#73 browsable history)
-      if #cp_ring > 0 then
+      -- Archived pre-overwrite versions + ladder rungs (#73 browsable history)
+      if #versions_all > 0 then
         table.insert(buttons, {{
-          text = T(_("Previous versions (%1)…"), #cp_ring),
+          text = T(_("Previous versions (%1)…"), #versions_all),
           callback = function()
             UIManager:close(dialog)
             self_ref:_showXrayCheckpointList(opts)
@@ -8211,8 +8327,9 @@ function AskGPT:_findXrayCheckpointIndex(file, cp)
 end
 
 --- Browse archived X-Ray versions (#73 browsable history): the pre-overwrite
---- snapshot ring, newest first. For a re-reader whose live X-Ray is ahead of
---- their position, marks the nearest at-or-below version — the spoiler-safe view.
+--- snapshot ring (newest first), then ladder rungs (most complete first —
+--- §6 slice 1). For a re-reader whose live X-Ray is ahead of their position,
+--- marks the nearest at-or-below version — the spoiler-safe view.
 function AskGPT:_showXrayCheckpointList(opts)
   local ActionCache = require("koassistant_action_cache")
   local ButtonDialog = require("ui/widget/buttondialog")
@@ -8221,14 +8338,23 @@ function AskGPT:_showXrayCheckpointList(opts)
   if not file then return end
 
   local ring = ActionCache.getXrayCheckpoints(file)
-  if #ring == 0 then
+  local ladder = ActionCache.getXrayLadder(file)
+  if #ring == 0 and #ladder == 0 then
     UIManager:show(InfoMessage:new{ text = _("No previous X-Ray versions."), timeout = 2 })
     return
   end
 
+  local entries = {}
+  for _idx, cp in ipairs(ring) do
+    entries[#entries + 1] = { cp = cp }
+  end
+  for i = #ladder, 1, -1 do
+    entries[#entries + 1] = { cp = ladder[i], is_rung = true }
+  end
+
   -- Re-reader marker: only when this book is open, position is known, and the
   -- live X-Ray is ahead of the reader (the one real spoiler exposure —
-  -- xray_ecosystem_plan.md W5)
+  -- xray_ecosystem_plan.md W5). Ring and ladder compete on equal terms.
   local mark_idx, current_progress
   if self.ui and self.ui.document and self.ui.document.file == file then
     local ContextExtractor = require("koassistant_context_extractor")
@@ -8237,7 +8363,9 @@ function AskGPT:_showXrayCheckpointList(opts)
       local live = ActionCache.getXrayCache(file)
       if live and (live.full_document
           or (live.progress_decimal or 0) > current_progress.decimal + 0.01) then
-        mark_idx = ActionCache.nearestCheckpointIndex(ring, current_progress.decimal)
+        local combined = {}
+        for _idx, e in ipairs(entries) do combined[#combined + 1] = e.cp end
+        mark_idx = ActionCache.nearestCheckpointIndex(combined, current_progress.decimal)
       end
     end
   end
@@ -8245,19 +8373,58 @@ function AskGPT:_showXrayCheckpointList(opts)
   local self_ref = self
   local list_dialog
   local buttons = {}
-  for idx, cp in ipairs(ring) do
-    local row_text = self:_xrayCheckpointLabel(cp)
+  for idx, e in ipairs(entries) do
+    local row_text = self:_xrayCheckpointLabel(e.cp)
+    if e.is_rung then
+      row_text = row_text .. " · " .. _("ladder")
+    end
     if idx == mark_idx then
       -- "latest BEFORE your position", not numerically closest: a version ahead
       -- of the reader covers text they haven't re-reached (spoilers)
       row_text = row_text .. " " .. _("(latest before your position)")
     end
-    local captured_cp = cp
+    local captured = e
     table.insert(buttons, {{
       text = row_text,
       callback = function()
         UIManager:close(list_dialog)
-        self_ref:_showXrayCheckpointOptions(captured_cp, opts)
+        if captured.is_rung then
+          self_ref:_showXrayLadderRungOptions(captured.cp, opts)
+        else
+          self_ref:_showXrayCheckpointOptions(captured.cp, opts)
+        end
+      end,
+    }})
+  end
+  if #ladder > 0 and not require("koassistant_xray_auto").ladderBuild() then
+    table.insert(buttons, {{
+      text = T(_("Delete ladder (%1 versions)…"), #ladder),
+      callback = function()
+        UIManager:close(list_dialog)
+        local confirm
+        confirm = ButtonDialog:new{
+          title = T(_("Delete all %1 ladder versions?"), #ladder)
+            .. "\n" .. _("Archived previous versions are kept."),
+          buttons = {
+            {{
+              text = _("Delete"),
+              callback = function()
+                UIManager:close(confirm)
+                ActionCache.clearXrayLadder(file)
+                self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+                self_ref:_refreshXrayAutoState()
+              end,
+            }},
+            {{
+              text = _("Cancel"),
+              callback = function()
+                UIManager:close(confirm)
+                self_ref:_showXrayCheckpointList(opts)
+              end,
+            }},
+          },
+        }
+        UIManager:show(confirm)
       end,
     }})
   end
@@ -8277,6 +8444,47 @@ function AskGPT:_showXrayCheckpointList(opts)
     buttons = buttons,
   }
   UIManager:show(list_dialog)
+end
+
+--- Options card for one ladder rung: view only. Rungs are the promotion source
+--- and are never individually deleted (whole-ladder delete lives in the list) —
+--- COPY semantics throughout (§5 decision 10).
+function AskGPT:_showXrayLadderRungOptions(rung, opts)
+  local ButtonDialog = require("ui/widget/buttondialog")
+  local self_ref = self
+  local file = (self.ui and self.ui.document and self.ui.document.file) or (opts and opts.file)
+  if not file then return end
+  local label = self:_xrayCheckpointLabel(rung)
+  local card
+  card = ButtonDialog:new{
+    title = T(_("Ladder version: %1"), label),
+    buttons = {
+      {{
+        text = _("View"),
+        callback = function()
+          UIManager:close(card)
+          self_ref:showCacheViewer({
+            name = _("X-Ray Version"),
+            key = "_xray_cache",
+            data = rung,
+            file = file,
+            book_title = opts and opts.book_title,
+            book_author = opts and opts.book_author,
+            skip_stale_popup = true,
+            checkpoint = true,
+          })
+        end,
+      }},
+      {{
+        text = _("Back"),
+        callback = function()
+          UIManager:close(card)
+          self_ref:_showXrayCheckpointList(opts)
+        end,
+      }},
+    },
+  }
+  UIManager:show(card)
 end
 
 --- Options card for one archived X-Ray version: view (read-only), restore
@@ -8999,6 +9207,33 @@ function AskGPT:_refreshXrayAutoState()
     -- Console visibility while testing: log per-turn gate declines when debug is on
     state.debug = features.debug and true or nil
   end
+  -- Version ladder presence (xray_ecosystem_plan.md §6 slice 1). Promotion is
+  -- UNCONDITIONAL (decision 11: a local swap needs no consent or opt-in), so
+  -- these fields live OUTSIDE the auto_update block. Default users pay one file
+  -- stat; ladder books additionally pay one parse per refresh to hold the rung
+  -- progress list (numbers only — never the results).
+  do
+    local ActionCache = require("koassistant_action_cache")
+    state.ladder_count = ActionCache.getXrayLadderCount(file)
+    if state.ladder_count > 0 then
+      local rungs = {}
+      for _idx, rung in ipairs(ActionCache.getXrayLadder(file)) do
+        local p = tonumber(rung.progress_decimal)
+        if p then rungs[#rungs + 1] = p end
+      end
+      state.rung_progress = rungs
+      local live = ActionCache.getXrayCache(file)
+      if not (live and live.result) then
+        -- Build-from-nothing: no live X-Ray yet — the first promotion INSTALLS the
+        -- position rung. (A deleted X-Ray can't reach here: delete clears the ladder.)
+        state.live_progress = 0
+      elseif not live.full_document and live.source_mode ~= "ai_knowledge" then
+        state.live_progress = tonumber(live.progress_decimal)
+      end
+      -- Different-lineage live entry (complete-track / AI-knowledge): live_progress
+      -- stays nil → the pre-filter never schedules a promotion over it
+    end
+  end
   self._xray_auto_state = state
 end
 
@@ -9009,7 +9244,6 @@ function AskGPT:_xrayAutoOnPageUpdate(pageno)
   if not state then return end
   local prev_page = state.prev_page
   state.prev_page = pageno
-  if state.auto_update ~= true or state.eligible ~= true then return end
   if not self.ui or not self.ui.document then return end
   local doc_info = self.ui.document.info
   -- Flowing documents only in v1: a PDF range extraction is a synchronous per-page
@@ -9017,6 +9251,31 @@ function AskGPT:_xrayAutoOnPageUpdate(pageno)
   if not doc_info or doc_info.has_pages then return end
   local total = doc_info.number_of_pages
   if not total or total <= 0 then return end
+
+  -- Ladder promotion pre-filter (§6 slice 1, decision 11: unconditional — no
+  -- opt-in, no consent, no rate limit; the fire is a local file swap). Pure
+  -- arithmetic: fire only when the position has crossed a rung that is ahead of
+  -- the live cache. Same jump guard as the API path — a TOC peek ahead must not
+  -- promote spoilers into the live X-Ray.
+  if state.rung_progress and state.live_progress and not self._xray_ladder_promo_pending then
+    local XrayAuto = require("koassistant_xray_auto")
+    if not XrayAuto.ladderBuild() and not XrayAuto.isInFlight()
+        and prev_page and math.abs(pageno - prev_page) <= XrayAuto.JUMP_GUARD_PAGES then
+      local pos = pageno / total
+      for _idx, rp in ipairs(state.rung_progress) do
+        if rp > state.live_progress + XrayAuto.LADDER_TOLERANCE
+            and rp <= pos + XrayAuto.LADDER_TOLERANCE then
+          self:_scheduleXrayLadderPromotion()
+          break
+        end
+      end
+    end
+  end
+
+  if state.auto_update ~= true or state.eligible ~= true then return end
+  -- Never contend with an active ladder build: its rungs already cover what an
+  -- API update would fetch, and promotion takes over after completion
+  if require("koassistant_xray_auto").ladderBuild() then return end
   -- A scheduled-but-not-yet-fired update would otherwise log as "rate_limited"
   -- (the limit is stamped at schedule time) — say what's actually happening
   if self._xray_auto_pending then
@@ -9069,6 +9328,19 @@ function AskGPT:_scheduleXrayAutoFire()
   end
   self._xray_auto_pending = fire
   UIManager:scheduleIn(XrayAuto.SCHEDULE_DELAY_S, fire)
+end
+
+--- Silent consent check shared by every unattended X-Ray fire (background update,
+--- auto-create, ladder rungs): the book_text gate incl. trusted-provider bypass,
+--- without _checkRequirements' UI.
+function AskGPT:_xrayBackgroundConsentOk(action, features)
+  if action.use_book_text == false then return false end
+  if features.enable_book_text_extraction == true then return true end
+  local provider = action.provider or features.provider
+  for _idx, trusted_id in ipairs(features.trusted_providers or {}) do
+    if trusted_id == provider then return true end
+  end
+  return false
 end
 
 --- The deferred fire. Fresh disk reads are the authority here; then dispatch the
@@ -9131,17 +9403,9 @@ function AskGPT:_fireXrayAutoUpdate()
   -- Consent gate, mirroring _checkRequirements' book_text gate (the background path
   -- never runs that UI pre-flight): revoking text extraction after a book was opted
   -- in must stop background fires. Trusted providers bypass, same as everywhere.
-  if action.use_book_text == false then return end
-  if features.enable_book_text_extraction ~= true then
-    local trusted = false
-    local provider = action.provider or features.provider
-    for _idx, trusted_id in ipairs(features.trusted_providers or {}) do
-      if trusted_id == provider then trusted = true break end
-    end
-    if not trusted then
-      logger.info("KOAssistant: background X-Ray update declined: text extraction consent off")
-      return
-    end
+  if not self:_xrayBackgroundConsentOk(action, features) then
+    logger.info("KOAssistant: background X-Ray update declined: text extraction consent off")
+    return
   end
 
   self:updateConfigFromSettings()
@@ -9230,6 +9494,346 @@ function AskGPT:_fireXrayAutoUpdate()
     end)
 end
 
+-- ========================= X-Ray version ladder =========================
+-- Create-ahead prefix versions (xray_ecosystem_plan.md §5 decisions 10/11 +
+-- §6 slice 1, ref #73 #90): chain the incremental machinery ahead of the
+-- reader, rung by rung to 100%, into a separate ladder sidecar. The live
+-- X-Ray keeps tracking the reader throughout; PROMOTION swaps rungs in
+-- locally as the reader passes them — free, instant, no consent needed.
+
+--- Defer a promotion off the page-turn tick (same pattern as the API fire).
+--- Page-turn promotions are CAPPED (a big position swing is more likely a peek
+--- than reading — see the cap note in the fire); manual and post-build calls
+--- are not.
+function AskGPT:_scheduleXrayLadderPromotion()
+  if self._xray_ladder_promo_pending then return end
+  local self_ref = self
+  local fire = function()
+    self_ref._xray_ladder_promo_pending = nil
+    self_ref:_fireXrayLadderPromotion({ capped = true })
+  end
+  self._xray_ladder_promo_pending = fire
+  UIManager:scheduleIn(require("koassistant_xray_auto").SCHEDULE_DELAY_S, fire)
+end
+
+--- The deferred promotion. Disk truth re-derived here (ladder + live cache +
+--- flow-aware position), then a pure pick. COPY semantics — the rung stays in
+--- the ladder for re-readers.
+--- @param opts table|nil { manual = true } → always notify and report back;
+---   { capped = true } (page-turn path) → refuse position swings above the
+---   max-gap dial: the jump guard only suppresses the jump TURN itself, so the
+---   next ordinary turn at a peeked-ahead location would otherwise promote
+---   far-ahead spoilers. Manual taps and the post-build install are
+---   user-affirmed positions — uncapped.
+--- @return boolean promoted
+function AskGPT:_fireXrayLadderPromotion(opts)
+  if not self.ui or not self.ui.document or not self.ui.document.file then return false end
+  local XrayAuto = require("koassistant_xray_auto")
+  if XrayAuto.ladderBuild() or XrayAuto.isInFlight() then return false end
+  local file = self.ui.document.file
+  local ActionCache = require("koassistant_action_cache")
+  local ladder = ActionCache.getXrayLadder(file)
+  if #ladder == 0 then return false end
+  local live = ActionCache.getXrayCache(file)
+  if live and live.result and (live.full_document or live.source_mode == "ai_knowledge") then
+    -- Different lineage — never promote over it. (No live entry at all is FINE:
+    -- that's the build-from-nothing case, and the first promotion installs the
+    -- position rung; a deleted X-Ray can't reach here since delete clears the ladder.)
+    self:_refreshXrayAutoState()
+    return false
+  end
+  local ContextExtractor = require("koassistant_context_extractor")
+  local progress = ContextExtractor:new(self.ui):getReadingProgress()
+  local decimal = progress and tonumber(progress.decimal)
+  if not decimal then return false end
+  local features = self.settings:readSetting("features") or {}
+  local live_p = live and tonumber(live.progress_decimal) or 0
+  if opts and opts.capped
+      and decimal - live_p > XrayAuto.dialsFromFeatures(features).max_gap then
+    logger.info("KOAssistant: ladder promotion declined - position swing above the max-gap dial")
+    return false
+  end
+  local rung = XrayAuto.pickPromotableRung(ladder, live_p, decimal)
+  if not rung then
+    self:_refreshXrayAutoState()
+    return false
+  end
+  local ok = ActionCache.promoteXrayLadderRung(file, rung,
+      ActionCache.checkpointLimitFromFeatures(features), opts)
+  if ok then
+    self._file_dialog_row_cache = { file = nil, rows = nil }
+    logger.info("KOAssistant: X-Ray ladder rung promoted to", tostring(rung.progress_decimal),
+      (opts and opts.manual) and "(manual)" or "(auto)")
+    if (opts and opts.manual) or features.xray_auto_notify == true then
+      UIManager:show(Notification:new{
+        text = T(_("X-Ray updated from ladder (to %1%)"),
+          math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5)),
+      })
+    end
+  end
+  self:_refreshXrayAutoState()
+  return ok
+end
+
+--- Entry point for the ladder build/resume (X-Ray popup rows). Explicit user
+--- action: pre-flight UI gating + a cost dialog, then the silent chain.
+function AskGPT:_startXrayLadderBuild()
+  local XrayAuto = require("koassistant_xray_auto")
+  local ActionCache = require("koassistant_action_cache")
+  local XrayParser = require("koassistant_xray_parser")
+  if XrayAuto.ladderBuild() or XrayAuto.isInFlight() then
+    UIManager:show(InfoMessage:new{ text = _("An X-Ray task is already running."), timeout = 2 })
+    return
+  end
+  if not self.ui or not self.ui.document or not self.ui.document.file then return end
+  local doc_info = self.ui.document.info
+  if not doc_info or doc_info.has_pages then
+    UIManager:show(InfoMessage:new{
+      text = _("The version ladder supports EPUB-style (flowing) documents only."),
+      timeout = 3,
+    })
+    return
+  end
+  local file = self.ui.document.file
+
+  local action = self.action_service and self.action_service:getAction("book", "xray")
+  if not action or not action.update_prompt then return end
+  if self:_checkRequirements(action) then return end
+  if not NetworkMgr:isWifiOn() then
+    UIManager:show(InfoMessage:new{ text = _("WiFi is off."), timeout = 2 })
+    return
+  end
+
+  -- Base = whichever is further along: the highest existing rung (resume) or the
+  -- live incremental X-Ray (a manual update mid-ladder can pass the rungs). No
+  -- base at all = build from nothing (rung 1 is a bounded create, §6).
+  local ladder = ActionCache.getXrayLadder(file)
+  local base_progress = ActionCache.highestXrayLadderProgress(ladder)
+  local entry = ActionCache.get(file, "xray")
+  local live_ok_base, live_progress = XrayAuto.eligibilityFromEntry(entry, XrayParser.isJSON)
+  if not live_ok_base and entry and entry.result then
+    -- An incremental-track X-Ray at 100% is a valid (terminal) base — eligibility
+    -- only rejects it because there is nothing left to UPDATE. Other ineligible
+    -- types (complete-track, AI-knowledge, legacy text) are a different lineage.
+    local p = tonumber(entry.progress_decimal)
+    if p and p >= 1.0 and not entry.full_document and entry.source_mode ~= "ai_knowledge"
+        and XrayParser.isJSON(entry.result) then
+      live_ok_base, live_progress = true, p
+    end
+  end
+  if entry and entry.result and not live_ok_base and base_progress == nil then
+    UIManager:show(InfoMessage:new{
+      text = _("This X-Ray can't build a version ladder (complete-track, AI-knowledge, or legacy format). Delete it first to build from scratch."),
+      timeout = 5,
+    })
+    return
+  end
+  if live_ok_base and (base_progress == nil or (live_progress or 0) > base_progress) then
+    base_progress = live_progress
+  end
+
+  local rungs = XrayAuto.planLadderRungs(base_progress or 0)
+  if #rungs == 0 then
+    UIManager:show(InfoMessage:new{ text = _("The version ladder is already complete."), timeout = 2 })
+    return
+  end
+
+  local resume = #ladder > 0
+  local self_ref = self
+  local confirm
+  confirm = ButtonDialog:new{
+    title = (resume
+        and T(_("Resume the X-Ray version ladder from %1%?"),
+          math.floor((base_progress or 0) * 100 + 0.5))
+        or _("Build an X-Ray version ladder?"))
+      .. "\n" .. T(_("%1 versions will be generated in the background (every %2% of the book, up to 100%), one incremental update each — in total roughly the cost of one full X-Ray run. The book must stay open; you can keep reading."),
+        #rungs, math.floor(XrayAuto.LADDER_SPACING * 100 + 0.5)),
+    buttons = {
+      {{
+        text = resume and _("Resume") or _("Build"),
+        callback = function()
+          UIManager:close(confirm)
+          XrayAuto.beginLadderBuild(file, rungs)
+          self_ref:_fireXrayLadderRung()
+        end,
+      }},
+      {{
+        text = _("Cancel"),
+        callback = function()
+          UIManager:close(confirm)
+        end,
+      }},
+    },
+  }
+  UIManager:show(confirm)
+end
+
+--- One rung of the chain: resolve the base fresh from disk (highest rung vs live
+--- entry), fire the silent incremental machinery at the rung target, advance from
+--- the completion callback. Same authority rule as _fireXrayAutoUpdate — disk
+--- truth per rung, config COPY per rung.
+function AskGPT:_fireXrayLadderRung()
+  local XrayAuto = require("koassistant_xray_auto")
+  local build = XrayAuto.ladderBuild()
+  if not build then return end
+  if not self.ui or not self.ui.document or self.ui.document.file ~= build.file then
+    XrayAuto.endLadderBuild()
+    return
+  end
+  local target = build.rungs[build.idx]
+  if not target or build.cancel_requested then
+    XrayAuto.endLadderBuild()
+    return
+  end
+  local file = build.file
+  local features = self.settings:readSetting("features") or {}
+  local action = self.action_service and self.action_service:getAction("book", "xray")
+  if not action or not action.update_prompt then
+    XrayAuto.endLadderBuild()
+    return
+  end
+  -- Consent re-check per rung: revoking text extraction mid-build stops the chain
+  -- (same rule as the background update path)
+  if not self:_xrayBackgroundConsentOk(action, features) then
+    XrayAuto.endLadderBuild()
+    UIManager:show(InfoMessage:new{ text = _("Ladder build stopped: text extraction is disabled."), timeout = 3 })
+    return
+  end
+  if not NetworkMgr:isWifiOn() then
+    XrayAuto.endLadderBuild()
+    UIManager:show(InfoMessage:new{ text = _("Ladder build stopped: WiFi is off."), timeout = 3 })
+    return
+  end
+
+  local ActionCache = require("koassistant_action_cache")
+  local XrayParser = require("koassistant_xray_parser")
+  local ladder = ActionCache.getXrayLadder(file)
+  local base, base_progress
+  for _idx, rung in ipairs(ladder) do
+    local p = tonumber(rung.progress_decimal)
+    if p and rung.result and (base_progress == nil or p > base_progress) then
+      base, base_progress = rung, p
+    end
+  end
+  local entry = ActionCache.get(file, "xray")
+  if entry and entry.result and not entry.full_document
+      and entry.source_mode ~= "ai_knowledge" and XrayParser.isJSON(entry.result) then
+    local p = tonumber(entry.progress_decimal)
+    if p and (base_progress == nil or p > base_progress) then
+      base, base_progress = entry, p
+    end
+  end
+  -- Skip threshold MUST be at least the incremental path's engagement threshold
+  -- (dialogs.lua: update engages only when target > cached + 0.01) — a narrower
+  -- skip would fire a rung the update path then aborts, wedging resume forever
+  if base_progress and base_progress >= target - 0.01 then
+    -- Already covered (resume overlap) — skip ahead
+    XrayAuto.advanceLadderBuild()
+    return self:_fireXrayLadderRung()
+  end
+  local create_mode = base == nil
+
+  self:updateConfigFromSettings()
+  local config_copy = {}
+  for k, v in pairs(configuration or {}) do config_copy[k] = v end
+  config_copy.features = {}
+  for k, v in pairs((configuration or {}).features or {}) do config_copy.features[k] = v end
+  config_copy.features.is_book_context = true
+  config_copy.features._background_request = true
+  config_copy.features._background_create = create_mode or nil
+  config_copy.features._is_book_level_action = true
+  config_copy.features._ladder_build = true
+  config_copy.features._ladder_target_ratio = target
+  config_copy.features._ladder_base = base
+
+  local doc_props = self.ui.doc_props or {}
+  local title = doc_props.display_title or doc_props.title or "Unknown"
+  local authors = doc_props.authors or ""
+  if authors:find("\n") then authors = authors:gsub("\n", ", ") end
+  local raw_doc_props = getRawDocProps(file) or doc_props
+  config_copy.features.book_metadata = buildBookMetadata(title, authors, file, raw_doc_props,
+      self.ui.document, self.ui.doc_settings)
+  config_copy.features.book_context = bookContextString(config_copy.features.book_metadata)
+
+  XrayAuto.beginFlight()
+  local self_ref = self
+  local watchdog = function()
+    self_ref._xray_auto_watchdog = nil
+    XrayAuto.cancelInFlight()
+  end
+  self._xray_auto_watchdog = watchdog
+  UIManager:scheduleIn(XrayAuto.WATCHDOG_S, watchdog)
+
+  logger.info("KOAssistant: ladder rung", build.idx, "of", build.total, "firing (to", target, ")")
+  UIManager:show(Notification:new{
+    text = T(_("Building X-Ray ladder — version %1 of %2 (to %3%)…"),
+      build.idx, build.total, math.floor(target * 100 + 0.5)),
+  })
+  Dialogs.executeActionForResult(action, config_copy.features.book_context, self.ui, config_copy, self,
+    config_copy.features.book_metadata,
+    function(result, meta_or_err)
+      if self_ref._xray_auto_watchdog then
+        UIManager:unschedule(self_ref._xray_auto_watchdog)
+        self_ref._xray_auto_watchdog = nil
+      end
+      XrayAuto.endFlight()
+      local was_cancelled = XrayAuto.consumeOutcomeFlags()
+      local cur = XrayAuto.ladderBuild()
+      if not cur then return end  -- build ended (close/cancel) while in flight
+      if was_cancelled or cur.cancel_requested then
+        XrayAuto.endLadderBuild()
+        UIManager:show(Notification:new{ text = _("Ladder build cancelled.") })
+        return
+      end
+      -- Honesty check: the rung must actually be on disk — truncated responses and
+      -- silent save failures never advance the chain
+      local on_disk = ActionCache.highestXrayLadderProgress(ActionCache.getXrayLadder(file))
+      local rung_written = result and on_disk and on_disk >= target - XrayAuto.LADDER_TOLERANCE
+      if not rung_written then
+        XrayAuto.endLadderBuild()
+        logger.info("KOAssistant: ladder build stopped at rung", cur.idx, "-",
+          tostring(meta_or_err or "rung not saved"))
+        UIManager:show(InfoMessage:new{
+          text = T(_("Ladder build stopped at version %1 of %2 — resume it from the X-Ray popup."),
+            cur.idx, cur.total),
+          timeout = 4,
+        })
+        return
+      end
+      local next_target = XrayAuto.advanceLadderBuild()
+      if next_target and self_ref.ui and self_ref.ui.document
+          and self_ref.ui.document.file == file then
+        -- Yield the UI between rungs
+        UIManager:scheduleIn(1, function()
+          self_ref:_fireXrayLadderRung()
+        end)
+      else
+        XrayAuto.endLadderBuild()
+        UIManager:show(Notification:new{
+          text = T(_("X-Ray ladder built (%1 versions)."), cur.total),
+        })
+        self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+        self_ref:_refreshXrayAutoState()
+        -- Bring the live X-Ray up to the reader's position for free
+        self_ref:_fireXrayLadderPromotion()
+      end
+    end)
+end
+
+--- Stop the chain (popup row). An in-flight rung is killed; completed rungs stay
+--- (resume re-plans from the highest one).
+function AskGPT:_cancelXrayLadderBuild()
+  local XrayAuto = require("koassistant_xray_auto")
+  XrayAuto.requestLadderCancel()
+  XrayAuto.cancelInFlight()
+  XrayAuto.endLadderBuild()
+  if self._xray_auto_watchdog then
+    UIManager:unschedule(self._xray_auto_watchdog)
+    self._xray_auto_watchdog = nil
+  end
+  UIManager:show(Notification:new{ text = _("Ladder build cancelled.") })
+end
+
 --- Kill anything pending or in flight when the book closes. (The completion guard
 --- makes a straggler write impossible regardless; this just stops wasted work.)
 function AskGPT:onCloseDocument()
@@ -9237,11 +9841,20 @@ function AskGPT:onCloseDocument()
     UIManager:unschedule(self._xray_auto_pending)
     self._xray_auto_pending = nil
   end
+  if self._xray_ladder_promo_pending then
+    UIManager:unschedule(self._xray_ladder_promo_pending)
+    self._xray_ladder_promo_pending = nil
+  end
   if self._xray_auto_watchdog then
     UIManager:unschedule(self._xray_auto_watchdog)
     self._xray_auto_watchdog = nil
   end
-  require("koassistant_xray_auto").cancelInFlight()
+  local XrayAuto = require("koassistant_xray_auto")
+  if XrayAuto.ladderBuild() then
+    -- Completed rungs stay on disk; the popup offers Resume next open
+    XrayAuto.endLadderBuild()
+  end
+  XrayAuto.cancelInFlight()
 end
 
 --- Show a "quiz?" popup for a finished chapter.
