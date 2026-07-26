@@ -201,19 +201,23 @@ XrayAuto.LADDER_TOLERANCE = 0.005
 
 --- Plan the rung targets for a build: multiples of `spacing` above
 --- `base_progress`, plus a final 1.0. Pure; rounded to 3 decimals so float drift
---- never produces 0.30000000000000004-style targets. A rung within 1% of the
---- base is not planned — the incremental update path only engages when the
---- target exceeds the base by more than 0.01 (dialogs.lua), so a closer rung
---- could never be built (the fire's skip rule uses the same threshold).
+--- never produces 0.30000000000000004-style targets.
+--- The first rung must sit at least HALF a step ahead of the base (maintainer
+--- 2026-07-26: an X-Ray at 48% must not get a 50% rung — a near-boundary rung
+--- spends a whole call on a near-duplicate; the base version itself covers that
+--- neighborhood in the version set, staying live until promotion ring-archives
+--- it). Half-spacing also always clears the update path's 1% engagement
+--- threshold, and scales if spacing ever becomes a dial.
 --- @param base_progress number|nil 0..1 (nil/0 = build from nothing)
 --- @param spacing number|nil override (default LADDER_SPACING)
---- @return table Ascending array of target ratios (empty when base is ~1.0)
+--- @return table Ascending array of target ratios (empty when base is ≥ ~99%)
 function XrayAuto.planLadderRungs(base_progress, spacing)
   spacing = spacing or XrayAuto.LADDER_SPACING
   local base = tonumber(base_progress) or 0
-  if base >= 1.0 - XrayAuto.LADDER_TOLERANCE then return {} end
+  -- Within 1% of the end the update path wouldn't engage — nothing to build
+  if base >= 0.99 then return {} end
   local rungs = {}
-  local n = math.floor((base + 0.01 + 1e-9) / spacing) + 1
+  local n = math.floor((base + spacing / 2 - 1e-9) / spacing) + 1
   local target = math.floor(n * spacing * 1000 + 0.5) / 1000
   while target < 1.0 - XrayAuto.LADDER_TOLERANCE do
     rungs[#rungs + 1] = target

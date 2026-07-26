@@ -479,10 +479,17 @@ TestRunner:test("planLadderRungs: spacing multiples above base, final 1.0, float
     TestRunner:assertEqual(from_zero[3], 0.3, "no float drift (0.3 exact)")
     TestRunner:assertEqual(from_zero[10], 1.0, "final rung 100%")
 
+    -- First rung must be at least HALF a step ahead of the base: a 48% X-Ray
+    -- must NOT get a 50% rung (near-duplicate for a full call's price)
+    local near = XrayAuto.planLadderRungs(0.48)
+    TestRunner:assertEqual(near[1], 0.6, "48% base skips the 50% near-duplicate")
+    TestRunner:assertEqual(#near, 5, "48% base: 5 rungs (60..90 + 100)")
+    TestRunner:assertEqual(XrayAuto.planLadderRungs(0.45)[1], 0.5, "exactly half a step qualifies")
+
     local mid = XrayAuto.planLadderRungs(0.37)
-    TestRunner:assertEqual(#mid, 7, "base 37%: 7 rungs (40..90 + 100)")
-    TestRunner:assertEqual(mid[1], 0.4, "first rung above base")
-    TestRunner:assertEqual(mid[7], 1.0, "ends at 100%")
+    TestRunner:assertEqual(#mid, 6, "base 37%: 6 rungs (50..90 + 100 — 40% is under half a step)")
+    TestRunner:assertEqual(mid[1], 0.5, "first rung at least half a step above base")
+    TestRunner:assertEqual(mid[6], 1.0, "ends at 100%")
 
     -- Base ON a rung boundary starts at the NEXT one
     TestRunner:assertEqual(XrayAuto.planLadderRungs(0.4)[1], 0.5, "boundary base skips its own rung")
@@ -493,6 +500,8 @@ TestRunner:test("planLadderRungs: spacing multiples above base, final 1.0, float
     TestRunner:assertEqual(#tail, 1, "near the end: just the final rung")
     TestRunner:assertEqual(tail[1], 1.0, "which is 100%")
     TestRunner:assertEqual(#XrayAuto.planLadderRungs(1.0), 0, "complete base: nothing to build")
+    TestRunner:assertEqual(#XrayAuto.planLadderRungs(0.995), 0,
+        "within 1% of the end: update path can't engage, nothing to build")
 end)
 
 TestRunner:test("pickPromotableRung: at-or-below position, ahead of live, complete excluded", function()
