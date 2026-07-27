@@ -9845,9 +9845,9 @@ function AskGPT:_startXrayLadderBuild()
   local resume = #ladder > 0
   local self_ref = self
   local cost_text = snapped
-    and T(_("%1 versions will be generated in the background (at chapter ends, roughly every %2% of the book, up to 100%), one incremental update each — in total roughly the cost of one full X-Ray run. The book must stay open; you can keep reading."),
+    and T(_("%1 versions will be generated in the background (at chapter ends, roughly every %2% of the book, up to 100%), each extracting and analyzing the next slice of the book without further prompts — in total roughly the cost of one full X-Ray run. The book must stay open; you can keep reading."),
       #rungs, math.floor(spacing * 100 + 0.5))
-    or T(_("%1 versions will be generated in the background (every %2% of the book, up to 100%), one incremental update each — in total roughly the cost of one full X-Ray run. The book must stay open; you can keep reading."),
+    or T(_("%1 versions will be generated in the background (every %2% of the book, up to 100%), each extracting and analyzing the next slice of the book without further prompts — in total roughly the cost of one full X-Ray run. The book must stay open; you can keep reading."),
       #rungs, math.floor(spacing * 100 + 0.5))
   local confirm
   confirm = ButtonDialog:new{

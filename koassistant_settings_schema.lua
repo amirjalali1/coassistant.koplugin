@@ -1607,7 +1607,7 @@ local SettingsSchema = {
                             return T(_("Trusted Providers: %1"), table.concat(trusted, ", "))
                         end
                     end,
-                    help_text = _("Providers you trust bypass all data sharing controls below AND text extraction. All data types (highlights, annotations, notebook, book text) are available without toggling individual settings. Use for local Ollama instances or providers you fully trust."),
+                    help_text = _("Providers you trust bypass all data sharing controls below AND text extraction. All data types (highlights, annotations, notebook, book text) are available without toggling individual settings. Use for local Ollama instances or providers you fully trust.\n\nTrust also satisfies the consent that background features (such as Automatic X-Ray and ladder builds) check before running — those can then extract text and spend tokens without a per-request tap."),
                     callback = "showTrustedProvidersDialog",
                     separator = true,
                 },
@@ -1731,7 +1731,7 @@ local SettingsSchema = {
                             text = _("Allow Text Extraction"),
                             path = "features.enable_book_text_extraction",
                             default = false,
-                            help_text = _("When enabled, actions can extract and send book text to the AI. Used by X-Ray, Recap, and actions with text placeholders.\n\nTip: Use Hidden Flows to exclude front matter, appendices, etc. You can also focus actions on a specific section to extract only a chapter or part."),
+                            help_text = _("When enabled, actions can extract and send book text to the AI. Used by X-Ray, Recap, and actions with text placeholders.\n\nThis consent also covers background features you opt into separately (such as Automatic X-Ray and X-Ray version-ladder builds): those extract text and spend API tokens without a per-request confirmation, within their own size guards. Revoking this consent stops them.\n\nTip: Use Hidden Flows to exclude front matter, appendices, etc. You can also focus actions on a specific section to extract only a chapter or part."),
                             on_change = function(new_value, plugin)
                                 if new_value then
                                     -- Unlock QS panel toggle after first manual enable
@@ -1744,7 +1744,7 @@ local SettingsSchema = {
                                     local InfoMessage = require("ui/widget/infomessage")
                                     local UIManager = require("ui/uimanager")
                                     UIManager:show(InfoMessage:new{
-                                        text = _("Text extraction sends actual book content to the AI. This uses tokens (increases API costs) and processing time. Features like X-Ray and Recap use this to analyze your reading progress.\n\nTip: Use Hidden Flows to exclude front matter, appendices, etc. You can also focus actions on a specific section to extract only a chapter or part."),
+                                        text = _("Text extraction sends actual book content to the AI. This uses tokens (increases API costs) and processing time. Features like X-Ray and Recap use this to analyze your reading progress.\n\nBackground features you opt into separately (such as Automatic X-Ray) will also extract text without asking per request.\n\nTip: Use Hidden Flows to exclude front matter, appendices, etc. You can also focus actions on a specific section to extract only a chapter or part."),
                                     })
                                 end
                             end,
@@ -1781,7 +1781,7 @@ local SettingsSchema = {
                             text = _("Don't warn about truncated extractions"),
                             path = "features.suppress_truncation_warning",
                             default = false,
-                            help_text = _("When unchecked, a blocking warning is shown before sending requests when extracted text was truncated to fit the character limit. Shows coverage percentage so you know how much of the book was included.\n\nCheck this if you don't need the reminder."),
+                            help_text = _("When unchecked, a blocking warning is shown before sending requests when extracted text was truncated to fit the character limit. Shows coverage percentage so you know how much of the book was included.\n\nBackground runs (Automatic X-Ray, ladder builds) never show this warning — a truncated background extraction aborts the run instead of sending dishonest coverage.\n\nCheck this if you don't need the reminder."),
                             depends_on = { id = "enable_book_text_extraction", value = true },
                         },
                         {
@@ -1790,7 +1790,7 @@ local SettingsSchema = {
                             text = _("Don't warn about large extractions"),
                             path = "features.suppress_large_extraction_warning",
                             default = false,
-                            help_text = _("When unchecked, a warning is shown before sending requests with large text extractions (over 500K characters / ~125K tokens). Most models have smaller context windows and will reject oversized requests.\n\nCheck this if you know your model's limits and don't need the reminder."),
+                            help_text = _("When unchecked, a warning is shown before sending requests with large text extractions (over 500K characters / ~125K tokens). Most models have smaller context windows and will reject oversized requests.\n\nBackground runs (Automatic X-Ray, ladder builds) never show this warning; their size is bounded instead — automatic updates by the Maximum Progress Gap, ladder versions by their incremental steps.\n\nCheck this if you know your model's limits and don't need the reminder."),
                             depends_on = { id = "enable_book_text_extraction", value = true },
                         },
                         {
