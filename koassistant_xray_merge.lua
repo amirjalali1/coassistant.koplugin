@@ -364,6 +364,7 @@ function XrayMerge.execute(opts)
         prompt = prompt_text,
         storage_key = "__SKIP__",
         enable_web_search = false,
+        reasoning_config = "off",  -- xray-action parity (T2): structural JSON merge, no reasoning
         api_params = XrayMerge.API_PARAMS,
         builtin = true,
     }
@@ -574,6 +575,17 @@ local function pickTargetThenRun(opts)
                 gap.from_page, gap.to_page, gap.after_label or "?", gap.before_label or "?")
         end
         if target == "main" then
+            -- Base-coverage gap (device round 1 T4): a delta merge whose first
+            -- selected section starts past the main's covered range leaves a hole
+            -- no input fills — the between-inputs loop above can't see it
+            local base_page = delta_mode and not opts.main_entry.full_document
+                and tonumber(opts.main_entry.progress_page) or nil
+            local first_start = scoped[1] and tonumber(scoped[1].start_page)
+            if base_page and first_start and first_start > base_page + 1 then
+                warnings[#warnings + 1] = T(
+                    _("The main X-Ray covers up to p. %1 and the first selected section starts at p. %2 — the pages between are in neither."),
+                    base_page, first_start)
+            end
             -- Raising the main's claim / passing the reader = spoiler-relevant
             local main_p = delta_mode and tonumber(opts.main_entry.progress_decimal) or nil
             local reader_p = opts.reading_decimal

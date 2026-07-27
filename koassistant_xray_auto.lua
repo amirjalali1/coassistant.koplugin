@@ -21,16 +21,21 @@ XrayAuto.RATE_LIMIT_S = 15 * 60  -- min seconds between background attempts
 XrayAuto.JUMP_GUARD_PAGES = 5    -- quiz pattern: a TOC jump moves many pages, a turn 1-3
 XrayAuto.SCHEDULE_DELAY_S = 3    -- defer the fire off the page-turn tick
 XrayAuto.CATCHUP_DELAY_S = 30    -- session-start catch-up delay (update-checker pattern)
-XrayAuto.WATCHDOG_S = 120        -- absolute cancel; don't rely on the child's socket timeout
+XrayAuto.WATCHDOG_S = 300        -- absolute cancel; don't rely on the child's socket timeout.
+                                 -- Device round 1 (T1): thinking-default models take 100s+ per
+                                 -- incremental update — 120 killed legitimate runs.
 
 -- Cross-instance session state (file-local module state, NOT self._*)
 local last_attempt = nil   -- stamped at SCHEDULE time, not fire time
 local in_flight = false
+local in_flight_file = nil -- which book the flight belongs to (popup display scoping, T8)
 local cancel_fn = nil
 local last_failure = nil   -- { file = path, message = string }
 local session_updates = 0
 local cancelled = false    -- set when an actual flight was cancelled (close/watchdog)
 local discarded = false    -- set by the completion guard when it rejects the write
+local watchdogged = false  -- set when the WATCHDOG killed the flight (T1: a timeout is a
+                           -- visible failure, never a silent cancel)
 
 --- Resolve the user dials (schema: Reading & Library → X-Ray) into gate values.
 --- Pure; fallbacks MUST match the schema defaults (5% / 25% / 15 min). An inverted
@@ -96,17 +101,32 @@ function XrayAuto.markScheduled(now)
   last_attempt = now
 end
 
-function XrayAuto.beginFlight()
+function XrayAuto.beginFlight(file)
   in_flight = true
+  in_flight_file = file
 end
 
 function XrayAuto.endFlight()
   in_flight = false
+  in_flight_file = nil
   cancel_fn = nil
 end
 
 function XrayAuto.isInFlight()
   return in_flight
+end
+
+--- Which book the current flight belongs to (nil when idle or unknown). The
+--- gate stays global — one background request at a time — but popup DISPLAY
+--- scopes to the file so another book's flight can't gray out this book's rows.
+function XrayAuto.inFlightFile()
+  return in_flight_file
+end
+
+--- Mark the current flight as watchdog-killed (called by the watchdog closure
+--- right before cancelInFlight, so the outcome classifies as a timeout failure).
+function XrayAuto.markWatchdog()
+  watchdogged = true
 end
 
 --- Store the cancel handle returned by the silent request path (gpt_query
@@ -129,6 +149,7 @@ function XrayAuto.cancelInFlight()
     pcall(fn)
   end
   in_flight = false
+  in_flight_file = nil
 end
 
 --- Consume-once outcome markers so the fire callback classifies results honestly
@@ -139,9 +160,9 @@ function XrayAuto.markDiscarded()
 end
 
 function XrayAuto.consumeOutcomeFlags()
-  local c, d = cancelled, discarded
-  cancelled, discarded = false, false
-  return c, d
+  local c, d, w = cancelled, discarded, watchdogged
+  cancelled, discarded, watchdogged = false, false, false
+  return c, d, w
 end
 
 function XrayAuto.recordFailure(file, message)

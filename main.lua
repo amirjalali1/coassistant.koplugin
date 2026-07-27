@@ -6985,9 +6985,10 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         nc_highest = nc_ac.highestXrayLadderProgress(
           nc_ac.getXrayLadder(self.ui.document.file))
       end
-      if nc_rungs > 0 and (nc_highest or 0) >= 1.0 - 0.005 then
-        -- Complete from-nothing ladder with no live X-Ray yet (interrupted before
-        -- the install): the versions list is its only browse surface
+      -- With no live X-Ray, the versions list is the rungs' ONLY browse surface —
+      -- show it for ANY rung count, not just a complete ladder (device round 1 T3:
+      -- a cancelled from-nothing build left its rungs unviewable)
+      if nc_rungs > 0 then
         table.insert(buttons, {{
           text = T(_("Previous versions (%1)…"), nc_rungs),
           callback = function()
@@ -6995,7 +6996,8 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
             self_ref:_showXrayCheckpointList(opts)
           end,
         }})
-      else
+      end
+      if not (nc_rungs > 0 and (nc_highest or 0) >= 1.0 - 0.005) then
         table.insert(buttons, {{
           text = nc_rungs > 0
               and T(_("Resume ladder build (%1 versions so far)…"), nc_rungs)
@@ -7155,9 +7157,10 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           self_ref:_cancelXrayLadderBuild()
         end,
       }})
-    elseif XrayAuto.isInFlight() then
+    elseif XrayAuto.isInFlight() and XrayAuto.inFlightFile() == sx_file then
       -- A manual run while a background one is in flight is safe (completion guard),
-      -- just wasteful — surface the state instead of the Update button
+      -- just wasteful — surface the state instead of the Update button. File-scoped
+      -- (device round 1 T8): another book's flight must not gray out this book's rows.
       table.insert(buttons, {{ text = _("Auto-update in progress…"), enabled = false }})
     else
       table.insert(buttons, {{
@@ -7168,29 +7171,31 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           on_update()
         end,
       }})
-      -- Free local update from a pre-built rung (§6 slice 1) — offered alongside
-      -- the API update: the rung lands at-or-below the reader, the API update
-      -- lands exactly at them; the user picks
-      if current_progress and not cached_entry.full_document
-          and cached_entry.source_mode ~= "ai_knowledge" then
-        local promotable = XrayAuto.pickPromotableRung(ladder_rungs,
-          cached_entry.progress_decimal, current_progress.decimal)
-        if promotable then
-          table.insert(buttons, {{
-            text = T(_("Update from ladder (to %1%) — instant"),
-              math.floor((tonumber(promotable.progress_decimal) or 0) * 100 + 0.5)),
-            callback = function()
-              UIManager:close(dialog)
-              if not self_ref:_fireXrayLadderPromotion({ manual = true }) then
-                -- Disk moved between drawing the row and tapping it
-                UIManager:show(InfoMessage:new{
-                  text = _("Nothing to update from the ladder — the X-Ray moved in the meantime."),
-                  timeout = 3,
-                })
-              end
-            end,
-          }})
-        end
+    end
+    -- Free local update from a pre-built rung (§6 slice 1) — offered alongside
+    -- the API update: the rung lands at-or-below the reader, the API update
+    -- lands exactly at them; the user picks. Shown even while a background
+    -- update is in flight (device round 1 T6): promotion is local, and the
+    -- completion guard discards a stale flight write.
+    if not ladder_building and current_progress and not cached_entry.full_document
+        and cached_entry.source_mode ~= "ai_knowledge" then
+      local promotable = XrayAuto.pickPromotableRung(ladder_rungs,
+        cached_entry.progress_decimal, current_progress.decimal)
+      if promotable then
+        table.insert(buttons, {{
+          text = T(_("Update from ladder (to %1%) — instant"),
+            math.floor((tonumber(promotable.progress_decimal) or 0) * 100 + 0.5)),
+          callback = function()
+            UIManager:close(dialog)
+            if not self_ref:_fireXrayLadderPromotion({ manual = true }) then
+              -- Disk moved between drawing the row and tapping it
+              UIManager:show(InfoMessage:new{
+                text = _("Nothing to update from the ladder — the X-Ray moved in the meantime."),
+                timeout = 3,
+              })
+            end
+          end,
+        }})
       end
     end
     -- "Update to 100%": normal incremental update with progress override (same spoiler-free prompt)
@@ -9445,11 +9450,12 @@ function AskGPT:_fireXrayAutoUpdate()
   local book_context = bookContextString(config_copy.features.book_metadata)
   config_copy.features.book_context = book_context
 
-  XrayAuto.beginFlight()
+  XrayAuto.beginFlight(file)
   -- Absolute watchdog (update-checker pattern): don't rely on the child's socket timeout
   local self_ref = self
   local watchdog = function()
     self_ref._xray_auto_watchdog = nil
+    XrayAuto.markWatchdog()
     XrayAuto.cancelInFlight()
   end
   self._xray_auto_watchdog = watchdog
@@ -9475,10 +9481,16 @@ function AskGPT:_fireXrayAutoUpdate()
         self_ref._xray_auto_watchdog = nil
       end
       XrayAuto.endFlight()
-      local was_cancelled, was_discarded = XrayAuto.consumeOutcomeFlags()
-      if was_cancelled or was_discarded then
-        -- Guard-discard (a manual run won the race / X-Ray deleted) or book-close/
-        -- watchdog cancel: a skip — neither a success (nothing written) nor a failure
+      local was_cancelled, was_discarded, was_watchdog = XrayAuto.consumeOutcomeFlags()
+      if was_watchdog then
+        -- Watchdog kill = a timeout the reader should see (device round 1 T1:
+        -- the silent-cancel classification hid every timeout)
+        XrayAuto.recordFailure(file, "timed out")
+        logger.warn("KOAssistant: background X-Ray update timed out (watchdog,",
+          XrayAuto.WATCHDOG_S, "s)")
+      elseif was_cancelled or was_discarded then
+        -- Guard-discard (a manual run won the race / X-Ray deleted) or book-close
+        -- cancel: a skip — neither a success (nothing written) nor a failure
         logger.info("KOAssistant: background X-Ray update skipped -",
           was_discarded and "discarded (cache changed mid-flight)" or "cancelled")
       elseif result then
@@ -9772,10 +9784,11 @@ function AskGPT:_fireXrayLadderRung()
       self.ui.document, self.ui.doc_settings)
   config_copy.features.book_context = bookContextString(config_copy.features.book_metadata)
 
-  XrayAuto.beginFlight()
+  XrayAuto.beginFlight(file)
   local self_ref = self
   local watchdog = function()
     self_ref._xray_auto_watchdog = nil
+    XrayAuto.markWatchdog()
     XrayAuto.cancelInFlight()
   end
   self._xray_auto_watchdog = watchdog
@@ -9794,9 +9807,21 @@ function AskGPT:_fireXrayLadderRung()
         self_ref._xray_auto_watchdog = nil
       end
       XrayAuto.endFlight()
-      local was_cancelled = XrayAuto.consumeOutcomeFlags()
+      local was_cancelled, _was_discarded, was_watchdog = XrayAuto.consumeOutcomeFlags()
       local cur = XrayAuto.ladderBuild()
       if not cur then return end  -- build ended (close/cancel) while in flight
+      if was_watchdog and not cur.cancel_requested then
+        -- Timeout, not a user cancel (T1): stop honestly with the resume hint
+        XrayAuto.endLadderBuild()
+        logger.warn("KOAssistant: ladder rung", cur.idx, "timed out (watchdog,",
+          XrayAuto.WATCHDOG_S, "s)")
+        UIManager:show(InfoMessage:new{
+          text = T(_("Ladder build stopped at version %1 of %2 (request timed out) — resume it from the X-Ray popup."),
+            cur.idx, cur.total),
+          timeout = 4,
+        })
+        return
+      end
       if was_cancelled or cur.cancel_requested then
         XrayAuto.endLadderBuild()
         UIManager:show(Notification:new{ text = _("Ladder build cancelled.") })

@@ -1170,7 +1170,7 @@ Guidelines:
 
 CRITICAL: This must cover only content up to {reading_progress}. Output ONLY valid JSON — no other text. JSON keys must remain in English. Technical terms and concept names must match the paper's language. All other string values must follow your language instructions.]],
         skip_language_instruction = false,
-        -- Inherits global reasoning setting (user choice)
+        reasoning_config = "off",  -- Structured JSON extraction; on thinking-default models reasoning roughly doubles latency (device round 1 T2 — ~100s/update) for no schema benefit, and covers section X-Rays + ladder rungs + background updates (all ride this action)
         api_params = {
             temperature = 0.5,
             max_tokens = 65536,  -- X-Ray JSON can be large; Sonnet 4.5 max is 64000
