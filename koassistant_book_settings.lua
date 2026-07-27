@@ -57,11 +57,47 @@ end
 -- Per-book AI Book Tools posture ("off" | "manual" | "auto" | nil = follow global).
 BookSettings.KEY_TOOLS = "koassistant_book_tools"
 
--- Background X-Ray auto-update per-book opt-in (xray_background_plan.md §5).
--- PLAIN opt-in, not tri-state: true = opted in, nil = not (there is no
--- "follow global" state — the global toggle is the master switch and this is the
--- second half of the double opt-in, so nil must never mean "inherit on").
+-- Per-book Automatic X-Ray (xray_ecosystem_plan.md §7 P1): "on" | "off" | nil =
+-- follow global. "on" = the full bundle for THIS book — auto-create + auto-update
+-- (+ promotion, which is unconditional anyway) — standalone, no global master
+-- needed. Legacy boolean true (the pre-tri-state double-opt-in) is honored as
+-- "on" only when the one-time migration recorded the old master as enabled —
+-- with the old master off, stored opt-ins were inert and must not re-activate.
 BookSettings.KEY_XRAY_AUTO = "koassistant_book_xray_auto"
+
+--- Per-book Automatic X-Ray override. Pure.
+--- @return string|nil "on" | "off" | nil (= follow global)
+function BookSettings.xrayAutoOverride(doc_settings, features)
+    local v = doc_settings and doc_settings:readSetting(BookSettings.KEY_XRAY_AUTO)
+    if v == "on" or v == "off" then return v end
+    if v == true and features and features._xray_auto_legacy_optin == true then
+        return "on"
+    end
+    return nil
+end
+
+--- Effective X-Ray automation for a book. Per-book "on" bundles auto-create
+--- (the one-switch directive); follow-global books need the global create
+--- sub-toggle on top of the global master. Pure.
+--- @return boolean auto, boolean create_allowed, string|nil override
+function BookSettings.resolveXrayAuto(doc_settings, features)
+    local ov = BookSettings.xrayAutoOverride(doc_settings, features)
+    if ov == "on" then return true, true, ov end
+    if ov == "off" then return false, false, ov end
+    local f = features or {}
+    local auto = f.xray_auto_update == true
+    return auto, auto and f.xray_auto_create == true, nil
+end
+
+--- Row/chip label for the current per-book Automatic X-Ray state. Pure.
+function BookSettings.xrayAutoLabel(doc_settings, features)
+    local ov = BookSettings.xrayAutoOverride(doc_settings, features)
+    if ov == "on" then return _("On") end
+    if ov == "off" then return _("Off") end
+    local global_on = features and features.xray_auto_update == true
+    return T(_("Follow global (%1)"), global_on and _("On") or _("Off"))
+end
+
 
 --- Resolve the effective AI Book Tools posture for a book: per-book override > global
 -- tools_posture > "auto" (the schema default — the fallback MUST match it, per the
@@ -652,6 +688,46 @@ end
 -- Book target: Follow global / Off / Manual / Auto (KEY_TOOLS sidecar key).
 -- Global target: Off / Manual / Auto (features.tools_posture).
 -- @param opts table: { plugin, ui, document_path, on_close, target_override }
+--- Tri-state Automatic X-Ray picker (§7 P1) — shared by the Book Settings row
+--- and both X-Ray popup rows. Defined AFTER resolveDocSettings (file-local
+--- upvalue scope). opts = { plugin, ui, document_path, on_change (called after
+--- a pick; refresh state + reopen your surface), on_cancel }.
+function BookSettings.showXrayAutoPicker(opts)
+    opts = opts or {}
+    local doc_settings = resolveDocSettings(opts.ui, opts.document_path)
+    if not doc_settings then return end
+    local features = opts.plugin and opts.plugin.settings
+        and opts.plugin.settings:readSetting("features") or {}
+    local cur = BookSettings.xrayAutoOverride(doc_settings, features)
+    local global_on = features.xray_auto_update == true
+    local function dot(on) return on and "● " or "○ " end
+    local picker
+    local function pick(val)
+        doc_settings:saveSetting(BookSettings.KEY_XRAY_AUTO, val)
+        doc_settings:flush()
+        UIManager:close(picker)
+        if opts.on_change then opts.on_change() end
+    end
+    picker = ButtonDialog:new{
+        title = _("Automatic X-Ray (this book)") .. "\n"
+            .. _("On: create an X-Ray early in the book and quietly keep it updated as you read — background API calls (WiFi + text-extraction consent required). Ladder versions are never built automatically."),
+        buttons = {
+            {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), global_on and _("On") or _("Off")),
+                callback = function() pick(nil) end }},
+            {{ text = dot(cur == "on") .. _("On — fully automatic"),
+                callback = function() pick("on") end }},
+            {{ text = dot(cur == "off") .. _("Off — never automatic"),
+                callback = function() pick("off") end }},
+            {{ text = _("Cancel"), id = "close",
+                callback = function()
+                    UIManager:close(picker)
+                    if opts.on_cancel then opts.on_cancel() end
+                end }},
+        },
+    }
+    UIManager:show(picker)
+end
+
 function BookSettings.showToolsPosture(opts)
     opts = opts or {}
     local plugin = opts.plugin
@@ -1650,25 +1726,22 @@ function BookSettings.show(opts)
         end })
     addButton({ text = T(_("Book info: %1"), bookInfoLabel(doc_settings:readSetting(BookSettings.KEY_BOOK_INFO))),
         callback = showBookInfoSubPicker })
-    -- Plain per-book opt-in (nil = off): second half of the double opt-in with the
-    -- global xray_auto_update master — no follow-global state, so a simple toggle,
-    -- not the tri-state picker
-    addButton({ text = T(_("X-Ray auto-update: %1"),
-            doc_settings:readSetting(BookSettings.KEY_XRAY_AUTO) == true and _("On") or _("Off")),
+    -- Tri-state Automatic X-Ray (§7 P1): On = create + update + promotion for
+    -- this book, standalone — no global master required
+    addButton({ text = T(_("Automatic X-Ray: %1"),
+            BookSettings.xrayAutoLabel(doc_settings, features)),
         callback = function()
-            if features.xray_auto_update ~= true then
-                UIManager:show(require("ui/widget/infomessage"):new{
-                    text = _("Enable 'Auto-update X-Ray while reading' in Settings → Reading & Library first, then opt this book in."),
-                })
-                return
-            end
-            local cur = doc_settings:readSetting(BookSettings.KEY_XRAY_AUTO) == true
-            doc_settings:saveSetting(BookSettings.KEY_XRAY_AUTO, (not cur) and true or nil)
-            doc_settings:flush()
-            syncConfig()
-            -- Refresh the page-turn pre-filter so the change takes effect this session
-            if plugin and plugin._refreshXrayAutoState then plugin:_refreshXrayAutoState() end
-            reopen()
+            closeDialog()
+            BookSettings.showXrayAutoPicker({
+                plugin = plugin, ui = ui, document_path = opts.document_path,
+                on_change = function()
+                    syncConfig()
+                    -- Refresh the page-turn pre-filter so the change takes effect this session
+                    if plugin and plugin._refreshXrayAutoState then plugin:_refreshXrayAutoState() end
+                    reopen()
+                end,
+                on_cancel = reopen,
+            })
         end })
     addButton({ text = T(_("Highlight context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHT_CONTEXT))),
         callback = function()

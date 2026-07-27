@@ -422,7 +422,7 @@ function XrayMerge.execute(opts)
                         end
                     end,
                 })
-                if opts.on_done then opts.on_done(ok, not ok and res_or_err or nil) end
+                if opts.on_done then opts.on_done(ok, not ok and res_or_err or nil, opts.target) end
             else
                 -- Combined-section target: validate, then write a section entry
                 -- with the union scope (section conventions: progress 1.0 +
@@ -460,7 +460,7 @@ function XrayMerge.execute(opts)
                 if ok and plugin_ref then
                     plugin_ref._file_dialog_row_cache = { file = nil, rows = nil }
                 end
-                if opts.on_done then opts.on_done(ok == true, ok ~= true and "cache write failed" or nil) end
+                if opts.on_done then opts.on_done(ok == true, ok ~= true and "cache write failed" or nil, opts.target) end
             end
         end)
 end
@@ -811,17 +811,48 @@ function XrayMerge.startFlow(opts)
                     reading_decimal = reading_decimal,
                     title = opts.title,
                     author = opts.author,
-                    on_done = opts.on_done or function(ok, err)
-                        if ok then
-                            UIManager:show(Notification:new{
-                                text = T(_("X-Ray merge complete (%1 sections)"), #picked),
-                            })
-                        else
+                    on_done = opts.on_done or function(ok, err, target)
+                        if not ok then
                             UIManager:show(InfoMessage:new{
                                 text = T(_("X-Ray merge failed: %1"), tostring(err or "unknown error")),
                                 timeout = 4,
                             })
+                            return
                         end
+                        if target ~= "main" or #picked == 0 then
+                            UIManager:show(Notification:new{
+                                text = T(_("X-Ray merge complete (%1 sections)"), #picked),
+                            })
+                            return
+                        end
+                        -- Into-main merges keep their inputs by design (merge is
+                        -- additive) — but ask, so the section list doesn't read
+                        -- as "the merge didn't take" (device rounds 1+2, T5)
+                        local ActionCache2 = require("koassistant_action_cache")
+                        local choice
+                        choice = ButtonDialog:new{
+                            title = T(_("Merged %1 section X-Rays into the main X-Ray."), #picked)
+                                .. "\n" .. _("Keep them as separate section X-Rays too?"),
+                            buttons = {
+                                {{
+                                    text = _("Keep sections"),
+                                    callback = function() UIManager:close(choice) end,
+                                }},
+                                {{
+                                    text = T(_("Delete the %1 merged sections"), #picked),
+                                    callback = function()
+                                        UIManager:close(choice)
+                                        for _idx, sec in ipairs(picked) do
+                                            ActionCache2.clear(opts.file, sec.key)
+                                        end
+                                        UIManager:show(Notification:new{
+                                            text = T(_("Deleted %1 section X-Rays."), #picked),
+                                        })
+                                    end,
+                                }},
+                            },
+                        }
+                        UIManager:show(choice)
                     end,
                 })
             end,
@@ -840,6 +871,9 @@ function XrayMerge.startFlow(opts)
         current_picker = dialog
         UIManager:show(dialog)
     end
+    -- Flow is really starting — retire the caller's browser only now, so the
+    -- no-sections/consent-blocked early returns above leave it intact (T11)
+    if opts.close_browser then opts.close_browser() end
     showPicker()
     logger.info("KOAssistant XrayMerge: flow started with", #sections, "sections for", opts.file)
 end

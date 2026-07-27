@@ -798,6 +798,10 @@ function XrayDedup.startFlow(opts)
             })
             return
         end
+        -- The list is really opening — NOW retire the caller's browser (its
+        -- data is about to be rewritten); empty scans return above with the
+        -- browser intact (T11)
+        if opts.close_browser then opts.close_browser() end
         local dialog
         local rows = {}
         for _idx, pair in ipairs(found) do

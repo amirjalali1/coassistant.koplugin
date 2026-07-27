@@ -439,6 +439,8 @@ function AskGPT:init()
     end
     -- Check if recap reminder should be shown
     self:checkRecapReminder()
+    -- One-shot Automatic X-Ray offer (§7 P4, opt-in; gates inside)
+    self:checkXrayOffer()
     -- Initialize chapter quiz state (reset on each book open). The chapter boundary list is
     -- recomputed lazily on the first page turn (and whenever the level setting changes), since
     -- the TOC may not be filled yet here.
@@ -1684,6 +1686,23 @@ function AskGPT:initSettings()
       features._reasoning_v2_migrated = true
       needs_save = true
       logger.info("KOAssistant: Migrated reasoning settings to per-model system (v2)")
+    end
+
+    -- ONE-TIME migration (Automatic X-Ray v2, xray_ecosystem_plan.md §7 P1): the
+    -- xray_auto_update master used to be half of a double opt-in (master AND a
+    -- per-book boolean). It now means "automatic for ALL books"; per-book keys are
+    -- tri-state strings. An old master=true user's effective posture was "opted-in
+    -- books only" → record the legacy grant (their boolean opt-ins keep working via
+    -- BookSettings.xrayAutoOverride) and switch the master OFF — the new all-books
+    -- meaning must stay opt-in fresh, never surprise spend.
+    if not features._xray_auto_v2_migrated then
+      if features.xray_auto_update == true then
+        features._xray_auto_legacy_optin = true
+        features.xray_auto_update = false
+      end
+      features._xray_auto_v2_migrated = true
+      needs_save = true
+      logger.info("KOAssistant: Migrated Automatic X-Ray to per-book tri-state (v2)")
     end
 
     -- ONE-TIME migration (tools posture): the enable_tool_workflows bool became the
@@ -5250,6 +5269,7 @@ function AskGPT:showCacheViewer(cache_info)
           full_document = cache_info.data.full_document,
           used_reasoning = cache_info.data.used_reasoning,
           web_search_used = cache_info.data.web_search_used,
+          merged_from_sections = cache_info.data.merged_from_sections,
           info_popup_text = info_popup_text,
           -- Archived-version view: browser goes read-only (no update/delete rows,
           -- no nested version history), title says "X-Ray Version"
@@ -7009,22 +7029,23 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         }})
       end
     end
-    -- Per-book opt-in BEFORE the first X-Ray exists, when auto-create makes it
-    -- actionable (§5 decision 1): opting in = "create early, then keep updated"
+    -- Per-book Automatic X-Ray (§7 P1): tri-state, universal — On bundles
+    -- auto-create + auto-update for this book, no global master needed
     local nc_af = self.settings:readSetting("features") or {}
-    if nc_af.xray_auto_update == true and nc_af.xray_auto_create == true
-        and self.ui and self.ui.doc_settings and self.ui.document
+    if self.ui and self.ui.doc_settings and self.ui.document
         and not (self.ui.document.info and self.ui.document.info.has_pages) then
-      local auto_key = require("koassistant_book_settings").KEY_XRAY_AUTO
-      local auto_on = self.ui.doc_settings:readSetting(auto_key) == true
       table.insert(buttons, {{
-        text = (auto_on and "● " or "○ ") .. _("Auto-create & update while reading (this book)"),
+        text = T(_("Automatic X-Ray: %1"),
+          require("koassistant_book_settings").xrayAutoLabel(self.ui.doc_settings, nc_af)),
         callback = function()
           UIManager:close(dialog)
-          self_ref.ui.doc_settings:saveSetting(auto_key, (not auto_on) and true or nil)
-          self_ref.ui.doc_settings:flush()
-          self_ref:_refreshXrayAutoState()
-          self_ref:_showXrayScopePopup(action, action_id, on_update, cached_entry, opts)
+          require("koassistant_book_settings").showXrayAutoPicker({
+            plugin = self_ref, ui = self_ref.ui,
+            on_change = function()
+              self_ref:_refreshXrayAutoState()
+              self_ref:_showXrayScopePopup(action, action_id, on_update, cached_entry, opts)
+            end,
+          })
         end,
       }})
     end
@@ -7269,21 +7290,23 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         }})
       end
     end
-    -- Per-book background auto-update opt-in (double opt-in: master toggle + this row;
-    -- here for discoverability, mirrored in Book Settings). Flowing docs only in v1.
+    -- Per-book Automatic X-Ray (§7 P1): tri-state, universal — mirrored in
+    -- Book Settings. Flowing docs only.
     local af = self.settings:readSetting("features") or {}
-    if af.xray_auto_update == true and self.ui and self.ui.doc_settings and doc
+    if self.ui and self.ui.doc_settings and doc
         and not (doc.info and doc.info.has_pages) then
-      local auto_key = require("koassistant_book_settings").KEY_XRAY_AUTO
-      local auto_on = self.ui.doc_settings:readSetting(auto_key) == true
       table.insert(buttons, {{
-        text = (auto_on and "● " or "○ ") .. _("Auto-update while reading (this book)"),
+        text = T(_("Automatic X-Ray: %1"),
+          require("koassistant_book_settings").xrayAutoLabel(self.ui.doc_settings, af)),
         callback = function()
           UIManager:close(dialog)
-          self_ref.ui.doc_settings:saveSetting(auto_key, (not auto_on) and true or nil)
-          self_ref.ui.doc_settings:flush()
-          self_ref:_refreshXrayAutoState()
-          self_ref:_showXrayScopePopup(action, action_id, on_update, cached_entry, opts)
+          require("koassistant_book_settings").showXrayAutoPicker({
+            plugin = self_ref, ui = self_ref.ui,
+            on_change = function()
+              self_ref:_refreshXrayAutoState()
+              self_ref:_showXrayScopePopup(action, action_id, on_update, cached_entry, opts)
+            end,
+          })
         end,
       }})
     end
@@ -8932,6 +8955,62 @@ end
 
 --- Check if we should show a recap reminder for the current book.
 --- Called from onReaderReady when the user opens a book they haven't read in a while.
+--- One-shot "turn on Automatic X-Ray?" offer on book open (§7 P4, recap-reminder
+--- pattern; opt-in via xray_offer_auto). Fires only when accepting can act
+--- immediately: flowing doc, no X-Ray at all, inside the auto-create window,
+--- consent already satisfied. Declining sets the per-book tri-state to "off"
+--- (the offer only fires while it is unset, so it never re-asks); tapping
+--- outside decides nothing and may ask again next open. A ButtonDialog, NOT a
+--- ConfirmBox — ConfirmBox fires cancel_callback on ANY close incl. dismiss.
+function AskGPT:checkXrayOffer()
+  local features = self.settings:readSetting("features") or {}
+  if features.xray_offer_auto ~= true then return end
+  if not self.ui or not self.ui.document or not self.ui.doc_settings then return end
+  local doc_info = self.ui.document.info
+  if not doc_info or doc_info.has_pages then return end
+  local file = self.ui.document.file
+  if not file then return end
+  local BookSettings = require("koassistant_book_settings")
+  if BookSettings.xrayAutoOverride(self.ui.doc_settings, features) ~= nil then return end
+  if BookSettings.resolveXrayAuto(self.ui.doc_settings, features) then return end
+  local ActionCache = require("koassistant_action_cache")
+  local entry = ActionCache.get(file, "xray")
+  if entry and entry.result then return end
+  local doc_entry = ActionCache.getXrayCache(file)
+  if doc_entry and doc_entry.result then return end
+  -- Same window as auto-create: offer only where accepting acts right away
+  local percent = self.ui.doc_settings:readSetting("percent_finished") or 0
+  local dials = require("koassistant_xray_auto").dialsFromFeatures(features)
+  if percent <= dials.min_gap or percent > dials.max_gap then return end
+  local action = self.action_service and self.action_service:getAction("book", "xray")
+  if not action then return end
+  if not self:_xrayBackgroundConsentOk(action, features) then return end
+  local self_ref = self
+  local offer
+  offer = ButtonDialog:new{
+    title = _("This book has no X-Ray yet.") .. "\n"
+      .. _("Turn on Automatic X-Ray for this book? It will be created in the background now and kept updated as you read."),
+    buttons = {
+      {{ text = _("Turn on"), callback = function()
+        UIManager:close(offer)
+        self_ref.ui.doc_settings:saveSetting(
+          require("koassistant_book_settings").KEY_XRAY_AUTO, "on")
+        self_ref.ui.doc_settings:flush()
+        self_ref:_refreshXrayAutoState()
+        -- Act now — the deferred fire re-checks every gate from disk truth
+        UIManager:scheduleIn(2, function() self_ref:_fireXrayAutoUpdate() end)
+      end }},
+      {{ text = _("Not for this book"), callback = function()
+        UIManager:close(offer)
+        self_ref.ui.doc_settings:saveSetting(
+          require("koassistant_book_settings").KEY_XRAY_AUTO, "off")
+        self_ref.ui.doc_settings:flush()
+      end }},
+    },
+  }
+  UIManager:show(offer)
+end
+
 function AskGPT:checkRecapReminder()
   local features = self.settings:readSetting("features") or {}
   if features.enable_recap_reminder ~= true then return end
@@ -9201,9 +9280,10 @@ function AskGPT:_refreshXrayAutoState()
   if not file then return end
   local features = self.settings:readSetting("features") or {}
   local state = { prev_page = prev and prev.prev_page }
-  state.auto_update = features.xray_auto_update == true
-    and self.ui.doc_settings ~= nil
-    and self.ui.doc_settings:readSetting(require("koassistant_book_settings").KEY_XRAY_AUTO) == true
+  -- §7 P1 tri-state: per-book "on" (bundles create) / "off" / follow-global
+  local auto_on, create_allowed = require("koassistant_book_settings")
+      .resolveXrayAuto(self.ui.doc_settings, features)
+  state.auto_update = self.ui.doc_settings ~= nil and auto_on
   if state.auto_update then
     -- One cache dofile — paid only by opted-in books; default users never hit disk here
     local XrayAuto = require("koassistant_xray_auto")
@@ -9215,7 +9295,7 @@ function AskGPT:_refreshXrayAutoState()
     -- Auto-create (§5 decision 1): a book with NO X-Ray at all becomes eligible
     -- from progress 0 — the max-gap cap then confines creation to early in the
     -- book. Existing-but-ineligible artifacts stay manual.
-    if not state.eligible and features.xray_auto_create == true
+    if not state.eligible and create_allowed
         and not (entry and entry.result) then
       local doc_entry = ActionCache.getXrayCache(file)
       if not (doc_entry and doc_entry.result) then
@@ -9378,11 +9458,10 @@ function AskGPT:_fireXrayAutoUpdate()
   local file = self.ui.document.file
 
   local features = self.settings:readSetting("features") or {}
-  if features.xray_auto_update ~= true then return end
-  if not (self.ui.doc_settings
-      and self.ui.doc_settings:readSetting(require("koassistant_book_settings").KEY_XRAY_AUTO) == true) then
-    return
-  end
+  -- §7 P1 tri-state: per-book "on" (bundles create) / "off" / follow-global
+  local fire_auto, fire_create_allowed = require("koassistant_book_settings")
+      .resolveXrayAuto(self.ui.doc_settings, features)
+  if not self.ui.doc_settings or not fire_auto then return end
   local doc_info = self.ui.document.info
   if not doc_info or doc_info.has_pages then return end
 
@@ -9395,7 +9474,7 @@ function AskGPT:_fireXrayAutoUpdate()
   if not eligible then
     -- Auto-create carve-out (§5 decision 1): opt-in, and ONLY when no X-Ray
     -- exists at all — an existing-but-ineligible artifact stays manual
-    if features.xray_auto_create == true and not (fire_entry and fire_entry.result) then
+    if fire_create_allowed and not (fire_entry and fire_entry.result) then
       local doc_entry = ActionCache.getXrayCache(file)
       if not (doc_entry and doc_entry.result) then
         create_mode = true

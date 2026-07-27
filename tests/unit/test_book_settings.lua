@@ -882,6 +882,42 @@ TestRunner:test("zero-gather smart retrieval resolves empty and fires the fallba
     TestRunner:assertContains(result, "No document text was provided", "fallback nudge fires")
 end)
 
+TestRunner:suite("Automatic X-Ray tri-state (xray_ecosystem_plan.md §7 P1)")
+
+TestRunner:test("xrayAutoOverride: strings win; legacy true needs the migration grant", function()
+    local function ds(v) return { readSetting = function(_, key)
+        if key == BookSettings.KEY_XRAY_AUTO then return v end
+    end } end
+    TestRunner:assertEqual(BookSettings.xrayAutoOverride(ds("on"), {}), "on", "string on")
+    TestRunner:assertEqual(BookSettings.xrayAutoOverride(ds("off"), {}), "off", "string off")
+    TestRunner:assertEqual(BookSettings.xrayAutoOverride(ds(nil), {}), nil, "unset = follow")
+    -- Legacy boolean true: honored ONLY with the migration's master-was-on grant
+    TestRunner:assertEqual(BookSettings.xrayAutoOverride(ds(true), { _xray_auto_legacy_optin = true }), "on",
+        "legacy opt-in honored when the old master was on")
+    TestRunner:assertEqual(BookSettings.xrayAutoOverride(ds(true), {}), nil,
+        "legacy opt-in inert without the grant (old master was off)")
+    TestRunner:assertEqual(BookSettings.xrayAutoOverride(nil, {}), nil, "no doc_settings = follow")
+end)
+
+TestRunner:test("resolveXrayAuto: per-book On bundles create; follow needs master+create", function()
+    local function ds(v) return { readSetting = function(_, key)
+        if key == BookSettings.KEY_XRAY_AUTO then return v end
+    end } end
+    local auto, create = BookSettings.resolveXrayAuto(ds("on"), {})
+    TestRunner:assertEqual(auto, true, "per-book On is standalone (global off)")
+    TestRunner:assertEqual(create, true, "per-book On bundles auto-create")
+    auto, create = BookSettings.resolveXrayAuto(ds("off"), { xray_auto_update = true, xray_auto_create = true })
+    TestRunner:assertEqual(auto, false, "per-book Off beats global on")
+    TestRunner:assertEqual(create, false, "per-book Off kills create too")
+    auto, create = BookSettings.resolveXrayAuto(ds(nil), { xray_auto_update = true })
+    TestRunner:assertEqual(auto, true, "follow-global inherits the all-books master")
+    TestRunner:assertEqual(create, false, "follow-global create needs the sub-toggle")
+    auto, create = BookSettings.resolveXrayAuto(ds(nil), { xray_auto_update = true, xray_auto_create = true })
+    TestRunner:assertEqual(create, true, "follow-global create with the sub-toggle on")
+    auto = BookSettings.resolveXrayAuto(ds(nil), {})
+    TestRunner:assertEqual(auto, false, "everything unset = off (schema default)")
+end)
+
 print("")
 print(string.rep("-", 50))
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))

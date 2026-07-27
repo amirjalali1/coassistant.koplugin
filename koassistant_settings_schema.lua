@@ -810,10 +810,10 @@ local SettingsSchema = {
                 {
                     id = "xray_auto_update",
                     type = "toggle",
-                    text = _("Auto-update X-Ray while reading"),
+                    text = _("Automatic X-Ray (all books)"),
                     path = "features.xray_auto_update",
                     default = false,
-                    help_text = _("Quietly bring this book's X-Ray up to your reading position in the background as you read. Each book must additionally be opted in from its X-Ray popup or Book Settings.\n\nSpend guards: never creates an X-Ray (only updates an existing incremental one — unless Auto-create below is also on), fires at most once per cooldown, only for progress gaps inside the window below (bigger gaps stay manual), and only when WiFi is already on. This makes API calls without a tap — leave off if every request should be explicit."),
+                    help_text = _("Quietly keep every book's X-Ray up to your reading position in the background as you read (flowing formats like EPUB only). Individual books can override this either way: X-Ray popup or Book Settings → Automatic X-Ray — a per-book On works even with this off, and a per-book Off always wins.\n\nSpend guards: fires at most once per cooldown, only for progress gaps inside the window below (bigger gaps stay manual), and only when WiFi is already on. Background runs extract book text and use API tokens without a per-request tap — text-extraction consent (or a trusted provider) is required, and ladder versions are never built automatically. Leave off if every request should be explicit."),
                 },
                 {
                     id = "xray_auto_create",
@@ -821,8 +821,16 @@ local SettingsSchema = {
                     text = _("Auto-create X-Ray (early in a book)"),
                     path = "features.xray_auto_create",
                     default = false,
-                    help_text = _("For opted-in books with no X-Ray yet: quietly create the first one in the background once you've read past the minimum gap. The maximum gap still caps it — further into a book, create the first X-Ray manually (which shows the extraction size first). Books with an existing non-incremental X-Ray (complete, AI-knowledge, legacy) are never touched."),
+                    help_text = _("For books following the global setting with no X-Ray yet: quietly create the first one in the background once you've read past the minimum gap. The maximum gap still caps it — further into a book, create the first X-Ray manually (which shows the extraction size first). Books with an existing non-incremental X-Ray (complete, AI-knowledge, legacy) are never touched.\n\nBooks switched to Automatic individually (per-book On) always auto-create, regardless of this setting."),
                     depends_on = { id = "xray_auto_update", value = true },
+                },
+                {
+                    id = "xray_offer_auto",
+                    type = "toggle",
+                    text = _("Offer Automatic X-Ray for New Books"),
+                    path = "features.xray_offer_auto",
+                    default = false,
+                    help_text = _("When you open a book that has no X-Ray, ask once — early in the book — whether to turn on Automatic X-Ray for it. Only asks when it could act right away (flowing format, inside the auto-create window, text-extraction consent in place). Declining turns the book's Automatic X-Ray off, so it never asks again for that book."),
                 },
                 {
                     id = "xray_auto_min_gap",
@@ -834,7 +842,7 @@ local SettingsSchema = {
                     max = 20,
                     step = 1,
                     precision = "%d",
-                    help_text = _("Don't auto-update until you've read at least this much past the X-Ray's position. Lower = more frequent, smaller updates (more API calls); higher = fewer, larger ones."),
+                    help_text = _("Don't auto-update until you've read at least this much past the X-Ray's position. Lower = more frequent, smaller updates (more API calls); higher = fewer, larger ones. Also the lower edge of the auto-create window."),
                     depends_on = { id = "xray_auto_update", value = true },
                 },
                 {
@@ -847,7 +855,7 @@ local SettingsSchema = {
                     max = 60,
                     step = 5,
                     precision = "%d",
-                    help_text = _("Spend guard: gaps bigger than this never auto-update — run the update manually from the X-Ray popup, which shows the size first. Raising this allows larger unattended extractions."),
+                    help_text = _("Spend guard: gaps bigger than this never auto-update — run the update manually from the X-Ray popup, which shows the size first. Raising this allows larger unattended extractions. Also the upper edge of the auto-create window, and the cap on automatic ladder promotions after a position jump (the manual popup row has no cap)."),
                     depends_on = { id = "xray_auto_update", value = true },
                 },
                 {
@@ -866,11 +874,10 @@ local SettingsSchema = {
                 {
                     id = "xray_auto_notify",
                     type = "toggle",
-                    text = _("Notify on Auto-Update"),
+                    text = _("Notify on Background Activity"),
                     path = "features.xray_auto_notify",
                     default = false,
-                    help_text = _("Show a brief notification when a background X-Ray update starts and when it completes. Off = fully silent (the X-Ray popup always shows the current coverage)."),
-                    depends_on = { id = "xray_auto_update", value = true },
+                    help_text = _("Show a brief notification when a background X-Ray update or create starts and completes, and when a ladder version is silently swapped in. Off = fully silent (the X-Ray popup always shows the current coverage)."),
                 },
                 {
                     id = "xray_versions_kept",
@@ -882,7 +889,7 @@ local SettingsSchema = {
                     max = 20,
                     step = 1,
                     precision = "%d",
-                    help_text = _("Whenever an update or redo overwrites the X-Ray, the outgoing version is archived — browse, view, or restore them via \"Previous versions\" in the X-Ray popup and browser menu. This sets how many are kept per book (oldest dropped first). 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself."),
+                    help_text = _("Whenever an update or redo overwrites the X-Ray, the outgoing version is archived — browse, view, or restore them via \"Previous versions\" in the X-Ray popup and browser menu. This sets how many are kept per book (oldest dropped first). 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself. Ladder versions are stored separately and are never trimmed by this."),
                     separator = true,
                 },
                 -- Recap Reminder

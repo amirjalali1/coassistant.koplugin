@@ -4037,8 +4037,9 @@ function XrayBrowser:showOptions()
                 callback = function()
                     closeOptions()
                     -- Close the browser: a successful into-main merge replaces the
-                    -- data this view renders
-                    if self_ref.menu then UIManager:close(self_ref.menu) end
+                    -- data this view renders. Deferred to list-open (device
+                    -- round 2 T11): an empty flow must leave the browser up.
+                    local browser_closed = false
                     require("koassistant_xray_merge").startFlow({
                         file = self_ref.metadata.book_file,
                         ui = self_ref.ui,
@@ -4046,6 +4047,12 @@ function XrayBrowser:showOptions()
                         configuration = self_ref.metadata.configuration,
                         title = self_ref.metadata.title,
                         author = self_ref.metadata.book_author,
+                        close_browser = function()
+                            if not browser_closed and self_ref.menu then
+                                browser_closed = true
+                                UIManager:close(self_ref.menu)
+                            end
+                        end,
                     })
                 end,
             }})
@@ -4060,8 +4067,10 @@ function XrayBrowser:showOptions()
             text = _("Find duplicate entities…"), align = "left",
             callback = function()
                 closeOptions()
-                -- Close the browser: a merge rewrites the data this view renders
-                if self_ref.menu then UIManager:close(self_ref.menu) end
+                -- Close the browser only when the pair list actually opens (a
+                -- merge rewrites the data this view renders) — an empty scan
+                -- must leave the browser up (device round 2 T11)
+                local browser_closed = false
                 require("koassistant_xray_dedup").startFlow({
                     file = self_ref.metadata.book_file,
                     ui = self_ref.ui,
@@ -4069,6 +4078,12 @@ function XrayBrowser:showOptions()
                     configuration = self_ref.metadata.configuration,
                     title = self_ref.metadata.title,
                     author = self_ref.metadata.book_author,
+                    close_browser = function()
+                        if not browser_closed and self_ref.menu then
+                            browser_closed = true
+                            UIManager:close(self_ref.menu)
+                        end
+                    end,
                 })
             end,
         }})
@@ -4107,6 +4122,11 @@ function XrayBrowser:showOptions()
     end
     if self.metadata.web_search_used then
         table.insert(info_parts, _("Web search:") .. " " .. _("Yes"))
+    end
+    -- Merge provenance (T12): the field records the LAST merge's input count
+    if tonumber(self.metadata.merged_from_sections) then
+        table.insert(info_parts, _("Merged from:") .. " "
+            .. T(_("%1 section X-Rays"), self.metadata.merged_from_sections))
     end
 
     if #info_parts > 0 then
