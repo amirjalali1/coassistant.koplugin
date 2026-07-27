@@ -880,6 +880,14 @@ local SettingsSchema = {
                     help_text = _("Show a brief notification when a background X-Ray update or create starts and completes, and when a ladder version is silently swapped in. Off = fully silent (the X-Ray popup always shows the current coverage)."),
                 },
                 {
+                    id = "xray_ladder_chapter_snap",
+                    type = "toggle",
+                    text = _("Ladder Versions at Chapter Ends"),
+                    path = "features.xray_ladder_chapter_snap",
+                    default = true,
+                    help_text = _("When building an X-Ray version ladder, place each version at the nearest chapter end (within a few percent) instead of an exact percentage — versions then read as \"up to the end of a chapter\", and the versions list shows the chapter names. Needs a table of contents. Version spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones."),
+                },
+                {
                     id = "xray_versions_kept",
                     type = "spinner",
                     text = _("X-Ray Versions to Keep"),

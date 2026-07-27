@@ -528,6 +528,74 @@ TestRunner:test("planLadderRungs: spacing multiples above base, final 1.0, float
         "within 1% of the end: update path can't engage, nothing to build")
 end)
 
+TestRunner:test("ladderSpacingFor: 10% baseline, min-pages floor, tiny-book clamp", function()
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(nil), 0.1, "no page count: baseline")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(0), 0.1, "zero pages: baseline")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(600), 0.1, "long book: baseline 10%")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(300), 0.1, "300 pages: floor lands exactly on baseline")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(200), 0.15, "200 pages: 30-page floor -> 15%")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(100), 0.3, "novella: 30%")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(40), 0.5, "tiny book clamps at 50%")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(220), 0.14,
+        "whole-percent rounding (30/220 -> 14%)")
+    TestRunner:assertEqual(#XrayAuto.planLadderRungs(0, XrayAuto.ladderSpacingFor(100)), 4,
+        "novella ladder: 30/60/90/100 — 4 calls, not 10")
+end)
+
+TestRunner:test("snapLadderRungs: chapter-end snap, window, dedup, final rung survives", function()
+    local rungs = XrayAuto.planLadderRungs(0)  -- 0.1..0.9 + 1.0
+    local bounds = {
+        { ratio = 0.12, title = "One" },
+        { ratio = 0.28, title = "Two" },
+        { ratio = 0.55, title = "Three" },
+        { ratio = 0.71, title = "Four" },
+    }
+    local targets, labels = XrayAuto.snapLadderRungs(rungs, bounds, 0)
+    TestRunner:assertEqual(targets[1], 0.12, "0.10 snaps to the chapter end at 0.12")
+    TestRunner:assertEqual(labels[1], "One", "carries the chapter title")
+    TestRunner:assertEqual(targets[2], 0.2, "no boundary within 3%: raw target kept")
+    TestRunner:assertEqual(labels[2], nil, "raw targets carry no label")
+    TestRunner:assertEqual(targets[3], 0.28, "0.30 snaps DOWN to 0.28")
+    TestRunner:assertEqual(targets[5], 0.5, "0.55 is outside the 3% window of 0.50")
+    TestRunner:assertEqual(targets[7], 0.71, "0.70 snaps up to 0.71")
+    TestRunner:assertEqual(labels[7], "Four", "label rides")
+    TestRunner:assertEqual(targets[#targets], 1.0, "final rung stays 1.0, never snapped")
+    TestRunner:assertEqual(labels[#targets], nil, "final rung unlabeled")
+
+    local t2, l2 = XrayAuto.snapLadderRungs(rungs, { { ratio = 0.5, title = "Only" } }, 0)
+    TestRunner:assertEqual(t2, rungs, "fewer than 3 boundaries: passthrough (unusable TOC)")
+    TestRunner:assertEqual(next(l2), nil, "and no labels")
+
+    local t3 = XrayAuto.snapLadderRungs({ 0.9, 1.0 }, {
+        { ratio = 0.3, title = "A" }, { ratio = 0.6, title = "B" }, { ratio = 0.99, title = "Z" },
+    }, 0.85)
+    TestRunner:assertEqual(t3[1], 0.9, "a boundary inside the final 3% is ignored")
+    TestRunner:assertEqual(t3[2], 1.0, "so the final rung is never displaced")
+
+    local t4 = XrayAuto.snapLadderRungs({ 0.30, 0.33, 1.0 }, {
+        { ratio = 0.31, title = "A" }, { ratio = 0.05, title = "B" }, { ratio = 0.07, title = "C" },
+    }, 0)
+    TestRunner:assertEqual(#t4, 2, "two rungs collapsing onto one chapter build it once")
+    TestRunner:assertEqual(t4[1], 0.31, "the snapped rung")
+    TestRunner:assertEqual(t4[2], 1.0, "plus the final rung")
+
+    -- Labels ride the build state per-index (skip-ahead advances idx, staying aligned)
+    XrayAuto.beginLadderBuild("/x.epub", targets, labels)
+    TestRunner:assertEqual(XrayAuto.ladderBuild().labels[1], "One", "labels stored on the build")
+    XrayAuto.endLadderBuild()
+
+    -- chapter_label survives the ladder sidecar serializer (field parity)
+    ActionCache.clearXrayLadder(DOC_PATH)
+    ActionCache.pushXrayLadderRung(DOC_PATH, {
+        result = '{"x":1}', progress_decimal = 0.28, timestamp = 1700000000,
+        chapter_label = "Two \"quoted\" title",
+    })
+    local disk = ActionCache.getXrayLadder(DOC_PATH)
+    TestRunner:assertEqual(disk[1] and disk[1].chapter_label, "Two \"quoted\" title",
+        "chapter_label round-trips through the ring serializer")
+    ActionCache.clearXrayLadder(DOC_PATH)
+end)
+
 TestRunner:test("pickPromotableRung: at-or-below position, ahead of live, complete excluded", function()
     local ladder = {
         { progress_decimal = 0.2, result = "a" },

@@ -3116,10 +3116,12 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     local ladder_build_flag = config and config.features and config.features._ladder_build
     local ladder_target = config and config.features and tonumber(config.features._ladder_target_ratio)
     local ladder_base = config and config.features and config.features._ladder_base
+    local ladder_chapter_label = config and config.features and config.features._ladder_chapter_label
     if config and config.features then
         config.features._ladder_build = nil
         config.features._ladder_target_ratio = nil
         config.features._ladder_base = nil
+        config.features._ladder_chapter_label = nil
     end
     -- Merge engine (§6 slice 3): sentinel payload. Artifact JSON must NEVER pass
     -- through the placeholder machinery (the early passes strip lines and
@@ -3344,6 +3346,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         _ladder_build = ladder_build_flag or nil,
         _ladder_target = ladder_target,
         _ladder_base = ladder_base,
+        -- P3 chapter snapping: the planned rung's chapter title, stamped into the
+        -- rung entry at save so the versions list can label it
+        _ladder_chapter_label = ladder_chapter_label,
     }
     message_data._merge_payload = merge_payload
     logger.info("KOAssistant: message_data.book_metadata=", message_data.book_metadata and "present" or "nil")
@@ -4429,6 +4434,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                         used_book_text = book_text_was_provided,
                         flow_visible_pages = message_data.flow_visible_pages,
                         source_mode = source_mode,
+                        chapter_label = message_data._ladder_chapter_label,
                     })
                     logger.info("KOAssistant: ladder rung", rung_ok and "saved" or "SAVE FAILED",
                         "at", progress)

@@ -7113,6 +7113,14 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     local cached_progress = cached_entry.progress_decimal or 0
     if current_progress and current_progress.decimal > cached_progress + 0.01 then
       update_text = T(_("Update %1 (to %2)"), action_name, current_progress.formatted)
+    elseif current_progress and cached_progress > current_progress.decimal + 0.01 then
+      -- T14: the cache is AHEAD of the reader (merge-ahead main / re-reader).
+      -- "Redo (to 53%)" reads like a downgrade of the 88% version — say what
+      -- actually happens: a from-scratch rebuild at the reader's position; the
+      -- outgoing version stays under Previous versions.
+      update_text = T(_("Rebuild %1 to your position (%2) — replaces the current %3%"),
+        action_name, current_progress.formatted,
+        math.floor(cached_progress * 100 + 0.5))
     elseif current_progress then
       update_text = T(_("Redo %1 (to %2)"), action_name, current_progress.formatted)
     else
@@ -8388,6 +8396,10 @@ function AskGPT:_xrayCheckpointLabel(cp)
     table.insert(parts, _("Complete"))
   elseif cp.progress_decimal then
     table.insert(parts, math.floor(cp.progress_decimal * 100 + 0.5) .. "%")
+  end
+  if cp.chapter_label then
+    -- P3: chapter-snapped rungs name the chapter whose end they cover
+    table.insert(parts, T(_("end of %1"), cp.chapter_label))
   end
   local rel = formatRelativeTime(cp.timestamp)
   if rel ~= "" then
@@ -9724,6 +9736,37 @@ function AskGPT:_fireXrayLadderPromotion(opts)
   return ok
 end
 
+--- Chapter-end boundaries for ladder rung snapping (P3): ascending
+--- { ratio, title } where ratio = the chapter's last page over the page count
+--- and title = the chapter that ENDS there. Chapter set = the quiz auto-level
+--- heuristic (leaf-at-N, 5-page floor) — deliberately independent of the
+--- per-book quiz settings. Ends inside the final 3% are excluded (that close
+--- to the end is the 1.0 rung's job). nil = unusable TOC (< 3 boundaries).
+function AskGPT:_ladderChapterBoundaries()
+  local toc = self.ui and self.ui.toc and self.ui.toc.toc
+  local doc = self.ui and self.ui.document
+  if not toc or #toc == 0 or not doc then return nil end
+  local total = doc:getPageCount()
+  if not total or total <= 0 then return nil end
+  local QuizChapters = require("koassistant_quiz_chapters")
+  local level = QuizChapters.autoLevel(toc, total, 5)
+  local indices = QuizChapters.chapterIndices(toc, level)
+  local out = {}
+  for k = 1, #indices - 1 do
+    local end_page = (toc[indices[k + 1]].page or 1) - 1
+    local ratio = end_page / total
+    if ratio > 0 and ratio <= 0.97 then
+      local title = toc[indices[k]].title or ""
+      if self.ui.toc.cleanUpTocTitle then
+        title = self.ui.toc:cleanUpTocTitle(title) or title
+      end
+      out[#out + 1] = { ratio = ratio, title = title ~= "" and title or nil }
+    end
+  end
+  if #out < 3 then return nil end
+  return out
+end
+
 --- Entry point for the ladder build/resume (X-Ray popup rows). Explicit user
 --- action: pre-flight UI gating + a cost dialog, then the silent chain.
 function AskGPT:_startXrayLadderBuild()
@@ -9781,28 +9824,44 @@ function AskGPT:_startXrayLadderBuild()
     base_progress = live_progress
   end
 
-  local rungs = XrayAuto.planLadderRungs(base_progress or 0)
+  -- P2(a): spacing adapts to book length (min-pages floor); P3: targets snap
+  -- to chapter ends when a usable TOC exists (labels ride into the rung entries)
+  local spacing = XrayAuto.ladderSpacingFor(self.ui.document:getPageCount())
+  local rungs = XrayAuto.planLadderRungs(base_progress or 0, spacing)
+  local features = self.settings:readSetting("features") or {}
+  local rung_labels = {}
+  if features.xray_ladder_chapter_snap ~= false then
+    local boundaries = self:_ladderChapterBoundaries()
+    if boundaries then
+      rungs, rung_labels = XrayAuto.snapLadderRungs(rungs, boundaries, base_progress or 0)
+    end
+  end
   if #rungs == 0 then
     UIManager:show(InfoMessage:new{ text = _("The version ladder is already complete."), timeout = 2 })
     return
   end
+  local snapped = next(rung_labels) ~= nil
 
   local resume = #ladder > 0
   local self_ref = self
+  local cost_text = snapped
+    and T(_("%1 versions will be generated in the background (at chapter ends, roughly every %2% of the book, up to 100%), one incremental update each — in total roughly the cost of one full X-Ray run. The book must stay open; you can keep reading."),
+      #rungs, math.floor(spacing * 100 + 0.5))
+    or T(_("%1 versions will be generated in the background (every %2% of the book, up to 100%), one incremental update each — in total roughly the cost of one full X-Ray run. The book must stay open; you can keep reading."),
+      #rungs, math.floor(spacing * 100 + 0.5))
   local confirm
   confirm = ButtonDialog:new{
     title = (resume
         and T(_("Resume the X-Ray version ladder from %1%?"),
           math.floor((base_progress or 0) * 100 + 0.5))
         or _("Build an X-Ray version ladder?"))
-      .. "\n" .. T(_("%1 versions will be generated in the background (every %2% of the book, up to 100%), one incremental update each — in total roughly the cost of one full X-Ray run. The book must stay open; you can keep reading."),
-        #rungs, math.floor(XrayAuto.LADDER_SPACING * 100 + 0.5)),
+      .. "\n" .. cost_text,
     buttons = {
       {{
         text = resume and _("Resume") or _("Build"),
         callback = function()
           UIManager:close(confirm)
-          XrayAuto.beginLadderBuild(file, rungs)
+          XrayAuto.beginLadderBuild(file, rungs, rung_labels)
           self_ref:_fireXrayLadderRung()
         end,
       }},
@@ -9894,6 +9953,7 @@ function AskGPT:_fireXrayLadderRung()
   config_copy.features._ladder_build = true
   config_copy.features._ladder_target_ratio = target
   config_copy.features._ladder_base = base
+  config_copy.features._ladder_chapter_label = build.labels and build.labels[build.idx] or nil
 
   local doc_props = self.ui.doc_props or {}
   local title = doc_props.display_title or doc_props.title or "Unknown"

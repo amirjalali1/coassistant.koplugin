@@ -1174,6 +1174,7 @@ local CHECKPOINT_COPY_FIELDS = {
     "progress_decimal", "progress_page", "timestamp", "result",
     "used_highlights", "used_annotations", "used_book_text",
     "model", "full_document", "flow_visible_pages", "source_mode",
+    "chapter_label",
 }
 
 local function buildCheckpointEntry(source)
@@ -1228,6 +1229,9 @@ local function writeCheckpointRing(path, ring)
         end
         if cp.source_mode then
             file:write(string.format("        source_mode = %q,\n", cp.source_mode))
+        end
+        if cp.chapter_label then
+            file:write(string.format("        chapter_label = %q,\n", cp.chapter_label))
         end
         local result_text = cp.result or ""
         local eq_str = string.rep("=", findSafeDelimiter(result_text))

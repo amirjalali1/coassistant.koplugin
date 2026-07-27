@@ -217,8 +217,68 @@ end
 -- math + the build-chain session state live here (same cross-instance rationale as
 -- the flight state above); ladder file I/O lives in koassistant_action_cache.lua.
 
-XrayAuto.LADDER_SPACING = 0.10   -- rung boundaries every 10% (v1 constant, no dial)
+XrayAuto.LADDER_SPACING = 0.10   -- rung boundaries every 10% (baseline; formula below can widen)
 XrayAuto.LADDER_TOLERANCE = 0.005
+XrayAuto.LADDER_MIN_RUNG_PAGES = 30  -- P2(a) floor: a rung must cover at least ~this many pages
+XrayAuto.LADDER_MAX_SPACING = 0.50   -- tiny books still get a midpoint + final rung
+XrayAuto.LADDER_SNAP_WINDOW = 0.03   -- P3: chapter-end snap distance (±3%)
+
+--- P2(a) formula (§7): rung spacing from book length — the 10% baseline until
+--- the min-pages-per-rung floor kicks in (a novella must not burn a call on a
+--- 10-page slice), clamped so even tiny books keep two rungs. Rounded to whole
+--- percents (the cost dialog and notifications display it).
+--- @param total_pages number|nil document page count
+--- @return number spacing ratio (LADDER_SPACING..LADDER_MAX_SPACING)
+function XrayAuto.ladderSpacingFor(total_pages)
+  local pages = tonumber(total_pages)
+  if not pages or pages <= 0 then return XrayAuto.LADDER_SPACING end
+  local spacing = math.floor((XrayAuto.LADDER_MIN_RUNG_PAGES / pages) * 100 + 0.5) / 100
+  if spacing < XrayAuto.LADDER_SPACING then return XrayAuto.LADDER_SPACING end
+  if spacing > XrayAuto.LADDER_MAX_SPACING then return XrayAuto.LADDER_MAX_SPACING end
+  return spacing
+end
+
+--- P3 (§7): snap rung targets to chapter-end boundaries so versions read as
+--- "up to the end of a chapter" instead of an arbitrary percent. Pure.
+--- Boundaries above 1 - SNAP_WINDOW are ignored (a rung that close to the end
+--- is the final rung's job) — which also guarantees the 1.0 rung survives the
+--- ordering pass below. A target that lands within the update path's 1%
+--- engagement threshold of its predecessor (or the base) is dropped: two rungs
+--- collapsing onto one chapter build it once.
+--- @param rungs table planLadderRungs output (ascending ratios, last = 1.0)
+--- @param boundaries table|nil ascending { ratio, title } chapter ends; fewer than 3 = unusable TOC, no-op
+--- @param base_progress number|nil the build base (0..1)
+--- @return table targets (ascending ratios), table labels (sparse, parallel: labels[i] = chapter title of targets[i])
+function XrayAuto.snapLadderRungs(rungs, boundaries, base_progress)
+  if type(boundaries) ~= "table" or #boundaries < 3 then
+    return rungs, {}
+  end
+  local targets, labels = {}, {}
+  local prev = tonumber(base_progress) or 0
+  for _idx, target in ipairs(rungs) do
+    local snapped, label = target, nil
+    if target < 1.0 - XrayAuto.LADDER_TOLERANCE then
+      local best_d
+      for _b, b in ipairs(boundaries) do
+        local ratio = tonumber(b.ratio)
+        if ratio and ratio <= 1.0 - XrayAuto.LADDER_SNAP_WINDOW then
+          local d = math.abs(ratio - target)
+          if d <= XrayAuto.LADDER_SNAP_WINDOW and (not best_d or d < best_d) then
+            best_d = d
+            snapped = math.floor(ratio * 1000 + 0.5) / 1000
+            label = b.title
+          end
+        end
+      end
+    end
+    if snapped > prev + 0.01 then
+      targets[#targets + 1] = snapped
+      if label then labels[#targets] = label end
+      prev = snapped
+    end
+  end
+  return targets, labels
+end
 
 --- Plan the rung targets for a build: multiples of `spacing` above
 --- `base_progress`, plus a final 1.0. Pure; rounded to 3 decimals so float drift
@@ -283,8 +343,10 @@ function XrayAuto.ladderBuild()
   return ladder_build
 end
 
-function XrayAuto.beginLadderBuild(file, rungs)
-  ladder_build = { file = file, rungs = rungs, idx = 1, total = #rungs }
+--- @param labels table|nil sparse array parallel to rungs (snapLadderRungs output):
+--- labels[i] = chapter title for rungs[i], carried into each rung's cache entry
+function XrayAuto.beginLadderBuild(file, rungs, labels)
+  ladder_build = { file = file, rungs = rungs, labels = labels, idx = 1, total = #rungs }
 end
 
 --- Advance to the next rung. Returns the next target ratio, or nil when done.
