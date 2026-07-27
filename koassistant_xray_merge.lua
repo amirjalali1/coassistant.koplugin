@@ -422,6 +422,15 @@ function XrayMerge.execute(opts)
                         end
                     end,
                 })
+                if ok then
+                    -- Stamp the inputs as folded-in (T15): section list + merge
+                    -- picker read this. A section regeneration clears it (fresh
+                    -- set() carries no merged_to_main); a main redo merely makes
+                    -- it historical (informational, timestamped).
+                    local keys = {}
+                    for _idx, sec in ipairs(opts.sections) do keys[#keys + 1] = sec.key end
+                    ActionCache.markSectionsMerged(file, keys, os.time())
+                end
                 if opts.on_done then opts.on_done(ok, not ok and res_or_err or nil, opts.target) end
             else
                 -- Combined-section target: validate, then write a section entry
@@ -759,10 +768,15 @@ function XrayMerge.startFlow(opts)
         end
     end
 
-    -- Multi-select (all selected by default — merging everything is the
-    -- common case), ●/○ toggle rows rebuilt on tap (chip-manager idiom)
+    -- Multi-select, ●/○ toggle rows rebuilt on tap (chip-manager idiom).
+    -- Pre-selected = sections NOT yet folded into the main (T15) — re-merging
+    -- already-merged content just re-sends it; already-merged rows stay
+    -- pickable and are labeled. (No merged sections at all → everything
+    -- selected, the original common case.)
     local selected = {}
-    for _idx, sec in ipairs(sections) do selected[sec.key] = true end
+    for _idx, sec in ipairs(sections) do
+        if not sec.data.merged_to_main then selected[sec.key] = true end
+    end
 
     local current_picker
     local showPicker  -- forward decl (toggle rows close-and-rebuild)
@@ -779,8 +793,12 @@ function XrayMerge.startFlow(opts)
         end
         for _idx, sec in ipairs(sections) do
             local captured = sec
+            local detail_parts = {}
             local pages = sec.data.scope_page_summary
-            local detail = pages and pages ~= "" and (" (" .. pages .. ")") or ""
+            if pages and pages ~= "" then detail_parts[#detail_parts + 1] = pages end
+            if sec.data.merged_to_main then detail_parts[#detail_parts + 1] = _("merged") end
+            local detail = #detail_parts > 0
+                and (" (" .. table.concat(detail_parts, ", ") .. ")") or ""
             table.insert(rows, {{
                 text = (selected[captured.key] and "● " or "○ ") .. (captured.label or "?") .. detail,
                 align = "left",

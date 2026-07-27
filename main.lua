@@ -6903,6 +6903,27 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
   local dialog
   local buttons = {}
 
+  -- P6 grouping (§7): collapse secondary rows behind one "<label>…" row. Group
+  -- rows are built exactly like top-level ones — reassigning `dialog` to the
+  -- sub-dialog makes their UIManager:close(dialog) close the right widget.
+  local function addGroupRow(group_rows, label, group_title)
+    if #group_rows == 0 then return end
+    table.insert(buttons, {{
+      text = label,
+      callback = function()
+        UIManager:close(dialog)
+        local rows = {}
+        for _idx, r in ipairs(group_rows) do rows[#rows + 1] = r end
+        rows[#rows + 1] = {{ text = _("Back"), callback = function()
+          UIManager:close(dialog)
+          self_ref:_showXrayScopePopup(action, action_id, on_update, cached_entry, opts)
+        end }}
+        dialog = ButtonDialog:new{ title = group_title, buttons = rows }
+        UIManager:show(dialog)
+      end,
+    }})
+  end
+
   if not cached_entry or not cached_entry.result then
     if self:_checkRequirements(action) then
       return
@@ -6928,10 +6949,12 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         self_ref:_executeBookLevelActionDirect(action, action_id, { full_document = true })
       end,
     }})
-    -- Surface in-range section X-Rays + list existing + new
+    -- Surface in-range section X-Rays + list existing + new — grouped (P6)
     local ActionCache = require("koassistant_action_cache")
     local sx_file = (self.ui and self.ui.document and self.ui.document.file)
         or (opts and opts.file)
+    local nc_sec_rows, nc_ver_rows = {}, {}
+    local nc_sx_count = 0
     if sx_file then
       local doc = self.ui and self.ui.document
       if doc then
@@ -6948,7 +6971,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           end
           local sec_detail = #sec_parts > 0 and " (" .. table.concat(sec_parts, ", ") .. ")" or ""
           local captured_sec = sec
-          table.insert(buttons, {{
+          table.insert(nc_sec_rows, {{
             text = T(_("View \"%1\""), sec.label) .. sec_detail,
             callback = function()
               UIManager:close(dialog)
@@ -6961,10 +6984,10 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           }})
         end
       end
-      local sx_count = ActionCache.getSectionXrayCount(sx_file)
-      if sx_count > 0 then
-        table.insert(buttons, {{
-          text = T(_("View Section X-Rays (%1)"), sx_count),
+      nc_sx_count = ActionCache.getSectionXrayCount(sx_file)
+      if nc_sx_count > 0 then
+        table.insert(nc_sec_rows, {{
+          text = T(_("View Section X-Rays (%1)"), nc_sx_count),
           callback = function()
             UIManager:close(dialog)
             self_ref:_showSectionXrayList(opts)
@@ -6973,7 +6996,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       end
       -- "Generate Section X-Ray..." only when book is open and has TOC
       if self.ui and self.ui.toc and self.ui.toc.toc and #self.ui.toc.toc > 0 then
-        table.insert(buttons, {{
+        table.insert(nc_sec_rows, {{
           text = _("Generate Section X-Ray…"),
           callback = function()
             UIManager:close(dialog)
@@ -7009,7 +7032,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       -- show it for ANY rung count, not just a complete ladder (device round 1 T3:
       -- a cancelled from-nothing build left its rungs unviewable)
       if nc_rungs > 0 then
-        table.insert(buttons, {{
+        table.insert(nc_ver_rows, {{
           text = T(_("Previous versions (%1)…"), nc_rungs),
           callback = function()
             UIManager:close(dialog)
@@ -7018,7 +7041,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         }})
       end
       if not (nc_rungs > 0 and (nc_highest or 0) >= 1.0 - 0.005) then
-        table.insert(buttons, {{
+        table.insert(nc_ver_rows, {{
           text = nc_rungs > 0
               and T(_("Resume ladder build (%1 versions so far)…"), nc_rungs)
               or _("Build version ladder…"),
@@ -7029,6 +7052,11 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         }})
       end
     end
+    -- P6 group rows (only non-empty groups render)
+    addGroupRow(nc_sec_rows,
+      nc_sx_count > 0 and T(_("Section X-Rays (%1)…"), nc_sx_count) or _("Section X-Rays…"),
+      _("Section X-Rays"))
+    addGroupRow(nc_ver_rows, _("Versions & ladder…"), _("Versions & ladder"))
     -- Per-book Automatic X-Ray (§7 P1): tri-state, universal — On bundles
     -- auto-create + auto-update for this book, no global master needed
     local nc_af = self.settings:readSetting("features") or {}
@@ -7105,6 +7133,9 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       for _idx, cp in ipairs(cp_ring) do versions_all[#versions_all + 1] = cp end
       for _idx, rung in ipairs(ladder_rungs) do versions_all[#versions_all + 1] = rung end
     end
+    -- P6 grouping: secondary rows collect here, one "<label>…" row each below
+    local c_sec_rows, c_ver_rows = {}, {}
+    local c_sx_count = sx_file and ActionCache.getSectionXrayCount(sx_file) or 0
 
     table.insert(buttons, {{
       text = T(_("View %1"), action_name .. view_detail),
@@ -7154,7 +7185,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         end
         local sec_detail = #sec_parts > 0 and " (" .. table.concat(sec_parts, ", ") .. ")" or ""
         local captured_sec = sec
-        table.insert(buttons, {{
+        table.insert(c_sec_rows, {{
           text = T(_("View \"%1\""), sec.label) .. sec_detail,
           callback = function()
             UIManager:close(dialog)
@@ -7222,7 +7253,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     -- "Update to 100%": normal incremental update with progress override (same spoiler-free prompt)
     -- Only shown when reader isn't already near 100% (otherwise the regular Update button covers it)
     if not current_progress or current_progress.decimal < 0.995 then
-      table.insert(buttons, {{
+      table.insert(c_ver_rows, {{
         text = T(_("Update %1 (to %2)"), action_name, "100%"),
         callback = function()
           UIManager:close(dialog)
@@ -7239,7 +7270,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       local highest_rung = ActionCache.highestXrayLadderProgress(ladder_rungs)
       if #ladder_rungs == 0 then
         if not cached_entry.full_document and cached_entry.source_mode ~= "ai_knowledge" then
-          table.insert(buttons, {{
+          table.insert(c_ver_rows, {{
             text = _("Build version ladder…"),
             callback = function()
               UIManager:close(dialog)
@@ -7248,7 +7279,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           }})
         end
       elseif (highest_rung or 0) < 1.0 - 0.005 then
-        table.insert(buttons, {{
+        table.insert(c_ver_rows, {{
           text = T(_("Resume ladder build (from %1%)…"),
             math.floor((highest_rung or 0) * 100 + 0.5)),
           callback = function()
@@ -7260,10 +7291,9 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     end
     -- Section X-Rays: list existing + new
     if sx_file then
-      local sx_count = ActionCache.getSectionXrayCount(sx_file)
-      if sx_count > 0 then
-        table.insert(buttons, {{
-          text = T(_("View Section X-Rays (%1)"), sx_count),
+      if c_sx_count > 0 then
+        table.insert(c_sec_rows, {{
+          text = T(_("View Section X-Rays (%1)"), c_sx_count),
           callback = function()
             UIManager:close(dialog)
             self_ref:_showSectionXrayList(opts)
@@ -7271,7 +7301,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         }})
       end
       if self.ui and self.ui.toc and self.ui.toc.toc and #self.ui.toc.toc > 0 then
-        table.insert(buttons, {{
+        table.insert(c_sec_rows, {{
           text = _("Generate Section X-Ray…"),
           callback = function()
             UIManager:close(dialog)
@@ -7281,7 +7311,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       end
       -- Archived pre-overwrite versions + ladder rungs (#73 browsable history)
       if #versions_all > 0 then
-        table.insert(buttons, {{
+        table.insert(c_ver_rows, {{
           text = T(_("Previous versions (%1)…"), #versions_all),
           callback = function()
             UIManager:close(dialog)
@@ -7290,6 +7320,13 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         }})
       end
     end
+    -- P6 group rows (only non-empty groups render)
+    addGroupRow(c_sec_rows,
+      c_sx_count > 0 and T(_("Section X-Rays (%1)…"), c_sx_count) or _("Section X-Rays…"),
+      _("Section X-Rays"))
+    addGroupRow(c_ver_rows,
+      #versions_all > 0 and T(_("Versions & ladder (%1)…"), #versions_all) or _("Versions & ladder…"),
+      _("Versions & ladder"))
     -- Per-book Automatic X-Ray (§7 P1): tri-state, universal — mirrored in
     -- Book Settings. Flowing docs only.
     local af = self.settings:readSetting("features") or {}
@@ -8228,6 +8265,10 @@ function AskGPT:_showSectionXrayList(opts)
     local rel_time = formatRelativeTime(sec.data.timestamp)
     if rel_time ~= "" then
       table.insert(detail_parts, rel_time)
+    end
+    -- T15: this section's content was folded into the main X-Ray
+    if sec.data.merged_to_main then
+      table.insert(detail_parts, _("merged"))
     end
     local detail = #detail_parts > 0 and (" (" .. table.concat(detail_parts, ", ") .. ")") or ""
 

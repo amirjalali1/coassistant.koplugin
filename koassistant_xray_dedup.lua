@@ -566,6 +566,7 @@ end
 local function reasonLabel(reason)
     if reason == "exact" then return _("same name") end
     if reason == "alias" then return _("shared alias") end
+    if reason == "manual" then return _("picked manually") end
     return _("contained name")
 end
 
@@ -622,10 +623,11 @@ function XrayDedup.startFlow(opts)
         end
         local never = ActionCache.neverMergePairsFrom(user_aliases)
         local found, truncated = XrayDedup.findDuplicates(data, never)
-        return { found = found, truncated = truncated, never = never }
+        -- data included for the manual-pair picker (T13)
+        return { found = found, truncated = truncated, never = never, data = data }
     end
 
-    local showList, showPairOptions, showNeverList  -- forward decls (mutually recursive)
+    local showList, showPairOptions, showNeverList, showManualPick  -- forward decls (mutually recursive)
 
     showPairOptions = function(pair)
         local XrayMerge = require("koassistant_xray_merge")
@@ -783,6 +785,84 @@ function XrayDedup.startFlow(opts)
         UIManager:show(dialog)
     end
 
+    -- Manual pairing (§7.4 T13): the scan heuristics are deliberately
+    -- conservative ("Bob" vs "Robert" is invisible to them) — let the reader
+    -- pick the two entries; the pair rides the normal Merge / AI merge / Never
+    -- options with reason "manual". Category → entry A → entry B.
+    showManualPick = function()
+        local res = scan()
+        if res.err then
+            UIManager:show(InfoMessage:new{ text = res.err, timeout = 4 })
+            return
+        end
+        -- Data may be rewritten from here — retire the caller's browser (T11 rule)
+        if opts.close_browser then opts.close_browser() end
+        local cats = {}
+        for _idx, cat in ipairs(XrayParser.getCategories(res.data or {})) do
+            if not SCAN_EXCLUDED[cat.key] and type(cat.items) == "table" then
+                local named = 0
+                for _i, item in ipairs(cat.items) do
+                    if rawName(item) then named = named + 1 end
+                end
+                if named >= 2 then cats[#cats + 1] = cat end
+            end
+        end
+        if #cats == 0 then
+            UIManager:show(InfoMessage:new{
+                text = _("No category has two named entries to merge."), timeout = 3 })
+            return
+        end
+        local function pickEntry(cat, title, exclude_idx, on_pick)
+            local dialog
+            local rows = {}
+            for i, item in ipairs(cat.items) do
+                local nm = rawName(item)
+                if i ~= exclude_idx and nm then
+                    local ci, citem, cname = i, item, nm
+                    rows[#rows + 1] = {{ text = cname, align = "left",
+                        callback = function()
+                            UIManager:close(dialog)
+                            on_pick(ci, citem, cname)
+                        end }}
+                end
+            end
+            rows[#rows + 1] = {{ text = _("Cancel"),
+                callback = function() UIManager:close(dialog) end }}
+            dialog = ButtonDialog:new{ title = title, buttons = rows }
+            UIManager:show(dialog)
+        end
+        local catdlg
+        local cat_rows = {}
+        for _idx, cat in ipairs(cats) do
+            local ccat = cat
+            cat_rows[#cat_rows + 1] = {{ text = ccat.label or ccat.key, align = "left",
+                callback = function()
+                    UIManager:close(catdlg)
+                    pickEntry(ccat, _("Pick the entry to KEEP or merge into"), nil,
+                        function(ia, item_a, name_a)
+                            pickEntry(ccat, T(_("Pick the entry to pair with \"%1\""), name_a), ia,
+                                function(ib, item_b, name_b)
+                                    showPairOptions({
+                                        cat_key = ccat.key,
+                                        cat_label = ccat.label or ccat.key,
+                                        name_a = name_a, name_b = name_b,
+                                        item_a = item_a, item_b = item_b,
+                                        idx_a = ia, idx_b = ib,
+                                        reason = "manual",
+                                    })
+                                end)
+                        end)
+                end }}
+        end
+        cat_rows[#cat_rows + 1] = {{ text = _("Cancel"),
+            callback = function() UIManager:close(catdlg) end }}
+        catdlg = ButtonDialog:new{
+            title = _("Merge entities manually — pick a category"),
+            buttons = cat_rows,
+        }
+        UIManager:show(catdlg)
+    end
+
     showList = function(after_change)
         local res = scan()
         if res.err then
@@ -791,11 +871,23 @@ function XrayDedup.startFlow(opts)
         end
         local found = res.found
         if #found == 0 and #res.never == 0 then
-            UIManager:show(InfoMessage:new{
-                text = after_change and _("No more likely duplicates.")
+            -- Not a bare InfoMessage: offer the manual picker right where the
+            -- scan came up empty (T13)
+            local empty
+            empty = ButtonDialog:new{
+                title = after_change and _("No more likely duplicates.")
                     or _("No likely duplicates found."),
-                timeout = 3,
-            })
+                buttons = {
+                    {{ text = _("Merge two entities manually…"),
+                        callback = function()
+                            UIManager:close(empty)
+                            showManualPick()
+                        end }},
+                    {{ text = _("Close"),
+                        callback = function() UIManager:close(empty) end }},
+                },
+            }
+            UIManager:show(empty)
             return
         end
         -- The list is really opening — NOW retire the caller's browser (its
@@ -839,6 +931,13 @@ function XrayDedup.startFlow(opts)
                 end,
             }}
         end
+        rows[#rows + 1] = {{
+            text = _("Merge two entities manually…"), align = "left",
+            callback = function()
+                UIManager:close(dialog)
+                showManualPick()
+            end,
+        }}
         rows[#rows + 1] = {{
             text = _("Close"),
             callback = function() UIManager:close(dialog) end,

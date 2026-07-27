@@ -285,6 +285,9 @@ local function saveCache(document_path, cache)
             if entry.merged_from_sections then
                 file:write(string.format("        merged_from_sections = %s,\n", tostring(entry.merged_from_sections)))
             end
+            if entry.merged_to_main then
+                file:write(string.format("        merged_to_main = %s,\n", tostring(entry.merged_to_main)))
+            end
             if entry.unavailable_data_text then
                 file:write(string.format("        unavailable_data_text = %q,\n", entry.unavailable_data_text))
             end
@@ -425,6 +428,10 @@ function ActionCache.set(document_path, action_id, result, progress_decimal, met
         -- Merge-engine provenance: how many section X-Rays were folded in
         -- (xray_ecosystem_plan.md §6 slice 3; nil = not a merged artifact)
         merged_from_sections = metadata and metadata.merged_from_sections,
+        -- Section entries: os.time() when an into-main merge folded this section
+        -- in (§7.4 T15; informational — a main redo makes it historical).
+        -- Regeneration clears it naturally: a fresh set() carries no value.
+        merged_to_main = metadata and metadata.merged_to_main,
         -- Track unavailable data at generation time (pre-formatted string for artifact viewer)
         unavailable_data_text = metadata and metadata.unavailable_data_text,
         -- Section X-Ray scope metadata
@@ -451,6 +458,26 @@ function ActionCache.updateField(document_path, action_id, field, value)
     local cache = loadCache(document_path)
     if not cache[action_id] then return false end
     cache[action_id][field] = value
+    return saveCache(document_path, cache)
+end
+
+--- Stamp section entries as folded into the main X-Ray (§7.4 T15). One
+--- load+save for the whole batch — never N file rewrites (e-ink).
+--- @param document_path string The document file path
+--- @param keys table Array of section cache keys
+--- @param timestamp number os.time() of the merge
+--- @return boolean success
+function ActionCache.markSectionsMerged(document_path, keys, timestamp)
+    if not document_path or type(keys) ~= "table" or #keys == 0 then return false end
+    local cache = loadCache(document_path)
+    local touched = false
+    for _idx, key in ipairs(keys) do
+        if cache[key] then
+            cache[key].merged_to_main = timestamp
+            touched = true
+        end
+    end
+    if not touched then return false end
     return saveCache(document_path, cache)
 end
 
