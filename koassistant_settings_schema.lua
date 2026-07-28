@@ -886,7 +886,7 @@ local SettingsSchema = {
                     text = _("Checkpoints at Chapter Ends"),
                     path = "features.xray_ladder_chapter_snap",
                     default = true,
-                    help_text = _("When building X-Ray checkpoints ahead, place each checkpoint at the nearest chapter end (within a few percent) instead of an exact percentage — checkpoints then read as \"up to the end of a chapter\", and the versions list shows the chapter names. Needs a table of contents. Checkpoint spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones."),
+                    help_text = _("When building X-Ray checkpoints, place each checkpoint at the nearest chapter end (within a few percent) instead of an exact percentage — checkpoints then read as \"up to the end of a chapter\", and the versions list shows the chapter names. Needs a table of contents. Checkpoint spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones."),
                 },
                 {
                     id = "xray_versions_kept",

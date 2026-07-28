@@ -4666,7 +4666,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             local tokens_high = math.floor(extracted_chars / 2000)
             local warning_dialog
             warning_dialog = ButtonDialog:new{
-                title = T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens). Make sure your model's context window can accommodate this.\n\nYou can focus on a specific section or section range instead of the full document, or use KOReader's Hidden Flows to exclude irrelevant content. For X-Ray, \"Build checkpoints ahead\" covers the book in bounded steps instead of one large request."), chars_k, tokens_low, tokens_high),
+                title = T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens). Make sure your model's context window can accommodate this.\n\nYou can focus on a specific section or section range instead of the full document, or use KOReader's Hidden Flows to exclude irrelevant content. For X-Ray, \"Build checkpoints\" covers the book in bounded steps instead of one large request."), chars_k, tokens_low, tokens_high),
                 buttons = {
                     {{
                         text = _("Cancel"),
@@ -4751,7 +4751,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
 
     if truncation_msg then
         truncation_msg = truncation_msg .. "\n\n"
-            .. _("You can increase the limit in Settings → Privacy & Data → Text Extraction, use Hidden Flows to exclude irrelevant content, or focus on a specific section or section range. For X-Ray, \"Build checkpoints ahead\" covers the book in bounded steps instead of one large request.")
+            .. _("You can increase the limit in Settings → Privacy & Data → Text Extraction, use Hidden Flows to exclude irrelevant content, or focus on a specific section or section range. For X-Ray, \"Build checkpoints\" covers the book in bounded steps instead of one large request.")
         local truncation_dialog
         truncation_dialog = ButtonDialog:new{
             title = truncation_msg,

@@ -7063,7 +7063,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         table.insert(nc_ver_rows, {{
           text = nc_rungs > 0
               and T(_("Resume building checkpoints (%1 so far)…"), nc_rungs)
-              or _("Build checkpoints ahead…"),
+              or _("Build checkpoints…"),
           callback = function()
             UIManager:close(dialog)
             self_ref:_startXrayLadderBuild()
@@ -7408,7 +7408,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         and self.ui and self.ui.document and self.ui.document.file == sx_file then
       if #ladder_rungs == 0 then
         table.insert(c_ver_rows, {{
-          text = _("Build checkpoints ahead…"),
+          text = _("Build checkpoints…"),
           callback = function()
             UIManager:close(dialog)
             self_ref:_startXrayLadderBuild()
@@ -10314,18 +10314,30 @@ function AskGPT:_startXrayLadderBuild()
       return
     end
     local snapped = next(rung_labels) ~= nil
-    local cost_text = snapped
-      and T(_("%1 checkpoints will be generated in the background (at chapter ends, roughly every %2% of the book, up to 100%), each extracting and analyzing the next slice of the book without further prompts — the book is read once in total, plus per-checkpoint overhead, so somewhat more than one full X-Ray run. The book must stay open; you can keep reading."),
+    -- Round 15 (maintainer): the confirm is DYNAMIC — it states what this build
+    -- will actually do given the current X-Ray state ("ahead" was wrong: a
+    -- from-nothing build starts at the beginning, and a build over an existing
+    -- X-Ray continues from its coverage). Full sentences, no dashes.
+    local base_pct = math.floor((base_progress or 0) * 100 + 0.5)
+    local state_line
+    if resume then
+      state_line = T(_("Checkpoints built so far reach %1%. Building will continue from there to 100%."), base_pct)
+    elseif (base_progress or 0) > 0.005 then
+      state_line = T(_("Your X-Ray covers to %1%. Checkpoints will continue from there to 100%."), base_pct)
+    else
+      state_line = _("There is no X-Ray yet. Checkpoints will cover the whole book from the beginning.")
+    end
+    local plan_line = snapped
+      and T(_("%1 checkpoints are planned, at chapter ends roughly every %2% of the book."),
         #rungs, math.floor(spacing * 100 + 0.5))
-      or T(_("%1 checkpoints will be generated in the background (every %2% of the book, up to 100%), each extracting and analyzing the next slice of the book without further prompts — the book is read once in total, plus per-checkpoint overhead, so somewhat more than one full X-Ray run. The book must stay open; you can keep reading."),
+      or T(_("%1 checkpoints are planned, every %2% of the book."),
         #rungs, math.floor(spacing * 100 + 0.5))
+    local cost_line = _("Each is generated in the background from the next slice of the text, with no further prompts. The text is read once in total, plus a small per-checkpoint overhead. The book must stay open; you can keep reading, cancel anytime, and resume later.")
     local confirm
     confirm = ButtonDialog:new{
-      title = (resume
-          and T(_("Resume building X-Ray checkpoints from %1%?"),
-            math.floor((base_progress or 0) * 100 + 0.5))
-          or _("Build X-Ray checkpoints ahead?"))
-        .. "\n" .. cost_text,
+      title = (resume and _("Resume building X-Ray checkpoints?") or _("Build X-Ray checkpoints?"))
+        .. "\n" .. state_line .. " " .. plan_line
+        .. "\n" .. cost_line,
       buttons = {
         {{
           text = resume and _("Resume") or _("Build"),
