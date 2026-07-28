@@ -3950,17 +3950,61 @@ function XrayBrowser:showOptions()
                 update_text = _("Redo X-Ray")
             end
 
+            -- Ladder context for the round-6/7 parity gates (main live view only)
+            local uladder_highest = 0
+            local ulive_other_lineage = false
+            if not self.scope and not self.metadata.checkpoint and self.metadata.book_file then
+                local UpdCache = require("koassistant_action_cache")
+                uladder_highest = UpdCache.highestXrayLadderProgress(
+                    UpdCache.getXrayLadder(self.metadata.book_file)) or 0
+                local ulive = UpdCache.getXrayCache(self.metadata.book_file)
+                ulive_other_lineage = (ulive and ulive.result
+                    and (ulive.full_document or ulive.source_mode == "ai_knowledge")) or false
+            end
+
             table.insert(buttons, {{
                 text = update_text, align = "left",
                 callback = function()
                     closeOptions()
-                    if self_ref.menu then UIManager:close(self_ref.menu) end
-                    self_ref.on_update()
+                    local fire = function()
+                        if self_ref.menu then UIManager:close(self_ref.menu) end
+                        self_ref.on_update()
+                    end
+                    -- Mid-ladder honesty (device round 2): paid call, moves only
+                    -- the LIVE X-Ray — rungs are never created or replaced by it
+                    if current_dec and current_dec > cached_dec + 0.01
+                        and uladder_highest > cached_dec + 0.005 then
+                        local ConfirmBox = require("ui/widget/confirmbox")
+                        UIManager:show(ConfirmBox:new{
+                            text = T(_("Update the X-Ray to exactly %1 with one API call?\nThe ladder is not touched — its versions still swap in for free as you read past them."),
+                                math.floor(current_dec * 100 + 0.5) .. "%"),
+                            ok_text = _("Update"),
+                            ok_callback = fire,
+                        })
+                    else
+                        fire()
+                    end
                 end,
             }})
 
-            -- "Update to 100%": only when reader isn't already near 100%
-            if self_ref.on_update_to_100 and (not current_dec or current_dec < 0.995) then
+            -- "Update to 100%": replaced by the free switch when a finished 1.0
+            -- rung exists (popup parity — device round 2); never on other lineages
+            if uladder_highest >= 0.995 and not ulive_other_lineage
+                and self.metadata.plugin then
+                table.insert(buttons, {{
+                    text = _("Switch to complete version (100%) — instant"), align = "left",
+                    callback = function()
+                        closeOptions()
+                        -- The switch replaces the data this browser renders
+                        if self_ref.menu then UIManager:close(self_ref.menu) end
+                        self_ref.metadata.plugin:_switchToCompleteXrayRung({
+                            file = self_ref.metadata.book_file,
+                            book_title = self_ref.metadata.title,
+                            book_author = self_ref.metadata.book_author,
+                        })
+                    end,
+                }})
+            elseif self_ref.on_update_to_100 and (not current_dec or current_dec < 0.995) then
                 table.insert(buttons, {{
                     text = _("Update X-Ray (to 100%)"), align = "left",
                     callback = function()
@@ -4010,13 +4054,22 @@ function XrayBrowser:showOptions()
                 text = T(_("All versions (%1)…"), cp_count), align = "left",
                 callback = function()
                     closeOptions()
-                    -- Close the browser: the version list may view/restore another
-                    -- version, and XrayBrowser holds module-level state
-                    if self_ref.menu then UIManager:close(self_ref.menu) end
+                    -- DEFERRED close (device round 2): browsing the list must not
+                    -- retire the browser — it closes only when a version is
+                    -- actually Viewed (another browser opens — module-level
+                    -- state), Restored, or Switched (both replace this view's
+                    -- data). Delete/Back leave it standing.
+                    local browser_closed = false
                     self_ref.metadata.plugin:_showXrayCheckpointList({
                         file = self_ref.metadata.book_file,
                         book_title = self_ref.metadata.title,
                         book_author = self_ref.metadata.book_author,
+                        close_browser = function()
+                            if not browser_closed and self_ref.menu then
+                                browser_closed = true
+                                UIManager:close(self_ref.menu)
+                            end
+                        end,
                     })
                 end,
             }})

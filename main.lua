@@ -7240,7 +7240,26 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         callback = function()
           UIManager:close(dialog)
           if self_ref:_checkRequirements(action) then return end
-          on_update()
+          -- Mid-ladder honesty (device round 2): an exact-position update is a
+          -- paid API call that only moves the LIVE X-Ray — it never creates or
+          -- replaces a rung, and later rungs still swap in when passed. Say so
+          -- before spending.
+          if current_progress
+              and current_progress.decimal > (cached_entry.progress_decimal or 0) + 0.01
+              and (ActionCache.highestXrayLadderProgress(ladder_rungs) or 0)
+                > (cached_entry.progress_decimal or 0) + 0.005 then
+            local ConfirmBox = require("ui/widget/confirmbox")
+            UIManager:show(ConfirmBox:new{
+              text = T(_("Update the X-Ray to exactly %1 with one API call?\nThe ladder is not touched — its versions still swap in for free as you read past them."),
+                current_progress.formatted),
+              ok_text = _("Update"),
+              ok_callback = function()
+                on_update()
+              end,
+            })
+          else
+            on_update()
+          end
         end,
       }})
     end
@@ -8464,7 +8483,7 @@ function AskGPT:_showXrayCheckpointList(opts)
   local ring = ActionCache.getXrayCheckpoints(file)
   local ladder = ActionCache.getXrayLadder(file)
   if #ring == 0 and #ladder == 0 then
-    UIManager:show(InfoMessage:new{ text = _("No previous X-Ray versions."), timeout = 2 })
+    UIManager:show(InfoMessage:new{ text = _("No X-Ray versions."), timeout = 2 })
     return
   end
 
@@ -8476,6 +8495,8 @@ function AskGPT:_showXrayCheckpointList(opts)
     entries[#entries + 1] = { cp = ladder[i], is_rung = true }
   end
 
+  local live = ActionCache.getXrayCache(file)
+
   -- Re-reader marker: only when this book is open, position is known, and the
   -- live X-Ray is ahead of the reader (the one real spoiler exposure —
   -- xray_ecosystem_plan.md W5). Ring and ladder compete on equal terms.
@@ -8484,7 +8505,6 @@ function AskGPT:_showXrayCheckpointList(opts)
     local ContextExtractor = require("koassistant_context_extractor")
     current_progress = ContextExtractor:new(self.ui):getReadingProgress()
     if current_progress then
-      local live = ActionCache.getXrayCache(file)
       if live and (live.full_document
           or (live.progress_decimal or 0) > current_progress.decimal + 0.01) then
         local combined = {}
@@ -8502,6 +8522,14 @@ function AskGPT:_showXrayCheckpointList(opts)
     if e.is_rung then
       row_text = row_text .. " · " .. _("ladder")
     end
+    -- A rung whose copy IS the live X-Ray (installed via promotion/switch) is
+    -- the same content in two roles — say so instead of looking like a
+    -- mysterious duplicate (device round 2)
+    if e.is_rung and live and live.timestamp == e.cp.timestamp
+        and math.abs((tonumber(live.progress_decimal) or -1)
+          - (tonumber(e.cp.progress_decimal) or -2)) < 1e-6 then
+      row_text = row_text .. " " .. _("(current)")
+    end
     if idx == mark_idx then
       -- "latest BEFORE your position", not numerically closest: a version ahead
       -- of the reader covers text they haven't re-reached (spoilers)
@@ -8517,6 +8545,21 @@ function AskGPT:_showXrayCheckpointList(opts)
         else
           self_ref:_showXrayCheckpointOptions(captured.cp, opts)
         end
+      end,
+    }})
+  end
+  -- Parity with the popup (device round 2): the free switch must be reachable
+  -- from every surface that lists the finished 1.0 rung
+  if (ActionCache.highestXrayLadderProgress(ladder) or 0) >= 0.995
+      and not (live and live.result
+        and (live.full_document or live.source_mode == "ai_knowledge"))
+      and (not live or (tonumber(live.progress_decimal) or 0) < 0.995) then
+    table.insert(buttons, {{
+      text = _("Switch to complete version (100%) — instant"),
+      callback = function()
+        UIManager:close(list_dialog)
+        if opts and opts.close_browser then opts.close_browser() end
+        self_ref:_switchToCompleteXrayRung(opts)
       end,
     }})
   end
@@ -8559,7 +8602,8 @@ function AskGPT:_showXrayCheckpointList(opts)
     end,
   }})
 
-  local title = _("Previous X-Ray Versions")
+  -- "X-Ray Versions", not "Previous": ladder rungs can sit AHEAD of the reader
+  local title = _("X-Ray Versions")
   if mark_idx and current_progress then
     title = title .. "\n" .. T(_("Reading position: %1"), current_progress.formatted)
   end
@@ -8587,6 +8631,9 @@ function AskGPT:_showXrayLadderRungOptions(rung, opts)
         text = _("View"),
         callback = function()
           UIManager:close(card)
+          -- Viewing opens another X-Ray browser (module-level state) — the
+          -- originating browser must close now, not when the list was opened
+          if opts and opts.close_browser then opts.close_browser() end
           self_ref:showCacheViewer({
             name = _("X-Ray Version"),
             key = "_xray_cache",
@@ -8630,6 +8677,7 @@ function AskGPT:_showXrayCheckpointOptions(cp, opts)
     text = _("View"),
     callback = function()
       UIManager:close(options_dialog)
+      if opts and opts.close_browser then opts.close_browser() end
       self_ref:showCacheViewer({
         name = _("X-Ray Version"),
         key = "_xray_cache",
@@ -8665,6 +8713,8 @@ function AskGPT:_showXrayCheckpointOptions(cp, opts)
                 local ok = idx and ActionCache.restoreXrayCheckpoint(file, idx,
                     ActionCache.checkpointLimitFromFeatures(features))
                 if ok then
+                  -- The restore replaced the data an open browser renders
+                  if opts and opts.close_browser then opts.close_browser() end
                   self_ref._file_dialog_row_cache = { file = nil, rows = nil }
                   -- Cache progress moved — resync the background pre-filter
                   self_ref:_refreshXrayAutoState()

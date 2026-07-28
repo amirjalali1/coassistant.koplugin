@@ -806,7 +806,7 @@ function ChatHistoryManager:exportChatAsText(document_path, chat_id)
     table.insert(result, "")
     
     -- Format messages
-    for _, msg in ipairs(chat.messages) do
+    for _idx, msg in ipairs(chat.messages) do
         local role = msg.role:gsub("^%l", string.upper)
         local content = msg.content
         
@@ -843,7 +843,7 @@ function ChatHistoryManager:exportChatAsMarkdown(document_path, chat_id)
     table.insert(result, "")
     
     -- Format messages
-    for _, msg in ipairs(chat.messages) do
+    for _idx, msg in ipairs(chat.messages) do
         local role = msg.role:gsub("^%l", string.upper)
         local content = msg.content
         
@@ -1216,7 +1216,7 @@ function ChatHistoryManager:addTagToChat(document_path, chat_id, tag)
         end
 
         -- Check if tag already exists
-        for _, existing_tag in ipairs(chat.tags) do
+        for _idx, existing_tag in ipairs(chat.tags) do
             if existing_tag == tag then
                 logger.info("Tag already exists: " .. tag)
                 return true  -- Already has this tag
@@ -2774,7 +2774,7 @@ function ChatHistoryManager:getAllDocumentsUnified(ui)
         -- Helper to get max timestamp from a list of chats
         local function getMaxTimestamp(chats)
             local max_ts = 0
-            for _, chat in ipairs(chats) do
+            for _idx, chat in ipairs(chats) do
                 if chat.timestamp and chat.timestamp > max_ts then
                     max_ts = chat.timestamp
                 end
