@@ -7012,7 +7012,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     local nc_build = nc_xa.ladderBuild()
     if nc_build then
       table.insert(buttons, {{
-        text = T(_("Building ladder — version %1 of %2… (tap to cancel)"),
+        text = T(_("Preparing versions — %1 of %2… (tap to cancel)"),
           nc_build.idx, nc_build.total),
         callback = function()
           UIManager:close(dialog)
@@ -7055,8 +7055,8 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       if not (nc_rungs > 0 and (nc_highest or 0) >= 1.0 - 0.005) then
         table.insert(nc_ver_rows, {{
           text = nc_rungs > 0
-              and T(_("Resume ladder build (%1 versions so far)…"), nc_rungs)
-              or _("Build version ladder…"),
+              and T(_("Resume preparing versions (%1 so far)…"), nc_rungs)
+              or _("Prepare versions ahead…"),
           callback = function()
             UIManager:close(dialog)
             self_ref:_startXrayLadderBuild()
@@ -7068,7 +7068,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     addGroupRow(nc_sec_rows,
       nc_sx_count > 0 and T(_("Section X-Rays (%1)…"), nc_sx_count) or _("Section X-Rays…"),
       _("Section X-Rays"))
-    addGroupRow(nc_ver_rows, _("Versions & ladder…"), _("Versions & ladder"))
+    addGroupRow(nc_ver_rows, _("Versions…"), _("Versions"))
     -- Per-book Automatic X-Ray (§7 P1): tri-state, universal — On bundles
     -- auto-create + auto-update for this book, no global master needed
     local nc_af = self.settings:readSetting("features") or {}
@@ -7220,9 +7220,39 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     end
     local XrayAuto = require("koassistant_xray_auto")
     local ladder_building = XrayAuto.ladderBuild()
+    -- Ladder awareness, hoisted (round 12): feeds the state header, the paid-row
+    -- demotion, and the free-update row. promotable = a prepared version ready to
+    -- install now (at-or-below reader, ahead of live); next_ahead = the nearest
+    -- prepared version past the reader.
+    local promotable
+    if not ladder_building and current_progress and not cached_entry.full_document
+        and cached_entry.source_mode ~= "ai_knowledge" then
+      promotable = XrayAuto.pickPromotableRung(ladder_rungs,
+        cached_entry.progress_decimal, current_progress.decimal)
+    end
+    local next_ahead
+    if current_progress then
+      for _idx, r in ipairs(ladder_rungs) do
+        local p = tonumber(r.progress_decimal)
+        if p and not r.full_document and p > current_progress.decimal + 0.005 then
+          if not next_ahead or p < next_ahead then next_ahead = p end
+        end
+      end
+    end
+    local update_case = current_progress
+      and current_progress.decimal > (cached_entry.progress_decimal or 0) + 0.01
+    local spacing_now = (doc and not (doc.info and doc.info.has_pages))
+      and XrayAuto.ladderSpacingFor(doc:getPageCount()) or XrayAuto.LADDER_SPACING
+    -- Round-12 demotion (§7.4 batch item 12): the paid to-position update never
+    -- sits beside a free competitor — it moves into the Versions group when a
+    -- prepared version is ready now or lands within one spacing ahead.
+    local demote_paid = update_case
+      and (promotable ~= nil
+        or (next_ahead ~= nil
+          and next_ahead - current_progress.decimal <= spacing_now + 0.005))
     if ladder_building then
       table.insert(buttons, {{
-        text = T(_("Building ladder — version %1 of %2… (tap to cancel)"),
+        text = T(_("Preparing versions — %1 of %2… (tap to cancel)"),
           ladder_building.idx, ladder_building.total),
         callback = function()
           UIManager:close(dialog)
@@ -7235,7 +7265,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       -- (device round 1 T8): another book's flight must not gray out this book's rows.
       table.insert(buttons, {{ text = _("Auto-update in progress…"), enabled = false }})
     else
-      table.insert(buttons, {{
+      local paid_row = {{
         text = update_text,
         callback = function()
           UIManager:close(dialog)
@@ -7243,7 +7273,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           -- Mid-ladder honesty (device round 2): an exact-position update is a
           -- paid API call that only moves the LIVE X-Ray — it never creates or
           -- replaces a rung, and later rungs still swap in when passed. Say so
-          -- before spending.
+          -- before spending. (Recomputed at tap time — disk may have moved.)
           if current_progress
               and current_progress.decimal > (cached_entry.progress_decimal or 0) + 0.01
               and (ActionCache.highestXrayLadderProgress(ladder_rungs) or 0)
@@ -7251,25 +7281,25 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
             -- Decision support (device round 3): name the concrete free
             -- alternative — a rung already at-or-below the reader beats the
             -- paid call outright; otherwise say where the next one lands
-            local next_ahead, avail_now
+            local c_next, c_avail
             for _idx, r in ipairs(ladder_rungs) do
               local p = tonumber(r.progress_decimal)
               if p and not r.full_document then
                 if p > current_progress.decimal + 0.005 then
-                  if not next_ahead or p < next_ahead then next_ahead = p end
+                  if not c_next or p < c_next then c_next = p end
                 elseif p > (cached_entry.progress_decimal or 0) + 0.005 then
-                  if not avail_now or p > avail_now then avail_now = p end
+                  if not c_avail or p > c_avail then c_avail = p end
                 end
               end
             end
-            local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?\nThe ladder is not touched — its versions still swap in for free as you read past them."),
+            local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?\nPrepared versions are not touched — they still swap in for free as you read past them."),
               current_progress.formatted)
-            if avail_now then
-              confirm_text = confirm_text .. "\n" .. T(_("A free ladder version at %1% is available right now (\"Update from ladder\")."),
-                math.floor(avail_now * 100 + 0.5))
-            elseif next_ahead then
+            if c_avail then
+              confirm_text = confirm_text .. "\n" .. T(_("A free prepared version at %1% is available right now (\"Update to %1% — instant\")."),
+                math.floor(c_avail * 100 + 0.5))
+            elseif c_next then
               confirm_text = confirm_text .. "\n" .. T(_("The next free version arrives at %1%."),
-                math.floor(next_ahead * 100 + 0.5))
+                math.floor(c_next * 100 + 0.5))
             end
             local ConfirmBox = require("ui/widget/confirmbox")
             UIManager:show(ConfirmBox:new{
@@ -7283,33 +7313,29 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
             on_update()
           end
         end,
-      }})
+      }}
+      table.insert(demote_paid and c_ver_rows or buttons, paid_row)
     end
-    -- Free local update from a pre-built rung (§6 slice 1) — offered alongside
-    -- the API update: the rung lands at-or-below the reader, the API update
-    -- lands exactly at them; the user picks. Shown even while a background
-    -- update is in flight (device round 1 T6): promotion is local, and the
-    -- completion guard discards a stale flight write.
-    if not ladder_building and current_progress and not cached_entry.full_document
-        and cached_entry.source_mode ~= "ai_knowledge" then
-      local promotable = XrayAuto.pickPromotableRung(ladder_rungs,
-        cached_entry.progress_decimal, current_progress.decimal)
-      if promotable then
-        table.insert(buttons, {{
-          text = T(_("Update from ladder (to %1%) — instant"),
-            math.floor((tonumber(promotable.progress_decimal) or 0) * 100 + 0.5)),
-          callback = function()
-            UIManager:close(dialog)
-            if not self_ref:_fireXrayLadderPromotion({ manual = true }) then
-              -- Disk moved between drawing the row and tapping it
-              UIManager:show(InfoMessage:new{
-                text = _("Nothing to update from the ladder — the X-Ray moved in the meantime."),
-                timeout = 3,
-              })
-            end
-          end,
-        }})
-      end
+    -- Free local update from a prepared version (§6 slice 1). With round-12
+    -- demotion the paid row moves into the Versions group whenever this row
+    -- renders — free never sits beside paid at the top level. Shown even while
+    -- a background update is in flight (device round 1 T6): promotion is local,
+    -- and the completion guard discards a stale flight write.
+    if promotable then
+      table.insert(buttons, {{
+        text = T(_("Update to %1% — instant"),
+          math.floor((tonumber(promotable.progress_decimal) or 0) * 100 + 0.5)),
+        callback = function()
+          UIManager:close(dialog)
+          if not self_ref:_fireXrayLadderPromotion({ manual = true }) then
+            -- Disk moved between drawing the row and tapping it
+            UIManager:show(InfoMessage:new{
+              text = _("Nothing to update from prepared versions — the X-Ray moved in the meantime."),
+              timeout = 3,
+            })
+          end
+        end,
+      }})
     end
     -- "Update to 100%" family (device round 2 gates): never offered when the
     -- cache already covers the whole book; when a finished 1.0 rung exists, the
@@ -7364,7 +7390,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         and self.ui and self.ui.document and self.ui.document.file == sx_file then
       if #ladder_rungs == 0 then
         table.insert(c_ver_rows, {{
-          text = _("Build version ladder…"),
+          text = _("Prepare versions ahead…"),
           callback = function()
             UIManager:close(dialog)
             self_ref:_startXrayLadderBuild()
@@ -7372,7 +7398,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         }})
       elseif (ladder_highest or 0) < 1.0 - 0.005 then
         table.insert(c_ver_rows, {{
-          text = T(_("Resume ladder build (from %1%)…"),
+          text = T(_("Resume preparing versions (from %1%)…"),
             math.floor((ladder_highest or 0) * 100 + 0.5)),
           callback = function()
             UIManager:close(dialog)
@@ -7419,8 +7445,8 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       c_sx_count > 0 and T(_("Section X-Rays (%1)…"), c_sx_count) or _("Section X-Rays…"),
       _("Section X-Rays"))
     addGroupRow(c_ver_rows,
-      #versions_all > 0 and T(_("Versions & ladder (%1)…"), #versions_all) or _("Versions & ladder…"),
-      _("Versions & ladder"))
+      #versions_all > 0 and T(_("Versions (%1)…"), #versions_all) or _("Versions…"),
+      _("Versions"))
     -- Per-book Automatic X-Ray (§7 P1): tri-state, universal — mirrored in
     -- Book Settings. Flowing docs only.
     local af = self.settings:readSetting("features") or {}
@@ -7448,8 +7474,26 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       end,
     }})
 
-    -- "Last auto-update failed" trace line (session-scoped, silent-failure surfacing)
+    -- State header (round 12, scope/source design standard): line 1 = coverage
+    -- (view detail), line 2 = the reader's position + the one fact no row shows
+    -- (where the next prepared version lands / that a free one is ready).
     local popup_title = action_name .. view_detail
+    if current_progress and not cached_entry.full_document
+        and (cached_entry.progress_decimal or 0) < 0.995 then
+      local pos_line
+      if promotable then
+        pos_line = T(_("You're at %1 — a free version at %2% is ready."),
+          current_progress.formatted,
+          math.floor((tonumber(promotable.progress_decimal) or 0) * 100 + 0.5))
+      elseif next_ahead then
+        pos_line = T(_("You're at %1 — next prepared version at %2%."),
+          current_progress.formatted, math.floor(next_ahead * 100 + 0.5))
+      else
+        pos_line = T(_("You're at %1."), current_progress.formatted)
+      end
+      popup_title = popup_title .. "\n" .. pos_line
+    end
+    -- "Last auto-update failed" trace line (session-scoped, silent-failure surfacing)
     if doc and doc.file and XrayAuto.lastFailure(doc.file) then
       popup_title = popup_title .. "\n" .. _("Last auto-update failed")
     end
@@ -8561,7 +8605,7 @@ function AskGPT:_showXrayCheckpointList(opts)
   for idx, e in ipairs(entries) do
     local row_text = self:_xrayCheckpointLabel(e.cp)
     if e.is_rung then
-      row_text = row_text .. " · " .. _("ladder")
+      row_text = row_text .. " · " .. _("prepared")
     end
     -- A rung whose copy IS the live X-Ray (installed via promotion/switch) is
     -- the same content in two roles — say so instead of looking like a
@@ -8606,32 +8650,74 @@ function AskGPT:_showXrayCheckpointList(opts)
   end
   if #ladder > 0 and not require("koassistant_xray_auto").ladderBuild() then
     table.insert(buttons, {{
-      text = T(_("Delete ladder (%1 versions)…"), #ladder),
+      text = T(_("Delete prepared versions (%1)…"), #ladder),
       callback = function()
         UIManager:close(list_dialog)
+        local function doDelete(confirm_widget)
+          UIManager:close(confirm_widget)
+          ActionCache.clearXrayLadder(file)
+          self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+          self_ref:_refreshXrayAutoState()
+        end
+        -- Round-12 delete honesty (maintainer): the complete version IS the 1.0
+        -- rung until installed — a plain delete before switching would silently
+        -- discard it. Three states, three messages.
+        local has_complete_rung =
+          (ActionCache.highestXrayLadderProgress(ladder) or 0) >= 0.995
+        local live_complete = live and live.result
+          and (live.full_document or (tonumber(live.progress_decimal) or 0) >= 0.995)
         local confirm
-        confirm = ButtonDialog:new{
-          title = T(_("Delete all %1 ladder versions?"), #ladder)
-            .. "\n" .. _("The current X-Ray and archived previous versions are not affected."),
-          buttons = {
-            {{
-              text = _("Delete"),
-              callback = function()
-                UIManager:close(confirm)
-                ActionCache.clearXrayLadder(file)
-                self_ref._file_dialog_row_cache = { file = nil, rows = nil }
-                self_ref:_refreshXrayAutoState()
-              end,
-            }},
-            {{
-              text = _("Cancel"),
-              callback = function()
-                UIManager:close(confirm)
-                self_ref:_showXrayCheckpointList(opts)
-              end,
-            }},
-          },
-        }
+        if has_complete_rung and not live_complete then
+          confirm = ButtonDialog:new{
+            title = T(_("Delete the %1 prepared versions? They include your complete version (100%), which is not installed as your current X-Ray — deleting now discards it."), #ladder),
+            buttons = {
+              {{
+                text = _("Switch to complete version first…"),
+                callback = function()
+                  UIManager:close(confirm)
+                  self_ref:_switchToCompleteXrayRung(opts)
+                end,
+              }},
+              {{
+                text = _("Delete all, including the complete version"),
+                callback = function() doDelete(confirm) end,
+              }},
+              {{
+                text = _("Cancel"),
+                callback = function()
+                  UIManager:close(confirm)
+                  self_ref:_showXrayCheckpointList(opts)
+                end,
+              }},
+            },
+          }
+        else
+          local detail
+          if live_complete then
+            detail = _("Your complete X-Ray stays — this deletes only the preparation steps.")
+            if live and not live.full_document then
+              detail = detail .. " " .. _("It also removes the free \"Switch back to your position\" option.")
+            end
+          else
+            detail = _("The current X-Ray and archived previous versions are not affected.")
+          end
+          confirm = ButtonDialog:new{
+            title = T(_("Delete all %1 prepared versions?"), #ladder) .. "\n" .. detail,
+            buttons = {
+              {{
+                text = _("Delete"),
+                callback = function() doDelete(confirm) end,
+              }},
+              {{
+                text = _("Cancel"),
+                callback = function()
+                  UIManager:close(confirm)
+                  self_ref:_showXrayCheckpointList(opts)
+                end,
+              }},
+            },
+          }
+        end
         UIManager:show(confirm)
       end,
     }})
@@ -8666,7 +8752,7 @@ function AskGPT:_showXrayLadderRungOptions(rung, opts)
   local label = self:_xrayCheckpointLabel(rung)
   local card
   card = ButtonDialog:new{
-    title = T(_("Ladder version: %1"), label),
+    title = T(_("Prepared version: %1"), label),
     buttons = {
       {{
         text = _("View"),
@@ -9844,7 +9930,7 @@ function AskGPT:_fireXrayLadderPromotion(opts)
       (opts and opts.manual) and "(manual)" or "(auto)")
     if (opts and opts.manual) or features.xray_auto_notify == true then
       UIManager:show(Notification:new{
-        text = T(_("X-Ray updated from ladder (to %1%)"),
+        text = T(_("X-Ray updated to %1% (prepared version)"),
           math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5)),
       })
     end
@@ -9884,7 +9970,7 @@ function AskGPT:_switchToCompleteXrayRung(opts)
     end
   end
   if not rung then
-    UIManager:show(InfoMessage:new{ text = _("The ladder's complete version is no longer available."), timeout = 3 })
+    UIManager:show(InfoMessage:new{ text = _("The prepared complete version is no longer available."), timeout = 3 })
     return
   end
   local self_ref = self
@@ -9901,7 +9987,7 @@ function AskGPT:_switchToCompleteXrayRung(opts)
           local ok = ActionCache.promoteXrayLadderRung(file, rung,
               ActionCache.checkpointLimitFromFeatures(features), { manual = true })
           if not ok then
-            UIManager:show(InfoMessage:new{ text = _("Switch failed — the ladder version could not be installed."), timeout = 3 })
+            UIManager:show(InfoMessage:new{ text = _("Switch failed — the prepared version could not be installed."), timeout = 3 })
             return
           end
           self_ref._file_dialog_row_cache = { file = nil, rows = nil }
@@ -9910,10 +9996,10 @@ function AskGPT:_switchToCompleteXrayRung(opts)
           local offer
           offer = ButtonDialog:new{
             title = _("Switched to the complete X-Ray.") .. "\n"
-              .. T(_("Delete the %1 ladder versions? Your complete X-Ray is kept either way. Deleting removes the free \"Switch back to your position\" option; kept, they stay browsable under All versions."), ladder_n),
+              .. T(_("Delete the %1 prepared versions? Your complete X-Ray is kept either way. Deleting removes the free \"Switch back to your position\" option; kept, they stay browsable under All versions."), ladder_n),
             buttons = {
               {{
-                text = _("Delete ladder versions"),
+                text = _("Delete prepared versions"),
                 callback = function()
                   UIManager:close(offer)
                   ActionCache.clearXrayLadder(file)
@@ -9970,7 +10056,7 @@ function AskGPT:_switchBackToPositionRung(opts)
   -- ahead live (the whole point of the switch-back)
   local rung = XrayAuto.pickPromotableRung(ActionCache.getXrayLadder(file), 0, decimal)
   if not rung then
-    UIManager:show(InfoMessage:new{ text = _("No ladder version at or below your position."), timeout = 3 })
+    UIManager:show(InfoMessage:new{ text = _("No prepared version at or below your position."), timeout = 3 })
     return
   end
   local features = self.settings:readSetting("features") or {}
@@ -9984,7 +10070,7 @@ function AskGPT:_switchBackToPositionRung(opts)
         math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5)),
     })
   else
-    UIManager:show(InfoMessage:new{ text = _("Switch failed — the ladder version could not be installed."), timeout = 3 })
+    UIManager:show(InfoMessage:new{ text = _("Switch failed — the prepared version could not be installed."), timeout = 3 })
   end
 end
 
@@ -10033,7 +10119,7 @@ function AskGPT:_startXrayLadderBuild()
   local doc_info = self.ui.document.info
   if not doc_info or doc_info.has_pages then
     UIManager:show(InfoMessage:new{
-      text = _("The version ladder supports EPUB-style (flowing) documents only."),
+      text = _("Preparing versions ahead supports EPUB-style (flowing) documents only."),
       timeout = 3,
     })
     return
@@ -10067,7 +10153,7 @@ function AskGPT:_startXrayLadderBuild()
   end
   if entry and entry.result and not live_ok_base and base_progress == nil then
     UIManager:show(InfoMessage:new{
-      text = _("This X-Ray can't build a version ladder (complete-track, AI-knowledge, or legacy format). Delete it first to build from scratch."),
+      text = _("This X-Ray can't prepare versions ahead (complete-track, AI-knowledge, or legacy format). Delete it first to build from scratch."),
       timeout = 5,
     })
     return
@@ -10153,9 +10239,9 @@ function AskGPT:_startXrayLadderBuild()
     local confirm
     confirm = ButtonDialog:new{
       title = (resume
-          and T(_("Resume the X-Ray version ladder from %1%?"),
+          and T(_("Resume preparing X-Ray versions from %1%?"),
             math.floor((base_progress or 0) * 100 + 0.5))
-          or _("Build an X-Ray version ladder?"))
+          or _("Prepare X-Ray versions ahead?"))
         .. "\n" .. cost_text,
       buttons = {
         {{
@@ -10214,12 +10300,12 @@ function AskGPT:_fireXrayLadderRung()
   -- (same rule as the background update path)
   if not self:_xrayBackgroundConsentOk(action, features) then
     XrayAuto.endLadderBuild()
-    UIManager:show(InfoMessage:new{ text = _("Ladder build stopped: text extraction is disabled."), timeout = 3 })
+    UIManager:show(InfoMessage:new{ text = _("Version preparation stopped: text extraction is disabled."), timeout = 3 })
     return
   end
   if not NetworkMgr:isWifiOn() then
     XrayAuto.endLadderBuild()
-    UIManager:show(InfoMessage:new{ text = _("Ladder build stopped: WiFi is off."), timeout = 3 })
+    UIManager:show(InfoMessage:new{ text = _("Version preparation stopped: WiFi is off."), timeout = 3 })
     return
   end
 
@@ -10286,7 +10372,7 @@ function AskGPT:_fireXrayLadderRung()
 
   logger.info("KOAssistant: ladder rung", build.idx, "of", build.total, "firing (to", target, ")")
   UIManager:show(Notification:new{
-    text = T(_("Building X-Ray ladder — version %1 of %2 (to %3%)…"),
+    text = T(_("Preparing X-Ray versions — %1 of %2 (to %3%)…"),
       build.idx, build.total, math.floor(target * 100 + 0.5)),
   })
   Dialogs.executeActionForResult(action, config_copy.features.book_context, self.ui, config_copy, self,
@@ -10306,7 +10392,7 @@ function AskGPT:_fireXrayLadderRung()
         logger.warn("KOAssistant: ladder rung", cur.idx, "timed out (watchdog,",
           XrayAuto.WATCHDOG_S, "s)")
         UIManager:show(InfoMessage:new{
-          text = T(_("Ladder build stopped at version %1 of %2 (request timed out) — resume it from the X-Ray popup."),
+          text = T(_("Version preparation stopped at %1 of %2 (request timed out) — resume it from the X-Ray popup."),
             cur.idx, cur.total),
           timeout = 4,
         })
@@ -10314,7 +10400,7 @@ function AskGPT:_fireXrayLadderRung()
       end
       if was_cancelled or cur.cancel_requested then
         XrayAuto.endLadderBuild()
-        UIManager:show(Notification:new{ text = _("Ladder build cancelled.") })
+        UIManager:show(Notification:new{ text = _("Version preparation cancelled.") })
         return
       end
       -- Honesty check: the rung must actually be on disk — truncated responses and
@@ -10326,7 +10412,7 @@ function AskGPT:_fireXrayLadderRung()
         logger.info("KOAssistant: ladder build stopped at rung", cur.idx, "-",
           tostring(meta_or_err or "rung not saved"))
         UIManager:show(InfoMessage:new{
-          text = T(_("Ladder build stopped at version %1 of %2 — resume it from the X-Ray popup."),
+          text = T(_("Version preparation stopped at %1 of %2 — resume it from the X-Ray popup."),
             cur.idx, cur.total),
           timeout = 4,
         })
@@ -10342,7 +10428,7 @@ function AskGPT:_fireXrayLadderRung()
       else
         XrayAuto.endLadderBuild()
         UIManager:show(Notification:new{
-          text = T(_("X-Ray ladder built (%1 versions)."), cur.total),
+          text = T(_("X-Ray versions prepared (%1)."), cur.total),
         })
         self_ref._file_dialog_row_cache = { file = nil, rows = nil }
         self_ref:_refreshXrayAutoState()
@@ -10363,7 +10449,7 @@ function AskGPT:_cancelXrayLadderBuild()
     UIManager:unschedule(self._xray_auto_watchdog)
     self._xray_auto_watchdog = nil
   end
-  UIManager:show(Notification:new{ text = _("Ladder build cancelled.") })
+  UIManager:show(Notification:new{ text = _("Version preparation cancelled.") })
 end
 
 --- Kill anything pending or in flight when the book closes. (The completion guard

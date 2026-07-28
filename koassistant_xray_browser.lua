@@ -3988,10 +3988,10 @@ function XrayBrowser:showOptions()
                                 end
                             end
                         end
-                        local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?\nThe ladder is not touched — its versions still swap in for free as you read past them."),
+                        local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?\nPrepared versions are not touched — they still swap in for free as you read past them."),
                             math.floor(current_dec * 100 + 0.5) .. "%")
                         if avail_now then
-                            confirm_text = confirm_text .. "\n" .. T(_("A free ladder version at %1% is available right now (\"Update from ladder\" in the X-Ray popup)."),
+                            confirm_text = confirm_text .. "\n" .. T(_("A free prepared version at %1% is available right now (\"Update to %1% — instant\" in the X-Ray popup)."),
                                 math.floor(avail_now * 100 + 0.5))
                         elseif next_ahead then
                             confirm_text = confirm_text .. "\n" .. T(_("The next free version arrives at %1%."),
@@ -4244,15 +4244,15 @@ function XrayBrowser:showOptions()
         local info_ladder = InfoActionCache.getXrayLadder(self.metadata.book_file)
         if #info_ladder > 0 then
             local highest = InfoActionCache.highestXrayLadderProgress(info_ladder) or 0
-            table.insert(info_parts, T(_("Version ladder: %1 versions (up to %2%)"),
+            table.insert(info_parts, T(_("Prepared versions: %1 (up to %2%)"),
                 #info_ladder, math.floor(highest * 100 + 0.5)))
             for _idx, rung in ipairs(info_ladder) do
                 if rung.timestamp == self.metadata.timestamp
                     and math.abs((tonumber(rung.progress_decimal) or -1)
                         - (tonumber(self.metadata.progress_decimal) or -2)) < 1e-6 then
                     table.insert(info_parts, rung.chapter_label
-                        and T(_("Installed from ladder (end of %1)"), rung.chapter_label)
-                        or _("Installed from ladder"))
+                        and T(_("Installed from prepared version (end of %1)"), rung.chapter_label)
+                        or _("Installed from prepared version"))
                     break
                 end
             end

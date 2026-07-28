@@ -710,7 +710,7 @@ function BookSettings.showXrayAutoPicker(opts)
     end
     picker = ButtonDialog:new{
         title = _("Automatic X-Ray (this book)") .. "\n"
-            .. _("On: create an X-Ray early in the book and quietly keep it updated as you read — background API calls (WiFi + text-extraction consent required). Ladder versions are never built automatically."),
+            .. _("On: create an X-Ray early in the book and quietly keep it updated as you read — background API calls (WiFi + text-extraction consent required). Versions ahead are never prepared automatically."),
         buttons = {
             {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), global_on and _("On") or _("Off")),
                 callback = function() pick(nil) end }},
