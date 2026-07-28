@@ -10077,56 +10077,113 @@ function AskGPT:_startXrayLadderBuild()
   end
 
   -- P2(a): spacing adapts to book length (min-pages floor); P3: targets snap
-  -- to chapter ends when a usable TOC exists (labels ride into the rung entries)
-  local spacing = XrayAuto.ladderSpacingFor(self.ui.document:getPageCount())
-  local rungs = XrayAuto.planLadderRungs(base_progress or 0, spacing)
+  -- to chapter ends when a usable TOC exists (labels ride into the rung entries).
+  -- Round 11: the formula is a DEFAULT, not a decree — "Adjust spacing…" on the
+  -- confirm re-plans this ONE run at a user-picked spacing (dense material can
+  -- warrant closer versions than the length formula; nothing is persisted).
+  local recommended = XrayAuto.ladderSpacingFor(self.ui.document:getPageCount())
   local features = self.settings:readSetting("features") or {}
-  local rung_labels = {}
-  if features.xray_ladder_chapter_snap ~= false then
-    local boundaries = self:_ladderChapterBoundaries()
-    if boundaries then
-      rungs, rung_labels = XrayAuto.snapLadderRungs(rungs, boundaries, base_progress or 0, spacing)
-    end
-  end
-  if #rungs == 0 then
-    -- Also the no-ladder-but-live-at-100% case — say why, not "complete"
-    UIManager:show(InfoMessage:new{ text = _("Nothing to build — the X-Ray already covers the whole book."), timeout = 3 })
-    return
-  end
-  local snapped = next(rung_labels) ~= nil
+  local boundaries = features.xray_ladder_chapter_snap ~= false
+    and self:_ladderChapterBoundaries() or nil
 
   local resume = #ladder > 0
   local self_ref = self
-  local cost_text = snapped
-    and T(_("%1 versions will be generated in the background (at chapter ends, roughly every %2% of the book, up to 100%), each extracting and analyzing the next slice of the book without further prompts — the book is read once in total, plus per-version overhead, so somewhat more than one full X-Ray run. The book must stay open; you can keep reading."),
-      #rungs, math.floor(spacing * 100 + 0.5))
-    or T(_("%1 versions will be generated in the background (every %2% of the book, up to 100%), each extracting and analyzing the next slice of the book without further prompts — the book is read once in total, plus per-version overhead, so somewhat more than one full X-Ray run. The book must stay open; you can keep reading."),
-      #rungs, math.floor(spacing * 100 + 0.5))
-  local confirm
-  confirm = ButtonDialog:new{
-    title = (resume
-        and T(_("Resume the X-Ray version ladder from %1%?"),
-          math.floor((base_progress or 0) * 100 + 0.5))
-        or _("Build an X-Ray version ladder?"))
-      .. "\n" .. cost_text,
-    buttons = {
-      {{
-        text = resume and _("Resume") or _("Build"),
+  local function planFor(spacing)
+    local rungs = XrayAuto.planLadderRungs(base_progress or 0, spacing)
+    local rung_labels = {}
+    if boundaries then
+      rungs, rung_labels = XrayAuto.snapLadderRungs(rungs, boundaries, base_progress or 0, spacing)
+    end
+    return rungs, rung_labels
+  end
+
+  local showConfirm -- forward decl: the spacing picker re-invokes it
+  local function showSpacingPicker(current)
+    local opts, seen = {}, {}
+    for _idx, s in ipairs({ 0.05, 0.10, 0.15, 0.20, 0.25, 0.50, recommended }) do
+      local pct = math.floor(s * 100 + 0.5)
+      if not seen[pct] then
+        seen[pct] = true
+        opts[#opts + 1] = { pct = pct, spacing = s }
+      end
+    end
+    table.sort(opts, function(a, b) return a.pct < b.pct end)
+    local picker
+    local rows = {}
+    for _idx, opt in ipairs(opts) do
+      local rungs = planFor(opt.spacing)
+      local row_text = opt.pct == math.floor(recommended * 100 + 0.5)
+        and T(_("Every %1% — %2 versions (recommended)"), opt.pct, #rungs)
+        or T(_("Every %1% — %2 versions"), opt.pct, #rungs)
+      rows[#rows + 1] = {{
+        text = row_text,
         callback = function()
-          UIManager:close(confirm)
-          XrayAuto.beginLadderBuild(file, rungs, rung_labels)
-          self_ref:_fireXrayLadderRung()
+          UIManager:close(picker)
+          showConfirm(opt.spacing)
         end,
-      }},
-      {{
-        text = _("Cancel"),
-        callback = function()
-          UIManager:close(confirm)
-        end,
-      }},
-    },
-  }
-  UIManager:show(confirm)
+      }}
+    end
+    rows[#rows + 1] = {{
+      text = _("Back"),
+      callback = function()
+        UIManager:close(picker)
+        showConfirm(current)
+      end,
+    }}
+    picker = ButtonDialog:new{
+      title = _("Version spacing for this run:"),
+      buttons = rows,
+    }
+    UIManager:show(picker)
+  end
+
+  showConfirm = function(spacing)
+    local rungs, rung_labels = planFor(spacing)
+    if #rungs == 0 then
+      -- Also the no-ladder-but-live-at-100% case — say why, not "complete"
+      UIManager:show(InfoMessage:new{ text = _("Nothing to build — the X-Ray already covers the whole book."), timeout = 3 })
+      return
+    end
+    local snapped = next(rung_labels) ~= nil
+    local cost_text = snapped
+      and T(_("%1 versions will be generated in the background (at chapter ends, roughly every %2% of the book, up to 100%), each extracting and analyzing the next slice of the book without further prompts — the book is read once in total, plus per-version overhead, so somewhat more than one full X-Ray run. The book must stay open; you can keep reading."),
+        #rungs, math.floor(spacing * 100 + 0.5))
+      or T(_("%1 versions will be generated in the background (every %2% of the book, up to 100%), each extracting and analyzing the next slice of the book without further prompts — the book is read once in total, plus per-version overhead, so somewhat more than one full X-Ray run. The book must stay open; you can keep reading."),
+        #rungs, math.floor(spacing * 100 + 0.5))
+    local confirm
+    confirm = ButtonDialog:new{
+      title = (resume
+          and T(_("Resume the X-Ray version ladder from %1%?"),
+            math.floor((base_progress or 0) * 100 + 0.5))
+          or _("Build an X-Ray version ladder?"))
+        .. "\n" .. cost_text,
+      buttons = {
+        {{
+          text = resume and _("Resume") or _("Build"),
+          callback = function()
+            UIManager:close(confirm)
+            XrayAuto.beginLadderBuild(file, rungs, rung_labels)
+            self_ref:_fireXrayLadderRung()
+          end,
+        }},
+        {{
+          text = _("Adjust spacing for this run…"),
+          callback = function()
+            UIManager:close(confirm)
+            showSpacingPicker(spacing)
+          end,
+        }},
+        {{
+          text = _("Cancel"),
+          callback = function()
+            UIManager:close(confirm)
+          end,
+        }},
+      },
+    }
+    UIManager:show(confirm)
+  end
+  showConfirm(recommended)
 end
 
 --- One rung of the chain: resolve the base fresh from disk (highest rung vs live
