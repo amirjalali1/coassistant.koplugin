@@ -7315,6 +7315,25 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         end,
       }})
     end
+    -- Free exit from ahead-mode (device round 3): live ahead of the reader
+    -- (e.g. after switch-to-complete) + a rung at-or-below the reader →
+    -- switching back re-enters position-tracking, promotion resumes naturally.
+    -- Reversible both ways while the ladder exists.
+    if current_progress and not cached_entry.full_document
+        and cached_entry.source_mode ~= "ai_knowledge"
+        and (cached_entry.progress_decimal or 0) > current_progress.decimal + 0.01 then
+      local back_rung = XrayAuto.pickPromotableRung(ladder_rungs, 0, current_progress.decimal)
+      if back_rung then
+        table.insert(c_ver_rows, {{
+          text = T(_("Switch back to your position (%1%) — instant"),
+            math.floor((tonumber(back_rung.progress_decimal) or 0) * 100 + 0.5)),
+          callback = function()
+            UIManager:close(dialog)
+            self_ref:_switchBackToPositionRung(opts)
+          end,
+        }})
+      end
+    end
     -- Version ladder build/resume (§6 slice 1). Flowing docs only, like the
     -- background machinery. The row renders for ineligible lineages too
     -- (complete-track / AI-knowledge) — _startXrayLadderBuild explains honestly
@@ -8571,7 +8590,7 @@ function AskGPT:_showXrayCheckpointList(opts)
         local confirm
         confirm = ButtonDialog:new{
           title = T(_("Delete all %1 ladder versions?"), #ladder)
-            .. "\n" .. _("Archived previous versions are kept."),
+            .. "\n" .. _("The current X-Ray and archived previous versions are not affected."),
           buttons = {
             {{
               text = _("Delete"),
@@ -9869,7 +9888,7 @@ function AskGPT:_switchToCompleteXrayRung(opts)
           local offer
           offer = ButtonDialog:new{
             title = _("Switched to the complete X-Ray.") .. "\n"
-              .. T(_("Delete the %1 ladder versions? Kept, they stay browsable under All versions."), ladder_n),
+              .. T(_("Delete the %1 ladder versions? Your complete X-Ray is kept either way. Deleting removes the free \"Switch back to your position\" option; kept, they stay browsable under All versions."), ladder_n),
             buttons = {
               {{
                 text = _("Delete ladder versions"),
@@ -9900,6 +9919,51 @@ function AskGPT:_switchToCompleteXrayRung(opts)
     },
   }
   UIManager:show(confirm)
+end
+
+--- The mirror of _switchToCompleteXrayRung (device round 3): when the live
+--- X-Ray sits AHEAD of the reader (typically after switch-to-complete), install
+--- the highest rung at-or-below the reading position — free, spoiler-safe (it
+--- only moves coverage DOWN to the reader), so no warning dialog. Promotion
+--- resumes naturally afterwards; while the ladder exists the two switches are
+--- fully reversible. Requires the book open (needs the reading position).
+function AskGPT:_switchBackToPositionRung(opts)
+  local XrayAuto = require("koassistant_xray_auto")
+  local ActionCache = require("koassistant_action_cache")
+  if XrayAuto.ladderBuild() or XrayAuto.isInFlight() then
+    UIManager:show(InfoMessage:new{ text = _("An X-Ray task is already running."), timeout = 2 })
+    return
+  end
+  local file = (self.ui and self.ui.document and self.ui.document.file) or (opts and opts.file)
+  if not file or not self.ui or not self.ui.document or self.ui.document.file ~= file then return end
+  local live = ActionCache.getXrayCache(file)
+  if live and live.result and (live.full_document or live.source_mode == "ai_knowledge") then
+    return
+  end
+  local ContextExtractor = require("koassistant_context_extractor")
+  local progress = ContextExtractor:new(self.ui):getReadingProgress()
+  local decimal = progress and tonumber(progress.decimal)
+  if not decimal then return end
+  -- live_progress 0 = "highest rung at-or-below the reader", ignoring the
+  -- ahead live (the whole point of the switch-back)
+  local rung = XrayAuto.pickPromotableRung(ActionCache.getXrayLadder(file), 0, decimal)
+  if not rung then
+    UIManager:show(InfoMessage:new{ text = _("No ladder version at or below your position."), timeout = 3 })
+    return
+  end
+  local features = self.settings:readSetting("features") or {}
+  local ok = ActionCache.promoteXrayLadderRung(file, rung,
+      ActionCache.checkpointLimitFromFeatures(features), { manual = true })
+  if ok then
+    self._file_dialog_row_cache = { file = nil, rows = nil }
+    self:_refreshXrayAutoState()
+    UIManager:show(Notification:new{
+      text = T(_("Switched back — X-Ray now at %1%"),
+        math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5)),
+    })
+  else
+    UIManager:show(InfoMessage:new{ text = _("Switch failed — the ladder version could not be installed."), timeout = 3 })
+  end
 end
 
 --- Chapter-end boundaries for ladder rung snapping (P3): ascending

@@ -4017,6 +4017,39 @@ function XrayBrowser:showOptions()
         end
     end
 
+    -- Free exit from ahead-mode (round 8 popup parity): live X-Ray ahead of
+    -- the reader + a rung at-or-below → switch back re-enters position-tracking
+    if not self.scope and not self.metadata.checkpoint
+        and self.metadata.plugin and self.metadata.book_file
+        and self.ui and self.ui.document
+        and self.ui.document.file == self.metadata.book_file then
+        local SbCache = require("koassistant_action_cache")
+        local sb_live = SbCache.getXrayCache(self.metadata.book_file)
+        local SbExtractor = require("koassistant_context_extractor")
+        local sb_cur = SbExtractor:new(self.ui):getReadingProgress()
+        if sb_live and sb_cur and sb_live.result
+            and not sb_live.full_document and sb_live.source_mode ~= "ai_knowledge"
+            and (sb_live.progress_decimal or 0) > sb_cur.decimal + 0.01 then
+            local sb_rung = require("koassistant_xray_auto").pickPromotableRung(
+                SbCache.getXrayLadder(self.metadata.book_file), 0, sb_cur.decimal)
+            if sb_rung then
+                table.insert(buttons, {{
+                    text = T(_("Switch back to your position (%1%) — instant"),
+                        math.floor((tonumber(sb_rung.progress_decimal) or 0) * 100 + 0.5)),
+                    align = "left",
+                    callback = function()
+                        closeOptions()
+                        -- The switch replaces the data this browser renders
+                        if self_ref.menu then UIManager:close(self_ref.menu) end
+                        self_ref.metadata.plugin:_switchBackToPositionRung({
+                            file = self_ref.metadata.book_file,
+                        })
+                    end,
+                }})
+            end
+        end
+    end
+
     -- Delete option
     if self.on_delete then
         local delete_text = self.scope and _("Delete Section X-Ray") or _("Delete X-Ray")
