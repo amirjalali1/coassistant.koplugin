@@ -1114,7 +1114,7 @@ function ModelAudit.draftStanzas(facts, current)
     add("%s-- koassistant_model_lists.lua (HUMAN decisions) ---------------------------%s",
         C.bold, C.off)
     add('--   %s array: add "%s" (position matters - first entry = provider default)', provider, model)
-    add("--   _tiers: place by price/positioning (reasoning/flagship/standard/fast/ultrafast)")
+    add("--   _tiers: place by price/positioning (frontier/flagship/standard/fast/ultrafast)")
     add("--   then run: lua tests/run_tests.lua --models %s", provider)
     return lines
 end

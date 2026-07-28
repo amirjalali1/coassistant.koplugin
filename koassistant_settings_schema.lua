@@ -519,7 +519,8 @@ local SettingsSchema = {
                                 if mode == "fastest" then
                                     label = _("Fastest for provider")
                                 elseif mode == "tier" then
-                                    label = T(_("%1 tier"), f.quick_preset_tier or "fast")
+                                    local ModelLists = require("koassistant_model_lists")
+                                    label = T(_("%1 tier"), ModelLists.normalizeTier(f.quick_preset_tier or "fast"))
                                 elseif mode == "model" then
                                     label = f.quick_preset_model or "?"
                                 else
@@ -527,7 +528,7 @@ local SettingsSchema = {
                                 end
                                 return T(_("Model override: %1"), label)
                             end,
-                            help_text = _("Optionally switch models while Quick Answer is on (that chat only — your default model is untouched): the active provider's fastest listed model, a tier of the active provider, or a pinned specific model. Custom providers have no tier info and keep the current model. A one-shot model pick in the Quick chip's menu overrides this."),
+                            help_text = _("Optionally switch models while Quick Answer is on (that chat only — your default model is untouched): the active provider's fastest listed model, a tier of the active provider, or a pinned specific model. Custom providers keep the current model unless custom_models.lua gives them tier placements. A one-shot model pick in the Quick chip's menu overrides this."),
                             callback = "showQuickPresetModelMode",
                             keep_menu_open = true,
                         },

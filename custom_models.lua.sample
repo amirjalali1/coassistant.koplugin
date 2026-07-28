@@ -53,6 +53,14 @@
 --
 --   max_output_tokens[provider][prefix] = number
 --     Output-token ceiling (prevents HTTP 400 from oversized max_tokens).
+--
+--   tiers[provider][tier] = model_id
+--     Tier placements used by the Quick Answer preset ("fastest"/tier modes).
+--     Tier names: "frontier", "flagship", "standard", "fast", "ultrafast".
+--     EXACT model id (no prefix matching); your entry wins over the built-in
+--     tier tables. This is also the only way custom providers get tiers —
+--     without one, Quick's fast-model modes keep the current model there.
+--     "frontier" is never auto-selected; it only resolves when asked for.
 
 return {
     -----------------------------------------------------------------------
@@ -92,5 +100,20 @@ return {
     -- },
     -- max_output_tokens = {
     --     openai = { ["gpt-6"] = 65536 },
+    -- },
+
+    -----------------------------------------------------------------------
+    -- EXAMPLE 4: Tier placements — give a local custom provider a fast tier
+    -- (so the Quick Answer preset's "fastest" mode works there), and point
+    -- the built-in Ollama fast tier at a model you actually have installed.
+    -----------------------------------------------------------------------
+    -- tiers = {
+    --     custom_lm_studio = {
+    --         fast = "qwen3-4b-instruct",
+    --         standard = "qwen3-30b-a3b",
+    --     },
+    --     ollama = {
+    --         fast = "gemma3:4b",
+    --     },
     -- },
 }

@@ -2,8 +2,9 @@
 --
 -- Two data layers, both lazy-loaded on first use:
 --   USER    <plugin_dir>/custom_models.lua — hand-written grants/denies, reasoning
---           profiles, param constraints, output caps (see custom_models.lua.sample).
---           Highest precedence at every model_constraints.lua chokepoint.
+--           profiles, param constraints, output caps, tier placements (see
+--           custom_models.lua.sample). Highest precedence at every
+--           model_constraints.lua chokepoint and in ModelLists.getModelForTier.
 --   DERIVED <settings_dir>/koassistant_model_caps.lua — machine-owned cache of
 --           provider-reported metadata (today: OpenRouter supported_parameters,
 --           fetched per-model in main.lua). Consulted AFTER the curated lists.
@@ -79,6 +80,18 @@ function ModelOverrides.capabilityOverride(provider, model, capability)
     end
     if best == nil then return nil end
     return best and true or false
+end
+
+--- User tier placement (item 18b): tiers[provider][tier] = model_id. Exact keys,
+--- no prefix matching — a tier names one concrete model. This is also how custom
+--- providers (id "custom_<slug>") get tiers at all.
+--- @return string|nil model id, nil = no opinion (curated _tiers applies)
+function ModelOverrides.tierOverride(provider, tier)
+    local user = ensureUser()
+    local map = user and user.tiers and user.tiers[provider]
+    local model = type(map) == "table" and map[tier] or nil
+    if type(model) == "string" and model ~= "" then return model end
+    return nil
 end
 
 --- First user reasoning profile matching the model (array order = user's order).

@@ -264,6 +264,7 @@ ModelConstraints.capabilities = {
         tools = {
             "mistral-large", "mistral-medium", "mistral-small",
             "codestral", "magistral",
+            "ministral",    -- edge family (tools probe OK 2026-07-28, covers 3b/8b/14b)
         },
     },
 }

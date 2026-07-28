@@ -1,12 +1,11 @@
 -- Model lists for each provider
 -- SINGLE SOURCE OF TRUTH for all model data
--- Last updated: 2026-07-25
+-- Last updated: 2026-07-28
 --
 -- Structure:
 --   ModelLists[provider] = array of model IDs (for backward compat & dropdowns)
 --   ModelLists._tiers = tier -> provider -> model_id mappings
 --   ModelLists._docs = provider documentation URLs for update checking
---   ModelLists._model_info = model_id -> metadata (tier, context, status, etc.)
 
 local ModelLists = {
     ---------------------------------------------------------------------------
@@ -114,6 +113,10 @@ local ModelLists = {
         -- Reasoning (Magistral 1.2)
         "magistral-medium-latest",
         "magistral-small-latest",       -- open-weight (Apache 2.0)
+        -- Ministral edge models (2512 generation; probed 2026-07-28: no reasoning
+        -- axis, temperature free, tools OK)
+        "ministral-14b-latest",         -- fast
+        "ministral-8b-latest",          -- ultrafast
         -- Coding
         "codestral-latest",
     },
@@ -199,6 +202,7 @@ local ModelLists = {
 
         -- Anthropic
         "anthropic/claude-sonnet-5",
+        "anthropic/claude-fable-5",     -- frontier (verified in catalog 2026-07-28)
         "anthropic/claude-sonnet-4-6",
         "anthropic/claude-haiku-4-5",
 
@@ -312,7 +316,14 @@ local ModelLists = {
     ---------------------------------------------------------------------------
     -- TIER MAPPINGS
     -- Maps tier -> provider -> recommended model_id
-    -- Tiers: reasoning > flagship > standard > fast > ultrafast
+    -- Tiers: frontier > flagship > standard > fast > ultrafast
+    --
+    -- The old "reasoning" tier was RETIRED 2026-07-28 (item 19d): reasoning is a
+    -- per-model AXIS now (model_constraints.lua profiles), not a price rung —
+    -- every current flagship thinks. Persisted "reasoning" picks read through to
+    -- flagship via normalizeTier(); never to frontier (no silent up-pricing).
+    -- Users can add/override tier entries (incl. for custom providers) via the
+    -- tiers section of custom_models.lua — resolved in getModelForTier().
     ---------------------------------------------------------------------------
 
     -- Every id we have EVER shipped as a provider's array default (mined from git history
@@ -347,27 +358,16 @@ local ModelLists = {
     },
 
     _tiers = {
-        -- Models with explicit thinking/reasoning traces
-        reasoning = {
-            anthropic = "claude-opus-5",
-            openai = "gpt-5.6-sol",
-            deepseek = "deepseek-v4-pro",
-            gemini = "gemini-3.6-flash",             -- Pro models are paid-only; keep tier free-tier usable (3.6 flash assumed free-tier)
-            groq = "openai/gpt-oss-120b",            -- OpenAI open-weight
-            mistral = "magistral-medium-latest",
-            xai = "grok-4.5",
-            cohere = "command-a-reasoning-08-2025",
-            ollama = "deepseek-r1",
-            openrouter = "deepseek/deepseek-v4-pro",
-            requesty = "deepseek/deepseek-v4-pro",
-            together = "deepseek-ai/DeepSeek-V4-Pro",
-            fireworks = "accounts/fireworks/models/deepseek-v4-pro",
-            sambanova = "DeepSeek-V3.1",
-            qwen = "qwen3-max",
-            kimi = "kimi-k2.6-thinking",
-            doubao = "doubao-seed-2.0-pro-256k",
-            zai = "glm-4.7",
-            perplexity = "sonar-reasoning-pro",
+        -- Most capable, premium-priced models. STRICTLY OPT-IN: nothing
+        -- auto-selects this tier — the Quick preset "fastest" walk stops at
+        -- flagship, and getModelForTier() fallback only descends (a frontier
+        -- REQUEST falls to flagship; a flagship request never climbs here).
+        -- Sparse by design: most providers have no frontier-class model.
+        frontier = {
+            anthropic = "claude-fable-5",
+            gemini = "gemini-3.1-pro-preview",       -- paid-only deep reasoning
+            openrouter = "anthropic/claude-fable-5",
+            requesty = "anthropic/claude-fable-5",
         },
 
         -- Provider's most capable general-purpose model
@@ -382,7 +382,7 @@ local ModelLists = {
             cohere = "command-a-plus-05-2026",
             ollama = "llama4",
             openrouter = "anthropic/claude-sonnet-5",
-            requesty = "anthropic/claude-sonnet-4.6",
+            requesty = "anthropic/claude-sonnet-5",
             together = "deepseek-ai/DeepSeek-V4-Pro",
             fireworks = "accounts/fireworks/models/deepseek-v4-pro",
             sambanova = "Llama-4-Maverick-17B-128E-Instruct",
@@ -404,8 +404,8 @@ local ModelLists = {
             xai = "grok-4.20-0309-non-reasoning",
             cohere = "command-a-plus-05-2026",
             ollama = "llama3.3",
-            openrouter = "google/gemini-3.5-flash",
-            requesty = "google/gemini-3.5-flash",
+            openrouter = "google/gemini-3.6-flash",
+            requesty = "google/gemini-2.5-flash",   -- newer gemini rides vertex/ ids on Requesty; this is the verified google/ slug (2026-07-28)
             together = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             fireworks = "accounts/fireworks/models/llama-v3p3-70b-instruct",
             sambanova = "Meta-Llama-3.3-70B-Instruct",
@@ -423,12 +423,12 @@ local ModelLists = {
             deepseek = "deepseek-v4-flash",
             gemini = "gemini-3.6-flash",
             groq = "llama-3.1-8b-instant",
-            mistral = "mistral-small-latest",
+            mistral = "ministral-14b-latest",
             xai = "grok-4.20-0309-non-reasoning",
             cohere = "command-r7b-12-2024",
             ollama = "llama3.2:3b",
-            openrouter = "google/gemini-3.5-flash",
-            requesty = "google/gemini-3.5-flash",
+            openrouter = "google/gemini-3.6-flash",
+            requesty = "google/gemini-2.5-flash",
             together = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             fireworks = "accounts/fireworks/models/llama-v3p3-70b-instruct",
             sambanova = "Meta-Llama-3.3-70B-Instruct",
@@ -446,12 +446,12 @@ local ModelLists = {
             deepseek = "deepseek-v4-flash",
             gemini = "gemini-3.5-flash-lite",
             groq = "llama-3.1-8b-instant",
-            mistral = "mistral-small-latest",
+            mistral = "ministral-8b-latest",
             xai = "grok-4.20-0309-non-reasoning",
             cohere = "command-r7b-12-2024",
             ollama = "tinyllama",
-            openrouter = "google/gemini-3.5-flash",   -- FREE tier
-            requesty = "google/gemini-3.5-flash",
+            openrouter = "google/gemini-3.6-flash",
+            requesty = "google/gemini-2.5-flash",
             together = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             fireworks = "accounts/fireworks/models/llama-v3p3-70b-instruct",
             sambanova = "Meta-Llama-3.3-70B-Instruct",
@@ -555,9 +555,9 @@ local ModelLists = {
     ---------------------------------------------------------------------------
 
     _tier_info = {
-        reasoning = {
-            description = "Models with explicit thinking/reasoning traces",
-            typical_use = "Complex analysis, multi-step reasoning, scholarly work, math",
+        frontier = {
+            description = "Most capable premium models — expensive, explicit opt-in only",
+            typical_use = "Hardest analysis where cost is no concern; never auto-selected",
         },
         flagship = {
             description = "Provider's most capable general-purpose model",
@@ -638,38 +638,61 @@ function ModelLists.isBuiltInProvider(provider_id)
     return ModelLists[provider_id] ~= nil and type(ModelLists[provider_id]) == "table"
 end
 
+-- Canonical tier ladder, most capable first. Fallback only ever DESCENDS this
+-- list — frontier is reachable solely by asking for it explicitly.
+local TIER_ORDER = {"frontier", "flagship", "standard", "fast", "ultrafast"}
+
+-- Map legacy/unknown tier names onto the canonical ladder. The retired
+-- "reasoning" tier (persisted quick_preset_tier values predate 2026-07-28)
+-- resolves to flagship — deliberately NOT frontier, so no pick silently gets
+-- more expensive than what the user chose.
+-- @param tier string|nil
+-- @return string - canonical tier name
+function ModelLists.normalizeTier(tier)
+    if tier == "reasoning" then return "flagship" end
+    for _idx, t in ipairs(TIER_ORDER) do
+        if t == tier then return tier end
+    end
+    return "standard"
+end
+
+-- One tier/provider lookup: user override (custom_models.lua tiers section,
+-- item 18b — also how custom providers get tiers) first, curated second.
+local function lookupTier(provider, tier)
+    local ModelOverrides = require("koassistant_model_overrides")
+    local override = ModelOverrides.tierOverride(provider, tier)
+    if override then return override end
+    local tier_map = ModelLists._tiers[tier]
+    return tier_map and tier_map[provider] or nil
+end
+
 -- Get model for a specific tier and provider (with fallback)
 -- @param provider string - Provider name
--- @param tier string - Tier name (reasoning/flagship/standard/fast/ultrafast)
--- @param fallback boolean - If true, falls back to next tier (default: true)
+-- @param tier string - Tier name (frontier/flagship/standard/fast/ultrafast;
+--                      legacy "reasoning" reads through to flagship)
+-- @param fallback boolean - If true, falls back to next-cheaper tier (default: true)
 -- @return string|nil - Model ID or nil
 function ModelLists.getModelForTier(provider, tier, fallback)
     if fallback == nil then fallback = true end
-
-    local tier_order = {"reasoning", "flagship", "standard", "fast", "ultrafast"}
+    tier = ModelLists.normalizeTier(tier)
 
     -- Direct lookup
-    local tier_map = ModelLists._tiers[tier]
-    if tier_map and tier_map[provider] then
-        return tier_map[provider]
-    end
+    local model = lookupTier(provider, tier)
+    if model then return model end
 
-    -- Fallback to next tier
+    -- Fallback toward cheaper tiers
     if fallback then
         local start_idx = 1
-        for i, t in ipairs(tier_order) do
+        for i, t in ipairs(TIER_ORDER) do
             if t == tier then
                 start_idx = i + 1
                 break
             end
         end
 
-        for i = start_idx, #tier_order do
-            local fallback_tier = tier_order[i]
-            local fallback_map = ModelLists._tiers[fallback_tier]
-            if fallback_map and fallback_map[provider] then
-                return fallback_map[provider]
-            end
+        for i = start_idx, #TIER_ORDER do
+            model = lookupTier(provider, TIER_ORDER[i])
+            if model then return model end
         end
     end
 
@@ -687,13 +710,6 @@ function ModelLists.getTierForModel(provider, model_id)
         end
     end
     return "standard"
-end
-
--- Check if provider has a reasoning model
--- @param provider string - Provider name
--- @return boolean
-function ModelLists.hasReasoningModel(provider)
-    return ModelLists._tiers.reasoning[provider] ~= nil
 end
 
 -- Get tier info (description and typical use)

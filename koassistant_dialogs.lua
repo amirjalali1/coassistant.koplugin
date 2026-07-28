@@ -370,13 +370,13 @@ local function resolveQuickPresetModel(features, provider)
         if m then return { provider = provider, model = m } end
         return nil
     end
-    -- "fastest": walk from ultrafast toward slower until the provider has a listed
-    -- tier (custom providers have no tier info → nil → keep the current model)
+    -- "fastest": walk from ultrafast toward slower until the provider has a
+    -- listed tier — NEVER frontier (opt-in only). Goes through getModelForTier
+    -- so custom_models.lua tier placements work (incl. custom providers; without
+    -- one there → nil → keep the current model).
     for _idx, tier in ipairs({ "ultrafast", "fast", "standard", "flagship" }) do
-        local tier_map = MLists._tiers[tier]
-        if tier_map and tier_map[provider] then
-            return { provider = provider, model = tier_map[provider] }
-        end
+        local m = MLists.getModelForTier(provider, tier, false)
+        if m then return { provider = provider, model = m } end
     end
     return nil
 end
@@ -815,13 +815,14 @@ showQuickPresetModelMode = function(opts)
             { id = "fast", label = _("Fast") },
             { id = "standard", label = _("Standard") },
             { id = "flagship", label = _("Flagship") },
-            { id = "reasoning", label = _("Reasoning") },
+            { id = "frontier", label = _("Frontier") },
         }
         for _idx, tier in ipairs(TIERS) do
             -- Not every provider lists every tier: show what the pick resolves to
             -- for the ACTIVE provider (fallback walks toward faster tiers)
             local resolved = ModelLists.getModelForTier(active_provider, tier.id, true)
-            local is_current = mode == "tier" and (f.quick_preset_tier or "fast") == tier.id
+            local is_current = mode == "tier"
+                and ModelLists.normalizeTier(f.quick_preset_tier or "fast") == tier.id
             local tier_id = tier.id
             table.insert(buttons, {{
                 text = (is_current and "● " or "○ ")
@@ -864,7 +865,8 @@ showQuickPresetModelMode = function(opts)
                 finish()
             end),
             row(mode == "tier"
-                    and T(_("Tier: %1 (change…)"), f.quick_preset_tier or "fast")
+                    and T(_("Tier: %1 (change…)"),
+                        require("koassistant_model_lists").normalizeTier(f.quick_preset_tier or "fast"))
                     or _("A tier of the active provider…"),
                 mode == "tier", function()
                 UIManager:close(dialog)
@@ -931,7 +933,8 @@ showQuickPresetEditor = function(opts)
     if mode == "fastest" then
         model_mode_label = _("Fastest for provider")
     elseif mode == "tier" then
-        model_mode_label = T(_("%1 tier"), f.quick_preset_tier or "fast")
+        model_mode_label = T(_("%1 tier"),
+            require("koassistant_model_lists").normalizeTier(f.quick_preset_tier or "fast"))
     elseif mode == "model" then
         model_mode_label = f.quick_preset_model or "?"
     else
