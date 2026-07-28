@@ -7003,6 +7003,13 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
             self_ref:_showSectionPicker(action)
           end,
         }})
+        table.insert(nc_sec_rows, {{
+          text = _("Generate for a section range…"),
+          callback = function()
+            UIManager:close(dialog)
+            self_ref:_showSectionRangePicker(action)
+          end,
+        }})
       end
     end
     -- Version ladder from nothing (§6 slice 1): build the full rung set up front —
@@ -7270,17 +7277,26 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         callback = function()
           UIManager:close(dialog)
           if self_ref:_checkRequirements(action) then return end
-          -- Mid-ladder honesty (device round 2): an exact-position update is a
-          -- paid API call that only moves the LIVE X-Ray — it never creates or
-          -- replaces a rung, and later rungs still swap in when passed. Say so
-          -- before spending. (Recomputed at tap time — disk may have moved.)
-          if current_progress
-              and current_progress.decimal > (cached_entry.progress_decimal or 0) + 0.01
-              and (ActionCache.highestXrayLadderProgress(ladder_rungs) or 0)
-                > (cached_entry.progress_decimal or 0) + 0.005 then
+          if not (current_progress
+              and current_progress.decimal > (cached_entry.progress_decimal or 0) + 0.01) then
+            -- Redo / rebuild-from-scratch: interactive only — the round-14
+            -- background path is incremental-update-only
+            on_update()
+            return
+          end
+          -- Round 14: every paid to-position update confirms. The cost step
+          -- carries the mid-ladder honesty lines (when checkpoints are around
+          -- — recomputed at tap time, disk may have moved) AND the background
+          -- choice (item-24 X-Ray slice).
+          local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?"),
+            current_progress.formatted)
+          if (ActionCache.highestXrayLadderProgress(ladder_rungs) or 0)
+              > (cached_entry.progress_decimal or 0) + 0.005 then
             -- Decision support (device round 3): name the concrete free
             -- alternative — a rung already at-or-below the reader beats the
             -- paid call outright; otherwise say where the next one lands
+            confirm_text = confirm_text .. "\n"
+              .. _("Checkpoints are not touched — they still swap in for free as you read past them.")
             local c_next, c_avail
             for _idx, r in ipairs(ladder_rungs) do
               local p = tonumber(r.progress_decimal)
@@ -7292,8 +7308,6 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
                 end
               end
             end
-            local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?\nCheckpoints are not touched — they still swap in for free as you read past them."),
-              current_progress.formatted)
             if c_avail then
               confirm_text = confirm_text .. "\n" .. T(_("A free checkpoint at %1% is available right now (\"Update to %1% — instant\")."),
                 math.floor(c_avail * 100 + 0.5))
@@ -7301,17 +7315,21 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
               confirm_text = confirm_text .. "\n" .. T(_("The next free checkpoint arrives at %1%."),
                 math.floor(c_next * 100 + 0.5))
             end
-            local ConfirmBox = require("ui/widget/confirmbox")
-            UIManager:show(ConfirmBox:new{
-              text = confirm_text,
-              ok_text = _("Update"),
-              ok_callback = function()
-                on_update()
-              end,
-            })
-          else
-            on_update()
           end
+          local ConfirmBox = require("ui/widget/confirmbox")
+          UIManager:show(ConfirmBox:new{
+            text = confirm_text,
+            ok_text = _("Update"),
+            ok_callback = function()
+              on_update()
+            end,
+            other_buttons = {{{
+              text = _("Update in background (keep reading)"),
+              callback = function()
+                self_ref:_fireXrayAutoUpdate({ manual = true })
+              end,
+            }}},
+          })
         end,
       }}
       table.insert(demote_paid and c_ver_rows or buttons, paid_row)
@@ -7424,6 +7442,13 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           callback = function()
             UIManager:close(dialog)
             self_ref:_showSectionPicker(action)
+          end,
+        }})
+        table.insert(c_sec_rows, {{
+          text = _("Generate for a section range…"),
+          callback = function()
+            UIManager:close(dialog)
+            self_ref:_showSectionRangePicker(action)
           end,
         }})
       end
@@ -7892,6 +7917,38 @@ function AskGPT:_showSectionPicker(action, opts)
 
   toc_menu:switchItemTable(nil, collapsed_toc, collapsed_toc.current or -1)
   UIManager:show(menu_container)
+end
+
+--- Section X-Ray over a RANGE of sections (round 14, §7.4 batch item 10): two
+--- TOC picks → one synthetic entry spanning both (union span, composite label),
+--- which rides the normal name-input + generate path — one API call instead of
+--- build-per-chapter + merge. Picks may come in either order.
+function AskGPT:_showSectionRangePicker(action)
+  local self_ref = self
+  self:_showSectionPicker(action, {
+    title = _("Section range — pick the first section"),
+    on_select = function(first)
+      self_ref:_showSectionPicker(action, {
+        title = _("Section range — pick the last section"),
+        on_select = function(second)
+          local a, b = first, second
+          if (b.start_page or 0) < (a.start_page or 0) then a, b = b, a end
+          local entry
+          if a.start_page == b.start_page and a.end_page == b.end_page then
+            entry = a
+          else
+            entry = {
+              title = T(_("%1 – %2"), a.title or "", b.title or ""),
+              start_page = a.start_page,
+              end_page = math.max(a.end_page or 0, b.end_page or 0),
+              depth = math.min(a.depth or 1, b.depth or 1),
+            }
+          end
+          self_ref:_showSectionXrayNameInput(action, entry)
+        end,
+      })
+    end,
+  })
 end
 
 --- Show name input for a Section X-Ray, then trigger generation.
@@ -9704,20 +9761,29 @@ end
 --- The deferred fire. Fresh disk reads are the authority here; then dispatch the
 --- headless update through the normal incremental machinery (executeActionForResult
 --- with the _background_request transient on a config COPY — never the shared
---- module configuration).
-function AskGPT:_fireXrayAutoUpdate()
+--- module configuration). Round 14: opts.manual = user-invoked background update
+--- (the "Update in background" choice on the paid confirm) — skips the posture
+--- and spend dials (still consent/WiFi/eligibility-gated), never creates, always
+--- notifies, and reports timeouts/failures instead of staying silent.
+function AskGPT:_fireXrayAutoUpdate(opts)
+  local manual = (opts and opts.manual) or false
   local XrayAuto = require("koassistant_xray_auto")
   -- A close/book-switch inside the deferral window must not execute against a dead
   -- instance (readerui broadcasts CloseDocument then nils the document)
   if not self.ui or not self.ui.document or not self.ui.document.file then return end
-  if XrayAuto.isInFlight() then return end
+  if XrayAuto.isInFlight() then
+    if manual then
+      UIManager:show(InfoMessage:new{ text = _("An X-Ray task is already running."), timeout = 2 })
+    end
+    return
+  end
   local file = self.ui.document.file
 
   local features = self.settings:readSetting("features") or {}
   -- §7 P1 tri-state: per-book "on" (bundles create) / "off" / follow-global
   local fire_auto, fire_create_allowed = require("koassistant_book_settings")
       .resolveXrayAuto(self.ui.doc_settings, features)
-  if not self.ui.doc_settings or not fire_auto then return end
+  if not self.ui.doc_settings or (not fire_auto and not manual) then return end
   local doc_info = self.ui.document.info
   if not doc_info or doc_info.has_pages then return end
 
@@ -9729,8 +9795,9 @@ function AskGPT:_fireXrayAutoUpdate()
   local create_mode = false
   if not eligible then
     -- Auto-create carve-out (§5 decision 1): opt-in, and ONLY when no X-Ray
-    -- exists at all — an existing-but-ineligible artifact stays manual
-    if fire_create_allowed and not (fire_entry and fire_entry.result) then
+    -- exists at all — an existing-but-ineligible artifact stays manual. The
+    -- round-14 manual path is update-only: never creates.
+    if fire_create_allowed and not manual and not (fire_entry and fire_entry.result) then
       local doc_entry = ActionCache.getXrayCache(file)
       if not (doc_entry and doc_entry.result) then
         create_mode = true
@@ -9749,10 +9816,21 @@ function AskGPT:_fireXrayAutoUpdate()
   local decimal = progress and tonumber(progress.decimal)
   if not decimal then return end
   local delta = decimal - cached_progress
-  local dials = XrayAuto.dialsFromFeatures(features)
-  if delta <= dials.min_gap or delta > dials.max_gap then return end
+  if manual then
+    -- User-affirmed run: the spend dials don't gate it — only a
+    -- nothing-to-update floor
+    if delta <= 0.005 then return end
+  else
+    local dials = XrayAuto.dialsFromFeatures(features)
+    if delta <= dials.min_gap or delta > dials.max_gap then return end
+  end
   if _G.KOAssistantStreaming then return end
-  if not NetworkMgr:isWifiOn() then return end
+  if not NetworkMgr:isWifiOn() then
+    if manual then
+      UIManager:show(InfoMessage:new{ text = _("WiFi is off."), timeout = 2 })
+    end
+    return
+  end
 
   local action = self.action_service and self.action_service:getAction("book", "xray")
   if not action or not action.update_prompt or not action.use_response_caching then return end
@@ -9798,8 +9876,9 @@ function AskGPT:_fireXrayAutoUpdate()
 
   logger.info("KOAssistant: background X-Ray", create_mode and "create" or "update",
     "firing, delta", delta)
-  -- Start toast (same opt-in as the completion one — §10: the pair brackets the run)
-  if features.xray_auto_notify == true then
+  -- Start toast (opt-in for auto — §10: the pair brackets the run; manual
+  -- runs always notify: the user just asked for this)
+  if manual or features.xray_auto_notify == true then
     local Notification = require("ui/widget/notification")
     UIManager:show(Notification:new{
       text = create_mode
@@ -9823,6 +9902,9 @@ function AskGPT:_fireXrayAutoUpdate()
         XrayAuto.recordFailure(file, "timed out")
         logger.warn("KOAssistant: background X-Ray update timed out (watchdog,",
           XrayAuto.WATCHDOG_S, "s)")
+        if manual then
+          UIManager:show(InfoMessage:new{ text = _("Background X-Ray update timed out."), timeout = 3 })
+        end
       elseif was_cancelled or was_discarded then
         -- Guard-discard (a manual run won the race / X-Ray deleted) or book-close
         -- cancel: a skip — neither a success (nothing written) nor a failure
@@ -9832,8 +9914,8 @@ function AskGPT:_fireXrayAutoUpdate()
         XrayAuto.recordSuccess(file)
         logger.info("KOAssistant: background X-Ray", create_mode and "create" or "update",
           "completed (session total:", XrayAuto.sessionUpdateCount(), ")")
-        -- Completion toast (§10, opt-in — the default posture stays silent)
-        if features.xray_auto_notify == true then
+        -- Completion toast (§10, opt-in for auto; manual always notifies)
+        if manual or features.xray_auto_notify == true then
           local Notification = require("ui/widget/notification")
           UIManager:show(Notification:new{
             text = create_mode
@@ -9849,6 +9931,10 @@ function AskGPT:_fireXrayAutoUpdate()
         else
           XrayAuto.recordFailure(file, msg)
           logger.info("KOAssistant: background X-Ray update failed:", msg)
+          if manual then
+            UIManager:show(InfoMessage:new{
+              text = T(_("Background X-Ray update failed: %1"), msg), timeout = 4 })
+          end
         end
       end
       -- Refresh the pre-filter state if this book is still open

@@ -3970,38 +3970,52 @@ function XrayBrowser:showOptions()
                         if self_ref.menu then UIManager:close(self_ref.menu) end
                         self_ref.on_update()
                     end
-                    -- Mid-ladder honesty (device round 2): paid call, moves only
-                    -- the LIVE X-Ray — rungs are never created or replaced by it
-                    if current_dec and current_dec > cached_dec + 0.01
-                        and uladder_highest > cached_dec + 0.005 then
-                        -- Decision support (round 9, popup parity): name the
-                        -- concrete free alternative
-                        local CbCache = require("koassistant_action_cache")
-                        local next_ahead, avail_now
-                        for _idx, r in ipairs(CbCache.getXrayLadder(self_ref.metadata.book_file)) do
-                            local p = tonumber(r.progress_decimal)
-                            if p and not r.full_document then
-                                if p > current_dec + 0.005 then
-                                    if not next_ahead or p < next_ahead then next_ahead = p end
-                                elseif p > cached_dec + 0.005 then
-                                    if not avail_now or p > avail_now then avail_now = p end
+                    -- Round 14 (popup parity): every paid to-position update
+                    -- confirms — mid-ladder honesty lines when checkpoints are
+                    -- around, plus the background choice (open-book only)
+                    if current_dec and current_dec > cached_dec + 0.01 then
+                        local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?"),
+                            math.floor(current_dec * 100 + 0.5) .. "%")
+                        if uladder_highest > cached_dec + 0.005 then
+                            -- Decision support (round 9, popup parity): name the
+                            -- concrete free alternative
+                            confirm_text = confirm_text .. "\n"
+                                .. _("Checkpoints are not touched — they still swap in for free as you read past them.")
+                            local CbCache = require("koassistant_action_cache")
+                            local next_ahead, avail_now
+                            for _idx, r in ipairs(CbCache.getXrayLadder(self_ref.metadata.book_file)) do
+                                local p = tonumber(r.progress_decimal)
+                                if p and not r.full_document then
+                                    if p > current_dec + 0.005 then
+                                        if not next_ahead or p < next_ahead then next_ahead = p end
+                                    elseif p > cached_dec + 0.005 then
+                                        if not avail_now or p > avail_now then avail_now = p end
+                                    end
                                 end
                             end
+                            if avail_now then
+                                confirm_text = confirm_text .. "\n" .. T(_("A free checkpoint at %1% is available right now (\"Update to %1% — instant\" in the X-Ray popup)."),
+                                    math.floor(avail_now * 100 + 0.5))
+                            elseif next_ahead then
+                                confirm_text = confirm_text .. "\n" .. T(_("The next free checkpoint arrives at %1%."),
+                                    math.floor(next_ahead * 100 + 0.5))
+                            end
                         end
-                        local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?\nCheckpoints are not touched — they still swap in for free as you read past them."),
-                            math.floor(current_dec * 100 + 0.5) .. "%")
-                        if avail_now then
-                            confirm_text = confirm_text .. "\n" .. T(_("A free checkpoint at %1% is available right now (\"Update to %1% — instant\" in the X-Ray popup)."),
-                                math.floor(avail_now * 100 + 0.5))
-                        elseif next_ahead then
-                            confirm_text = confirm_text .. "\n" .. T(_("The next free version arrives at %1%."),
-                                math.floor(next_ahead * 100 + 0.5))
-                        end
+                        local plugin = self_ref.metadata.plugin
+                        local bg_ok = plugin and plugin.ui and plugin.ui.document
+                            and plugin.ui.document.file == self_ref.metadata.book_file
                         local ConfirmBox = require("ui/widget/confirmbox")
                         UIManager:show(ConfirmBox:new{
                             text = confirm_text,
                             ok_text = _("Update"),
                             ok_callback = fire,
+                            other_buttons = bg_ok and {{{
+                                text = _("Update in background (keep reading)"),
+                                callback = function()
+                                    if self_ref.menu then UIManager:close(self_ref.menu) end
+                                    plugin:_fireXrayAutoUpdate({ manual = true })
+                                end,
+                            }}} or nil,
                         })
                     else
                         fire()
