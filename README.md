@@ -904,6 +904,8 @@ Checkpoints serve two purposes, and both are first-class: **spoiler-safe reading
 3. Optionally rename it (defaults to the TOC entry title, 80-character limit)
 4. The AI analyzes only the text within that page range and produces a complete X-Ray
 
+**Section ranges:** **"Generate for a section range…"** (same popup group) asks for two TOC picks — the first and last section — and produces ONE Section X-Ray spanning everything between them (e.g. chapters 3–7 as a single artifact). Picks work in either order; the name defaults to "First – Last". One request instead of building each chapter separately and merging.
+
 **How to browse Section X-Rays:**
 - From the X-Ray scope popup → **"View Section X-Rays (N)"**, lists all sections with page ranges and timestamps
 - If you're currently reading within a section's page range, a **"View 'Section Name' (pp X–Y, Nd ago)"** button appears directly in the popup for quick access
