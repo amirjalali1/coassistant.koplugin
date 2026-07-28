@@ -311,20 +311,25 @@ end
 --- @param base_progress number|nil 0..1 (nil/0 = build from nothing)
 --- @param spacing number|nil override (default LADDER_SPACING)
 --- @return table Ascending array of target ratios (empty when base is ≥ ~99%)
-function XrayAuto.planLadderRungs(base_progress, spacing)
+function XrayAuto.planLadderRungs(base_progress, spacing, target_end)
   spacing = spacing or XrayAuto.LADDER_SPACING
   local base = tonumber(base_progress) or 0
-  -- Within 1% of the end the update path wouldn't engage — nothing to build
-  if base >= 0.99 then return {} end
+  -- Round 16 (unified creation flow): optional target bounds the build — cover
+  -- a huge section in prefix steps without paying for the rest of the book yet.
+  -- nil/invalid = 1.0 (the pre-target behavior; resume later can extend).
+  local goal = tonumber(target_end)
+  if not goal or goal <= 0 or goal > 1.0 then goal = 1.0 end
+  -- Within 1% of the goal the update path wouldn't engage — nothing to build
+  if base >= goal - 0.01 then return {} end
   local rungs = {}
   local n = math.floor((base + spacing / 2 - 1e-9) / spacing) + 1
   local target = math.floor(n * spacing * 1000 + 0.5) / 1000
-  while target < 1.0 - XrayAuto.LADDER_TOLERANCE do
+  while target < goal - XrayAuto.LADDER_TOLERANCE do
     rungs[#rungs + 1] = target
     n = n + 1
     target = math.floor(n * spacing * 1000 + 0.5) / 1000
   end
-  rungs[#rungs + 1] = 1.0
+  rungs[#rungs + 1] = goal
   return rungs
 end
 

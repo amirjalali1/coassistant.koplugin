@@ -6928,25 +6928,14 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     if self:_checkRequirements(action) then
       return
     end
-    -- Generate (to X%) or Generate (entire document)
-    local generate_partial_label
-    if current_progress then
-      generate_partial_label = T(_("Generate %1 (to %2)"), action_name, current_progress.formatted)
-    else
-      generate_partial_label = T(_("Generate %1"), action_name)
-    end
+    -- Round 16: the unified creation chooser replaces the two legacy generate
+    -- rows (coverage step, then delivery step — one request / checkpoints /
+    -- follow; §7.4 batch item 9 unified-creation design v1)
     table.insert(buttons, {{
-      text = generate_partial_label,
+      text = _("Create X-Ray…"),
       callback = function()
         UIManager:close(dialog)
-        on_update()
-      end,
-    }})
-    table.insert(buttons, {{
-      text = T(_("Generate Complete %1"), action_name),
-      callback = function()
-        UIManager:close(dialog)
-        self_ref:_executeBookLevelActionDirect(action, action_id, { full_document = true })
+        self_ref:_showXrayCreationChooser(action, action_id, on_update, opts)
       end,
     }})
     -- Surface in-range section X-Rays + list existing + new — grouped (P6)
@@ -7949,6 +7938,180 @@ function AskGPT:_showSectionRangePicker(action)
       })
     end,
   })
+end
+
+--- Unified X-Ray creation chooser (round 16, §7.4 batch item 9 unified-creation
+--- design v1): coverage step, then delivery step, dispatching to the existing
+--- paths. State-aware: reading position, per-book auto posture, live checkpoint
+--- counts per option. Entry = the "Create X-Ray…" row (no-cache popup); the
+--- auto-toggle and first-auto-fire entries come with the ask-flow phase.
+function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
+  local ButtonDialog = require("ui/widget/buttondialog")
+  local XrayAuto = require("koassistant_xray_auto")
+  local self_ref = self
+  local doc = self.ui and self.ui.document
+  if not doc then
+    -- File-browser entry: no live document, so only the one-request paths exist
+    local fb_dialog
+    fb_dialog = ButtonDialog:new{
+      title = _("Create X-Ray: how far should it cover?"),
+      buttons = {
+        {{ text = _("Up to my reading position"), callback = function()
+          UIManager:close(fb_dialog)
+          on_update()
+        end }},
+        {{ text = _("The whole book"), callback = function()
+          UIManager:close(fb_dialog)
+          self_ref:_executeBookLevelActionDirect(action, action_id, { full_document = true })
+        end }},
+        {{ text = _("Cancel"), callback = function() UIManager:close(fb_dialog) end }},
+      },
+    }
+    UIManager:show(fb_dialog)
+    return
+  end
+  local ContextExtractor = require("koassistant_context_extractor")
+  local progress = ContextExtractor:new(self.ui):getReadingProgress()
+  local decimal = progress and tonumber(progress.decimal) or 0
+  local features = self.settings:readSetting("features") or {}
+  local flowing = not (doc.info and doc.info.has_pages)
+  local total_pages = doc:getPageCount() or 0
+
+  local function showDelivery(coverage) -- { kind = "position"|"whole" }
+    local rows = {}
+    local spacing = flowing and XrayAuto.ladderSpacingFor(total_pages) or XrayAuto.LADDER_SPACING
+    local goal = coverage.kind == "position" and decimal or 1.0
+    local n_steps = flowing and #XrayAuto.planLadderRungs(0, spacing, goal) or 0
+    local dialog
+    if coverage.kind == "position" then
+      rows[#rows + 1] = {{
+        text = _("In one request now"),
+        callback = function()
+          UIManager:close(dialog)
+          on_update()
+        end,
+      }}
+    else
+      rows[#rows + 1] = {{
+        text = _("In one request now (analyzed as a whole)"),
+        callback = function()
+          UIManager:close(dialog)
+          self_ref:_executeBookLevelActionDirect(action, action_id, { full_document = true })
+        end,
+      }}
+    end
+    if n_steps > 1 then
+      rows[#rows + 1] = {{
+        text = T(_("In checkpoints (%1 background steps)…"), n_steps),
+        callback = function()
+          UIManager:close(dialog)
+          self_ref:_startXrayLadderBuild(coverage.kind == "position"
+            and { target = decimal } or nil)
+        end,
+      }}
+    end
+    if coverage.kind == "position" and flowing then
+      local BookSettings = require("koassistant_book_settings")
+      if BookSettings.resolveXrayAuto(self.ui.doc_settings, features) then
+        rows[#rows + 1] = {{ text = _("Automatically as I read (already on)"), enabled = false }}
+      else
+        rows[#rows + 1] = {{
+          text = _("Automatically as I read (small background updates)"),
+          callback = function()
+            UIManager:close(dialog)
+            self_ref:_enableXrayFollowForBook(decimal)
+          end,
+        }}
+      end
+    end
+    rows[#rows + 1] = {{ text = _("Back"), callback = function()
+      UIManager:close(dialog)
+      self_ref:_showXrayCreationChooser(action, action_id, on_update, opts)
+    end }}
+    dialog = ButtonDialog:new{
+      title = _("How should the X-Ray be built?"),
+      buttons = rows,
+    }
+    UIManager:show(dialog)
+  end
+
+  local chooser
+  local coverage_rows = {}
+  if progress and decimal > 0.01 then
+    coverage_rows[#coverage_rows + 1] = {{
+      text = T(_("Up to where I am (%1)"), progress.formatted),
+      callback = function()
+        UIManager:close(chooser)
+        showDelivery({ kind = "position" })
+      end,
+    }}
+  end
+  coverage_rows[#coverage_rows + 1] = {{
+    text = _("The whole book"),
+    callback = function()
+      UIManager:close(chooser)
+      showDelivery({ kind = "whole" })
+    end,
+  }}
+  if flowing and self.ui.toc and self.ui.toc.toc and #self.ui.toc.toc > 0 then
+    coverage_rows[#coverage_rows + 1] = {{
+      text = _("To the end of a section…"),
+      callback = function()
+        UIManager:close(chooser)
+        self_ref:_showSectionPicker(action, {
+          title = _("Cover the book up to the end of…"),
+          on_select = function(entry)
+            local ratio = total_pages > 0 and (entry.end_page or 0) / total_pages or 0
+            if ratio <= 0.01 then return end
+            if ratio >= 1.0 - 0.005 then
+              showDelivery({ kind = "whole" })
+            else
+              -- Checkpoints are the only bounded delivery for an arbitrary
+              -- prefix target (one-shot extraction only knows "to my position"
+              -- and "whole book") — straight to the build confirm
+              self_ref:_startXrayLadderBuild({ target = ratio, target_label = entry.title })
+            end
+          end,
+        })
+      end,
+    }}
+  end
+  coverage_rows[#coverage_rows + 1] = {{ text = _("Cancel"), callback = function()
+    UIManager:close(chooser)
+  end }}
+  chooser = ButtonDialog:new{
+    title = _("Create X-Ray: how far should it cover?"),
+    buttons = coverage_rows,
+  }
+  UIManager:show(chooser)
+end
+
+--- The "follow as I read" pick: per-book Automatic X-Ray ON, with the honest
+--- catch-up path when the reader is already past the auto-create window
+--- (following alone would never create there — the window caps unattended
+--- extraction size; the checkpoint build to position, with its own cost
+--- confirm, closes the gap; cancelling it leaves auto on, engaging once an
+--- X-Ray exists).
+function AskGPT:_enableXrayFollowForBook(decimal)
+  if not self.ui or not self.ui.doc_settings then return end
+  local BookSettings = require("koassistant_book_settings")
+  self.ui.doc_settings:saveSetting(BookSettings.KEY_XRAY_AUTO, true)
+  self:_refreshXrayAutoState()
+  local XrayAuto = require("koassistant_xray_auto")
+  local features = self.settings:readSetting("features") or {}
+  local dials = XrayAuto.dialsFromFeatures(features)
+  if (decimal or 0) > dials.max_gap then
+    UIManager:show(InfoMessage:new{
+      text = T(_("Automatic X-Ray is on for this book. You're at %1%, past the automatic-create window, so the X-Ray needs to catch up once first."),
+        math.floor((decimal or 0) * 100 + 0.5)),
+      timeout = 4,
+    })
+    self:_startXrayLadderBuild({ target = decimal })
+  else
+    UIManager:show(Notification:new{
+      text = _("Automatic X-Ray is on: it will create and update the X-Ray in the background as you read."),
+    })
+  end
 end
 
 --- Show name input for a Section X-Ray, then trigger generation.
@@ -10190,7 +10353,7 @@ end
 
 --- Entry point for the ladder build/resume (X-Ray popup rows). Explicit user
 --- action: pre-flight UI gating + a cost dialog, then the silent chain.
-function AskGPT:_startXrayLadderBuild()
+function AskGPT:_startXrayLadderBuild(build_opts)
   local XrayAuto = require("koassistant_xray_auto")
   local ActionCache = require("koassistant_action_cache")
   local XrayParser = require("koassistant_xray_parser")
@@ -10250,6 +10413,11 @@ function AskGPT:_startXrayLadderBuild()
   -- Round 11: the formula is a DEFAULT, not a decree — "Adjust spacing…" on the
   -- confirm re-plans this ONE run at a user-picked spacing (dense material can
   -- warrant closer versions than the length formula; nothing is persisted).
+  -- Round 16: build_opts.target (+ target_label) bounds the build below 100%
+  -- (unified creation flow: cover one huge section in prefix steps).
+  local goal = build_opts and tonumber(build_opts.target) or nil
+  if goal and (goal <= 0.005 or goal >= 1.0 - 0.005) then goal = nil end
+  local goal_label = goal and build_opts and build_opts.target_label or nil
   local recommended = XrayAuto.ladderSpacingFor(self.ui.document:getPageCount())
   local features = self.settings:readSetting("features") or {}
   local boundaries = features.xray_ladder_chapter_snap ~= false
@@ -10258,10 +10426,22 @@ function AskGPT:_startXrayLadderBuild()
   local resume = #ladder > 0
   local self_ref = self
   local function planFor(spacing)
-    local rungs = XrayAuto.planLadderRungs(base_progress or 0, spacing)
+    local rungs = XrayAuto.planLadderRungs(base_progress or 0, spacing, goal)
     local rung_labels = {}
-    if boundaries then
-      rungs, rung_labels = XrayAuto.snapLadderRungs(rungs, boundaries, base_progress or 0, spacing)
+    local snap_bounds = boundaries
+    if goal and snap_bounds then
+      -- Intermediate rungs may snap, but never past the target: the final rung
+      -- stays exactly at the goal
+      local kept = {}
+      for _idx, bd in ipairs(snap_bounds) do
+        if (bd.ratio or 0) < goal - XrayAuto.LADDER_TOLERANCE then
+          kept[#kept + 1] = bd
+        end
+      end
+      snap_bounds = #kept >= 3 and kept or nil
+    end
+    if snap_bounds then
+      rungs, rung_labels = XrayAuto.snapLadderRungs(rungs, snap_bounds, base_progress or 0, spacing)
     end
     return rungs, rung_labels
   end
@@ -10320,7 +10500,18 @@ function AskGPT:_startXrayLadderBuild()
     -- X-Ray continues from its coverage). Full sentences, no dashes.
     local base_pct = math.floor((base_progress or 0) * 100 + 0.5)
     local state_line
-    if resume then
+    if goal then
+      local goal_text = goal_label
+        and T(_("%1% (end of \"%2\")"), math.floor(goal * 100 + 0.5), goal_label)
+        or T(_("%1%"), math.floor(goal * 100 + 0.5))
+      if resume then
+        state_line = T(_("Checkpoints built so far reach %1%. Building will continue from there to %2."), base_pct, goal_text)
+      elseif (base_progress or 0) > 0.005 then
+        state_line = T(_("Your X-Ray covers to %1%. Checkpoints will continue from there to %2."), base_pct, goal_text)
+      else
+        state_line = T(_("There is no X-Ray yet. Checkpoints will cover the book from the beginning to %1."), goal_text)
+      end
+    elseif resume then
       state_line = T(_("Checkpoints built so far reach %1%. Building will continue from there to 100%."), base_pct)
     elseif (base_progress or 0) > 0.005 then
       state_line = T(_("Your X-Ray covers to %1%. Checkpoints will continue from there to 100%."), base_pct)

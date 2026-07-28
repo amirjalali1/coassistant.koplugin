@@ -543,6 +543,21 @@ TestRunner:test("ladderSpacingFor: 10% baseline, min-pages floor, tiny-book clam
         "novella ladder: 45/90/100 — 3 calls, not 10")
 end)
 
+TestRunner:test("planLadderRungs: target_end bounds the build", function()
+    local rungs = XrayAuto.planLadderRungs(0, 0.1, 0.6)
+    TestRunner:assertEqual(#rungs, 6, "0->60% at 10%: 6 rungs")
+    TestRunner:assertEqual(rungs[#rungs], 0.6, "final rung = the target, not 1.0")
+    local mid = XrayAuto.planLadderRungs(0.3, 0.1, 0.6)
+    TestRunner:assertEqual(#mid, 3, "30->60% at 10%: 3 rungs")
+    TestRunner:assertEqual(mid[1], 0.4, "first rung past the base")
+    TestRunner:assertEqual(#XrayAuto.planLadderRungs(0.59, 0.1, 0.6), 0,
+        "base within 1% of target: nothing to build")
+    TestRunner:assertEqual(XrayAuto.planLadderRungs(0, 0.1, nil)[10], 1.0,
+        "nil target keeps the 1.0 behavior")
+    TestRunner:assertEqual(XrayAuto.planLadderRungs(0, 0.1, 1.5)[10], 1.0,
+        "invalid target clamps to 1.0")
+end)
+
 TestRunner:test("ladderSpacingFor v2: max-pages ceiling narrows spacing on long books", function()
     TestRunner:assertEqual(XrayAuto.ladderSpacingFor(1000), 0.1,
         "1000 pages: ceiling lands exactly on baseline (100-page rungs)")
