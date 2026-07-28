@@ -295,6 +295,10 @@ function MessageHistory:fromSavedMessages(messages, model, chat_id, prompt_actio
         if chat_metadata.unavailable_data then
             history.unavailable_data = chat_metadata.unavailable_data
         end
+        -- Launch tag ("xray_chat" / "artifact") — kept across resume/re-save
+        if chat_metadata.launched_from then
+            history.launched_from = chat_metadata.launched_from
+        end
     end
 
     return history

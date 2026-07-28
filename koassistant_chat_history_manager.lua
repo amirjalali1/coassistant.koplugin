@@ -400,6 +400,8 @@ function ChatHistoryManager:saveChat(document_path, chat_title, message_history,
         book_author = metadata and metadata.book_author or nil,
         -- Store prompt action for continued chats
         prompt_action = message_history.prompt_action or nil,
+        -- Launch tag (device round 2): "xray_chat" / "artifact" grouping marker
+        launched_from = message_history.launched_from or nil,
         -- Store launch context for general chats started from within a book
         launch_context = metadata and metadata.launch_context or nil,
         -- Store domain for filtering and context (optional, set at chat start only)

@@ -4007,7 +4007,7 @@ function XrayBrowser:showOptions()
             + ActionCache.getXrayLadderCount(self.metadata.book_file)
         if cp_count > 0 then
             table.insert(buttons, {{
-                text = T(_("Previous versions (%1)…"), cp_count), align = "left",
+                text = T(_("All versions (%1)…"), cp_count), align = "left",
                 callback = function()
                     closeOptions()
                     -- Close the browser: the version list may view/restore another
@@ -4127,6 +4127,28 @@ function XrayBrowser:showOptions()
     if tonumber(self.metadata.merged_from_sections) then
         table.insert(info_parts, _("Merged from:") .. " "
             .. T(_("%1 section X-Rays"), self.metadata.merged_from_sections))
+    end
+    -- Ladder provenance (device round 2): derived from disk truth at tap time —
+    -- no cache fields involved, so it stays honest across ladder deletion and
+    -- later API updates. Live main only (not section/checkpoint views).
+    if not self.scope and not self.metadata.checkpoint and self.metadata.book_file then
+        local InfoActionCache = require("koassistant_action_cache")
+        local info_ladder = InfoActionCache.getXrayLadder(self.metadata.book_file)
+        if #info_ladder > 0 then
+            local highest = InfoActionCache.highestXrayLadderProgress(info_ladder) or 0
+            table.insert(info_parts, T(_("Version ladder: %1 versions (up to %2%)"),
+                #info_ladder, math.floor(highest * 100 + 0.5)))
+            for _idx, rung in ipairs(info_ladder) do
+                if rung.timestamp == self.metadata.timestamp
+                    and math.abs((tonumber(rung.progress_decimal) or -1)
+                        - (tonumber(self.metadata.progress_decimal) or -2)) < 1e-6 then
+                    table.insert(info_parts, rung.chapter_label
+                        and T(_("Installed from ladder (end of %1)"), rung.chapter_label)
+                        or _("Installed from ladder"))
+                    break
+                end
+            end
+        end
     end
 
     if #info_parts > 0 then

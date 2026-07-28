@@ -7033,10 +7033,22 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       -- a cancelled from-nothing build left its rungs unviewable)
       if nc_rungs > 0 then
         table.insert(nc_ver_rows, {{
-          text = T(_("Previous versions (%1)…"), nc_rungs),
+          text = T(_("All versions (%1)…"), nc_rungs),
           callback = function()
             UIManager:close(dialog)
             self_ref:_showXrayCheckpointList(opts)
+          end,
+        }})
+      end
+      -- Complete from-nothing ladder, no live X-Ray yet (reader before rung 1):
+      -- the spoiler-warned switch is the "front-loaded build, no gating wanted"
+      -- exit here too (device round 2)
+      if nc_rungs > 0 and (nc_highest or 0) >= 1.0 - 0.005 then
+        table.insert(nc_ver_rows, {{
+          text = _("Switch to complete version (100%) — instant"),
+          callback = function()
+            UIManager:close(dialog)
+            self_ref:_switchToCompleteXrayRung(opts)
           end,
         }})
       end
@@ -7258,9 +7270,23 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         }})
       end
     end
-    -- "Update to 100%": normal incremental update with progress override (same spoiler-free prompt)
-    -- Only shown when reader isn't already near 100% (otherwise the regular Update button covers it)
-    if not current_progress or current_progress.decimal < 0.995 then
+    -- "Update to 100%" family (device round 2 gates): never offered when the
+    -- cache already covers the whole book; when a finished 1.0 rung exists, the
+    -- free install REPLACES the API row — same coverage, zero cost.
+    local ladder_highest = ActionCache.highestXrayLadderProgress(ladder_rungs)
+    local cache_complete = cached_entry.full_document
+        or (cached_entry.progress_decimal or 0) >= 0.995
+    if not cache_complete and (ladder_highest or 0) >= 0.995
+        and cached_entry.source_mode ~= "ai_knowledge" then
+      table.insert(c_ver_rows, {{
+        text = _("Switch to complete version (100%) — instant"),
+        callback = function()
+          UIManager:close(dialog)
+          self_ref:_switchToCompleteXrayRung(opts)
+        end,
+      }})
+    elseif not cache_complete
+        and (not current_progress or current_progress.decimal < 0.995) then
       table.insert(c_ver_rows, {{
         text = T(_("Update %1 (to %2)"), action_name, "100%"),
         callback = function()
@@ -7270,26 +7296,24 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         end,
       }})
     end
-    -- Version ladder build/resume (§6 slice 1; ineligible types get the honest
-    -- explanation inside _startXrayLadderBuild). Flowing docs only, like the
-    -- background machinery.
+    -- Version ladder build/resume (§6 slice 1). Flowing docs only, like the
+    -- background machinery. The row renders for ineligible lineages too
+    -- (complete-track / AI-knowledge) — _startXrayLadderBuild explains honestly
+    -- instead of the row silently missing (device round 2).
     if doc and not (doc.info and doc.info.has_pages) and not ladder_building
         and self.ui and self.ui.document and self.ui.document.file == sx_file then
-      local highest_rung = ActionCache.highestXrayLadderProgress(ladder_rungs)
       if #ladder_rungs == 0 then
-        if not cached_entry.full_document and cached_entry.source_mode ~= "ai_knowledge" then
-          table.insert(c_ver_rows, {{
-            text = _("Build version ladder…"),
-            callback = function()
-              UIManager:close(dialog)
-              self_ref:_startXrayLadderBuild()
-            end,
-          }})
-        end
-      elseif (highest_rung or 0) < 1.0 - 0.005 then
+        table.insert(c_ver_rows, {{
+          text = _("Build version ladder…"),
+          callback = function()
+            UIManager:close(dialog)
+            self_ref:_startXrayLadderBuild()
+          end,
+        }})
+      elseif (ladder_highest or 0) < 1.0 - 0.005 then
         table.insert(c_ver_rows, {{
           text = T(_("Resume ladder build (from %1%)…"),
-            math.floor((highest_rung or 0) * 100 + 0.5)),
+            math.floor((ladder_highest or 0) * 100 + 0.5)),
           callback = function()
             UIManager:close(dialog)
             self_ref:_startXrayLadderBuild()
@@ -7317,10 +7341,12 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           end,
         }})
       end
-      -- Archived pre-overwrite versions + ladder rungs (#73 browsable history)
+      -- Archived pre-overwrite versions + ladder rungs (#73 browsable history).
+      -- "All", not "Previous": ladder rungs ahead of the reader are FUTURE
+      -- versions (device round 2 naming)
       if #versions_all > 0 then
         table.insert(c_ver_rows, {{
-          text = T(_("Previous versions (%1)…"), #versions_all),
+          text = T(_("All versions (%1)…"), #versions_all),
           callback = function()
             UIManager:close(dialog)
             self_ref:_showXrayCheckpointList(opts)
@@ -8628,7 +8654,7 @@ function AskGPT:_showXrayCheckpointOptions(cp, opts)
         local confirm_dialog
         confirm_dialog = ButtonDialog:new{
           title = T(_("Replace the current X-Ray with the version from %1?"), label)
-            .. "\n" .. _("The current version will be kept in Previous versions."),
+            .. "\n" .. _("The current version will be kept in the version list."),
           buttons = {
             {{
               text = _("Restore"),
@@ -9736,6 +9762,96 @@ function AskGPT:_fireXrayLadderPromotion(opts)
   return ok
 end
 
+--- Manual install of the finished 1.0 rung as the live X-Ray (device round 2):
+--- the ladder's complete version IS the whole-book X-Ray, so switching is free —
+--- this replaces the API "Update to 100%" whenever a finished rung exists.
+--- Deliberately bypasses the promotion position gate (a user-affirmed spoiler
+--- jump — warned first). Decision (b): afterwards offer ladder cleanup;
+--- declining keeps the rungs browsable in the versions list.
+function AskGPT:_switchToCompleteXrayRung(opts)
+  local XrayAuto = require("koassistant_xray_auto")
+  local ActionCache = require("koassistant_action_cache")
+  local ButtonDialog = require("ui/widget/buttondialog")
+  if XrayAuto.ladderBuild() or XrayAuto.isInFlight() then
+    UIManager:show(InfoMessage:new{ text = _("An X-Ray task is already running."), timeout = 2 })
+    return
+  end
+  local file = (self.ui and self.ui.document and self.ui.document.file) or (opts and opts.file)
+  if not file then return end
+  local live = ActionCache.getXrayCache(file)
+  if live and live.result and (live.full_document or live.source_mode == "ai_knowledge") then
+    -- Different lineage — same rule as promotion. (Row gating already excludes
+    -- this; guard against disk moving between drawing and tapping.)
+    return
+  end
+  local rung
+  for _idx, r in ipairs(ActionCache.getXrayLadder(file)) do
+    local p = tonumber(r.progress_decimal)
+    if p and p >= 1.0 - 0.005 and not r.full_document
+        and (not rung or p > tonumber(rung.progress_decimal)) then
+      rung = r
+    end
+  end
+  if not rung then
+    UIManager:show(InfoMessage:new{ text = _("The ladder's complete version is no longer available."), timeout = 3 })
+    return
+  end
+  local self_ref = self
+  local confirm
+  confirm = ButtonDialog:new{
+    title = _("Switch to the complete X-Ray (100%)?") .. "\n"
+      .. _("It covers the whole book — including everything ahead of your reading position. The current version is kept in the version list."),
+    buttons = {
+      {{
+        text = _("Switch"),
+        callback = function()
+          UIManager:close(confirm)
+          local features = self_ref.settings:readSetting("features") or {}
+          local ok = ActionCache.promoteXrayLadderRung(file, rung,
+              ActionCache.checkpointLimitFromFeatures(features), { manual = true })
+          if not ok then
+            UIManager:show(InfoMessage:new{ text = _("Switch failed — the ladder version could not be installed."), timeout = 3 })
+            return
+          end
+          self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+          self_ref:_refreshXrayAutoState()
+          local ladder_n = ActionCache.getXrayLadderCount(file)
+          local offer
+          offer = ButtonDialog:new{
+            title = _("Switched to the complete X-Ray.") .. "\n"
+              .. T(_("Delete the %1 ladder versions? Kept, they stay browsable under All versions."), ladder_n),
+            buttons = {
+              {{
+                text = _("Delete ladder versions"),
+                callback = function()
+                  UIManager:close(offer)
+                  ActionCache.clearXrayLadder(file)
+                  self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+                  self_ref:_refreshXrayAutoState()
+                end,
+              }},
+              {{
+                text = _("Keep them"),
+                callback = function()
+                  UIManager:close(offer)
+                end,
+              }},
+            },
+          }
+          UIManager:show(offer)
+        end,
+      }},
+      {{
+        text = _("Cancel"),
+        callback = function()
+          UIManager:close(confirm)
+        end,
+      }},
+    },
+  }
+  UIManager:show(confirm)
+end
+
 --- Chapter-end boundaries for ladder rung snapping (P3): ascending
 --- { ratio, title } where ratio = the chapter's last page over the page count
 --- and title = the chapter that ENDS there. Chapter set = the quiz auto-level
@@ -9833,11 +9949,12 @@ function AskGPT:_startXrayLadderBuild()
   if features.xray_ladder_chapter_snap ~= false then
     local boundaries = self:_ladderChapterBoundaries()
     if boundaries then
-      rungs, rung_labels = XrayAuto.snapLadderRungs(rungs, boundaries, base_progress or 0)
+      rungs, rung_labels = XrayAuto.snapLadderRungs(rungs, boundaries, base_progress or 0, spacing)
     end
   end
   if #rungs == 0 then
-    UIManager:show(InfoMessage:new{ text = _("The version ladder is already complete."), timeout = 2 })
+    -- Also the no-ladder-but-live-at-100% case — say why, not "complete"
+    UIManager:show(InfoMessage:new{ text = _("Nothing to build — the X-Ray already covers the whole book."), timeout = 3 })
     return
   end
   local snapped = next(rung_labels) ~= nil

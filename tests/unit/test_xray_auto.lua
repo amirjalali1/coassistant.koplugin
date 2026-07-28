@@ -542,6 +542,40 @@ TestRunner:test("ladderSpacingFor: 10% baseline, min-pages floor, tiny-book clam
         "novella ladder: 30/60/90/100 — 4 calls, not 10")
 end)
 
+TestRunner:test("ladderSpacingFor v2: max-pages ceiling narrows spacing on long books", function()
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(1000), 0.1,
+        "1000 pages: ceiling lands exactly on baseline (100-page rungs)")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(1500), 0.07,
+        "1500 pages: narrowed to 7% (~100-page rungs, not 150)")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(2000), 0.05,
+        "2000 pages: 5% (100-page rungs, 20 calls)")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(3000), 0.05,
+        "monster book: call-count floor wins over the size ceiling")
+    TestRunner:assertEqual(#XrayAuto.planLadderRungs(0, XrayAuto.ladderSpacingFor(3000)), 20,
+        "5% spacing from nothing = 19 partial rungs + 1.0")
+end)
+
+TestRunner:test("snapLadderRungs: narrow spacing shrinks the snap window", function()
+    -- spacing 5%: window becomes 2% (0.4 * spacing), so a boundary 2.5% away
+    -- must NOT capture the target (it would under the default 3% window)
+    local t, l = XrayAuto.snapLadderRungs({ 0.50, 1.0 }, {
+        { ratio = 0.475, title = "Near" }, { ratio = 0.2, title = "B" }, { ratio = 0.8, title = "C" },
+    }, 0, 0.05)
+    TestRunner:assertEqual(t[1], 0.5, "boundary 2.5% away ignored under the scaled 2% window")
+    TestRunner:assertEqual(l[1], nil, "no label for the unsnapped target")
+    -- inside the scaled window it still snaps
+    local t2, l2 = XrayAuto.snapLadderRungs({ 0.50, 1.0 }, {
+        { ratio = 0.49, title = "Close" }, { ratio = 0.2, title = "B" }, { ratio = 0.8, title = "C" },
+    }, 0, 0.05)
+    TestRunner:assertEqual(t2[1], 0.49, "1% away snaps under the scaled window")
+    TestRunner:assertEqual(l2[1], "Close", "label rides")
+    -- nil spacing keeps the legacy full window (back-compat)
+    local t3 = XrayAuto.snapLadderRungs({ 0.50, 1.0 }, {
+        { ratio = 0.475, title = "Near" }, { ratio = 0.2, title = "B" }, { ratio = 0.8, title = "C" },
+    }, 0)
+    TestRunner:assertEqual(t3[1], 0.475, "no spacing arg: 3% window still captures")
+end)
+
 TestRunner:test("snapLadderRungs: chapter-end snap, window, dedup, final rung survives", function()
     local rungs = XrayAuto.planLadderRungs(0)  -- 0.1..0.9 + 1.0
     local bounds = {

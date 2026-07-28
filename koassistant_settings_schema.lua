@@ -898,7 +898,7 @@ local SettingsSchema = {
                     max = 20,
                     step = 1,
                     precision = "%d",
-                    help_text = _("Whenever an update or redo overwrites the X-Ray, the outgoing version is archived — browse, view, or restore them via \"Previous versions\" in the X-Ray popup and browser menu. This sets how many are kept per book (oldest dropped first). 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself. Ladder versions are stored separately and are never trimmed by this."),
+                    help_text = _("Whenever an update or redo overwrites the X-Ray, the outgoing version is archived — browse, view, or restore them via \"All versions\" in the X-Ray popup and browser menu. This sets how many are kept per book (oldest dropped first). 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself. Ladder versions are stored separately and are never trimmed by this."),
                     separator = true,
                 },
                 -- Recap Reminder

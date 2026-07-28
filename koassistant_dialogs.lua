@@ -1441,6 +1441,7 @@ local function createSaveDialog(document_path, history, chat_history_manager, is
                                     book_title = metadata.book_title,
                                     book_author = metadata.book_author,
                                     prompt_action = history.prompt_action,
+                                    launched_from = history.launched_from,
                                     launch_context = metadata.launch_context,
                                     domain = metadata.domain,
                                     tags = existing_tags,
@@ -2392,6 +2393,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                                     book_title = metadata.book_title,
                                     book_author = metadata.book_author,
                                     prompt_action = history.prompt_action,
+                                    launched_from = history.launched_from,
                                     launch_context = metadata.launch_context,
                                     domain = metadata.domain,
                                     tags = existing_tags,
@@ -2528,6 +2530,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                             book_title = metadata.book_title,
                             book_author = metadata.book_author,
                             prompt_action = history.prompt_action,
+                            launched_from = history.launched_from,
                             launch_context = metadata.launch_context,
                             domain = metadata.domain,
                             tags = existing_tags,
@@ -2936,6 +2939,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                         book_title = metadata.book_title,
                         book_author = metadata.book_author,
                         prompt_action = history.prompt_action,
+                        launched_from = history.launched_from,
                         launch_context = metadata.launch_context,
                         domain = metadata.domain,
                         tags = existing_tags,
@@ -7430,6 +7434,9 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                     -- Persist x-ray flag for the chat session so reply paths can skip book tools
                     -- (BookToolRunner.shouldUse reads features._xray_chat_active).
                     configuration.features._xray_chat_active = is_xray_chat or nil
+                    -- Launch tag (device round 2): lets future surfaces group
+                    -- X-Ray-launched chats; persisted with the chat, restored on resume
+                    history.launched_from = is_xray_chat and "xray_chat" or nil
 
                     -- Build unified request config for ALL providers
                     -- No action specified, uses global behavior setting
@@ -9442,6 +9449,9 @@ local function launchArtifactChat(user_question, artifact_content, artifact_type
     -- Create history with artifact type as prompt_action for title generation
     local history = MessageHistory:new(nil, nil)
     history.prompt_action = artifact_type_name
+    -- Launch tag (device round 2): prompt_action holds the display name; this is
+    -- the stable "came from an artifact viewer" marker for future grouping surfaces
+    history.launched_from = "artifact"
     history.source_input = user_question
 
     -- Build consolidated message: book context + artifact framing + artifact content + user question

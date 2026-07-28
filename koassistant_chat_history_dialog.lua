@@ -1685,7 +1685,8 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
 
     -- Build chat_metadata for restoring cache/truncation notices
     local chat_metadata = nil
-    if chat.used_cache or chat.book_text_truncated or chat.unavailable_data then
+    if chat.used_cache or chat.book_text_truncated or chat.unavailable_data
+            or chat.launched_from then
         chat_metadata = {
             used_cache = chat.used_cache,
             cached_progress = chat.cached_progress,
@@ -1694,6 +1695,8 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
             book_text_coverage_start = chat.book_text_coverage_start,
             book_text_coverage_end = chat.book_text_coverage_end,
             unavailable_data = chat.unavailable_data,
+            -- Launch tag survives resume → re-save round-trips
+            launched_from = chat.launched_from,
         }
     end
 

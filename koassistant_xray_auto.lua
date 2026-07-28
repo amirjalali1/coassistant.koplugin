@@ -217,23 +217,32 @@ end
 -- math + the build-chain session state live here (same cross-instance rationale as
 -- the flight state above); ladder file I/O lives in koassistant_action_cache.lua.
 
-XrayAuto.LADDER_SPACING = 0.10   -- rung boundaries every 10% (baseline; formula below can widen)
+XrayAuto.LADDER_SPACING = 0.10   -- rung boundaries every 10% (baseline; formula below can widen OR narrow)
 XrayAuto.LADDER_TOLERANCE = 0.005
 XrayAuto.LADDER_MIN_RUNG_PAGES = 30  -- P2(a) floor: a rung must cover at least ~this many pages
+XrayAuto.LADDER_MAX_RUNG_PAGES = 100 -- P2(a) v2 ceiling: one rung should not extract much more than this
+XrayAuto.LADDER_MIN_SPACING = 0.05   -- call-count bound: never more than ~20 rungs, even on monster books
 XrayAuto.LADDER_MAX_SPACING = 0.50   -- tiny books still get a midpoint + final rung
-XrayAuto.LADDER_SNAP_WINDOW = 0.03   -- P3: chapter-end snap distance (±3%)
+XrayAuto.LADDER_SNAP_WINDOW = 0.03   -- P3: chapter-end snap distance (±3%; narrows with tight spacing)
 
---- P2(a) formula (§7): rung spacing from book length — the 10% baseline until
---- the min-pages-per-rung floor kicks in (a novella must not burn a call on a
---- 10-page slice), clamped so even tiny books keep two rungs. Rounded to whole
---- percents (the cost dialog and notifications display it).
+--- P2(a) formula v2 (§7, device round 2): rung spacing targets a pages-per-rung
+--- band. The 10% baseline is narrowed on long books so a single rung never
+--- extracts much more than LADDER_MAX_RUNG_PAGES (call SIZE bound — a 1500-page
+--- book gets ~7% rungs, not 150-page deltas), widened on short books by the
+--- min-pages floor (a novella must not burn a call on a 10-page slice). Spacing
+--- is clamped to [LADDER_MIN_SPACING, LADDER_MAX_SPACING]: the floor bounds call
+--- COUNT on monster books (size may exceed the ceiling there — the two bounds
+--- can't both hold, and count wins past ~2000 pages), the cap keeps tiny books
+--- at two rungs. Rounded to whole percents (the cost dialog displays it).
 --- @param total_pages number|nil document page count
---- @return number spacing ratio (LADDER_SPACING..LADDER_MAX_SPACING)
+--- @return number spacing ratio (LADDER_MIN_SPACING..LADDER_MAX_SPACING)
 function XrayAuto.ladderSpacingFor(total_pages)
   local pages = tonumber(total_pages)
   if not pages or pages <= 0 then return XrayAuto.LADDER_SPACING end
-  local spacing = math.floor((XrayAuto.LADDER_MIN_RUNG_PAGES / pages) * 100 + 0.5) / 100
-  if spacing < XrayAuto.LADDER_SPACING then return XrayAuto.LADDER_SPACING end
+  local spacing = math.min(XrayAuto.LADDER_SPACING, XrayAuto.LADDER_MAX_RUNG_PAGES / pages)
+  spacing = math.max(spacing, XrayAuto.LADDER_MIN_RUNG_PAGES / pages)
+  spacing = math.floor(spacing * 100 + 0.5) / 100
+  if spacing < XrayAuto.LADDER_MIN_SPACING then return XrayAuto.LADDER_MIN_SPACING end
   if spacing > XrayAuto.LADDER_MAX_SPACING then return XrayAuto.LADDER_MAX_SPACING end
   return spacing
 end
@@ -248,10 +257,17 @@ end
 --- @param rungs table planLadderRungs output (ascending ratios, last = 1.0)
 --- @param boundaries table|nil ascending { ratio, title } chapter ends; fewer than 3 = unusable TOC, no-op
 --- @param base_progress number|nil the build base (0..1)
+--- @param spacing number|nil the rung spacing (formula v2: narrow spacings shrink
+--- the snap distance to 40% of a step so ±window never spans adjacent targets;
+--- nil keeps the full LADDER_SNAP_WINDOW — the pre-v2 behavior)
 --- @return table targets (ascending ratios), table labels (sparse, parallel: labels[i] = chapter title of targets[i])
-function XrayAuto.snapLadderRungs(rungs, boundaries, base_progress)
+function XrayAuto.snapLadderRungs(rungs, boundaries, base_progress, spacing)
   if type(boundaries) ~= "table" or #boundaries < 3 then
     return rungs, {}
+  end
+  local window = XrayAuto.LADDER_SNAP_WINDOW
+  if tonumber(spacing) and spacing * 0.4 < window then
+    window = spacing * 0.4
   end
   local targets, labels = {}, {}
   local prev = tonumber(base_progress) or 0
@@ -263,7 +279,7 @@ function XrayAuto.snapLadderRungs(rungs, boundaries, base_progress)
         local ratio = tonumber(b.ratio)
         if ratio and ratio <= 1.0 - XrayAuto.LADDER_SNAP_WINDOW then
           local d = math.abs(ratio - target)
-          if d <= XrayAuto.LADDER_SNAP_WINDOW and (not best_d or d < best_d) then
+          if d <= window and (not best_d or d < best_d) then
             best_d = d
             snapped = math.floor(ratio * 1000 + 0.5) / 1000
             label = b.title
