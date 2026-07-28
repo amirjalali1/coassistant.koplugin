@@ -7248,10 +7248,32 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
               and current_progress.decimal > (cached_entry.progress_decimal or 0) + 0.01
               and (ActionCache.highestXrayLadderProgress(ladder_rungs) or 0)
                 > (cached_entry.progress_decimal or 0) + 0.005 then
+            -- Decision support (device round 3): name the concrete free
+            -- alternative — a rung already at-or-below the reader beats the
+            -- paid call outright; otherwise say where the next one lands
+            local next_ahead, avail_now
+            for _idx, r in ipairs(ladder_rungs) do
+              local p = tonumber(r.progress_decimal)
+              if p and not r.full_document then
+                if p > current_progress.decimal + 0.005 then
+                  if not next_ahead or p < next_ahead then next_ahead = p end
+                elseif p > (cached_entry.progress_decimal or 0) + 0.005 then
+                  if not avail_now or p > avail_now then avail_now = p end
+                end
+              end
+            end
+            local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?\nThe ladder is not touched — its versions still swap in for free as you read past them."),
+              current_progress.formatted)
+            if avail_now then
+              confirm_text = confirm_text .. "\n" .. T(_("A free ladder version at %1% is available right now (\"Update from ladder\")."),
+                math.floor(avail_now * 100 + 0.5))
+            elseif next_ahead then
+              confirm_text = confirm_text .. "\n" .. T(_("The next free version arrives at %1%."),
+                math.floor(next_ahead * 100 + 0.5))
+            end
             local ConfirmBox = require("ui/widget/confirmbox")
             UIManager:show(ConfirmBox:new{
-              text = T(_("Update the X-Ray to exactly %1 with one API call?\nThe ladder is not touched — its versions still swap in for free as you read past them."),
-                current_progress.formatted),
+              text = confirm_text,
               ok_text = _("Update"),
               ok_callback = function()
                 on_update()
