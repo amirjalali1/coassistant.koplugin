@@ -7901,6 +7901,9 @@ function AskGPT:_showSectionPicker(action, opts)
 
   toc_menu.close_callback = function()
     UIManager:close(menu_container)
+    -- Round 17 back-navigation rule: a picker inside a multi-step flow returns
+    -- to the previous step on close-out instead of abandoning the whole flow
+    if opts and opts.on_cancel then opts.on_cancel() end
   end
   toc_menu.show_parent = menu_container
 
@@ -7919,6 +7922,10 @@ function AskGPT:_showSectionRangePicker(action)
     on_select = function(first)
       self_ref:_showSectionPicker(action, {
         title = _("Section range — pick the last section"),
+        on_cancel = function()
+          -- Back one step: re-open the first pick, not abandon the flow
+          self_ref:_showSectionRangePicker(action)
+        end,
         on_select = function(second)
           local a, b = first, second
           if (b.start_page or 0) < (a.start_page or 0) then a, b = b, a end
@@ -7940,11 +7947,12 @@ function AskGPT:_showSectionRangePicker(action)
   })
 end
 
---- Unified X-Ray creation chooser (round 16, §7.4 batch item 9 unified-creation
---- design v1): coverage step, then delivery step, dispatching to the existing
---- paths. State-aware: reading position, per-book auto posture, live checkpoint
---- counts per option. Entry = the "Create X-Ray…" row (no-cache popup); the
---- auto-toggle and first-auto-fire entries come with the ask-flow phase.
+--- Unified X-Ray creation chooser (round 18 re-shell of the round-16 two-step:
+--- the scope/source RADIO idiom — both axes visible at once, rebuild-on-change
+--- with the top-anchor trick from _showUnifiedActionPopup; dispatch identical).
+--- State-aware: reading position, per-book auto posture, live checkpoint counts.
+--- Entry = the "Create X-Ray…" row (no-cache popup); the auto-toggle and
+--- first-auto-fire entries come with the ask-flow phase.
 function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   local ButtonDialog = require("ui/widget/buttondialog")
   local XrayAuto = require("koassistant_xray_auto")
@@ -7976,114 +7984,280 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   local features = self.settings:readSetting("features") or {}
   local flowing = not (doc.info and doc.info.has_pages)
   local total_pages = doc:getPageCount() or 0
+  local BookSettings = require("koassistant_book_settings")
+  local auto_on = flowing and BookSettings.resolveXrayAuto(self.ui.doc_settings, features)
 
-  local function showDelivery(coverage) -- { kind = "position"|"whole" }
-    local rows = {}
-    local spacing = flowing and XrayAuto.ladderSpacingFor(total_pages) or XrayAuto.LADDER_SPACING
-    local goal = coverage.kind == "position" and decimal or 1.0
-    local n_steps = flowing and #XrayAuto.planLadderRungs(0, spacing, goal) or 0
-    local dialog
-    if coverage.kind == "position" then
-      rows[#rows + 1] = {{
-        text = _("In one request now"),
-        callback = function()
-          UIManager:close(dialog)
-          on_update()
-        end,
-      }}
+  local cr = {
+    coverage = (progress and decimal > 0.01) and "position" or "whole",
+    delivery = "one",
+    target = nil, target_label = nil,
+  }
+  local current_dialog
+  local first_frame_h
+  local buildAndShow
+
+  local function goalFor()
+    if cr.coverage == "position" then return decimal end
+    if cr.coverage == "target" then return cr.target or 1.0 end
+    return 1.0
+  end
+
+  local function stepsFor()
+    if not flowing then return 0 end
+    local spacing = XrayAuto.ladderSpacingFor(total_pages)
+    return #XrayAuto.planLadderRungs(0, spacing, goalFor())
+  end
+
+  -- Keep the delivery pick valid when coverage changes
+  local function fixDelivery()
+    if cr.delivery == "follow" and (cr.coverage ~= "position" or auto_on) then
+      cr.delivery = "one"
+    end
+    if cr.delivery == "checkpoints" and stepsFor() <= 1 then
+      cr.delivery = "one"
+    end
+  end
+
+  local function dispatch()
+    if cr.delivery == "follow" then
+      self_ref:_enableXrayFollowForBook(decimal)
+    elseif cr.delivery == "checkpoints" then
+      local bo
+      if cr.coverage == "position" then
+        bo = { target = decimal }
+      elseif cr.coverage == "target" then
+        bo = { target = cr.target, target_label = cr.target_label }
+      end
+      self_ref:_startXrayLadderBuild(bo)
     else
-      rows[#rows + 1] = {{
-        text = _("In one request now (analyzed as a whole)"),
-        callback = function()
-          UIManager:close(dialog)
-          self_ref:_executeBookLevelActionDirect(action, action_id, { full_document = true })
-        end,
-      }}
-    end
-    if n_steps > 1 then
-      rows[#rows + 1] = {{
-        text = T(_("In checkpoints (%1 background steps)…"), n_steps),
-        callback = function()
-          UIManager:close(dialog)
-          self_ref:_startXrayLadderBuild(coverage.kind == "position"
-            and { target = decimal } or nil)
-        end,
-      }}
-    end
-    if coverage.kind == "position" and flowing then
-      local BookSettings = require("koassistant_book_settings")
-      if BookSettings.resolveXrayAuto(self.ui.doc_settings, features) then
-        rows[#rows + 1] = {{ text = _("Automatically as I read (already on)"), enabled = false }}
+      if cr.coverage == "position" then
+        on_update()
+      elseif cr.coverage == "whole" then
+        self_ref:_executeBookLevelActionDirect(action, action_id, { full_document = true })
       else
-        rows[#rows + 1] = {{
-          text = _("Automatically as I read (small background updates)"),
-          callback = function()
-            UIManager:close(dialog)
-            self_ref:_enableXrayFollowForBook(decimal)
-          end,
-        }}
+        self_ref:_startXrayLadderBuild({
+          target = cr.target, target_label = cr.target_label, one_shot = true })
       end
     end
-    rows[#rows + 1] = {{ text = _("Back"), callback = function()
-      UIManager:close(dialog)
-      self_ref:_showXrayCreationChooser(action, action_id, on_update, opts)
-    end }}
-    dialog = ButtonDialog:new{
-      title = _("How should the X-Ray be built?"),
-      buttons = rows,
-    }
-    UIManager:show(dialog)
   end
 
-  local chooser
-  local coverage_rows = {}
-  if progress and decimal > 0.01 then
-    coverage_rows[#coverage_rows + 1] = {{
-      text = T(_("Up to where I am (%1)"), progress.formatted),
-      callback = function()
-        UIManager:close(chooser)
-        showDelivery({ kind = "position" })
+  buildAndShow = function()
+    local Blitbuffer = require("ffi/blitbuffer")
+    local ButtonTable = require("ui/widget/buttontable")
+    local CenterContainer = require("ui/widget/container/centercontainer")
+    local Font = require("ui/font")
+    local FrameContainer = require("ui/widget/container/framecontainer")
+    local Geom = require("ui/geometry")
+    local GestureRange = require("ui/gesturerange")
+    local MovableContainer = require("ui/widget/container/movablecontainer")
+    local RadioButtonTable = require("ui/widget/radiobuttontable")
+    local Size = require("ui/size")
+    local TextBoxWidget = require("ui/widget/textboxwidget")
+    local TextWidget = require("ui/widget/textwidget")
+    local TitleBar = require("ui/widget/titlebar")
+    local VerticalGroup = require("ui/widget/verticalgroup")
+    local VerticalSpan = require("ui/widget/verticalspan")
+
+    local screen_width = Screen:getWidth()
+    local screen_height = Screen:getHeight()
+    local dialog_width = math.floor(math.min(screen_width, screen_height) * 0.8)
+    local content_width = dialog_width - 2 * Size.padding.large
+    local label_face = Font:getFace("cfont", 18)
+    local radio_face = Font:getFace("cfont", 20)
+    local info_face = Font:getFace("cfont", 16)
+
+    local vgroup = VerticalGroup:new{ align = "left" }
+    local title_bar = TitleBar:new{
+      width = dialog_width,
+      align = "left",
+      with_bottom_line = true,
+      title = _("Create X-Ray"),
+      title_shrink_font_to_fit = true,
+      close_callback = function() UIManager:close(current_dialog) end,
+    }
+    local function addLabel(text)
+      table.insert(vgroup, VerticalSpan:new{ width = Size.padding.large })
+      table.insert(vgroup, TextWidget:new{
+        text = text, face = label_face, bold = true,
+        fgcolor = Blitbuffer.COLOR_DARK_GRAY,
+      })
+      table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
+    end
+
+    -- === Coverage ===
+    addLabel(_("Coverage"))
+    local cov_rows = {}
+    if progress and decimal > 0.01 then
+      cov_rows[#cov_rows + 1] = { { text = T(_("Up to where I am (%1)"), progress.formatted),
+        provider = "position", checked = cr.coverage == "position" } }
+    end
+    cov_rows[#cov_rows + 1] = { { text = _("The whole book"),
+      provider = "whole", checked = cr.coverage == "whole" } }
+    if flowing and self.ui.toc and self.ui.toc.toc and #self.ui.toc.toc > 0 then
+      local target_text = cr.coverage == "target" and cr.target
+        and T(_("To the end of \"%1\" (%2%)"), cr.target_label or "?",
+          math.floor(cr.target * 100 + 0.5))
+        or _("To the end of a section…")
+      cov_rows[#cov_rows + 1] = { { text = target_text,
+        provider = "target", checked = cr.coverage == "target" } }
+    end
+    local cov_table = RadioButtonTable:new{
+      radio_buttons = cov_rows,
+      width = content_width,
+      no_sep = true, sep_width = 0,
+      face = radio_face,
+      show_parent = self_ref, parent = self_ref,
+      button_select_callback = function(btn)
+        if btn.provider == "target" then
+          -- (Re-)pick the section even when already selected: tapping the row
+          -- again is the natural way to change the target
+          UIManager:close(current_dialog)
+          self_ref:_showSectionPicker(action, {
+            title = _("Cover the book up to the end of…"),
+            on_cancel = function() buildAndShow() end,
+            on_select = function(entry)
+              local ratio = total_pages > 0 and (entry.end_page or 0) / total_pages or 0
+              if ratio >= 1.0 - 0.005 then
+                cr.coverage, cr.target, cr.target_label = "whole", nil, nil
+              elseif ratio > 0.01 then
+                cr.coverage, cr.target, cr.target_label = "target", ratio, entry.title
+              end
+              fixDelivery()
+              buildAndShow()
+            end,
+          })
+          return
+        end
+        if cr.coverage == btn.provider then return end
+        UIManager:close(current_dialog)
+        cr.coverage = btn.provider
+        cr.target, cr.target_label = nil, nil
+        fixDelivery()
+        buildAndShow()
       end,
-    }}
-  end
-  coverage_rows[#coverage_rows + 1] = {{
-    text = _("The whole book"),
-    callback = function()
-      UIManager:close(chooser)
-      showDelivery({ kind = "whole" })
-    end,
-  }}
-  if flowing and self.ui.toc and self.ui.toc.toc and #self.ui.toc.toc > 0 then
-    coverage_rows[#coverage_rows + 1] = {{
-      text = _("To the end of a section…"),
-      callback = function()
-        UIManager:close(chooser)
-        self_ref:_showSectionPicker(action, {
-          title = _("Cover the book up to the end of…"),
-          on_select = function(entry)
-            local ratio = total_pages > 0 and (entry.end_page or 0) / total_pages or 0
-            if ratio <= 0.01 then return end
-            if ratio >= 1.0 - 0.005 then
-              showDelivery({ kind = "whole" })
-            else
-              -- Checkpoints are the only bounded delivery for an arbitrary
-              -- prefix target (one-shot extraction only knows "to my position"
-              -- and "whole book") — straight to the build confirm
-              self_ref:_startXrayLadderBuild({ target = ratio, target_label = entry.title })
-            end
+    }
+    table.insert(vgroup, cov_table)
+
+    -- === Build ===
+    addLabel(_("Build"))
+    local del_rows = {
+      { { text = cr.coverage == "whole" and _("In one request now (analyzed as a whole)")
+          or _("In one request now"),
+        provider = "one", checked = cr.delivery == "one" } },
+    }
+    local n_steps = stepsFor()
+    if n_steps > 1 then
+      del_rows[#del_rows + 1] = { { text = T(_("In checkpoints (%1 background steps)"), n_steps),
+        provider = "checkpoints", checked = cr.delivery == "checkpoints" } }
+    end
+    if flowing and cr.coverage == "position" then
+      if auto_on then
+        del_rows[#del_rows + 1] = { { text = _("Automatically as I read (already on)"),
+          provider = "follow", enabled = false, checked = false } }
+      else
+        del_rows[#del_rows + 1] = { { text = _("Automatically as I read (small background updates)"),
+          provider = "follow", checked = cr.delivery == "follow" } }
+      end
+    end
+    local del_table = RadioButtonTable:new{
+      radio_buttons = del_rows,
+      width = content_width,
+      no_sep = true, sep_width = 0,
+      face = radio_face,
+      show_parent = self_ref, parent = self_ref,
+      button_select_callback = function(btn)
+        if btn.enabled == false then return end
+        if cr.delivery == btn.provider then return end
+        UIManager:close(current_dialog)
+        cr.delivery = btn.provider
+        buildAndShow()
+      end,
+    }
+    table.insert(vgroup, del_table)
+
+    -- Gray hint for the one pick whose behavior needs explaining up front
+    if cr.delivery == "follow" then
+      local dials = XrayAuto.dialsFromFeatures(features)
+      local hint = decimal > dials.max_gap
+        and T(_("You're at %1%, past the automatic-create window: a catch-up build to your position runs first."),
+          math.floor(decimal * 100 + 0.5))
+        or _("Creates and updates the X-Ray in the background as you read.")
+      table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
+      table.insert(vgroup, TextBoxWidget:new{
+        text = hint, face = info_face, width = content_width,
+        color = Blitbuffer.COLOR_DARK_GRAY,
+      })
+    end
+
+    table.insert(vgroup, VerticalSpan:new{ width = Size.padding.default })
+    local action_buttons = ButtonTable:new{
+      width = content_width,
+      buttons = {{
+        {
+          text = _("Cancel"),
+          callback = function() UIManager:close(current_dialog) end,
+        },
+        {
+          text = _("Create"),
+          callback = function()
+            UIManager:close(current_dialog)
+            dispatch()
           end,
-        })
-      end,
-    }}
+        },
+      }},
+      zero_sep = true,
+      show_parent = current_dialog,
+    }
+    table.insert(vgroup, CenterContainer:new{
+      dimen = Geom:new{ w = content_width, h = action_buttons:getSize().h },
+      action_buttons,
+    })
+    table.insert(vgroup, VerticalSpan:new{ width = Size.padding.default })
+
+    local widget_frame = FrameContainer:new{
+      radius = Size.radius.window,
+      padding = Size.padding.large,
+      margin = 0,
+      background = Blitbuffer.COLOR_WHITE,
+      VerticalGroup:new{ align = "left", title_bar, vgroup },
+    }
+    local movable = MovableContainer:new{ widget_frame }
+    -- Top-anchor on rebuilds (same trick as _showUnifiedActionPopup): no
+    -- vertical jump as rows change between selections
+    local frame_h = widget_frame:getSize().h
+    if not first_frame_h then first_frame_h = frame_h end
+    movable:setMovedOffset({ x = 0, y = math.floor((frame_h - first_frame_h) / 2) })
+
+    local InputContainer = require("ui/widget/container/inputcontainer")
+    current_dialog = InputContainer:new{
+      dimen = Geom:new{ x = 0, y = 0, w = screen_width, h = screen_height },
+      CenterContainer:new{
+        dimen = Geom:new{ w = screen_width, h = screen_height },
+        movable,
+      },
+    }
+    current_dialog.ges_events = {
+      TapClose = { GestureRange:new{
+        ges = "tap",
+        range = Geom:new{ w = screen_width, h = screen_height },
+      }},
+    }
+    function current_dialog:onTapClose(arg, ges_ev)
+      if ges_ev.pos:notIntersectWith(widget_frame.dimen) then
+        UIManager:close(self)
+      end
+      return true
+    end
+    function current_dialog:onCloseWidget()
+      UIManager:setDirty(nil, function() return "ui", widget_frame.dimen end)
+    end
+    function current_dialog:onShow()
+      UIManager:setDirty(self, function() return "ui", widget_frame.dimen end)
+    end
+    UIManager:show(current_dialog)
   end
-  coverage_rows[#coverage_rows + 1] = {{ text = _("Cancel"), callback = function()
-    UIManager:close(chooser)
-  end }}
-  chooser = ButtonDialog:new{
-    title = _("Create X-Ray: how far should it cover?"),
-    buttons = coverage_rows,
-  }
-  UIManager:show(chooser)
+
+  buildAndShow()
 end
 
 --- The "follow as I read" pick: per-book Automatic X-Ray ON, with the honest
@@ -10418,6 +10592,9 @@ function AskGPT:_startXrayLadderBuild(build_opts)
   local goal = build_opts and tonumber(build_opts.target) or nil
   if goal and (goal <= 0.005 or goal >= 1.0 - 0.005) then goal = nil end
   local goal_label = goal and build_opts and build_opts.target_label or nil
+  -- Round 17: one_shot = the chooser's "in one request now" for a target —
+  -- a single rung at the goal (same machinery, one background step)
+  local one_shot = goal and build_opts and build_opts.one_shot or nil
   local recommended = XrayAuto.ladderSpacingFor(self.ui.document:getPageCount())
   local features = self.settings:readSetting("features") or {}
   local boundaries = features.xray_ladder_chapter_snap ~= false
@@ -10426,6 +10603,10 @@ function AskGPT:_startXrayLadderBuild(build_opts)
   local resume = #ladder > 0
   local self_ref = self
   local function planFor(spacing)
+    if one_shot then
+      if (base_progress or 0) >= goal - 0.01 then return {}, {} end
+      return { goal }, (goal_label and { goal_label } or {})
+    end
     local rungs = XrayAuto.planLadderRungs(base_progress or 0, spacing, goal)
     local rung_labels = {}
     local snap_bounds = boundaries
@@ -10518,40 +10699,52 @@ function AskGPT:_startXrayLadderBuild(build_opts)
     else
       state_line = _("There is no X-Ray yet. Checkpoints will cover the whole book from the beginning.")
     end
-    local plan_line = snapped
-      and T(_("%1 checkpoints are planned, at chapter ends roughly every %2% of the book."),
-        #rungs, math.floor(spacing * 100 + 0.5))
-      or T(_("%1 checkpoints are planned, every %2% of the book."),
-        #rungs, math.floor(spacing * 100 + 0.5))
-    local cost_line = _("Each is generated in the background from the next slice of the text, with no further prompts. The text is read once in total, plus a small per-checkpoint overhead. The book must stay open; you can keep reading, cancel anytime, and resume later.")
+    local plan_line, cost_line
+    if one_shot then
+      plan_line = _("It will be generated in one background request.")
+      cost_line = _("The book must stay open; you can keep reading.")
+    else
+      plan_line = snapped
+        and T(_("%1 checkpoints are planned, at chapter ends roughly every %2% of the book."),
+          #rungs, math.floor(spacing * 100 + 0.5))
+        or T(_("%1 checkpoints are planned, every %2% of the book."),
+          #rungs, math.floor(spacing * 100 + 0.5))
+      cost_line = _("Each is generated in the background from the next slice of the text, with no further prompts. The text is read once in total, plus a small per-checkpoint overhead. The book must stay open; you can keep reading, cancel anytime, and resume later.")
+    end
     local confirm
     confirm = ButtonDialog:new{
-      title = (resume and _("Resume building X-Ray checkpoints?") or _("Build X-Ray checkpoints?"))
+      title = (one_shot and _("Generate the X-Ray?")
+          or resume and _("Resume building X-Ray checkpoints?")
+          or _("Build X-Ray checkpoints?"))
         .. "\n" .. state_line .. " " .. plan_line
         .. "\n" .. cost_line,
-      buttons = {
-        {{
-          text = resume and _("Resume") or _("Build"),
+      buttons = (function()
+        local rows = {}
+        rows[#rows + 1] = {{
+          text = one_shot and _("Generate") or resume and _("Resume") or _("Build"),
           callback = function()
             UIManager:close(confirm)
             XrayAuto.beginLadderBuild(file, rungs, rung_labels)
             self_ref:_fireXrayLadderRung()
           end,
-        }},
-        {{
-          text = _("Adjust spacing for this run…"),
-          callback = function()
-            UIManager:close(confirm)
-            showSpacingPicker(spacing)
-          end,
-        }},
-        {{
+        }}
+        if not one_shot then
+          rows[#rows + 1] = {{
+            text = _("Adjust spacing for this run…"),
+            callback = function()
+              UIManager:close(confirm)
+              showSpacingPicker(spacing)
+            end,
+          }}
+        end
+        rows[#rows + 1] = {{
           text = _("Cancel"),
           callback = function()
             UIManager:close(confirm)
           end,
-        }},
-      },
+        }}
+        return rows
+      end)(),
     }
     UIManager:show(confirm)
   end
