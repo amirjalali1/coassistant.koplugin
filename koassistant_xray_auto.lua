@@ -219,7 +219,10 @@ end
 
 XrayAuto.LADDER_SPACING = 0.10   -- rung boundaries every 10% (baseline; formula below can widen OR narrow)
 XrayAuto.LADDER_TOLERANCE = 0.005
-XrayAuto.LADDER_MIN_RUNG_PAGES = 30  -- P2(a) floor: a rung must cover at least ~this many pages
+XrayAuto.LADDER_MIN_RUNG_PAGES = 45  -- P2(a) floor: a rung must cover at least ~this many pages
+                                     -- (round 10: 30 -> 45 — every rung pays a fixed re-send
+                                     -- overhead, so short books get fewer, larger calls;
+                                     -- 10% baseline now starts at 450pp, not 300)
 XrayAuto.LADDER_MAX_RUNG_PAGES = 100 -- P2(a) v2 ceiling: one rung should not extract much more than this
 XrayAuto.LADDER_MIN_SPACING = 0.05   -- call-count bound: never more than ~20 rungs, even on monster books
 XrayAuto.LADDER_MAX_SPACING = 0.50   -- tiny books still get a midpoint + final rung

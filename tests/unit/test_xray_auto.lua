@@ -532,14 +532,15 @@ TestRunner:test("ladderSpacingFor: 10% baseline, min-pages floor, tiny-book clam
     TestRunner:assertEqual(XrayAuto.ladderSpacingFor(nil), 0.1, "no page count: baseline")
     TestRunner:assertEqual(XrayAuto.ladderSpacingFor(0), 0.1, "zero pages: baseline")
     TestRunner:assertEqual(XrayAuto.ladderSpacingFor(600), 0.1, "long book: baseline 10%")
-    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(300), 0.1, "300 pages: floor lands exactly on baseline")
-    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(200), 0.15, "200 pages: 30-page floor -> 15%")
-    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(100), 0.3, "novella: 30%")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(450), 0.1, "450 pages: floor lands exactly on baseline")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(300), 0.15, "300 pages: 45-page floor -> 15%")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(200), 0.23, "200 pages: 45-page floor -> 23%")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(100), 0.45, "novella: 45%")
     TestRunner:assertEqual(XrayAuto.ladderSpacingFor(40), 0.5, "tiny book clamps at 50%")
-    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(220), 0.14,
-        "whole-percent rounding (30/220 -> 14%)")
-    TestRunner:assertEqual(#XrayAuto.planLadderRungs(0, XrayAuto.ladderSpacingFor(100)), 4,
-        "novella ladder: 30/60/90/100 — 4 calls, not 10")
+    TestRunner:assertEqual(XrayAuto.ladderSpacingFor(220), 0.2,
+        "whole-percent rounding (45/220 -> 20.45 -> 20%)")
+    TestRunner:assertEqual(#XrayAuto.planLadderRungs(0, XrayAuto.ladderSpacingFor(100)), 3,
+        "novella ladder: 45/90/100 — 3 calls, not 10")
 end)
 
 TestRunner:test("ladderSpacingFor v2: max-pages ceiling narrows spacing on long books", function()
