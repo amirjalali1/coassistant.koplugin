@@ -3988,10 +3988,10 @@ function XrayBrowser:showOptions()
                                 end
                             end
                         end
-                        local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?\nPrepared versions are not touched — they still swap in for free as you read past them."),
+                        local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?\nCheckpoints are not touched — they still swap in for free as you read past them."),
                             math.floor(current_dec * 100 + 0.5) .. "%")
                         if avail_now then
-                            confirm_text = confirm_text .. "\n" .. T(_("A free prepared version at %1% is available right now (\"Update to %1% — instant\" in the X-Ray popup)."),
+                            confirm_text = confirm_text .. "\n" .. T(_("A free checkpoint at %1% is available right now (\"Update to %1% — instant\" in the X-Ray popup)."),
                                 math.floor(avail_now * 100 + 0.5))
                         elseif next_ahead then
                             confirm_text = confirm_text .. "\n" .. T(_("The next free version arrives at %1%."),
@@ -4075,9 +4075,27 @@ function XrayBrowser:showOptions()
     -- Delete option
     if self.on_delete then
         local delete_text = self.scope and _("Delete Section X-Ray") or _("Delete X-Ray")
-        local delete_confirm = self.scope
-            and T(_("Delete Section X-Ray \"%1\"? This cannot be undone."), self.scope.label or "")
-            or _("Delete this X-Ray? This cannot be undone.")
+        local delete_confirm
+        if self.scope then
+            delete_confirm = T(_("Delete Section X-Ray \"%1\"? This cannot be undone."), self.scope.label or "")
+        else
+            -- Round 13 (maintainer question): deleting the main X-Ray clears the
+            -- whole lineage — ring AND prepared versions (resurrection guard) —
+            -- so the confirm must say so. O(1) header counts.
+            delete_confirm = _("Delete this X-Ray? This cannot be undone.")
+            if self.metadata and self.metadata.book_file then
+                local DelCache = require("koassistant_action_cache")
+                local n_arch = DelCache.getXrayCheckpointCount(self.metadata.book_file)
+                local n_prep = DelCache.getXrayLadderCount(self.metadata.book_file)
+                if n_arch > 0 and n_prep > 0 then
+                    delete_confirm = T(_("Delete this X-Ray? Its %1 archived versions and %2 checkpoints are deleted with it. This cannot be undone."), n_arch, n_prep)
+                elseif n_arch > 0 then
+                    delete_confirm = T(_("Delete this X-Ray? Its %1 archived versions are deleted with it. This cannot be undone."), n_arch)
+                elseif n_prep > 0 then
+                    delete_confirm = T(_("Delete this X-Ray? Its %1 checkpoints are deleted with it. This cannot be undone."), n_prep)
+                end
+            end
+        end
         table.insert(buttons, {{
             text = delete_text, align = "left",
             callback = function()
@@ -4244,15 +4262,15 @@ function XrayBrowser:showOptions()
         local info_ladder = InfoActionCache.getXrayLadder(self.metadata.book_file)
         if #info_ladder > 0 then
             local highest = InfoActionCache.highestXrayLadderProgress(info_ladder) or 0
-            table.insert(info_parts, T(_("Prepared versions: %1 (up to %2%)"),
+            table.insert(info_parts, T(_("Checkpoints: %1 (up to %2%)"),
                 #info_ladder, math.floor(highest * 100 + 0.5)))
             for _idx, rung in ipairs(info_ladder) do
                 if rung.timestamp == self.metadata.timestamp
                     and math.abs((tonumber(rung.progress_decimal) or -1)
                         - (tonumber(self.metadata.progress_decimal) or -2)) < 1e-6 then
                     table.insert(info_parts, rung.chapter_label
-                        and T(_("Installed from prepared version (end of %1)"), rung.chapter_label)
-                        or _("Installed from prepared version"))
+                        and T(_("Installed from checkpoint (end of %1)"), rung.chapter_label)
+                        or _("Installed from checkpoint"))
                     break
                 end
             end

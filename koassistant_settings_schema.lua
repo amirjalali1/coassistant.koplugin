@@ -814,7 +814,7 @@ local SettingsSchema = {
                     text = _("Automatic X-Ray (all books)"),
                     path = "features.xray_auto_update",
                     default = false,
-                    help_text = _("Quietly keep every book's X-Ray up to your reading position in the background as you read (flowing formats like EPUB only). Individual books can override this either way: X-Ray popup or Book Settings → Automatic X-Ray — a per-book On works even with this off, and a per-book Off always wins.\n\nSpend guards: fires at most once per cooldown, only for progress gaps inside the window below (bigger gaps stay manual), and only when WiFi is already on. Background runs extract book text and use API tokens without a per-request tap — text-extraction consent (or a trusted provider) is required, and versions ahead are never prepared automatically. Leave off if every request should be explicit."),
+                    help_text = _("Quietly keep every book's X-Ray up to your reading position in the background as you read (flowing formats like EPUB only). Individual books can override this either way: X-Ray popup or Book Settings → Automatic X-Ray — a per-book On works even with this off, and a per-book Off always wins.\n\nSpend guards: fires at most once per cooldown, only for progress gaps inside the window below (bigger gaps stay manual), and only when WiFi is already on. Background runs extract book text and use API tokens without a per-request tap — text-extraction consent (or a trusted provider) is required, and checkpoints are never built automatically. Leave off if every request should be explicit."),
                 },
                 {
                     id = "xray_auto_create",
@@ -856,7 +856,7 @@ local SettingsSchema = {
                     max = 60,
                     step = 5,
                     precision = "%d",
-                    help_text = _("Spend guard: gaps bigger than this never auto-update — run the update manually from the X-Ray popup, which shows the size first. Raising this allows larger unattended extractions. Also the upper edge of the auto-create window, and the cap on automatic prepared-version swaps after a position jump (the manual popup row has no cap)."),
+                    help_text = _("Spend guard: gaps bigger than this never auto-update — run the update manually from the X-Ray popup, which shows the size first. Raising this allows larger unattended extractions. Also the upper edge of the auto-create window, and the cap on automatic checkpoint swaps after a position jump (the manual popup row has no cap)."),
                     depends_on = { id = "xray_auto_update", value = true },
                 },
                 {
@@ -878,15 +878,15 @@ local SettingsSchema = {
                     text = _("Notify on Background Activity"),
                     path = "features.xray_auto_notify",
                     default = false,
-                    help_text = _("Show a brief notification when a background X-Ray update or create starts and completes, and when a prepared version is silently swapped in. Off = fully silent (the X-Ray popup always shows the current coverage)."),
+                    help_text = _("Show a brief notification when a background X-Ray update or create starts and completes, and when a checkpoint is silently swapped in. Off = fully silent (the X-Ray popup always shows the current coverage)."),
                 },
                 {
                     id = "xray_ladder_chapter_snap",
                     type = "toggle",
-                    text = _("Prepared Versions at Chapter Ends"),
+                    text = _("Checkpoints at Chapter Ends"),
                     path = "features.xray_ladder_chapter_snap",
                     default = true,
-                    help_text = _("When preparing X-Ray versions ahead, place each version at the nearest chapter end (within a few percent) instead of an exact percentage — versions then read as \"up to the end of a chapter\", and the versions list shows the chapter names. Needs a table of contents. Version spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones."),
+                    help_text = _("When building X-Ray checkpoints ahead, place each checkpoint at the nearest chapter end (within a few percent) instead of an exact percentage — checkpoints then read as \"up to the end of a chapter\", and the versions list shows the chapter names. Needs a table of contents. Checkpoint spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones."),
                 },
                 {
                     id = "xray_versions_kept",
@@ -898,7 +898,7 @@ local SettingsSchema = {
                     max = 20,
                     step = 1,
                     precision = "%d",
-                    help_text = _("Whenever an update or redo overwrites the X-Ray, the outgoing version is archived — browse, view, or restore them via \"All versions\" in the X-Ray popup and browser menu. This sets how many are kept per book (oldest dropped first). 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself. Prepared versions are stored separately and are never trimmed by this."),
+                    help_text = _("Whenever an update or redo overwrites the X-Ray, the outgoing version is archived — browse, view, or restore them via \"All versions\" in the X-Ray popup and browser menu. This sets how many are kept per book (oldest dropped first). 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself. Checkpoints are stored separately and are never trimmed by this."),
                     separator = true,
                 },
                 -- Recap Reminder
@@ -1608,7 +1608,7 @@ local SettingsSchema = {
                             return T(_("Trusted Providers: %1"), table.concat(trusted, ", "))
                         end
                     end,
-                    help_text = _("Providers you trust bypass all data sharing controls below AND text extraction. All data types (highlights, annotations, notebook, book text) are available without toggling individual settings. Use for local Ollama instances or providers you fully trust.\n\nTrust also satisfies the consent that background features (such as Automatic X-Ray and preparing X-Ray versions ahead) check before running — those can then extract text and spend tokens without a per-request tap."),
+                    help_text = _("Providers you trust bypass all data sharing controls below AND text extraction. All data types (highlights, annotations, notebook, book text) are available without toggling individual settings. Use for local Ollama instances or providers you fully trust.\n\nTrust also satisfies the consent that background features (such as Automatic X-Ray and X-Ray checkpoint builds) check before running — those can then extract text and spend tokens without a per-request tap."),
                     callback = "showTrustedProvidersDialog",
                     separator = true,
                 },
@@ -1732,7 +1732,7 @@ local SettingsSchema = {
                             text = _("Allow Text Extraction"),
                             path = "features.enable_book_text_extraction",
                             default = false,
-                            help_text = _("When enabled, actions can extract and send book text to the AI. Used by X-Ray, Recap, and actions with text placeholders.\n\nThis consent also covers background features you opt into separately (such as Automatic X-Ray and preparing X-Ray versions ahead): those extract text and spend API tokens without a per-request confirmation, within their own size guards. Revoking this consent stops them.\n\nTip: Use Hidden Flows to exclude front matter, appendices, etc. You can also focus actions on a specific section to extract only a chapter or part."),
+                            help_text = _("When enabled, actions can extract and send book text to the AI. Used by X-Ray, Recap, and actions with text placeholders.\n\nThis consent also covers background features you opt into separately (such as Automatic X-Ray and X-Ray checkpoint builds): those extract text and spend API tokens without a per-request confirmation, within their own size guards. Revoking this consent stops them.\n\nTip: Use Hidden Flows to exclude front matter, appendices, etc. You can also focus actions on a specific section to extract only a chapter or part."),
                             on_change = function(new_value, plugin)
                                 if new_value then
                                     -- Unlock QS panel toggle after first manual enable
@@ -1782,7 +1782,7 @@ local SettingsSchema = {
                             text = _("Don't warn about truncated extractions"),
                             path = "features.suppress_truncation_warning",
                             default = false,
-                            help_text = _("When unchecked, a blocking warning is shown before sending requests when extracted text was truncated to fit the character limit. Shows coverage percentage so you know how much of the book was included.\n\nBackground runs (Automatic X-Ray, version preparation) never show this warning — a truncated background extraction aborts the run instead of sending dishonest coverage.\n\nCheck this if you don't need the reminder."),
+                            help_text = _("When unchecked, a blocking warning is shown before sending requests when extracted text was truncated to fit the character limit. Shows coverage percentage so you know how much of the book was included.\n\nBackground runs (Automatic X-Ray, checkpoint builds) never show this warning — a truncated background extraction aborts the run instead of sending dishonest coverage.\n\nCheck this if you don't need the reminder."),
                             depends_on = { id = "enable_book_text_extraction", value = true },
                         },
                         {
@@ -1791,7 +1791,7 @@ local SettingsSchema = {
                             text = _("Don't warn about large extractions"),
                             path = "features.suppress_large_extraction_warning",
                             default = false,
-                            help_text = _("When unchecked, a warning is shown before sending requests with large text extractions (over 500K characters / ~125K tokens). Most models have smaller context windows and will reject oversized requests.\n\nBackground runs (Automatic X-Ray, version preparation) never show this warning; their size is bounded instead — automatic updates by the Maximum Progress Gap, prepared versions by their incremental steps.\n\nCheck this if you know your model's limits and don't need the reminder."),
+                            help_text = _("When unchecked, a warning is shown before sending requests with large text extractions (over 500K characters / ~125K tokens). Most models have smaller context windows and will reject oversized requests.\n\nBackground runs (Automatic X-Ray, checkpoint builds) never show this warning; their size is bounded instead — automatic updates by the Maximum Progress Gap, checkpoints by their incremental steps.\n\nCheck this if you know your model's limits and don't need the reminder."),
                             depends_on = { id = "enable_book_text_extraction", value = true },
                         },
                         {

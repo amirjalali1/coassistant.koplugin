@@ -7012,7 +7012,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     local nc_build = nc_xa.ladderBuild()
     if nc_build then
       table.insert(buttons, {{
-        text = T(_("Preparing versions — %1 of %2… (tap to cancel)"),
+        text = T(_("Building checkpoints — %1 of %2… (tap to cancel)"),
           nc_build.idx, nc_build.total),
         callback = function()
           UIManager:close(dialog)
@@ -7055,8 +7055,8 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       if not (nc_rungs > 0 and (nc_highest or 0) >= 1.0 - 0.005) then
         table.insert(nc_ver_rows, {{
           text = nc_rungs > 0
-              and T(_("Resume preparing versions (%1 so far)…"), nc_rungs)
-              or _("Prepare versions ahead…"),
+              and T(_("Resume building checkpoints (%1 so far)…"), nc_rungs)
+              or _("Build checkpoints ahead…"),
           callback = function()
             UIManager:close(dialog)
             self_ref:_startXrayLadderBuild()
@@ -7126,11 +7126,11 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     if current_progress and current_progress.decimal > cached_progress + 0.01 then
       update_text = T(_("Update %1 (to %2)"), action_name, current_progress.formatted)
     elseif current_progress and cached_progress > current_progress.decimal + 0.01 then
-      -- T14: the cache is AHEAD of the reader (merge-ahead main / re-reader).
-      -- "Redo (to 53%)" reads like a downgrade of the 88% version — say what
-      -- actually happens: a from-scratch rebuild at the reader's position; the
-      -- outgoing version stays under Previous versions.
-      update_text = T(_("Rebuild %1 to your position (%2) — replaces the current %3%"),
+      -- T14 + round 13 wording: the cache is AHEAD of the reader (merge-ahead
+      -- main / re-reader). Say BOTH halves plainly: it's a from-scratch NEW
+      -- X-Ray at the reader's position, and the outgoing version is archived
+      -- (browsable under All versions), not deleted.
+      update_text = T(_("Rebuild %1 from scratch to your position (%2) — the current %3% version is archived"),
         action_name, current_progress.formatted,
         math.floor(cached_progress * 100 + 0.5))
     elseif current_progress then
@@ -7252,7 +7252,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           and next_ahead - current_progress.decimal <= spacing_now + 0.005))
     if ladder_building then
       table.insert(buttons, {{
-        text = T(_("Preparing versions — %1 of %2… (tap to cancel)"),
+        text = T(_("Building checkpoints — %1 of %2… (tap to cancel)"),
           ladder_building.idx, ladder_building.total),
         callback = function()
           UIManager:close(dialog)
@@ -7292,13 +7292,13 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
                 end
               end
             end
-            local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?\nPrepared versions are not touched — they still swap in for free as you read past them."),
+            local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?\nCheckpoints are not touched — they still swap in for free as you read past them."),
               current_progress.formatted)
             if c_avail then
-              confirm_text = confirm_text .. "\n" .. T(_("A free prepared version at %1% is available right now (\"Update to %1% — instant\")."),
+              confirm_text = confirm_text .. "\n" .. T(_("A free checkpoint at %1% is available right now (\"Update to %1% — instant\")."),
                 math.floor(c_avail * 100 + 0.5))
             elseif c_next then
-              confirm_text = confirm_text .. "\n" .. T(_("The next free version arrives at %1%."),
+              confirm_text = confirm_text .. "\n" .. T(_("The next free checkpoint arrives at %1%."),
                 math.floor(c_next * 100 + 0.5))
             end
             local ConfirmBox = require("ui/widget/confirmbox")
@@ -7330,7 +7330,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           if not self_ref:_fireXrayLadderPromotion({ manual = true }) then
             -- Disk moved between drawing the row and tapping it
             UIManager:show(InfoMessage:new{
-              text = _("Nothing to update from prepared versions — the X-Ray moved in the meantime."),
+              text = _("Nothing to update from checkpoints — the X-Ray moved in the meantime."),
               timeout = 3,
             })
           end
@@ -7390,7 +7390,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         and self.ui and self.ui.document and self.ui.document.file == sx_file then
       if #ladder_rungs == 0 then
         table.insert(c_ver_rows, {{
-          text = _("Prepare versions ahead…"),
+          text = _("Build checkpoints ahead…"),
           callback = function()
             UIManager:close(dialog)
             self_ref:_startXrayLadderBuild()
@@ -7398,7 +7398,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         }})
       elseif (ladder_highest or 0) < 1.0 - 0.005 then
         table.insert(c_ver_rows, {{
-          text = T(_("Resume preparing versions (from %1%)…"),
+          text = T(_("Resume building checkpoints (from %1%)…"),
             math.floor((ladder_highest or 0) * 100 + 0.5)),
           callback = function()
             UIManager:close(dialog)
@@ -7482,11 +7482,11 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         and (cached_entry.progress_decimal or 0) < 0.995 then
       local pos_line
       if promotable then
-        pos_line = T(_("You're at %1 — a free version at %2% is ready."),
+        pos_line = T(_("You're at %1 — a free checkpoint at %2% is ready."),
           current_progress.formatted,
           math.floor((tonumber(promotable.progress_decimal) or 0) * 100 + 0.5))
       elseif next_ahead then
-        pos_line = T(_("You're at %1 — next prepared version at %2%."),
+        pos_line = T(_("You're at %1 — next checkpoint at %2%."),
           current_progress.formatted, math.floor(next_ahead * 100 + 0.5))
       else
         pos_line = T(_("You're at %1."), current_progress.formatted)
@@ -8605,7 +8605,7 @@ function AskGPT:_showXrayCheckpointList(opts)
   for idx, e in ipairs(entries) do
     local row_text = self:_xrayCheckpointLabel(e.cp)
     if e.is_rung then
-      row_text = row_text .. " · " .. _("prepared")
+      row_text = row_text .. " · " .. _("checkpoint")
     end
     -- A rung whose copy IS the live X-Ray (installed via promotion/switch) is
     -- the same content in two roles — say so instead of looking like a
@@ -8650,7 +8650,7 @@ function AskGPT:_showXrayCheckpointList(opts)
   end
   if #ladder > 0 and not require("koassistant_xray_auto").ladderBuild() then
     table.insert(buttons, {{
-      text = T(_("Delete prepared versions (%1)…"), #ladder),
+      text = T(_("Delete checkpoints (%1)…"), #ladder),
       callback = function()
         UIManager:close(list_dialog)
         local function doDelete(confirm_widget)
@@ -8669,7 +8669,7 @@ function AskGPT:_showXrayCheckpointList(opts)
         local confirm
         if has_complete_rung and not live_complete then
           confirm = ButtonDialog:new{
-            title = T(_("Delete the %1 prepared versions? They include your complete version (100%), which is not installed as your current X-Ray — deleting now discards it."), #ladder),
+            title = T(_("Delete the %1 checkpoints? They include your complete version (100%), which is not installed as your current X-Ray — deleting now discards it."), #ladder),
             buttons = {
               {{
                 text = _("Switch to complete version first…"),
@@ -8694,7 +8694,7 @@ function AskGPT:_showXrayCheckpointList(opts)
         else
           local detail
           if live_complete then
-            detail = _("Your complete X-Ray stays — this deletes only the preparation steps.")
+            detail = _("Your complete X-Ray stays — this deletes only the checkpoints.")
             if live and not live.full_document then
               detail = detail .. " " .. _("It also removes the free \"Switch back to your position\" option.")
             end
@@ -8702,7 +8702,7 @@ function AskGPT:_showXrayCheckpointList(opts)
             detail = _("The current X-Ray and archived previous versions are not affected.")
           end
           confirm = ButtonDialog:new{
-            title = T(_("Delete all %1 prepared versions?"), #ladder) .. "\n" .. detail,
+            title = T(_("Delete all %1 checkpoints?"), #ladder) .. "\n" .. detail,
             buttons = {
               {{
                 text = _("Delete"),
@@ -8752,7 +8752,7 @@ function AskGPT:_showXrayLadderRungOptions(rung, opts)
   local label = self:_xrayCheckpointLabel(rung)
   local card
   card = ButtonDialog:new{
-    title = T(_("Prepared version: %1"), label),
+    title = T(_("Checkpoint: %1"), label),
     buttons = {
       {{
         text = _("View"),
@@ -9930,7 +9930,7 @@ function AskGPT:_fireXrayLadderPromotion(opts)
       (opts and opts.manual) and "(manual)" or "(auto)")
     if (opts and opts.manual) or features.xray_auto_notify == true then
       UIManager:show(Notification:new{
-        text = T(_("X-Ray updated to %1% (prepared version)"),
+        text = T(_("X-Ray updated to %1% (checkpoint)"),
           math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5)),
       })
     end
@@ -9943,8 +9943,10 @@ end
 --- the ladder's complete version IS the whole-book X-Ray, so switching is free —
 --- this replaces the API "Update to 100%" whenever a finished rung exists.
 --- Deliberately bypasses the promotion position gate (a user-affirmed spoiler
---- jump — warned first). Decision (b): afterwards offer ladder cleanup;
---- declining keeps the rungs browsable in the versions list.
+--- jump — warned first). Round 13: afterwards the switched-to X-Ray OPENS and a
+--- timed notice says the versions can be safely deleted — the round-8 modal
+--- delete offer was too aggressive (maintainer); the delete row lives in the
+--- versions list.
 function AskGPT:_switchToCompleteXrayRung(opts)
   local XrayAuto = require("koassistant_xray_auto")
   local ActionCache = require("koassistant_action_cache")
@@ -9970,7 +9972,7 @@ function AskGPT:_switchToCompleteXrayRung(opts)
     end
   end
   if not rung then
-    UIManager:show(InfoMessage:new{ text = _("The prepared complete version is no longer available."), timeout = 3 })
+    UIManager:show(InfoMessage:new{ text = _("The complete checkpoint is no longer available."), timeout = 3 })
     return
   end
   local self_ref = self
@@ -9987,35 +9989,24 @@ function AskGPT:_switchToCompleteXrayRung(opts)
           local ok = ActionCache.promoteXrayLadderRung(file, rung,
               ActionCache.checkpointLimitFromFeatures(features), { manual = true })
           if not ok then
-            UIManager:show(InfoMessage:new{ text = _("Switch failed — the prepared version could not be installed."), timeout = 3 })
+            UIManager:show(InfoMessage:new{ text = _("Switch failed — the checkpoint could not be installed."), timeout = 3 })
             return
           end
           self_ref._file_dialog_row_cache = { file = nil, rows = nil }
           self_ref:_refreshXrayAutoState()
-          local ladder_n = ActionCache.getXrayLadderCount(file)
-          local offer
-          offer = ButtonDialog:new{
-            title = _("Switched to the complete X-Ray.") .. "\n"
-              .. T(_("Delete the %1 prepared versions? Your complete X-Ray is kept either way. Deleting removes the free \"Switch back to your position\" option; kept, they stay browsable under All versions."), ladder_n),
-            buttons = {
-              {{
-                text = _("Delete prepared versions"),
-                callback = function()
-                  UIManager:close(offer)
-                  ActionCache.clearXrayLadder(file)
-                  self_ref._file_dialog_row_cache = { file = nil, rows = nil }
-                  self_ref:_refreshXrayAutoState()
-                end,
-              }},
-              {{
-                text = _("Keep them"),
-                callback = function()
-                  UIManager:close(offer)
-                end,
-              }},
-            },
-          }
-          UIManager:show(offer)
+          -- Round 13 (maintainer): the modal delete offer was too aggressive —
+          -- open the switched-to X-Ray instead and note the versions can be
+          -- safely deleted (the delete row lives under All versions).
+          local xr_action = self_ref.action_service
+            and self_ref.action_service:getAction("book", "xray")
+          local new_live = ActionCache.get(file, "xray")
+          if xr_action and new_live and new_live.result then
+            self_ref:viewCachedAction(xr_action, "xray", new_live, { skip_stale_popup = true })
+          end
+          UIManager:show(InfoMessage:new{
+            text = _("Switched to the complete X-Ray. The checkpoints are kept — they can be safely deleted under \"All versions\", or kept for the free \"Switch back to your position\" option."),
+            timeout = 6,
+          })
         end,
       }},
       {{
@@ -10056,7 +10047,7 @@ function AskGPT:_switchBackToPositionRung(opts)
   -- ahead live (the whole point of the switch-back)
   local rung = XrayAuto.pickPromotableRung(ActionCache.getXrayLadder(file), 0, decimal)
   if not rung then
-    UIManager:show(InfoMessage:new{ text = _("No prepared version at or below your position."), timeout = 3 })
+    UIManager:show(InfoMessage:new{ text = _("No checkpoint at or below your position."), timeout = 3 })
     return
   end
   local features = self.settings:readSetting("features") or {}
@@ -10065,12 +10056,18 @@ function AskGPT:_switchBackToPositionRung(opts)
   if ok then
     self._file_dialog_row_cache = { file = nil, rows = nil }
     self:_refreshXrayAutoState()
+    -- Round 13 parity with switch-to-complete: open the switched-to X-Ray
+    local xr_action = self.action_service and self.action_service:getAction("book", "xray")
+    local new_live = ActionCache.get(file, "xray")
+    if xr_action and new_live and new_live.result then
+      self:viewCachedAction(xr_action, "xray", new_live, { skip_stale_popup = true })
+    end
     UIManager:show(Notification:new{
       text = T(_("Switched back — X-Ray now at %1%"),
         math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5)),
     })
   else
-    UIManager:show(InfoMessage:new{ text = _("Switch failed — the prepared version could not be installed."), timeout = 3 })
+    UIManager:show(InfoMessage:new{ text = _("Switch failed — the checkpoint could not be installed."), timeout = 3 })
   end
 end
 
@@ -10119,7 +10116,7 @@ function AskGPT:_startXrayLadderBuild()
   local doc_info = self.ui.document.info
   if not doc_info or doc_info.has_pages then
     UIManager:show(InfoMessage:new{
-      text = _("Preparing versions ahead supports EPUB-style (flowing) documents only."),
+      text = _("Checkpoint building supports EPUB-style (flowing) documents only."),
       timeout = 3,
     })
     return
@@ -10153,7 +10150,7 @@ function AskGPT:_startXrayLadderBuild()
   end
   if entry and entry.result and not live_ok_base and base_progress == nil then
     UIManager:show(InfoMessage:new{
-      text = _("This X-Ray can't prepare versions ahead (complete-track, AI-knowledge, or legacy format). Delete it first to build from scratch."),
+      text = _("This X-Ray can't build checkpoints (complete-track, AI-knowledge, or legacy format). Delete it first to build from scratch."),
       timeout = 5,
     })
     return
@@ -10199,8 +10196,8 @@ function AskGPT:_startXrayLadderBuild()
     for _idx, opt in ipairs(opts) do
       local rungs = planFor(opt.spacing)
       local row_text = opt.pct == math.floor(recommended * 100 + 0.5)
-        and T(_("Every %1% — %2 versions (recommended)"), opt.pct, #rungs)
-        or T(_("Every %1% — %2 versions"), opt.pct, #rungs)
+        and T(_("Every %1% — %2 checkpoints (recommended)"), opt.pct, #rungs)
+        or T(_("Every %1% — %2 checkpoints"), opt.pct, #rungs)
       rows[#rows + 1] = {{
         text = row_text,
         callback = function()
@@ -10217,7 +10214,7 @@ function AskGPT:_startXrayLadderBuild()
       end,
     }}
     picker = ButtonDialog:new{
-      title = _("Version spacing for this run:"),
+      title = _("Checkpoint spacing for this run:"),
       buttons = rows,
     }
     UIManager:show(picker)
@@ -10232,16 +10229,16 @@ function AskGPT:_startXrayLadderBuild()
     end
     local snapped = next(rung_labels) ~= nil
     local cost_text = snapped
-      and T(_("%1 versions will be generated in the background (at chapter ends, roughly every %2% of the book, up to 100%), each extracting and analyzing the next slice of the book without further prompts — the book is read once in total, plus per-version overhead, so somewhat more than one full X-Ray run. The book must stay open; you can keep reading."),
+      and T(_("%1 checkpoints will be generated in the background (at chapter ends, roughly every %2% of the book, up to 100%), each extracting and analyzing the next slice of the book without further prompts — the book is read once in total, plus per-checkpoint overhead, so somewhat more than one full X-Ray run. The book must stay open; you can keep reading."),
         #rungs, math.floor(spacing * 100 + 0.5))
-      or T(_("%1 versions will be generated in the background (every %2% of the book, up to 100%), each extracting and analyzing the next slice of the book without further prompts — the book is read once in total, plus per-version overhead, so somewhat more than one full X-Ray run. The book must stay open; you can keep reading."),
+      or T(_("%1 checkpoints will be generated in the background (every %2% of the book, up to 100%), each extracting and analyzing the next slice of the book without further prompts — the book is read once in total, plus per-checkpoint overhead, so somewhat more than one full X-Ray run. The book must stay open; you can keep reading."),
         #rungs, math.floor(spacing * 100 + 0.5))
     local confirm
     confirm = ButtonDialog:new{
       title = (resume
-          and T(_("Resume preparing X-Ray versions from %1%?"),
+          and T(_("Resume building X-Ray checkpoints from %1%?"),
             math.floor((base_progress or 0) * 100 + 0.5))
-          or _("Prepare X-Ray versions ahead?"))
+          or _("Build X-Ray checkpoints ahead?"))
         .. "\n" .. cost_text,
       buttons = {
         {{
@@ -10300,12 +10297,12 @@ function AskGPT:_fireXrayLadderRung()
   -- (same rule as the background update path)
   if not self:_xrayBackgroundConsentOk(action, features) then
     XrayAuto.endLadderBuild()
-    UIManager:show(InfoMessage:new{ text = _("Version preparation stopped: text extraction is disabled."), timeout = 3 })
+    UIManager:show(InfoMessage:new{ text = _("Checkpoint build stopped: text extraction is disabled."), timeout = 3 })
     return
   end
   if not NetworkMgr:isWifiOn() then
     XrayAuto.endLadderBuild()
-    UIManager:show(InfoMessage:new{ text = _("Version preparation stopped: WiFi is off."), timeout = 3 })
+    UIManager:show(InfoMessage:new{ text = _("Checkpoint build stopped: WiFi is off."), timeout = 3 })
     return
   end
 
@@ -10372,7 +10369,7 @@ function AskGPT:_fireXrayLadderRung()
 
   logger.info("KOAssistant: ladder rung", build.idx, "of", build.total, "firing (to", target, ")")
   UIManager:show(Notification:new{
-    text = T(_("Preparing X-Ray versions — %1 of %2 (to %3%)…"),
+    text = T(_("Building X-Ray checkpoints — %1 of %2 (to %3%)…"),
       build.idx, build.total, math.floor(target * 100 + 0.5)),
   })
   Dialogs.executeActionForResult(action, config_copy.features.book_context, self.ui, config_copy, self,
@@ -10392,7 +10389,7 @@ function AskGPT:_fireXrayLadderRung()
         logger.warn("KOAssistant: ladder rung", cur.idx, "timed out (watchdog,",
           XrayAuto.WATCHDOG_S, "s)")
         UIManager:show(InfoMessage:new{
-          text = T(_("Version preparation stopped at %1 of %2 (request timed out) — resume it from the X-Ray popup."),
+          text = T(_("Checkpoint build stopped at %1 of %2 (request timed out) — resume it from the X-Ray popup."),
             cur.idx, cur.total),
           timeout = 4,
         })
@@ -10400,7 +10397,7 @@ function AskGPT:_fireXrayLadderRung()
       end
       if was_cancelled or cur.cancel_requested then
         XrayAuto.endLadderBuild()
-        UIManager:show(Notification:new{ text = _("Version preparation cancelled.") })
+        UIManager:show(Notification:new{ text = _("Checkpoint build cancelled.") })
         return
       end
       -- Honesty check: the rung must actually be on disk — truncated responses and
@@ -10412,7 +10409,7 @@ function AskGPT:_fireXrayLadderRung()
         logger.info("KOAssistant: ladder build stopped at rung", cur.idx, "-",
           tostring(meta_or_err or "rung not saved"))
         UIManager:show(InfoMessage:new{
-          text = T(_("Version preparation stopped at %1 of %2 — resume it from the X-Ray popup."),
+          text = T(_("Checkpoint build stopped at %1 of %2 — resume it from the X-Ray popup."),
             cur.idx, cur.total),
           timeout = 4,
         })
@@ -10428,7 +10425,7 @@ function AskGPT:_fireXrayLadderRung()
       else
         XrayAuto.endLadderBuild()
         UIManager:show(Notification:new{
-          text = T(_("X-Ray versions prepared (%1)."), cur.total),
+          text = T(_("X-Ray checkpoints built (%1)."), cur.total),
         })
         self_ref._file_dialog_row_cache = { file = nil, rows = nil }
         self_ref:_refreshXrayAutoState()
@@ -10449,7 +10446,7 @@ function AskGPT:_cancelXrayLadderBuild()
     UIManager:unschedule(self._xray_auto_watchdog)
     self._xray_auto_watchdog = nil
   end
-  UIManager:show(Notification:new{ text = _("Version preparation cancelled.") })
+  UIManager:show(Notification:new{ text = _("Checkpoint build cancelled.") })
 end
 
 --- Kill anything pending or in flight when the book closes. (The completion guard
