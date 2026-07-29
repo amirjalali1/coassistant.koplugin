@@ -7050,11 +7050,12 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           end,
         }})
       end
-      if not (nc_rungs > 0 and (nc_highest or 0) >= 1.0 - 0.005) then
-        table.insert(nc_ver_rows, {{
-          text = nc_rungs > 0
-              and T(_("Resume building checkpoints (%1 so far)…"), nc_rungs)
-              or _("Build checkpoints…"),
+      -- Round 20b (maintainer): the Versions group holds VERSIONS only — the
+      -- from-nothing build lives in "Create X-Ray…". Only a PAUSED build keeps
+      -- a top-level Resume row; with no rungs the group is empty and hides.
+      if nc_rungs > 0 and (nc_highest or 0) < 1.0 - 0.005 then
+        table.insert(buttons, {{
+          text = T(_("Resume building checkpoints (%1 so far)…"), nc_rungs),
           callback = function()
             UIManager:close(dialog)
             self_ref:_startXrayLadderBuild()
@@ -7398,10 +7399,12 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     -- background machinery. The row renders for ineligible lineages too
     -- (complete-track / AI-knowledge) — _startXrayLadderBuild explains honestly
     -- instead of the row silently missing (device round 2).
+    -- Round 20b (maintainer): a BUILD action, not a version — lives top-level;
+    -- the Versions group holds versions only (and hides when there are none).
     if doc and not (doc.info and doc.info.has_pages) and not ladder_building
         and self.ui and self.ui.document and self.ui.document.file == sx_file then
       if #ladder_rungs == 0 then
-        table.insert(c_ver_rows, {{
+        table.insert(buttons, {{
           text = _("Build checkpoints…"),
           callback = function()
             UIManager:close(dialog)
@@ -7409,7 +7412,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           end,
         }})
       elseif (ladder_highest or 0) < 1.0 - 0.005 then
-        table.insert(c_ver_rows, {{
+        table.insert(buttons, {{
           text = T(_("Resume building checkpoints (from %1%)…"),
             math.floor((ladder_highest or 0) * 100 + 0.5)),
           callback = function()
@@ -7969,13 +7972,13 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     fb_dialog = ButtonDialog:new{
       title = _("Create X-Ray: how far should it cover?"),
       buttons = {
-        {{ text = _("Up to my reading position"), callback = function()
-          UIManager:close(fb_dialog)
-          on_update()
-        end }},
         {{ text = _("The whole book"), callback = function()
           UIManager:close(fb_dialog)
           self_ref:_executeBookLevelActionDirect(action, action_id, { full_document = true })
+        end }},
+        {{ text = _("Up to my reading position"), callback = function()
+          UIManager:close(fb_dialog)
+          on_update()
         end }},
         {{ text = _("Cancel"), callback = function() UIManager:close(fb_dialog) end }},
       },
@@ -7992,8 +7995,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   local BookSettings = require("koassistant_book_settings")
   local auto_on = flowing and BookSettings.resolveXrayAuto(self.ui.doc_settings, features)
 
+  -- Round 20b (maintainer): whole book is the DEFAULT and top coverage option
   local cr = {
-    coverage = (progress and decimal > 0.01) and "position" or "whole",
+    coverage = "whole",
     delivery = "one",
     target = nil, target_label = nil,
   }
@@ -8099,12 +8103,12 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     -- === Coverage ===
     addLabel(_("Coverage"))
     local cov_rows = {}
+    cov_rows[#cov_rows + 1] = { { text = _("The whole book"),
+      provider = "whole", checked = cr.coverage == "whole" } }
     if progress and decimal > 0.01 then
       cov_rows[#cov_rows + 1] = { { text = T(_("Up to where I am (%1)"), progress.formatted),
         provider = "position", checked = cr.coverage == "position" } }
     end
-    cov_rows[#cov_rows + 1] = { { text = _("The whole book"),
-      provider = "whole", checked = cr.coverage == "whole" } }
     if flowing and self.ui.toc and self.ui.toc.toc and #self.ui.toc.toc > 0 then
       local target_text = cr.coverage == "target" and cr.target
         and T(_("To the end of \"%1\" (%2%)"), cr.target_label or "?",
