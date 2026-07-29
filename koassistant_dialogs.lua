@@ -3124,11 +3124,13 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     local ladder_target = config and config.features and tonumber(config.features._ladder_target_ratio)
     local ladder_base = config and config.features and config.features._ladder_base
     local ladder_chapter_label = config and config.features and config.features._ladder_chapter_label
+    local ladder_intro = config and config.features and config.features._ladder_intro
     if config and config.features then
         config.features._ladder_build = nil
         config.features._ladder_target_ratio = nil
         config.features._ladder_base = nil
         config.features._ladder_chapter_label = nil
+        config.features._ladder_intro = nil
     end
     -- Merge engine (§6 slice 3): sentinel payload. Artifact JSON must NEVER pass
     -- through the placeholder machinery (the early passes strip lines and
@@ -3356,6 +3358,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         -- P3 chapter snapping: the planned rung's chapter title, stamped into the
         -- rung entry at save so the versions list can label it
         _ladder_chapter_label = ladder_chapter_label,
+        -- Round 20: introductory step — the rung saves at progress 0 with the
+        -- intro flag (premise-only version, openable at any position)
+        _ladder_intro = ladder_intro or nil,
     }
     message_data._merge_payload = merge_payload
     logger.info("KOAssistant: message_data.book_metadata=", message_data.book_metadata and "present" or "nil")
@@ -4431,10 +4436,14 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                         or (message_data.cached_used_highlights == nil and message_data.cached_used_annotations == true)) then
                         rung_used_highlights = true
                     end
+                    -- Intro step (round 20): saved at progress 0 — the version is
+                    -- premise-only and must be promotable at ANY position; storing
+                    -- the extraction target would spoiler-gate it AND collide with
+                    -- rung 1 in the ladder's tolerance dedup
                     local rung_ok = cache_answer and ActionCache.pushXrayLadderRung(cache_file, {
                         result = cache_answer,
-                        progress_decimal = progress,
-                        progress_page = message_data.progress_page,
+                        progress_decimal = message_data._ladder_intro and 0 or progress,
+                        progress_page = message_data._ladder_intro and 0 or message_data.progress_page,
                         timestamp = os.time(),
                         model = model_name,
                         used_highlights = rung_used_highlights,
@@ -4442,6 +4451,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                         flow_visible_pages = message_data.flow_visible_pages,
                         source_mode = source_mode,
                         chapter_label = message_data._ladder_chapter_label,
+                        intro = message_data._ladder_intro or nil,
                     })
                     logger.info("KOAssistant: ladder rung", rung_ok and "saved" or "SAVE FAILED",
                         "at", progress)

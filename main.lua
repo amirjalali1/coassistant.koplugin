@@ -5880,7 +5880,9 @@ function AskGPT:_showAnalyzeNotesScopePopup(action, action_id, on_update, cached
     -- Cache exists: View / Update-or-Redo (to X%) / Redo (complete) / Cancel
     local view_detail = ""
     local parts = {}
-    if cached_entry.progress_decimal and cached_entry.progress_decimal < 1.0 then
+    if cached_entry.intro then
+      table.insert(parts, _("introduction"))
+    elseif cached_entry.progress_decimal and cached_entry.progress_decimal < 1.0 then
       table.insert(parts, math.floor(cached_entry.progress_decimal * 100 + 0.5) .. "%")
     end
     local rel_time = formatRelativeTime(cached_entry.timestamp)
@@ -7009,7 +7011,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     if nc_build then
       table.insert(buttons, {{
         text = T(_("Building checkpoints — %1 of %2… (tap to cancel)"),
-          nc_build.idx, nc_build.total),
+          nc_build.step or nc_build.idx, nc_build.total),
         callback = function()
           UIManager:close(dialog)
           self_ref:_cancelXrayLadderBuild()
@@ -7100,7 +7102,10 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     -- Cached X-Ray: View / Update-or-Redo / Update to 100% / Sections / Cancel
     local view_detail = ""
     local parts = {}
-    if cached_entry.progress_decimal and cached_entry.progress_decimal < 1.0 then
+    if cached_entry.intro then
+      -- Round 20: a live intro is premise-only coverage, not "0%"
+      table.insert(parts, _("introduction"))
+    elseif cached_entry.progress_decimal and cached_entry.progress_decimal < 1.0 then
       table.insert(parts, math.floor(cached_entry.progress_decimal * 100 + 0.5) .. "%")
     end
     local rel_time = formatRelativeTime(cached_entry.timestamp)
@@ -7249,7 +7254,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     if ladder_building then
       table.insert(buttons, {{
         text = T(_("Building checkpoints — %1 of %2… (tap to cancel)"),
-          ladder_building.idx, ladder_building.total),
+          ladder_building.step or ladder_building.idx, ladder_building.total),
         callback = function()
           UIManager:close(dialog)
           self_ref:_cancelXrayLadderBuild()
@@ -8011,9 +8016,13 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     return #rungs
   end
 
-  -- Keep the delivery pick valid when coverage changes
+  -- Keep the delivery pick valid when coverage changes. "Automatically as I
+  -- read" is valid for position AND whole-book coverage (round 20 — the
+  -- maintainer's point: auto IS eventual whole-book coverage, it follows you to
+  -- the end); only a section-end target has no auto semantics (auto never
+  -- stops at a target).
   local function fixDelivery()
-    if cr.delivery == "follow" and (cr.coverage ~= "position" or auto_on) then
+    if cr.delivery == "follow" and (cr.coverage == "target" or auto_on) then
       cr.delivery = "one"
     end
     if cr.delivery == "checkpoints" and stepsFor() <= 1 then
@@ -8150,10 +8159,12 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     }
     local n_steps = stepsFor()
     if n_steps > 1 then
-      del_rows[#del_rows + 1] = { { text = T(_("In checkpoints (%1 background steps)"), n_steps),
+      -- +1: from-nothing checkpoint builds start with the introductory step
+      -- (round 20) — the shown count must match the build confirm's plan
+      del_rows[#del_rows + 1] = { { text = T(_("In checkpoints (%1 background steps)"), n_steps + 1),
         provider = "checkpoints", checked = cr.delivery == "checkpoints" } }
     end
-    if flowing and cr.coverage == "position" then
+    if flowing and (cr.coverage == "position" or cr.coverage == "whole") then
       if auto_on then
         del_rows[#del_rows + 1] = { { text = _("Automatically as I read (already on)"),
           provider = "follow", enabled = false, checked = false } }
@@ -8185,6 +8196,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
         and T(_("You're at %1%, past the automatic-create window: a catch-up build to your position runs first."),
           math.floor(decimal * 100 + 0.5))
         or _("Creates and updates the X-Ray in the background as you read.")
+      if cr.coverage == "whole" then
+        hint = hint .. " " .. _("Coverage grows with your reading and reaches 100% when you finish the book.")
+      end
       table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
       table.insert(vgroup, TextBoxWidget:new{
         text = hint, face = info_face, width = content_width,
@@ -8960,7 +8974,10 @@ end
 --- (complete versions show "Complete" instead of a percent).
 function AskGPT:_xrayCheckpointLabel(cp)
   local parts = {}
-  if cp.full_document then
+  if cp.intro then
+    -- Round 20: premise-only version at progress 0 — "0%" would read as broken
+    table.insert(parts, _("Introduction (spoiler-free)"))
+  elseif cp.full_document then
     table.insert(parts, _("Complete"))
   elseif cp.progress_decimal then
     table.insert(parts, math.floor(cp.progress_decimal * 100 + 0.5) .. "%")
@@ -10019,7 +10036,9 @@ function AskGPT:_refreshXrayAutoState()
       local rungs = {}
       for _idx, rung in ipairs(ActionCache.getXrayLadder(file)) do
         local p = tonumber(rung.progress_decimal)
-        if p then rungs[#rungs + 1] = p end
+        -- Intro rungs (round 20) are not coverage points — never a promotion
+        -- trigger nor a "next checkpoint at N%" candidate
+        if p and not rung.intro then rungs[#rungs + 1] = p end
       end
       state.rung_progress = rungs
       local live = ActionCache.getXrayCache(file)
@@ -10470,6 +10489,14 @@ function AskGPT:_fireXrayLadderPromotion(opts)
     return false
   end
   local rung = XrayAuto.pickPromotableRung(ladder, live_p, decimal)
+  if not rung and not (live and live.result) then
+    -- Round 20: with no live X-Ray at all, the INTRO rung installs at any
+    -- position — premise-only content is spoiler-free by construction, so the
+    -- X-Ray button works from the very start instead of waiting for rung 1
+    for _idx, r in ipairs(ladder) do
+      if r.intro and r.result then rung = r break end
+    end
+  end
   if not rung then
     self:_refreshXrayAutoState()
     return false
@@ -10479,11 +10506,12 @@ function AskGPT:_fireXrayLadderPromotion(opts)
   if ok then
     self._file_dialog_row_cache = { file = nil, rows = nil }
     logger.info("KOAssistant: X-Ray ladder rung promoted to", tostring(rung.progress_decimal),
-      (opts and opts.manual) and "(manual)" or "(auto)")
+      rung.intro and "(intro)" or ((opts and opts.manual) and "(manual)" or "(auto)"))
     if (opts and opts.manual) or features.xray_auto_notify == true then
       UIManager:show(Notification:new{
-        text = T(_("X-Ray updated to %1% (checkpoint)"),
-          math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5)),
+        text = rung.intro and _("Introductory X-Ray is ready (spoiler-free).")
+          or T(_("X-Ray updated to %1% (checkpoint)"),
+            math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5)),
       })
     end
   end
@@ -10707,7 +10735,11 @@ function AskGPT:_startXrayLadderBuild(build_opts)
     })
     return
   end
-  if live_ok_base and (base_progress == nil or (live_progress or 0) > base_progress) then
+  -- A live INTRO X-Ray (round 20: premise-only, progress 0) is not a build
+  -- base — the chain must still create rung 1 from scratch, not "extend" a
+  -- deliberately censored artifact
+  if live_ok_base and not (entry and entry.intro)
+      and (base_progress == nil or (live_progress or 0) > base_progress) then
     base_progress = live_progress
   end
 
@@ -10729,7 +10761,13 @@ function AskGPT:_startXrayLadderBuild(build_opts)
   local boundaries = features.xray_ladder_chapter_snap ~= false
     and self:_ladderChapterBoundaries() or nil
 
-  local resume = #ladder > 0
+  -- Resume = real (non-intro) rungs exist; the intro step (round 20) plans only
+  -- on a genuine from-nothing build that hasn't built its intro yet
+  local resume, has_intro = false, false
+  for _idx, r in ipairs(ladder) do
+    if r.intro then has_intro = true else resume = true end
+  end
+  local plan_intro = base_progress == nil and not has_intro and not one_shot
   -- Round 19: a from-nothing build seeds its first checkpoint AT the reading
   -- position, so the reader gets a promotable (openable) X-Ray from the very
   -- first finished rung instead of waiting to cross the first spacing boundary
@@ -10859,6 +10897,9 @@ function AskGPT:_startXrayLadderBuild(build_opts)
         plan_line = plan_line .. " " .. T(_("The first stops at your position (%1%), so a usable X-Ray installs right away."),
           math.floor(seed * 100 + 0.5))
       end
+      if plan_intro then
+        plan_line = plan_line .. " " .. _("An introductory version is generated first (one extra request) — spoiler-free and readable from the very start of the book.")
+      end
       cost_line = _("Each is generated in the background from the next slice of the text, with no further prompts. The text is read once in total, plus a small per-checkpoint overhead. The book must stay open; you can keep reading, cancel anytime, and resume later.")
     end
     local confirm
@@ -10874,7 +10915,7 @@ function AskGPT:_startXrayLadderBuild(build_opts)
           text = one_shot and _("Generate") or resume and _("Resume") or _("Build"),
           callback = function()
             UIManager:close(confirm)
-            XrayAuto.beginLadderBuild(file, rungs, rung_labels)
+            XrayAuto.beginLadderBuild(file, rungs, rung_labels, { intro = plan_intro })
             self_ref:_fireXrayLadderRung()
           end,
         }}
@@ -10913,7 +10954,11 @@ function AskGPT:_fireXrayLadderRung()
     XrayAuto.endLadderBuild()
     return
   end
-  local target = build.rungs[build.idx]
+  -- Round 20: the chain may start with an INTRO step (premise-only version at
+  -- progress 0, read from rung 1's slice) before the rungs proper
+  local step = XrayAuto.currentLadderStep()
+  local target = step and step.target
+  local is_intro = (step and step.intro) or false
   if not target or build.cancel_requested then
     XrayAuto.endLadderBuild()
     return
@@ -10941,20 +10986,38 @@ function AskGPT:_fireXrayLadderRung()
   local ActionCache = require("koassistant_action_cache")
   local XrayParser = require("koassistant_xray_parser")
   local ladder = ActionCache.getXrayLadder(file)
+  if is_intro then
+    -- Skip the intro when one already exists (resume) or a live X-Ray appeared
+    -- mid-chain — the intro's whole point is "something openable before rung 1"
+    local have_intro = false
+    for _idx, r in ipairs(ladder) do
+      if r.intro and r.result then have_intro = true break end
+    end
+    local live_now = ActionCache.get(file, "xray")
+    if have_intro or (live_now and live_now.result) then
+      XrayAuto.completeIntro()
+      return self:_fireXrayLadderRung()
+    end
+  end
   local base, base_progress
+  -- Intro rungs never qualify as a base (round 20): a premise-only artifact
+  -- must not seed the incremental path — rung 1 creates from scratch
   for _idx, rung in ipairs(ladder) do
     local p = tonumber(rung.progress_decimal)
-    if p and rung.result and (base_progress == nil or p > base_progress) then
+    if p and rung.result and not rung.intro and (base_progress == nil or p > base_progress) then
       base, base_progress = rung, p
     end
   end
   local entry = ActionCache.get(file, "xray")
-  if entry and entry.result and not entry.full_document
+  if entry and entry.result and not entry.full_document and not entry.intro
       and entry.source_mode ~= "ai_knowledge" and XrayParser.isJSON(entry.result) then
     local p = tonumber(entry.progress_decimal)
     if p and (base_progress == nil or p > base_progress) then
       base, base_progress = entry, p
     end
+  end
+  if is_intro then
+    base, base_progress = nil, nil
   end
   -- Skip threshold MUST be at least the incremental path's engagement threshold
   -- (dialogs.lua: update engages only when target > cached + 0.01) — a narrower
@@ -10978,7 +11041,8 @@ function AskGPT:_fireXrayLadderRung()
   config_copy.features._ladder_build = true
   config_copy.features._ladder_target_ratio = target
   config_copy.features._ladder_base = base
-  config_copy.features._ladder_chapter_label = build.labels and build.labels[build.idx] or nil
+  config_copy.features._ladder_intro = is_intro or nil
+  config_copy.features._ladder_chapter_label = (not is_intro) and build.labels and build.labels[build.idx] or nil
 
   local doc_props = self.ui.doc_props or {}
   local title = doc_props.display_title or doc_props.title or "Unknown"
@@ -10999,12 +11063,30 @@ function AskGPT:_fireXrayLadderRung()
   self._xray_auto_watchdog = watchdog
   UIManager:scheduleIn(XrayAuto.WATCHDOG_S, watchdog)
 
-  logger.info("KOAssistant: ladder rung", build.idx, "of", build.total, "firing (to", target, ")")
+  -- Intro step (round 20): same slice as rung 1, but the prompt asks for a
+  -- premise-only, spoiler-free introduction (action copy — never mutate the
+  -- shared action table). Prompt text is wire content, not UI — no _().
+  local fire_action = action
+  if is_intro then
+    fire_action = {}
+    for k, v in pairs(action) do fire_action[k] = v end
+    fire_action.prompt = (action.prompt or "")
+      .. "\n\nIMPORTANT — INTRODUCTORY X-RAY: This X-Ray is a spoiler-free introduction for a reader who has NOT started the book yet. Cover only the premise, the setting, and the characters, concepts, or terms as they stand when first introduced in this opening portion. Do not mention any developments, reveals, relationships, or events beyond the initial setup."
+  end
+
+  local step_no = build.step or build.idx
+  if is_intro then
+    logger.info("KOAssistant: ladder step", step_no, "of", build.total, "firing (introduction)")
+  else
+    logger.info("KOAssistant: ladder step", step_no, "of", build.total, "firing (to", target, ")")
+  end
   UIManager:show(Notification:new{
-    text = T(_("Building X-Ray checkpoints — %1 of %2 (to %3%)…"),
-      build.idx, build.total, math.floor(target * 100 + 0.5)),
+    text = is_intro
+      and T(_("Building X-Ray checkpoints — %1 of %2 (introduction)…"), step_no, build.total)
+      or T(_("Building X-Ray checkpoints — %1 of %2 (to %3%)…"),
+        step_no, build.total, math.floor(target * 100 + 0.5)),
   })
-  Dialogs.executeActionForResult(action, config_copy.features.book_context, self.ui, config_copy, self,
+  Dialogs.executeActionForResult(fire_action, config_copy.features.book_context, self.ui, config_copy, self,
     config_copy.features.book_metadata,
     function(result, meta_or_err)
       if self_ref._xray_auto_watchdog then
@@ -11018,11 +11100,11 @@ function AskGPT:_fireXrayLadderRung()
       if was_watchdog and not cur.cancel_requested then
         -- Timeout, not a user cancel (T1): stop honestly with the resume hint
         XrayAuto.endLadderBuild()
-        logger.warn("KOAssistant: ladder rung", cur.idx, "timed out (watchdog,",
+        logger.warn("KOAssistant: ladder step", cur.step or cur.idx, "timed out (watchdog,",
           XrayAuto.WATCHDOG_S, "s)")
         UIManager:show(InfoMessage:new{
           text = T(_("Checkpoint build stopped at %1 of %2 (request timed out) — resume it from the X-Ray popup."),
-            cur.idx, cur.total),
+            cur.step or cur.idx, cur.total),
           timeout = 4,
         })
         return
@@ -11033,25 +11115,42 @@ function AskGPT:_fireXrayLadderRung()
         return
       end
       -- Honesty check: the rung must actually be on disk — truncated responses and
-      -- silent save failures never advance the chain
-      local on_disk = ActionCache.highestXrayLadderProgress(ActionCache.getXrayLadder(file))
-      local rung_written = result and on_disk and on_disk >= target - XrayAuto.LADDER_TOLERANCE
+      -- silent save failures never advance the chain. The intro writes at
+      -- progress 0, so it is verified by presence, not by coverage progress.
+      local rung_written
+      if is_intro then
+        for _idx, r in ipairs(ActionCache.getXrayLadder(file)) do
+          if r.intro and r.result then rung_written = true break end
+        end
+        rung_written = result and rung_written
+      else
+        local on_disk = ActionCache.highestXrayLadderProgress(ActionCache.getXrayLadder(file))
+        rung_written = result and on_disk and on_disk >= target - XrayAuto.LADDER_TOLERANCE
+      end
       if not rung_written then
         XrayAuto.endLadderBuild()
-        logger.info("KOAssistant: ladder build stopped at rung", cur.idx, "-",
+        logger.info("KOAssistant: ladder build stopped at step", cur.step or cur.idx, "-",
           tostring(meta_or_err or "rung not saved"))
         UIManager:show(InfoMessage:new{
           text = T(_("Checkpoint build stopped at %1 of %2 — resume it from the X-Ray popup."),
-            cur.idx, cur.total),
+            cur.step or cur.idx, cur.total),
           timeout = 4,
         })
         return
       end
       -- Round 19: a finished rung at-or-below the reader installs NOW — the
       -- seed (and any catch-up rung) must not wait for the whole chain.
-      -- pickPromotableRung no-ops when nothing at-or-below qualifies.
+      -- pickPromotableRung no-ops when nothing at-or-below qualifies; with no
+      -- live X-Ray at all, the intro installs (round 20).
       self_ref:_fireXrayLadderPromotion({ mid_build = true })
-      local next_target = XrayAuto.advanceLadderBuild()
+      local next_target
+      if is_intro then
+        XrayAuto.completeIntro()
+        local nxt = XrayAuto.currentLadderStep()
+        next_target = nxt and nxt.target
+      else
+        next_target = XrayAuto.advanceLadderBuild()
+      end
       if next_target and self_ref.ui and self_ref.ui.document
           and self_ref.ui.document.file == file then
         -- Yield the UI between rungs
@@ -11278,7 +11377,9 @@ function AskGPT:executeBookLevelAction(action_id)
       local view_detail = ""
       if cached.progress_decimal or cached.timestamp then
         local parts = {}
-        if cached.progress_decimal and cached.progress_decimal < 1.0 then
+        if cached.intro then
+          table.insert(parts, _("introduction"))
+        elseif cached.progress_decimal and cached.progress_decimal < 1.0 then
           table.insert(parts, math.floor(cached.progress_decimal * 100 + 0.5) .. "%")
         end
         local rel_time = formatRelativeTime(cached.timestamp)

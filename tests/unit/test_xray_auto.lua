@@ -597,6 +597,30 @@ TestRunner:test("planBuildRungs: seed first, tail planned FROM the seed", functi
     TestRunner:assertEqual(pos_cov[#pos_cov], 0.4, "final rung = the position goal")
 end)
 
+TestRunner:test("ladder build chain: intro step (round 20)", function()
+    XrayAuto.beginLadderBuild("/f", { 0.15, 0.3, 1.0 }, {}, { intro = true })
+    local b = XrayAuto.ladderBuild()
+    TestRunner:assertEqual(b.total, 4, "display total counts the intro step")
+    TestRunner:assertEqual(b.step, 1, "display step starts at 1")
+    local s = XrayAuto.currentLadderStep()
+    TestRunner:assertEqual(s.intro, true, "intro fires first")
+    TestRunner:assertEqual(s.target, 0.15, "intro reads rung 1's slice")
+    XrayAuto.completeIntro()
+    s = XrayAuto.currentLadderStep()
+    TestRunner:assertEqual(s.intro, nil, "rung 1 follows the intro")
+    TestRunner:assertEqual(s.target, 0.15, "rung index unchanged by the intro")
+    TestRunner:assertEqual(XrayAuto.ladderBuild().step, 2, "display step advanced")
+    TestRunner:assertEqual(XrayAuto.advanceLadderBuild(), 0.3, "advance to rung 2")
+    TestRunner:assertEqual(XrayAuto.ladderBuild().step, 3, "step tracks the advance")
+    XrayAuto.endLadderBuild()
+    -- No-intro chain: unchanged behavior
+    XrayAuto.beginLadderBuild("/f", { 0.5, 1.0 }, {})
+    TestRunner:assertEqual(XrayAuto.ladderBuild().total, 2, "no intro: total = rung count")
+    TestRunner:assertEqual(XrayAuto.currentLadderStep().target, 0.5, "rung 1 immediately")
+    TestRunner:assertEqual(XrayAuto.currentLadderStep().intro, nil, "no intro step")
+    XrayAuto.endLadderBuild()
+end)
+
 TestRunner:test("ladderSpacingFor v2: max-pages ceiling narrows spacing on long books", function()
     TestRunner:assertEqual(XrayAuto.ladderSpacingFor(1000), 0.1,
         "1000 pages: ceiling lands exactly on baseline (100-page rungs)")
@@ -749,6 +773,29 @@ TestRunner:test("ladder disk round-trip: ascending order, replace-within-toleran
 
     ActionCache.clearXrayLadder(DOC_PATH)
     TestRunner:assertEqual(ActionCache.getXrayLadderCount(DOC_PATH), 0, "cleared -> 0")
+end)
+
+TestRunner:test("intro rung: disk round-trip, resume-point exclusion (round 20)", function()
+    ActionCache.clearXrayLadder(DOC_PATH)
+    ActionCache.pushXrayLadderRung(DOC_PATH, {
+        result = '{"intro": true}', progress_decimal = 0, progress_page = 0,
+        timestamp = 1700000001, used_book_text = true, model = "m", intro = true,
+    })
+    local ladder = ActionCache.getXrayLadder(DOC_PATH)
+    TestRunner:assertEqual(#ladder, 1, "intro rung stored")
+    TestRunner:assertEqual(ladder[1].intro, true, "intro flag round-trips")
+    TestRunner:assertEqual(ActionCache.highestXrayLadderProgress(ladder), nil,
+        "intro-only ladder has no resume point (still a from-nothing build)")
+    ActionCache.pushXrayLadderRung(DOC_PATH, {
+        result = '{"rung": 1}', progress_decimal = 0.15, timestamp = 1700000002,
+    })
+    ladder = ActionCache.getXrayLadder(DOC_PATH)
+    TestRunner:assertEqual(#ladder, 2, "real rung joins the intro")
+    TestRunner:assertEqual(ActionCache.highestXrayLadderProgress(ladder), 0.15,
+        "real rungs set the resume point")
+    TestRunner:assertEqual(XrayAuto.pickPromotableRung(ladder, 0, 0.05), nil,
+        "intro never promotes via the position picker (installed by the no-live fallback only)")
+    ActionCache.clearXrayLadder(DOC_PATH)
 end)
 
 TestRunner:test("promoteXrayLadderRung: copy semantics, conditional ring push, flag fallback", function()

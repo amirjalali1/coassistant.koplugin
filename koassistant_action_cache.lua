@@ -291,6 +291,9 @@ local function saveCache(document_path, cache)
             if entry.unavailable_data_text then
                 file:write(string.format("        unavailable_data_text = %q,\n", entry.unavailable_data_text))
             end
+            if entry.intro then
+                file:write(string.format("        intro = %s,\n", tostring(entry.intro)))
+            end
             -- Section X-Ray scope metadata
             if entry.scope_label then
                 file:write(string.format("        scope_label = %q,\n", entry.scope_label))
@@ -434,6 +437,9 @@ function ActionCache.set(document_path, action_id, result, progress_decimal, met
         merged_to_main = metadata and metadata.merged_to_main,
         -- Track unavailable data at generation time (pre-formatted string for artifact viewer)
         unavailable_data_text = metadata and metadata.unavailable_data_text,
+        -- Introductory X-Ray (round 20): premise-only version at progress 0,
+        -- openable at any position (spoiler-free by construction)
+        intro = metadata and metadata.intro,
         -- Section X-Ray scope metadata
         scope_label = metadata and metadata.scope_label,
         scope_start_page = metadata and metadata.scope_start_page,
@@ -1174,7 +1180,7 @@ local CHECKPOINT_COPY_FIELDS = {
     "progress_decimal", "progress_page", "timestamp", "result",
     "used_highlights", "used_annotations", "used_book_text",
     "model", "full_document", "flow_visible_pages", "source_mode",
-    "chapter_label",
+    "chapter_label", "intro",
 }
 
 local function buildCheckpointEntry(source)
@@ -1232,6 +1238,9 @@ local function writeCheckpointRing(path, ring)
         end
         if cp.chapter_label then
             file:write(string.format("        chapter_label = %q,\n", cp.chapter_label))
+        end
+        if cp.intro then
+            file:write(string.format("        intro = %s,\n", tostring(cp.intro)))
         end
         local result_text = cp.result or ""
         local eq_str = string.rep("=", findSafeDelimiter(result_text))
@@ -1526,14 +1535,16 @@ function ActionCache.getXrayLadderCount(document_path)
 end
 
 --- Highest rung progress in a loaded ladder (resume point for the build chain).
---- Pure — takes the loaded array, not a path.
+--- Pure — takes the loaded array, not a path. Intro rungs (round 20: premise-only
+--- versions at progress 0) are skipped — an intro is not a resume point, and an
+--- intro-only ladder must still read as "from nothing".
 --- @param ladder table Rung array (any order)
 --- @return number|nil progress 0..1, or nil for an empty ladder
 function ActionCache.highestXrayLadderProgress(ladder)
     local best
     for _idx, rung in ipairs(ladder or {}) do
         local p = tonumber(rung.progress_decimal)
-        if p and (not best or p > best) then best = p end
+        if p and not rung.intro and (not best or p > best) then best = p end
     end
     return best
 end
@@ -1636,6 +1647,7 @@ function ActionCache.promoteXrayLadderRung(document_path, rung, limit, opts)
         used_annotations = pickFlag(rung.used_annotations, live and live.used_annotations),
         used_book_text = pickFlag(rung.used_book_text, live and live.used_book_text),
         updated_by_auto = not (opts and opts.manual) or nil,
+        intro = rung.intro,
     }
     local ok_doc = ActionCache.setXrayCache(document_path, rung.result, rung.progress_decimal or 0, meta)
     local ok_action = ActionCache.set(document_path, "xray", rung.result, rung.progress_decimal or 0, meta)

@@ -405,14 +405,42 @@ end
 
 --- @param labels table|nil sparse array parallel to rungs (snapLadderRungs output):
 --- labels[i] = chapter title for rungs[i], carried into each rung's cache entry
-function XrayAuto.beginLadderBuild(file, rungs, labels)
-  ladder_build = { file = file, rungs = rungs, labels = labels, idx = 1, total = #rungs }
+--- @param opts table|nil { intro = true } → an INTRODUCTORY step runs before
+--- rung 1 (round 20): it reads the same opening slice as rung 1 but writes a
+--- premise-only rung at progress 0, openable at any position. The display
+--- total counts it; `idx` stays the RUNG index (the intro never consumes it),
+--- `step` is the display step number.
+function XrayAuto.beginLadderBuild(file, rungs, labels, opts)
+  ladder_build = { file = file, rungs = rungs, labels = labels, idx = 1,
+    total = #rungs + ((opts and opts.intro) and 1 or 0),
+    intro_pending = (opts and opts.intro) or nil,
+    step = 1 }
+end
+
+--- The step the chain should fire next: { target, intro } or nil when done.
+function XrayAuto.currentLadderStep()
+  if not ladder_build then return nil end
+  if ladder_build.intro_pending then
+    return { target = ladder_build.rungs[1], intro = true }
+  end
+  local t = ladder_build.rungs[ladder_build.idx]
+  if not t then return nil end
+  return { target = t }
+end
+
+--- Mark the intro step done (or skipped); rung 1 fires next, idx unchanged.
+function XrayAuto.completeIntro()
+  if ladder_build and ladder_build.intro_pending then
+    ladder_build.intro_pending = nil
+    ladder_build.step = (ladder_build.step or 1) + 1
+  end
 end
 
 --- Advance to the next rung. Returns the next target ratio, or nil when done.
 function XrayAuto.advanceLadderBuild()
   if not ladder_build then return nil end
   ladder_build.idx = ladder_build.idx + 1
+  ladder_build.step = (ladder_build.step or ladder_build.idx) + 1
   return ladder_build.rungs[ladder_build.idx]
 end
 
