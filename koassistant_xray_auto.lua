@@ -1,14 +1,14 @@
 --[[--
-Background X-Ray auto-update: trigger gates + cross-instance session state
-(docs/xray_background_plan.md).
+Automatic X-Ray: the unified checkpoint engine's pure pieces + cross-instance
+session state (docs/xray_background_plan.md + xray_ecosystem_plan.md item 23).
 
-Gate logic is pure (quiz_chapters precedent — no KOReader deps, unit-testable):
-`shouldFire(state, progress_decimal, pageno, now)` answers from its arguments only.
-The module additionally holds file-local session state that must survive ReaderUI
-plugin-instance teardown on book switch (`last_attempt`, the in-flight flag, the
-subprocess cancel handle, and the session failure/success trace): per-instance
-`self._*` state would reset the rate limit on every book hop and orphan the
-in-flight flag. main.lua owns all event wiring and disk reads.
+Grid math and gate helpers are pure (quiz_chapters precedent — no KOReader
+deps, unit-testable). The module additionally holds file-local session state
+that must survive ReaderUI plugin-instance teardown on book switch
+(`last_attempt`, the in-flight flag, the subprocess cancel handle, the build
+chain, and the session failure/success trace): per-instance `self._*` state
+would reset the rate limit on every book hop and orphan the in-flight flag.
+main.lua owns all event wiring and disk reads.
 ]]
 
 local XrayAuto = {}
@@ -54,45 +54,39 @@ function XrayAuto.dialsFromFeatures(features)
   }
 end
 
---- Pure trigger gate. All checks answerable from arguments; disk truth (fresh cache
---- read, WiFi, document type) is the caller's job at fire time. Dial fields on state
---- (min_gap/max_gap/cooldown_s, from dialsFromFeatures) override the module defaults.
---- @param state table { auto_update, eligible, cached_progress, prev_page, min_gap, max_gap, cooldown_s } (may be stale)
---- @param progress_decimal number current position 0..1 (cheap approximation is fine)
---- @param pageno number current page (jump guard)
+-- (Round 21, unified checkpoint engine — plan item 23: the old shouldFire
+-- threshold/cap gate matrix is RETIRED with the to-position auto-update path.
+-- The scheduler's rule is now the one-ahead invariant, checked in
+-- main.lua:_xrayAutoOnPageUpdate against in-memory state; the jump guard,
+-- cooldown, and in-flight gates survive as the pieces below.)
+
+--- Cooldown gate for the auto scheduler (stamped at SCHEDULE time via
+--- markScheduled, same as before). Pure over module state + arguments.
+--- @param cooldown_s number|nil seconds (nil = RATE_LIMIT_S)
 --- @param now number os.time()
---- @return table { fire = boolean, reason = string }
-function XrayAuto.shouldFire(state, progress_decimal, pageno, now)
-  if not state or state.auto_update ~= true then
-    return { fire = false, reason = "not_opted_in" }
+--- @return boolean true when a new schedule is allowed
+function XrayAuto.cooldownElapsed(cooldown_s, now)
+  if not last_attempt or not now then return true end
+  return (now - last_attempt) >= (tonumber(cooldown_s) or XrayAuto.RATE_LIMIT_S)
+end
+
+--- The auto scheduler's work list (round 21): every missing grid point up to
+--- and including ONE past the reader — the one-ahead invariant. Pure prefix
+--- slice over an already-planned grid; the parallel sparse labels array keeps
+--- its indices (a prefix never shifts them).
+--- @param rungs table ascending grid targets (planBuildRungs/snap output)
+--- @param position number reader position 0..1
+--- @param labels table|nil sparse parallel chapter labels
+--- @return table truncated rungs, table truncated labels
+function XrayAuto.truncateToOneAhead(rungs, position, labels)
+  local pos = tonumber(position) or 0
+  local out, out_labels = {}, {}
+  for idx, t in ipairs(rungs or {}) do
+    out[#out + 1] = t
+    if labels and labels[idx] then out_labels[#out] = labels[idx] end
+    if t > pos + XrayAuto.LADDER_TOLERANCE then break end
   end
-  if state.eligible ~= true then
-    return { fire = false, reason = "not_eligible" }
-  end
-  if type(progress_decimal) ~= "number" or type(state.cached_progress) ~= "number" then
-    return { fire = false, reason = "no_progress" }
-  end
-  local delta = progress_decimal - state.cached_progress
-  if delta <= (state.min_gap or XrayAuto.THRESHOLD) then
-    return { fire = false, reason = "below_threshold" }
-  end
-  if delta > (state.max_gap or XrayAuto.MAX_DELTA) then
-    return { fire = false, reason = "above_cap" }
-  end
-  -- Jump guard: no prev_page (first turn after open/refresh) or a big hop = not
-  -- sequential reading; the page was still tracked by the caller.
-  if not state.prev_page or math.abs((pageno or 0) - state.prev_page) > XrayAuto.JUMP_GUARD_PAGES then
-    return { fire = false, reason = "page_jump" }
-  end
-  -- in_flight before the rate limit: both usually hold together (the limit is
-  -- stamped at schedule time), and "in_flight" is the honest reason then
-  if in_flight then
-    return { fire = false, reason = "in_flight" }
-  end
-  if last_attempt and now and (now - last_attempt) < (state.cooldown_s or XrayAuto.RATE_LIMIT_S) then
-    return { fire = false, reason = "rate_limited" }
-  end
-  return { fire = true, reason = "ok" }
+  return out, out_labels
 end
 
 --- Stamp the rate limit at SCHEDULE time (several page turns can pass the gates
@@ -409,11 +403,14 @@ end
 --- rung 1 (round 20): it reads the same opening slice as rung 1 but writes a
 --- premise-only rung at progress 0, openable at any position. The display
 --- total counts it; `idx` stays the RUNG index (the intro never consumes it),
---- `step` is the display step number.
+--- `step` is the display step number. { silent = true } (round 21) → an auto
+--- scheduler chain: routine progress/completion toasts are gated on the
+--- xray_auto_notify opt-in (failures stay visible either way).
 function XrayAuto.beginLadderBuild(file, rungs, labels, opts)
   ladder_build = { file = file, rungs = rungs, labels = labels, idx = 1,
     total = #rungs + ((opts and opts.intro) and 1 or 0),
     intro_pending = (opts and opts.intro) or nil,
+    silent = (opts and opts.silent) or nil,
     step = 1 }
 end
 

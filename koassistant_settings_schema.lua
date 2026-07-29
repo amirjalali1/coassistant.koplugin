@@ -814,7 +814,7 @@ local SettingsSchema = {
                     text = _("Automatic X-Ray (all books)"),
                     path = "features.xray_auto_update",
                     default = false,
-                    help_text = _("Quietly keep every book's X-Ray up to your reading position in the background as you read (flowing formats like EPUB only). Individual books can override this either way: X-Ray popup or Book Settings → Automatic X-Ray — a per-book On works even with this off, and a per-book Off always wins.\n\nSpend guards: fires at most once per cooldown, only for progress gaps inside the window below (bigger gaps stay manual), and only when WiFi is already on. Background runs extract book text and use API tokens without a per-request tap — text-extraction consent (or a trusted provider) is required, and checkpoints are never built automatically. Leave off if every request should be explicit."),
+                    help_text = _("Automatically build and maintain every book's X-Ray as you read (flowing formats like EPUB only): a spoiler-free introduction first, then checkpoints at chapter-sized steps, always keeping the next checkpoint ready ahead of you — reaching it installs it instantly and the one after starts building. Individual books can override this either way: X-Ray popup or Book Settings → Automatic X-Ray — a per-book On works even with this off, and a per-book Off always wins.\n\nSpend guards: at most one background build per cooldown, WiFi only, and text-extraction consent (or a trusted provider) required — background runs extract book text and use API tokens without a per-request tap. Leave off if every request should be explicit."),
                 },
                 {
                     id = "xray_auto_create",
@@ -822,7 +822,7 @@ local SettingsSchema = {
                     text = _("Auto-create X-Ray (early in a book)"),
                     path = "features.xray_auto_create",
                     default = false,
-                    help_text = _("For books following the global setting with no X-Ray yet: quietly create the first one in the background once you've read past the minimum gap. The maximum gap still caps it — further into a book, create the first X-Ray manually (which shows the extraction size first). Books with an existing non-incremental X-Ray (complete, AI-knowledge, legacy) are never touched.\n\nBooks switched to Automatic individually (per-book On) always auto-create, regardless of this setting."),
+                    help_text = _("For books following the global setting with no X-Ray yet: allow the automatic first build (introduction + checkpoints to your position; the first build asks how you want coverage, once per book). Without this, automation only maintains X-Rays you started yourself. Books with an existing non-incremental X-Ray (complete, AI-knowledge, legacy) are never touched.\n\nBooks switched to Automatic individually (per-book On) always build the first one, regardless of this setting."),
                     depends_on = { id = "xray_auto_update", value = true },
                 },
                 {
@@ -831,34 +831,12 @@ local SettingsSchema = {
                     text = _("Offer Automatic X-Ray for New Books"),
                     path = "features.xray_offer_auto",
                     default = false,
-                    help_text = _("When you open a book that has no X-Ray, ask once — early in the book — whether to turn on Automatic X-Ray for it. Only asks when it could act right away (flowing format, inside the auto-create window, text-extraction consent in place). Declining turns the book's Automatic X-Ray off, so it never asks again for that book."),
+                    help_text = _("When you open a book that has no X-Ray, ask once whether to turn on Automatic X-Ray for it. Only asks when it could act right away (flowing format, text-extraction consent in place). Declining turns the book's Automatic X-Ray off, so it never asks again for that book."),
                 },
-                {
-                    id = "xray_auto_min_gap",
-                    type = "spinner",
-                    text = _("Minimum Progress Gap (%)"),
-                    path = "features.xray_auto_min_gap",
-                    default = 5,
-                    min = 1,
-                    max = 20,
-                    step = 1,
-                    precision = "%d",
-                    help_text = _("Don't auto-update until you've read at least this much past the X-Ray's position. Lower = more frequent, smaller updates (more API calls); higher = fewer, larger ones. Also the lower edge of the auto-create window."),
-                    depends_on = { id = "xray_auto_update", value = true },
-                },
-                {
-                    id = "xray_auto_max_gap",
-                    type = "spinner",
-                    text = _("Maximum Progress Gap (%)"),
-                    path = "features.xray_auto_max_gap",
-                    default = 25,
-                    min = 10,
-                    max = 60,
-                    step = 5,
-                    precision = "%d",
-                    help_text = _("Spend guard: gaps bigger than this never auto-update — run the update manually from the X-Ray popup, which shows the size first. Raising this allows larger unattended extractions. Also the upper edge of the auto-create window, and the cap on automatic checkpoint swaps after a position jump (the manual popup row has no cap)."),
-                    depends_on = { id = "xray_auto_update", value = true },
-                },
+                -- (Round 21, unified engine: the min/max progress-gap dials are
+                -- retired — checkpoint spacing IS the increment. Stored values
+                -- are still read by dialsFromFeatures for the promotion
+                -- jump cap.)
                 {
                     id = "xray_auto_cooldown",
                     type = "spinner",
@@ -869,7 +847,7 @@ local SettingsSchema = {
                     max = 120,
                     step = 1,
                     precision = "%d",
-                    help_text = _("Minimum time between background attempts (0 = no cooldown). The progress-gap window still applies."),
+                    help_text = _("Minimum time between background checkpoint builds (0 = no cooldown)."),
                     depends_on = { id = "xray_auto_update", value = true },
                 },
                 {

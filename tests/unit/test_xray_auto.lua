@@ -33,85 +33,39 @@ local TestRunner = require("test_runner"):new()
 
 print("Running: test_xray_auto")
 print("")
-print("  [shouldFire gate matrix]")
+print("  [round 21: unified-engine scheduler pieces]")
+-- (The shouldFire threshold/cap gate matrix was retired with the to-position
+-- auto-update path — the scheduler's rule is now the one-ahead invariant,
+-- checked in main.lua against state; cooldown + truncation are the pure bits.)
 
 local NOW = 1000000
-local function baseState(overrides)
-    local s = { auto_update = true, eligible = true, cached_progress = 0.30, prev_page = 100 }
-    for k, v in pairs(overrides or {}) do s[k] = v end
-    return s
-end
 
-TestRunner:test("fires when all gates pass", function()
-    local v = XrayAuto.shouldFire(baseState(), 0.40, 101, NOW)
-    TestRunner:assertEqual(v.fire, true, "should fire")
-end)
-
-TestRunner:test("nil state / not opted in blocks", function()
-    TestRunner:assertEqual(XrayAuto.shouldFire(nil, 0.40, 101, NOW).fire, false, "nil state")
-    local v = XrayAuto.shouldFire(baseState({ auto_update = false }), 0.40, 101, NOW)
-    TestRunner:assertEqual(v.reason, "not_opted_in", "opt-in gate")
-end)
-
-TestRunner:test("ineligible cache blocks", function()
-    local v = XrayAuto.shouldFire(baseState({ eligible = false }), 0.40, 101, NOW)
-    TestRunner:assertEqual(v.reason, "not_eligible", "eligibility gate")
-end)
-
-TestRunner:test("missing progress numbers block", function()
-    -- (nil can't ride through the overrides table — build the state explicitly)
-    local v = XrayAuto.shouldFire({ auto_update = true, eligible = true, prev_page = 100 }, 0.40, 101, NOW)
-    TestRunner:assertEqual(v.reason, "no_progress", "cached progress required")
-    v = XrayAuto.shouldFire(baseState(), nil, 101, NOW)
-    TestRunner:assertEqual(v.reason, "no_progress", "current progress required")
-end)
-
-TestRunner:test("delta at/below threshold blocks; just above fires", function()
-    local v = XrayAuto.shouldFire(baseState(), 0.30 + XrayAuto.THRESHOLD, 101, NOW)
-    TestRunner:assertEqual(v.reason, "below_threshold", "delta == threshold must not fire")
-    v = XrayAuto.shouldFire(baseState(), 0.30 + XrayAuto.THRESHOLD + 0.001, 101, NOW)
-    TestRunner:assertEqual(v.fire, true, "delta just above threshold fires")
-end)
-
-TestRunner:test("delta above cap blocks (offline-day gaps stay manual)", function()
-    local v = XrayAuto.shouldFire(baseState(), 0.30 + XrayAuto.MAX_DELTA + 0.01, 101, NOW)
-    TestRunner:assertEqual(v.reason, "above_cap", "cap gate")
-    -- Exactly-at-cap uses binary-exact values (0.50 - 0.25 == 0.25) to dodge float noise
-    local at_cap = baseState({ cached_progress = 0.25 })
-    v = XrayAuto.shouldFire(at_cap, 0.25 + XrayAuto.MAX_DELTA, 101, NOW)
-    TestRunner:assertEqual(v.fire, true, "delta == cap still fires (inclusive)")
-end)
-
-TestRunner:test("jump guard: no prev_page or big hop blocks", function()
-    -- (nil can't ride through the overrides table — build the state explicitly)
-    local v = XrayAuto.shouldFire(
-        { auto_update = true, eligible = true, cached_progress = 0.30 }, 0.40, 101, NOW)
-    TestRunner:assertEqual(v.reason, "page_jump", "first turn after open must not fire")
-    v = XrayAuto.shouldFire(baseState({ prev_page = 90 }), 0.40, 101, NOW)
-    TestRunner:assertEqual(v.reason, "page_jump", "11-page hop is a jump")
-    v = XrayAuto.shouldFire(baseState({ prev_page = 96 }), 0.40, 101, NOW)
-    TestRunner:assertEqual(v.fire, true, "5-page hop is sequential reading")
-end)
-
-TestRunner:test("rate limit stamped at schedule time binds and expires", function()
+TestRunner:test("cooldownElapsed: stamped at schedule time, binds and expires", function()
+    TestRunner:assertEqual(XrayAuto.cooldownElapsed(60, NOW), true, "never scheduled: allowed")
     XrayAuto.markScheduled(NOW)
-    local v = XrayAuto.shouldFire(baseState(), 0.40, 101, NOW + 60)
-    TestRunner:assertEqual(v.reason, "rate_limited", "within the window")
-    v = XrayAuto.shouldFire(baseState(), 0.40, 101, NOW + XrayAuto.RATE_LIMIT_S)
-    TestRunner:assertEqual(v.fire, true, "window elapsed")
+    TestRunner:assertEqual(XrayAuto.cooldownElapsed(60, NOW + 30), false, "inside the window")
+    TestRunner:assertEqual(XrayAuto.cooldownElapsed(60, NOW + 60), true, "window elapsed")
+    TestRunner:assertEqual(XrayAuto.cooldownElapsed(0, NOW + 1), true, "zero cooldown never limits")
+    TestRunner:assertEqual(XrayAuto.cooldownElapsed(nil, NOW + XrayAuto.RATE_LIMIT_S), true,
+        "nil cooldown falls back to the module default")
 end)
 
-TestRunner:test("in-flight blocks; endFlight releases", function()
-    XrayAuto.beginFlight()
-    local v = XrayAuto.shouldFire(baseState(), 0.40, 101, NOW + XrayAuto.RATE_LIMIT_S)
-    TestRunner:assertEqual(v.reason, "in_flight", "in-flight gate")
-    XrayAuto.endFlight()
-    v = XrayAuto.shouldFire(baseState(), 0.40, 101, NOW + XrayAuto.RATE_LIMIT_S)
-    TestRunner:assertEqual(v.fire, true, "released")
+TestRunner:test("truncateToOneAhead: grid prefix ending one past the reader", function()
+    local rungs = { 0.15, 0.3, 0.45, 0.6, 1.0 }
+    local labels = { nil, "Ch 2", nil, "Ch 4" }
+    local out, out_labels = XrayAuto.truncateToOneAhead(rungs, 0.32, labels)
+    TestRunner:assertEqual(#out, 3, "everything to position plus ONE ahead")
+    TestRunner:assertEqual(out[3], 0.45, "the one-ahead target")
+    TestRunner:assertEqual(out_labels[2], "Ch 2", "labels ride with their rungs")
+    out = XrayAuto.truncateToOneAhead(rungs, 0.0)
+    TestRunner:assertEqual(#out, 1, "at the start: just the first target")
+    out = XrayAuto.truncateToOneAhead(rungs, 0.99)
+    TestRunner:assertEqual(#out, 5, "deep position: the whole grid (1.0 is the one ahead)")
+    TestRunner:assertEqual(#XrayAuto.truncateToOneAhead({}, 0.5), 0, "empty grid stays empty")
 end)
 
 print("")
-print("  [user dials (§10)]")
+print("  [user dials (§10; gap dials retired round 21 — stored values still parse)]")
 
 TestRunner:test("dialsFromFeatures: defaults match module constants", function()
     local d = XrayAuto.dialsFromFeatures(nil)
@@ -128,40 +82,6 @@ TestRunner:test("dialsFromFeatures: custom values convert; inverted window clamp
     TestRunner:assertEqual(d.cooldown_s, 300, "minutes to seconds")
     d = XrayAuto.dialsFromFeatures({ xray_auto_min_gap = 20, xray_auto_max_gap = 10 })
     TestRunner:assertEqual(d.max_gap, d.min_gap, "inverted window clamps to min")
-end)
-
-TestRunner:test("shouldFire honors state gap overrides", function()
-    local past_limit = NOW + XrayAuto.RATE_LIMIT_S  -- earlier markScheduled(NOW) still stands
-    local v = XrayAuto.shouldFire(baseState({ min_gap = 0.10 }), 0.38, 101, past_limit)
-    TestRunner:assertEqual(v.reason, "below_threshold", "raised min gap blocks a default-firing delta")
-    v = XrayAuto.shouldFire(baseState({ min_gap = 0.10 }), 0.45, 101, past_limit)
-    TestRunner:assertEqual(v.fire, true, "fires past the raised min gap")
-    v = XrayAuto.shouldFire(baseState({ max_gap = 0.50 }), 0.70, 101, past_limit)
-    TestRunner:assertEqual(v.fire, true, "raised max gap allows a default-blocked delta")
-end)
-
-TestRunner:test("shouldFire honors state cooldown override (0 = none)", function()
-    local T0 = NOW + 10000
-    XrayAuto.markScheduled(T0)
-    local v = XrayAuto.shouldFire(baseState({ cooldown_s = 60 }), 0.40, 101, T0 + 30)
-    TestRunner:assertEqual(v.reason, "rate_limited", "inside the shortened window")
-    v = XrayAuto.shouldFire(baseState({ cooldown_s = 60 }), 0.40, 101, T0 + 61)
-    TestRunner:assertEqual(v.fire, true, "past the shortened window")
-    v = XrayAuto.shouldFire(baseState({ cooldown_s = 0 }), 0.40, 101, T0 + 1)
-    TestRunner:assertEqual(v.fire, true, "zero cooldown never rate-limits")
-end)
-
-TestRunner:test("in-flight reason wins over the rate limit (log honesty)", function()
-    -- Both gates usually hold together (the limit is stamped at schedule time);
-    -- the decline must report the flight, not the cooldown
-    local T1 = NOW + 20000
-    XrayAuto.markScheduled(T1)
-    XrayAuto.beginFlight()
-    local v = XrayAuto.shouldFire(baseState(), 0.40, 101, T1 + 1)
-    TestRunner:assertEqual(v.reason, "in_flight", "in_flight masks rate_limited")
-    XrayAuto.endFlight()
-    v = XrayAuto.shouldFire(baseState(), 0.40, 101, T1 + 1)
-    TestRunner:assertEqual(v.reason, "rate_limited", "cooldown reported once the flight ends")
 end)
 
 print("")
@@ -475,22 +395,6 @@ TestRunner:test("restore: pre-metadata checkpoint inherits the outgoing entry's 
     TestRunner:assertEqual(live.used_book_text, true, "falls back to outgoing flags (sticky-true superset)")
     TestRunner:assertEqual(live.used_highlights, true, "fallback used_highlights")
     TestRunner:assertEqual(live.model, "model-C", "fallback model")
-end)
-
-print("")
-print("  [auto-create window]")
-
-TestRunner:test("create mode: cached_progress 0 fires only inside the gap window", function()
-    -- Auto-create rides the normal gates with cached_progress = 0 (§5 decision 1):
-    -- min_gap = too early, max_gap = too far into the book (stays manual)
-    local FAR = NOW + 100000  -- past every rate-limit stamp earlier tests left behind
-    local s = baseState({ cached_progress = 0 })
-    TestRunner:assertEqual(XrayAuto.shouldFire(s, 0.04, 101, FAR).reason, "below_threshold",
-        "before min gap: too early")
-    TestRunner:assertEqual(XrayAuto.shouldFire(s, 0.10, 101, FAR).fire, true,
-        "early-book window fires")
-    TestRunner:assertEqual(XrayAuto.shouldFire(s, 0.30, 101, FAR).reason, "above_cap",
-        "past max gap: first X-Ray stays manual")
 end)
 
 print("")

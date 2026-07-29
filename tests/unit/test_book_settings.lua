@@ -796,7 +796,9 @@ TestRunner:test("KEY_WEB_SEARCH and KEY_DOMAIN/KEY_RESEARCH are in SIDECAR_KEYS"
         "koassistant_book_tool_effort missing from SIDECAR_KEYS")
     TestRunner:assertEqual(found[BookSettings.KEY_WEB_EFFORT] == true, true,
         "koassistant_book_web_effort missing from SIDECAR_KEYS")
-    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 18, "18 per-book keys expected")
+    TestRunner:assertEqual(found[BookSettings.KEY_XRAY_GOAL] == true, true,
+        "koassistant_book_xray_goal missing from SIDECAR_KEYS (round 21)")
+    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 19, "19 per-book keys expected")
 end)
 
 TestRunner:suite("Quick Answer default (controls_parity_plan.md §8c.7)")

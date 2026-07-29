@@ -68,6 +68,11 @@ BookSettings.KEY_XRAY_AUTO = "koassistant_book_xray_auto"
 -- ask itself and by every EXPLICIT follow opt-in — picker On, Create-form follow
 -- pick, the P4 offer — which already answer the question the ask would pose)
 BookSettings.KEY_XRAY_COVERAGE_ASKED = "koassistant_book_xray_coverage_asked"
+-- Round 21 (unified checkpoint engine): per-book coverage GOAL bounding the
+-- checkpoint grid — a ratio for section-end targets; nil = whole book. Written
+-- by the Create form's "as I read" pick under section-end coverage and by the
+-- Extend-coverage chooser; the auto scheduler idles once the goal is reached.
+BookSettings.KEY_XRAY_GOAL = "koassistant_book_xray_goal"
 
 --- Per-book Automatic X-Ray override. Pure.
 --- @return string|nil "on" | "off" | nil (= follow global)
@@ -395,6 +400,7 @@ BookSettings.SIDECAR_KEYS = {
     BookSettings.KEY_HIGHLIGHT_CONTEXT,
     BookSettings.KEY_DICTIONARY_CONTEXT,
     BookSettings.KEY_XRAY_AUTO,
+    BookSettings.KEY_XRAY_GOAL,
     -- (KEY_XRAY_COVERAGE_ASKED is deliberately NOT here: a stamp, not an
     -- override — it must not count as "customized" nor block on reset;
     -- registered as its own storage-registry entry like the last-opened stamp)
@@ -723,7 +729,7 @@ function BookSettings.showXrayAutoPicker(opts)
     end
     picker = ButtonDialog:new{
         title = _("Automatic X-Ray (this book)") .. "\n"
-            .. _("On: create an X-Ray early in the book and quietly keep it updated as you read — background API calls (WiFi + text-extraction consent required). Checkpoints are never built automatically."),
+            .. _("On: build this book's X-Ray automatically as you read — a spoiler-free introduction first, then checkpoints, always keeping the next one ready ahead of you (background API calls; WiFi + text-extraction consent required)."),
         buttons = {
             {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), global_on and _("On") or _("Off")),
                 callback = function() pick(nil) end }},

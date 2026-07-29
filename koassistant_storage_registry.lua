@@ -289,7 +289,7 @@ Registry.entries = {
         location = "sidecar_dockey",
         ref = function() return require("koassistant_book_settings").SIDECAR_KEYS end,
         category = "config", backup = false,
-        notes = "18 per-book override keys; SIDECAR_KEYS is the owner's source of truth (no dedicated index; per-book DocSettings).",
+        notes = "Per-book override keys; SIDECAR_KEYS is the owner's source of truth (no dedicated index; per-book DocSettings).",
     },
     {
         id = "dockey_chats", label = "Per-book chats",
