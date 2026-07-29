@@ -138,6 +138,34 @@ end
 BookSettings.KEY_DOMAIN = "koassistant_book_domain"
 BookSettings.KEY_RESEARCH = "koassistant_book_research_mode"
 
+-- Per-book Background (book_background_plan.md): the reader's standing note about THIS
+-- book — why they're reading it, what stance they bring, what the metadata gets wrong.
+-- Rides the unified system prompt next to behavior/domain, so it reaches every entry
+-- point (direct actions included), unlike the session-scoped Attach note.
+BookSettings.KEY_BACKGROUND = "koassistant_book_background"
+
+-- Hard cap: the Background rides EVERY request for this book (cached on Anthropic,
+-- uncached elsewhere), so a pasted essay must not silently inflate every call.
+BookSettings.BACKGROUND_MAX_CHARS = 2000
+
+--- Read this book's Background, trimmed and capped. Pure.
+-- Over-cap text is cut by the Attach engine's truncate (UTF-8-safe, snaps to the
+-- previous line break) — its truncation NOTE is deliberately dropped: this is the
+-- reader's own standing note, not an attachment, and a "[truncated]" marker in the
+-- system prompt would read as instruction text.
+-- @return string|nil  nil when unset/blank (never an empty string)
+function BookSettings.getBackground(doc_settings)
+    local v = doc_settings and doc_settings:readSetting(BookSettings.KEY_BACKGROUND)
+    if type(v) ~= "string" then return nil end
+    v = v:match("^%s*(.-)%s*$")
+    if v == "" then return nil end
+    if #v > BookSettings.BACKGROUND_MAX_CHARS then
+        v = require("koassistant_attachments").truncate(
+            v, BookSettings.BACKGROUND_MAX_CHARS, "head")
+    end
+    return v
+end
+
 -- Per-book web-search override (true | false | nil = follow global).
 BookSettings.KEY_WEB_SEARCH = "koassistant_book_web_search"
 
@@ -387,6 +415,7 @@ end
 BookSettings.SIDECAR_KEYS = {
     BookSettings.KEY_DOMAIN,
     BookSettings.KEY_RESEARCH,
+    BookSettings.KEY_BACKGROUND,
     BookSettings.KEY_SPOILER_FREE,
     BookSettings.KEY_BOOK_INFO,
     BookSettings.KEY_AI_TITLE,
@@ -467,6 +496,67 @@ local function resolveDocSettings(ui, document_path)
     return (require("koassistant_doc_settings").resolve(document_path, ui))
 end
 
+--- Row label for the Background setting: a one-line preview, or "not set".
+-- @return string
+function BookSettings.backgroundRowLabel(doc_settings)
+    local v = BookSettings.getBackground(doc_settings)
+    if not v then return _("not set") end
+    v = v:gsub("%s+", " ")
+    if #v > 28 then
+        v = require("koassistant_attachments").truncate(v, 28, "head") .. "…"
+    end
+    return v
+end
+
+--- Background editor (book_background_plan.md §4) — the reader's standing note about
+-- this book. Module-level because two surfaces open it: the Book Settings screen and
+-- the Domain & Research picker (book target only).
+-- The explanation lives in `description` (always visible) rather than `input_hint`
+-- alone: this field reopens POPULATED, and a hint only shows on an empty field.
+-- Saving an empty field clears the setting — no separate "Clear" row needed.
+-- @param opts table: { plugin, ui, document_path, doc_settings, on_close }
+--   doc_settings: pass an already-resolved instance (callers inside the input dialog
+--   have one; avoids new upvalues there — 60-upvalue cap)
+function BookSettings.showBackgroundEditor(opts)
+    opts = opts or {}
+    local doc_settings = opts.doc_settings or resolveDocSettings(opts.ui, opts.document_path)
+    if not doc_settings then return end
+    local InputDialog = require("ui/widget/inputdialog")
+    local input
+    local function finish()
+        UIManager:close(input)
+        if opts.on_close then opts.on_close() end
+    end
+    input = InputDialog:new{
+        title = _("Background (this book)"),
+        description = _("Standing context for this book: why you're reading it, the stance you bring, anything the book's own description gets wrong. It is kept with this book and sent with every request about it, alongside your domain and behavior settings. Leave empty to remove."),
+        input = doc_settings:readSetting(BookSettings.KEY_BACKGROUND) or "",
+        input_hint = _("e.g. \"I'm reading this biography critically — I admire its subject and I think the author has an axe to grind\"\ne.g. \"for a seminar on X\" · \"this is the Arberry translation\""),
+        allow_newline = true,
+        -- Multi-line by default; only text_height works for InputDialog sizing
+        text_height = require("device").screen:scaleBySize(200),
+        buttons = {{
+            { text = _("Cancel"), id = "close", callback = function() finish() end },
+            {
+                text = _("Save"),
+                is_enter_default = true,
+                callback = function()
+                    local text = input:getInputText() or ""
+                    if text:match("^%s*$") then text = nil end
+                    doc_settings:saveSetting(BookSettings.KEY_BACKGROUND, text)
+                    doc_settings:flush()
+                    if opts.plugin and opts.plugin.updateConfigFromSettings then
+                        opts.plugin:updateConfigFromSettings()
+                    end
+                    finish()
+                end,
+            },
+        }},
+    }
+    UIManager:show(input)
+    input:onShowKeyboard()
+end
+
 --- Build the Domain & Research picker button rows (pure — no I/O).
 -- The caller supplies the current state and callbacks; each callback fully
 -- performs its write + close/refresh.
@@ -479,12 +569,14 @@ end
 --   global_domain   id | nil
 --   book_research   true | false | nil
 --   global_research bool
+--   background_label string|nil -- preview for the Background row (book target only)
 -- @param cb table (each fully performs write + close/refresh):
 --   set_target(new_target)               "book" | "global"
 --   pick_book_domain(id | "_none" | nil)
 --   pick_global_domain(id | nil)
 --   set_book_research(true | false | nil)
 --   set_global_research(true | nil)
+--   edit_background()                    optional -- omit to hide the Background row
 --   close()
 -- @param opts table|nil: { omit_close = bool }  -- caller appends its own rows + Close
 -- @return table buttons (ButtonDialog rows)
@@ -578,6 +670,16 @@ function BookSettings.buildDomainResearchButtons(state, cb, opts)
         })
     end
 
+    -- Background (book_background_plan.md §4): book target only — a standing note
+    -- about THIS book has no global equivalent. Callers that don't supply
+    -- cb.edit_background simply don't get the row.
+    if state.is_book_target and cb.edit_background then
+        table.insert(buttons, {{
+            text = T(_("Background: %1"), state.background_label or _("not set")),
+            callback = function() cb.edit_background() end,
+        }})
+    end
+
     if not (opts and opts.omit_close) then
         table.insert(buttons, {{
             text = _("Close"),
@@ -654,6 +756,7 @@ function BookSettings.showDomainResearch(opts)
         global_domain = features.selected_domain,
         book_research = book_research,
         global_research = features.research_mode,
+        background_label = doc_settings and BookSettings.backgroundRowLabel(doc_settings) or nil,
     }
 
     local cb = {
@@ -681,6 +784,20 @@ function BookSettings.showDomainResearch(opts)
         set_global_research = function(val)
             setGlobalFeature("research_mode", val)
             commit()
+        end,
+        edit_background = function()
+            closeDialog()
+            BookSettings.showBackgroundEditor({
+                plugin = plugin, doc_settings = doc_settings,
+                -- Reopen this picker on the same (book) target so the row's
+                -- preview refreshes in place
+                on_close = function()
+                    BookSettings.showDomainResearch({
+                        plugin = plugin, ui = ui, document_path = document_path,
+                        on_close = on_close, target_override = "book",
+                    })
+                end,
+            })
         end,
         close = function()
             closeDialog()
@@ -1721,6 +1838,15 @@ function BookSettings.show(opts)
 
     addHeader(_("AI behavior"))
     addButton({ text = T(_("Domain: %1"), domain_label), callback = showDomainSubPicker })
+    -- Background: the reader's standing note about this book (book_background_plan.md)
+    addButton({ text = T(_("Background: %1"), BookSettings.backgroundRowLabel(doc_settings)),
+        callback = function()
+            closeDialog()
+            BookSettings.showBackgroundEditor({
+                plugin = plugin, doc_settings = doc_settings,
+                on_close = function() BookSettings.show(opts) end,
+            })
+        end })
     addButton({ text = T(_("Research mode: %1"), research_label),
         callback = function()
             showBoolSubPicker(BookSettings.KEY_RESEARCH,

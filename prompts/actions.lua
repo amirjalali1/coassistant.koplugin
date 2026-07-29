@@ -24,6 +24,10 @@ local Constants = require("koassistant_constants")
 --   thinking_budget  - Token budget when extended_thinking="on" (1024-32000, default 4096)
 --   api_params       - Optional API parameters: { temperature, max_tokens }
 --   skip_language_instruction - Don't include user's language preferences in system prompt (optional)
+--   skip_domain      - Don't include the domain layer in the system prompt (optional)
+--   skip_background  - Per-book Background gate (book_background_plan.md §3), tri-state:
+--                      nil = follow skip_domain (default), true = never send it,
+--                      false = send it even when the domain is skipped (optional)
 --   include_book_context - Include book metadata with highlight context (optional)
 --   description      - Human-readable summary of what the action does (optional, shown in details view)
 --   enabled          - Default enabled state (default: true)
@@ -1847,6 +1851,10 @@ CRITICAL: No spoilers beyond {reading_progress}. Guide attention without reveali
         description = _("Searches the web for critical and reader reviews, awards, and any controversy about the work."),
         context = "book",
         skip_domain = true,  -- Reviews format is standardized
+        -- ...but the reader's stance on the book IS relevant here ("I think this
+        -- biography is a hatchet job — what do reviews say?"), so opt back into the
+        -- per-book Background that skip_domain would otherwise suppress
+        skip_background = false,
         prompt = [[Find reviews and reception for "{title}"{author_clause}.{doi_clause}
 
 Search for critical and reader responses, then summarize:

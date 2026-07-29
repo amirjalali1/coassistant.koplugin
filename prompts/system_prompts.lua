@@ -321,6 +321,9 @@ end
 --   global_variant: global setting fallback,
 --   custom_ai_behavior: user's custom behavior text,
 --   domain_context: optional domain context string,
+--   book_background: optional per-book Background text (the reader's standing note about
+--     this book; already trimmed/capped by BookSettings.getBackground and gated by the
+--     caller's skip_background read-through),
 --   enable_caching: boolean (only used by Anthropic),
 --   user_languages: comma-separated languages,
 --   primary_language: explicit primary language override,
@@ -355,6 +358,22 @@ function SystemPrompts.buildUnifiedSystem(config)
 
     -- Get combined content (behavior + domain)
     local content = SystemPrompts.getCacheableContent(behavior_text, config.domain_context)
+
+    -- Per-book Background (book_background_plan.md): the reader's standing note about
+    -- this book, framed as context rather than instruction. Sits with behavior+domain
+    -- (inside the Anthropic cached block) and BEFORE the language instruction, so the
+    -- response-language rule stays the last word. Per-action gating is the caller's
+    -- (skip_background read-through on skip_domain — buildUnifiedRequestConfig).
+    local book_background = nil
+    if config.book_background and config.book_background ~= ""
+            and Templates and Templates.BOOK_BACKGROUND_FRAME then
+        book_background = string.format(Templates.BOOK_BACKGROUND_FRAME, config.book_background)
+        if content then
+            content = content .. "\n\n" .. book_background
+        else
+            content = book_background
+        end
+    end
 
     -- Append language instruction if present
     if language_instruction then
@@ -432,6 +451,7 @@ function SystemPrompts.buildUnifiedSystem(config)
         components = {
             behavior = (behavior_source ~= "none") and behavior_text or nil,
             domain = config.domain_context,
+            book_background = book_background,
             language = language_instruction,
             research = research_nudge,
             web_search = web_search_nudge,

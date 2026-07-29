@@ -505,10 +505,44 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
     -- sidecar route as the web override (book_metadata.file); general/library fall to
     -- global. Always assigned so a stale value can't linger; no-op when there's no book
     -- override (resolver returns the global).
+    -- The same block resolves the per-book Background (see below).
+    local book_background = nil
     do
         local eff_ds = lang_file and SafeDocSettings.resolve(lang_file) or nil
         features.tool_lookup_effort = BookSettings.resolveToolEffort(eff_ds, features)
         features.web_search_effort = BookSettings.resolveWebEffort(eff_ds, features)
+
+        -- Per-book Background (book_background_plan.md §2/§3): the reader's standing
+        -- note about this book, injected into the system prompt next to
+        -- behavior/domain. This one chokepoint is why Background reaches EVERY entry
+        -- point (direct actions, gestures, artifact chat), unlike the dialog-scoped
+        -- Attach note. Per-action gating is a read-through: skip_background nil =
+        -- follow skip_domain, true = never, false = always (book_reviews opts back in).
+        --
+        -- Book resolution deliberately does NOT reuse lang_file: highlight entries NULL
+        -- OUT features.book_metadata (main.lua), so lang_file is nil there, and a
+        -- leftover book_metadata can point at a DIFFERENT book from an earlier
+        -- file-browser action. This mirrors handlePredefinedPrompt's per_book_file rule
+        -- so Background and domain always resolve against the SAME book — the identity
+        -- invariant (ai-metadata-override-leaks). General/library: no single book.
+        local skip_background = action and action.skip_background
+        if skip_background == nil then skip_background = action and action.skip_domain end
+        if not skip_background
+                and not features.is_general_context and not features.is_library_context then
+            local doc_file = plugin and plugin.ui and plugin.ui.document
+                and plugin.ui.document.file
+            local bg_file
+            if features.is_book_context then
+                bg_file = lang_file or doc_file   -- explicit target (file browser) wins
+            else
+                bg_file = doc_file or lang_file   -- highlight: the open book wins
+            end
+            if bg_file then
+                local bg_ds = (bg_file == lang_file) and eff_ds or nil
+                if not bg_ds then bg_ds = SafeDocSettings.resolve(bg_file) end
+                book_background = BookSettings.getBackground(bg_ds)
+            end
+        end
     end
 
     -- ⚡ quick-answer retry eligibility (S3): the stream window offers a quick retry only
@@ -545,6 +579,8 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
         custom_behaviors = features.custom_behaviors,       -- NEW: array of UI-created behaviors
         -- Domain context
         domain_context = domain_context,
+        -- Per-book Background (resolved + gated above)
+        book_background = book_background,
         -- Caching (only effective for Anthropic)
         enable_caching = (config.provider or config.default_provider) == "anthropic",
         -- Language settings (interaction_languages is new array format, user_languages is old
@@ -5422,6 +5458,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             global_domain = selected_domain,
             book_research = book_research_id,
             global_research = configuration.features and configuration.features.research_mode,
+            background_label = doc_settings and BookSettings.backgroundRowLabel(doc_settings) or nil,
         }
 
         local cb = {
@@ -5457,6 +5494,16 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                     plugin.settings:flush()
                 end
                 closeAndRefresh()
+            end,
+            -- Background (book_background_plan.md §4): book target only. Reopens this
+            -- picker so the row's preview refreshes; the input dialog itself is
+            -- refreshed on close (the Domain chip label doesn't show Background).
+            edit_background = function()
+                UIManager:close(_G.domain_selector_dialog)
+                BookSettings.showBackgroundEditor({
+                    plugin = plugin, doc_settings = doc_settings,
+                    on_close = showDomainSelector,
+                })
             end,
             close = function()
                 UIManager:close(_G.domain_selector_dialog)

@@ -184,6 +184,16 @@ function ActionService:loadActions()
                     if override.skip_domain ~= nil then
                         action_data.skip_domain = override.skip_domain
                     end
+                    -- Background override (tri-state: true/false/"domain" sentinel —
+                    -- a nil in the override table can't be told apart from "absent",
+                    -- same shape as the web-search override above)
+                    if override.skip_background ~= nil then
+                        if override.skip_background == "domain" then
+                            action_data.skip_background = nil  -- Reset to follow skip_domain
+                        else
+                            action_data.skip_background = override.skip_background
+                        end
+                    end
                     if override.domain ~= nil then
                         if override.domain == "global" then
                             action_data.domain = nil
@@ -1764,6 +1774,7 @@ function ActionService:createDuplicateAction(action)
         include_book_context = action.include_book_context,
         skip_language_instruction = action.skip_language_instruction,
         skip_domain = action.skip_domain,
+        skip_background = action.skip_background,
         -- Web search override (tri-state: true/false/nil)
         enable_web_search = action.enable_web_search,
         -- Context extraction flags

@@ -934,6 +934,54 @@ TestRunner:test("no web_search flag → no nudge", function()
     TestRunner:assertNil(result.components.web_search, "no web_search component")
 end)
 
+-- Per-book Background (book_background_plan.md §2)
+TestRunner:suite("buildUnifiedSystem() book_background")
+
+TestRunner:test("book_background is framed and included", function()
+    local result = SystemPrompts.buildUnifiedSystem({
+        global_variant = "standard",
+        book_background = "I am reading this biography critically.",
+    })
+    TestRunner:assertNotNil(result.components.book_background, "has book_background component")
+    TestRunner:assertContains(result.text, "I am reading this biography critically.",
+        "the reader's text is in the system prompt")
+    TestRunner:assertContains(result.text, "background about the book", "framed, not raw")
+    TestRunner:assertContains(result.text, "does not replace or override the task",
+        "framed as context, not instruction")
+end)
+
+TestRunner:test("no background / empty string → nothing injected", function()
+    local none = SystemPrompts.buildUnifiedSystem({ global_variant = "standard" })
+    TestRunner:assertNil(none.components.book_background, "absent when unset")
+    local empty = SystemPrompts.buildUnifiedSystem({
+        global_variant = "standard", book_background = "",
+    })
+    TestRunner:assertNil(empty.components.book_background, "absent when empty string")
+    TestRunner:assertEqual(empty.text, none.text, "empty background leaves the prompt untouched")
+end)
+
+TestRunner:test("background sits before the language instruction", function()
+    local result = SystemPrompts.buildUnifiedSystem({
+        global_variant = "standard",
+        book_background = "MARKER_BACKGROUND",
+        user_languages = "English",
+    })
+    local bg_at = result.text:find("MARKER_BACKGROUND", 1, true)
+    local lang_at = result.text:find("Response language", 1, true)
+    TestRunner:assertNotNil(bg_at, "background present")
+    TestRunner:assertNotNil(lang_at, "language instruction present")
+    TestRunner:assertEqual(bg_at < lang_at, true, "language rule stays the last word")
+end)
+
+TestRunner:test("background survives behavior_variant='none' (domain-less requests)", function()
+    local result = SystemPrompts.buildUnifiedSystem({
+        behavior_variant = "none",
+        skip_language_instruction = true,
+        book_background = "MARKER_BACKGROUND",
+    })
+    TestRunner:assertContains(result.text, "MARKER_BACKGROUND", "still injected with no behavior")
+end)
+
 -- Summary
 local success = TestRunner:summary()
 return success

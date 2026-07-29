@@ -798,7 +798,9 @@ TestRunner:test("KEY_WEB_SEARCH and KEY_DOMAIN/KEY_RESEARCH are in SIDECAR_KEYS"
         "koassistant_book_web_effort missing from SIDECAR_KEYS")
     TestRunner:assertEqual(found[BookSettings.KEY_XRAY_GOAL] == true, true,
         "koassistant_book_xray_goal missing from SIDECAR_KEYS (round 21)")
-    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 19, "19 per-book keys expected")
+    TestRunner:assertEqual(found[BookSettings.KEY_BACKGROUND] == true, true,
+        "koassistant_book_background missing from SIDECAR_KEYS (book_background_plan.md)")
+    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 20, "20 per-book keys expected")
 end)
 
 TestRunner:suite("Quick Answer default (controls_parity_plan.md §8c.7)")
@@ -918,6 +920,47 @@ TestRunner:test("resolveXrayAuto: per-book On bundles create; follow needs maste
     TestRunner:assertEqual(create, true, "follow-global create with the sub-toggle on")
     auto = BookSettings.resolveXrayAuto(ds(nil), {})
     TestRunner:assertEqual(auto, false, "everything unset = off (schema default)")
+end)
+
+TestRunner:suite("Per-book Background (book_background_plan.md)")
+
+local function bgDs(v)
+    return { readSetting = function(_, key)
+        if key == BookSettings.KEY_BACKGROUND then return v end
+    end }
+end
+
+TestRunner:test("getBackground: unset / blank / non-string → nil", function()
+    TestRunner:assertNil(BookSettings.getBackground(nil), "no doc_settings")
+    TestRunner:assertNil(BookSettings.getBackground(bgDs(nil)), "unset")
+    TestRunner:assertNil(BookSettings.getBackground(bgDs("")), "empty string")
+    TestRunner:assertNil(BookSettings.getBackground(bgDs("   \n  ")), "whitespace only")
+    TestRunner:assertNil(BookSettings.getBackground(bgDs(true)), "non-string value")
+end)
+
+TestRunner:test("getBackground: trims surrounding whitespace", function()
+    TestRunner:assertEqual(BookSettings.getBackground(bgDs("  reading this critically \n")),
+        "reading this critically", "trimmed")
+end)
+
+TestRunner:test("getBackground: caps over-long text (UTF-8 safe)", function()
+    local long = string.rep("a", BookSettings.BACKGROUND_MAX_CHARS + 500)
+    local out = BookSettings.getBackground(bgDs(long))
+    TestRunner:assertEqual(#out <= BookSettings.BACKGROUND_MAX_CHARS, true, "capped to the max")
+    -- Multi-byte tail must not be cut mid-sequence
+    local multi = string.rep("é", BookSettings.BACKGROUND_MAX_CHARS)  -- 2 bytes each
+    local out2 = BookSettings.getBackground(bgDs(multi))
+    TestRunner:assertEqual(#out2 <= BookSettings.BACKGROUND_MAX_CHARS, true, "multibyte capped")
+    TestRunner:assertEqual(#out2 % 2, 0, "no half codepoint at the tail")
+end)
+
+TestRunner:test("backgroundRowLabel: 'not set' when empty, preview when set", function()
+    TestRunner:assertEqual(BookSettings.backgroundRowLabel(bgDs(nil)), "not set", "unset label")
+    TestRunner:assertEqual(BookSettings.backgroundRowLabel(bgDs("short note")), "short note", "short preview")
+    local label = BookSettings.backgroundRowLabel(bgDs(string.rep("x", 100)))
+    TestRunner:assertEqual(#label < 40, true, "long value is previewed, not dumped")
+    TestRunner:assertEqual(BookSettings.backgroundRowLabel(bgDs("two\nlines here")), "two lines here",
+        "newlines collapsed for the row")
 end)
 
 print("")

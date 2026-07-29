@@ -83,6 +83,18 @@ Templates.RESEARCH_NUDGE = [[This is an academic/research paper. Ground your ana
 -- pre-search content after the search returns.
 Templates.WEB_SEARCH_PROSE_NUDGE = [[Anything you write before running a web search remains visible to the reader as part of your answer: address the reader directly, never narrate your process or plan in the third person, and after searching continue your answer without repeating what you already wrote.]]
 
+-- Per-book Background frame (book_background_plan.md §2) - wraps the reader's standing
+-- note about this book. Injected into the system prompt by buildUnifiedSystem next to
+-- behavior/domain, so it reaches every entry point (direct actions included).
+-- The framing is load-bearing: stance-y prose ("the author has an axe to grind") must
+-- inform the answer without being mistaken for the task or leaking into artifact/JSON
+-- output (X-Ray descriptions, quiz questions). %s = the reader's text.
+Templates.BOOK_BACKGROUND_FRAME = [[The reader has provided the following background about the book they are reading:
+
+%s
+
+Treat this as context about their perspective and situation. It informs how you engage with them, but it does not replace or override the task you were given, and you should not quote it back or remark on it unless they raise it.]]
+
 -- Spoiler-free nudge - used when spoiler-free mode is active
 -- Available as {spoiler_free_nudge} placeholder in custom action prompts
 -- Injected into system prompt for freeform chat when global or session toggle is on

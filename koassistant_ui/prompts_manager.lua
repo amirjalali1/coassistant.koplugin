@@ -259,6 +259,7 @@ function PromptsManager:loadPrompts()
             include_book_context = prompt.include_book_context,
             skip_language_instruction = prompt.skip_language_instruction,
             skip_domain = prompt.skip_domain,
+            skip_background = prompt.skip_background,
             temperature = temperature,
             extended_thinking = prompt.extended_thinking,
             thinking_budget = prompt.thinking_budget,
@@ -316,6 +317,15 @@ function PromptsManager:loadPrompts()
                 if override.reasoning_config then entry.reasoning_config = override.reasoning_config end
                 if override.skip_language_instruction ~= nil then entry.skip_language_instruction = override.skip_language_instruction end
                 if override.skip_domain ~= nil then entry.skip_domain = override.skip_domain end
+                -- Tri-state: "domain" sentinel means "follow skip_domain" (nil). Written
+                -- out longhand — `x and false or nil` collapses false to nil in Lua.
+                if override.skip_background ~= nil then
+                    if override.skip_background == "domain" then
+                        entry.skip_background = nil
+                    else
+                        entry.skip_background = override.skip_background
+                    end
+                end
                 if override.include_book_context ~= nil then entry.include_book_context = override.include_book_context end
                 -- Context extraction flag overrides
                 if override.use_book_text ~= nil then entry.use_book_text = override.use_book_text end
@@ -821,6 +831,20 @@ function PromptsManager:showPromptDetails(prompt)
         info_text = info_text .. "\n" .. _("Skip Language") .. ": " .. skip_lang_text
         info_text = info_text .. "  |  " .. _("Domain") .. ": " .. domain_text
 
+        -- Per-book Background gate — shown resolved, so the read-through on Domain is
+        -- visible rather than a surprise (book_background_plan.md §3)
+        local background_text
+        if prompt.skip_background == true then
+            background_text = _("Never")
+        elseif prompt.skip_background == false then
+            background_text = _("Always")
+        elseif prompt.skip_domain then
+            background_text = _("No (follows Domain)")
+        else
+            background_text = _("Yes (follows Domain)")
+        end
+        info_text = info_text .. "\n" .. _("Book Background") .. ": " .. background_text
+
         -- Include book info (for highlight contexts)
         if self:contextIncludesHighlight(prompt.context) then
             local book_context_text = prompt.include_book_context and _("Yes") or _("No")
@@ -1146,6 +1170,7 @@ function PromptsManager:duplicateAction(action)
         include_book_context = duplicate.include_book_context,
         skip_language_instruction = duplicate.skip_language_instruction,
         skip_domain = duplicate.skip_domain,
+        skip_background = duplicate.skip_background,
         enable_web_search = duplicate.enable_web_search,
         reasoning_config = duplicate.reasoning_config,
         extended_thinking = duplicate.extended_thinking,
@@ -1212,6 +1237,9 @@ function PromptsManager:showPromptEditor(existing_prompt)
         include_book_context = existing_prompt and existing_prompt.include_book_context or (not existing_prompt and true) or false,
         skip_language_instruction = existing_prompt and existing_prompt.skip_language_instruction or false,
         skip_domain = existing_prompt and existing_prompt.skip_domain or false,
+        -- Background gate (tri-state: nil = follow domain / true / false) — no `or nil`,
+        -- that would collapse an explicit false into "follow domain"
+        skip_background = existing_prompt and existing_prompt.skip_background,
         domain = existing_prompt and existing_prompt.domain or nil,
         temperature = existing_prompt and existing_prompt.temperature or nil,  -- nil = use global
         -- New format: reasoning_config (nil = global, "off" = force off, table = per-provider)
@@ -1799,6 +1827,16 @@ function PromptsManager:showStep3_Settings(state)
         end,
     })
 
+    table.insert(items, {
+        text = _("Background: ") .. self:getBackgroundDisplayText(state),
+        callback = function()
+            self:showBackgroundSelector(state, function()
+                UIManager:close(self.step3_dialog)
+                self:showStep3_Settings(state)
+            end)
+        end,
+    })
+
     if state.context and self:contextIncludesHighlight(state.context) then
         table.insert(items, {
             text = _("View: ") .. self:getViewModeDisplayText(state),
@@ -2214,6 +2252,76 @@ function PromptsManager:showWebSearchSelector(state, refresh_callback)
     }
 
     UIManager:show(self.web_search_dialog)
+end
+
+-- Per-book Background selector (book_background_plan.md §3) — tri-state gate for the
+-- reader's standing note about the book. Default follows the Domain setting, because
+-- the actions that skip the domain (translate, dictionary, wiki…) are the same ones a
+-- standing note would only distract. Exposed because picking Domain: None would
+-- otherwise silently drop the Background too.
+-- @param state: Action state being edited (state.skip_background: nil/true/false)
+-- @param refresh_callback: Callback to refresh the parent dialog
+function PromptsManager:showBackgroundSelector(state, refresh_callback)
+    -- (No `desc` field: this dialog renders option text only)
+    local options = {
+        { value = "domain", text = _("Follow domain (default)") },
+        { value = false, text = _("Always include") },
+        { value = true, text = _("Never include") },
+    }
+
+    local current = "domain"
+    if state.skip_background == true then
+        current = true
+    elseif state.skip_background == false then
+        current = false
+    end
+
+    local buttons = {}
+    for _idx, opt in ipairs(options) do
+        local is_selected = current == opt.value
+        table.insert(buttons, {
+            {
+                text = (is_selected and "● " or "○ ") .. opt.text,
+                callback = function()
+                    if opt.value == "domain" then
+                        state.skip_background = nil
+                    else
+                        state.skip_background = opt.value
+                    end
+                    UIManager:close(self.background_dialog)
+                    if refresh_callback then
+                        refresh_callback()
+                    end
+                end,
+            },
+        })
+    end
+
+    table.insert(buttons, {
+        {
+            text = _("Cancel"),
+            callback = function()
+                UIManager:close(self.background_dialog)
+                if refresh_callback then
+                    refresh_callback()
+                end
+            end,
+        },
+    })
+
+    self.background_dialog = ButtonDialog:new{
+        title = _("Book Background"),
+        buttons = buttons,
+    }
+
+    UIManager:show(self.background_dialog)
+end
+
+-- Row label for the Background gate (shared by the three settings screens)
+function PromptsManager:getBackgroundDisplayText(state)
+    if state.skip_background == true then return _("Never") end
+    if state.skip_background == false then return _("Always") end
+    return _("Follow domain")
 end
 
 -- Extended thinking selector dialog
@@ -3128,6 +3236,9 @@ function PromptsManager:showBuiltinSettingsEditor(prompt)
         skip_language_instruction_base = base_skip_lang,  -- Track base for comparison on save
         skip_domain = prompt.skip_domain or false,
         skip_domain_base = base_skip_domain,  -- Track base for comparison on save
+        -- Background gate (tri-state: nil/true/false — nil = follow domain)
+        skip_background = prompt.skip_background,
+        skip_background_base = base_action and base_action.skip_background,
         domain = prompt.domain,  -- nil = global
         domain_base = base_domain,  -- Track base for comparison on save
         include_book_context = prompt.include_book_context or false,
@@ -3276,6 +3387,16 @@ function PromptsManager:showBuiltinSettingsDialog(state)
         text = _("Web: ") .. web_display,
         callback = function()
             self:showWebSearchSelector(state, function()
+                UIManager:close(self.builtin_settings_dialog)
+                self:showBuiltinSettingsDialog(state)
+            end)
+        end,
+    })
+
+    table.insert(items, {
+        text = _("Background: ") .. self:getBackgroundDisplayText(state),
+        callback = function()
+            self:showBackgroundSelector(state, function()
                 UIManager:close(self.builtin_settings_dialog)
                 self:showBuiltinSettingsDialog(state)
             end)
@@ -3984,6 +4105,17 @@ function PromptsManager:saveBuiltinOverride(prompt, state)
         has_any = true
     end
 
+    -- Save skip_background if it differs from base (tri-state: nil/true/false).
+    -- "domain" sentinel = overriding back to nil (follow skip_domain).
+    if state.skip_background ~= state.skip_background_base then
+        if state.skip_background == nil then
+            override.skip_background = "domain"
+        else
+            override.skip_background = state.skip_background
+        end
+        has_any = true
+    end
+
     -- Save view mode flags if they differ from base
     if state.translate_view ~= (state.translate_view_base or false) then
         override.translate_view = state.translate_view
@@ -4035,6 +4167,8 @@ function PromptsManager:showCustomQuickSettings(prompt)
         include_book_context = prompt.include_book_context or false,
         skip_language_instruction = prompt.skip_language_instruction or false,
         skip_domain = prompt.skip_domain or false,
+        -- Background gate (tri-state: nil/true/false — nil = follow domain)
+        skip_background = prompt.skip_background,
         domain = prompt.domain,
         temperature = prompt.temperature,
         reasoning_config = prompt.reasoning_config,
@@ -4180,6 +4314,16 @@ function PromptsManager:showCustomQuickSettingsDialog(state)
         text = _("Web: ") .. custom_web_display,
         callback = function()
             self:showWebSearchSelector(state, function()
+                UIManager:close(self.custom_quick_dialog)
+                self:showCustomQuickSettingsDialog(state)
+            end)
+        end,
+    })
+
+    table.insert(items, {
+        text = _("Background: ") .. self:getBackgroundDisplayText(state),
+        callback = function()
+            self:showBackgroundSelector(state, function()
                 UIManager:close(self.custom_quick_dialog)
                 self:showCustomQuickSettingsDialog(state)
             end)
@@ -4940,6 +5084,8 @@ function PromptsManager:addPrompt(state)
             include_book_context = state.include_book_context or nil,
             skip_language_instruction = state.skip_language_instruction or nil,
             skip_domain = state.skip_domain or nil,
+            -- Tri-state: no `or nil` — false means "always include" and must survive
+            skip_background = state.skip_background,
             domain = state.domain,
             api_params = api_params,
             reasoning_config = state.reasoning_config,  -- nil = global, "off" = force off, table = per-provider
@@ -5017,6 +5163,8 @@ function PromptsManager:updatePrompt(existing_prompt, state)
                 include_book_context = state.include_book_context or nil,
                 skip_language_instruction = state.skip_language_instruction or nil,
                 skip_domain = state.skip_domain or nil,
+                -- Tri-state: no `or nil` — false means "always include" and must survive
+                skip_background = state.skip_background,
                 domain = state.domain,
                 api_params = api_params,
                 reasoning_config = state.reasoning_config,  -- nil = global, "off" = force off, table = per-provider
