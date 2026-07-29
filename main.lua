@@ -8005,7 +8005,10 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   local function stepsFor()
     if not flowing then return 0 end
     local spacing = XrayAuto.ladderSpacingFor(total_pages)
-    return #XrayAuto.planLadderRungs(0, spacing, goalFor())
+    -- Seed-aware (round 19): whole-book/target builds gain a first checkpoint
+    -- at the reading position, and the shown step count must match the plan
+    local rungs = XrayAuto.planBuildRungs(0, spacing, goalFor(), decimal)
+    return #rungs
   end
 
   -- Keep the delivery pick valid when coverage changes
@@ -8269,9 +8272,27 @@ end
 function AskGPT:_enableXrayFollowForBook(decimal)
   if not self.ui or not self.ui.doc_settings then return end
   local BookSettings = require("koassistant_book_settings")
-  self.ui.doc_settings:saveSetting(BookSettings.KEY_XRAY_AUTO, true)
+  -- "on" string, NOT boolean true (round-19 bug fix): the P1 tri-state resolver
+  -- honors a legacy boolean only for migrated users (_xray_auto_legacy_optin),
+  -- so a boolean write here was INERT for everyone else
+  self.ui.doc_settings:saveSetting(BookSettings.KEY_XRAY_AUTO, "on")
+  self.ui.doc_settings:flush()
   self:_refreshXrayAutoState()
+  self:_xrayFollowCatchUp(decimal)
+end
+
+--- The honest half of the follow pick, shared with the tri-state picker's "On"
+--- (round 19, parity rule): past the auto-create window the follow posture
+--- alone would never create, so say it and chain the checkpoint-build confirm;
+--- inside the window a toast says creation happens as you read.
+function AskGPT:_xrayFollowCatchUp(decimal)
   local XrayAuto = require("koassistant_xray_auto")
+  -- An explicit follow choice answers the coverage ask — never re-ask this book
+  if self.ui and self.ui.doc_settings then
+    self.ui.doc_settings:saveSetting(
+      require("koassistant_book_settings").KEY_XRAY_COVERAGE_ASKED, true)
+    self.ui.doc_settings:flush()
+  end
   local features = self.settings:readSetting("features") or {}
   local dials = XrayAuto.dialsFromFeatures(features)
   if (decimal or 0) > dials.max_gap then
@@ -8286,6 +8307,29 @@ function AskGPT:_enableXrayFollowForBook(decimal)
       text = _("Automatic X-Ray is on: it will create and update the X-Ray in the background as you read."),
     })
   end
+end
+
+--- Round 19 (item-16 "auto-toggle entry"): turning per-book Automatic X-Ray ON
+--- from the tri-state picker gets the same honest catch-up as the Create form's
+--- follow pick — but only when NO X-Ray exists yet (books with one need
+--- nothing: auto-update takes over; existing checkpoints promote by themselves
+--- once the reader crosses one).
+function AskGPT:_onXrayAutoTurnedOn()
+  if not self.ui or not self.ui.document or not self.ui.document.file then return end
+  local doc_info = self.ui.document.info
+  if not doc_info or doc_info.has_pages then return end
+  local ActionCache = require("koassistant_action_cache")
+  local file = self.ui.document.file
+  local entry = ActionCache.get(file, "xray")
+  if entry and entry.result then return end
+  local doc_entry = ActionCache.getXrayCache(file)
+  if doc_entry and doc_entry.result then return end
+  if ActionCache.getXrayLadderCount(file) > 0 then return end
+  local ContextExtractor = require("koassistant_context_extractor")
+  local progress = ContextExtractor:new(self.ui):getReadingProgress()
+  local decimal = progress and tonumber(progress.decimal)
+  if not decimal then return end
+  self:_xrayFollowCatchUp(decimal)
 end
 
 --- Show name input for a Section X-Ray, then trigger generation.
@@ -9645,6 +9689,10 @@ function AskGPT:checkXrayOffer()
         UIManager:close(offer)
         self_ref.ui.doc_settings:saveSetting(
           require("koassistant_book_settings").KEY_XRAY_AUTO, "on")
+        -- The offer promised a quiet background create — that IS the coverage
+        -- answer, so the round-19 ask must not interject a second question
+        self_ref.ui.doc_settings:saveSetting(
+          require("koassistant_book_settings").KEY_XRAY_COVERAGE_ASKED, true)
         self_ref.ui.doc_settings:flush()
         self_ref:_refreshXrayAutoState()
         -- Act now — the deferred fire re-checks every gate from disk truth
@@ -10082,6 +10130,78 @@ function AskGPT:_scheduleXrayAutoFire()
   UIManager:scheduleIn(XrayAuto.SCHEDULE_DELAY_S, fire)
 end
 
+--- Round 19 (item-16 "first-auto-fire coverage-ask"): the first time auto-create
+--- is about to fire on a book (every gate has already passed), ask HOW coverage
+--- should happen instead of silently creating — once per book (sidecar stamp).
+--- features.xray_coverage_mode remembers a global answer: "follow" = never ask,
+--- create silently; "build" = offer the (always-confirmed) checkpoint build once
+--- per book; nil/"ask" = ask. "Not now" skips THIS fire only — later fires
+--- create silently at the cooldown pace: the stamp stops the asking, never the
+--- automation. Explicit follow opt-ins (picker On, Create-form follow pick, the
+--- book-open offer) pre-stamp — the user already answered this question.
+--- @return boolean true when this fire was consumed (ask shown / build offered)
+function AskGPT:_xrayCoverageAskBeforeCreate(file, features, decimal)
+  if not self.ui or not self.ui.doc_settings then return false end
+  local BookSettings = require("koassistant_book_settings")
+  if features.xray_coverage_mode == "follow" then return false end
+  if self.ui.doc_settings:readSetting(BookSettings.KEY_XRAY_COVERAGE_ASKED) then return false end
+  local self_ref = self
+  local function stamp()
+    self_ref.ui.doc_settings:saveSetting(BookSettings.KEY_XRAY_COVERAGE_ASKED, true)
+    self_ref.ui.doc_settings:flush()
+  end
+  if features.xray_coverage_mode == "build" then
+    stamp()
+    self:_startXrayLadderBuild()
+    return true
+  end
+  local XrayAuto = require("koassistant_xray_auto")
+  local spacing = XrayAuto.ladderSpacingFor(self.ui.document and self.ui.document:getPageCount())
+  local n_steps = #XrayAuto.planBuildRungs(0, spacing, nil, decimal)
+  local remember = false
+  local ask
+  local function showAsk()
+    ask = ButtonDialog:new{
+      title = _("This book has no X-Ray yet. How should it be created?"),
+      buttons = {
+        {{ text = _("Quietly now, then follow as I read"), callback = function()
+          UIManager:close(ask)
+          stamp()
+          if remember then self_ref:_setXrayCoverageMode("follow") end
+          self_ref:_fireXrayAutoUpdate()
+        end }},
+        {{ text = T(_("Build all checkpoints now (%1 background requests)…"), n_steps),
+          callback = function()
+            UIManager:close(ask)
+            stamp()
+            if remember then self_ref:_setXrayCoverageMode("build") end
+            self_ref:_startXrayLadderBuild()
+          end }},
+        {{ text = (remember and "● " or "○ ") .. _("Use this choice for all books"),
+          callback = function()
+            UIManager:close(ask)
+            remember = not remember
+            showAsk()
+          end }},
+        {{ text = _("Not now"), callback = function()
+          UIManager:close(ask)
+          stamp()
+        end }},
+      },
+    }
+    UIManager:show(ask)
+  end
+  showAsk()
+  return true
+end
+
+function AskGPT:_setXrayCoverageMode(mode)
+  local f = self.settings:readSetting("features") or {}
+  f.xray_coverage_mode = mode
+  self.settings:saveSetting("features", f)
+  self.settings:flush()
+end
+
 --- Silent consent check shared by every unattended X-Ray fire (background update,
 --- auto-create, ladder rungs): the book_text gate incl. trusted-provider bypass,
 --- without _checkRequirements' UI.
@@ -10177,6 +10297,12 @@ function AskGPT:_fireXrayAutoUpdate(opts)
   -- in must stop background fires. Trusted providers bypass, same as everywhere.
   if not self:_xrayBackgroundConsentOk(action, features) then
     logger.info("KOAssistant: background X-Ray update declined: text extraction consent off")
+    return
+  end
+
+  -- Round 19 (item-16): first-would-fire coverage ask — auto-create path only;
+  -- every gate above has passed, so an accepted answer can act immediately
+  if create_mode and self:_xrayCoverageAskBeforeCreate(file, features, decimal) then
     return
   end
 
@@ -10311,12 +10437,15 @@ end
 ---   max-gap dial: the jump guard only suppresses the jump TURN itself, so the
 ---   next ordinary turn at a peeked-ahead location would otherwise promote
 ---   far-ahead spoilers. Manual taps and the post-build install are
----   user-affirmed positions — uncapped.
+---   user-affirmed positions — uncapped. { mid_build = true } (rung completion
+---   callback, round 19) → allowed while the chain is active: called between
+---   rungs, never concurrent with a flight, so a finished rung at-or-below the
+---   reader installs immediately instead of at chain end.
 --- @return boolean promoted
 function AskGPT:_fireXrayLadderPromotion(opts)
   if not self.ui or not self.ui.document or not self.ui.document.file then return false end
   local XrayAuto = require("koassistant_xray_auto")
-  if XrayAuto.ladderBuild() or XrayAuto.isInFlight() then return false end
+  if (XrayAuto.ladderBuild() and not (opts and opts.mid_build)) or XrayAuto.isInFlight() then return false end
   local file = self.ui.document.file
   local ActionCache = require("koassistant_action_cache")
   local ladder = ActionCache.getXrayLadder(file)
@@ -10601,13 +10730,18 @@ function AskGPT:_startXrayLadderBuild(build_opts)
     and self:_ladderChapterBoundaries() or nil
 
   local resume = #ladder > 0
+  -- Round 19: a from-nothing build seeds its first checkpoint AT the reading
+  -- position, so the reader gets a promotable (openable) X-Ray from the very
+  -- first finished rung instead of waiting to cross the first spacing boundary
+  local seed_prog = require("koassistant_context_extractor"):new(self.ui):getReadingProgress()
+  local seed_position = seed_prog and tonumber(seed_prog.decimal) or nil
   local self_ref = self
   local function planFor(spacing)
     if one_shot then
       if (base_progress or 0) >= goal - 0.01 then return {}, {} end
       return { goal }, (goal_label and { goal_label } or {})
     end
-    local rungs = XrayAuto.planLadderRungs(base_progress or 0, spacing, goal)
+    local rungs, seed = XrayAuto.planBuildRungs(base_progress or 0, spacing, goal, seed_position)
     local rung_labels = {}
     local snap_bounds = boundaries
     if goal and snap_bounds then
@@ -10622,9 +10756,21 @@ function AskGPT:_startXrayLadderBuild(build_opts)
       snap_bounds = #kept >= 3 and kept or nil
     end
     if snap_bounds then
-      rungs, rung_labels = XrayAuto.snapLadderRungs(rungs, snap_bounds, base_progress or 0, spacing)
+      if seed then
+        -- Snap the tail only: a seed snapped to a boundary ahead of the reader
+        -- could never promote — it stays exactly at the position, unlabeled
+        local tail = {}
+        for i = 2, #rungs do tail[#tail + 1] = rungs[i] end
+        local snapped_tail, tail_labels = XrayAuto.snapLadderRungs(tail, snap_bounds, seed, spacing)
+        rungs = { seed }
+        for _i, t in ipairs(snapped_tail) do rungs[#rungs + 1] = t end
+        rung_labels = {}
+        for i, l in pairs(tail_labels) do rung_labels[i + 1] = l end
+      else
+        rungs, rung_labels = XrayAuto.snapLadderRungs(rungs, snap_bounds, base_progress or 0, spacing)
+      end
     end
-    return rungs, rung_labels
+    return rungs, rung_labels, seed
   end
 
   local showConfirm -- forward decl: the spacing picker re-invokes it
@@ -10668,7 +10814,7 @@ function AskGPT:_startXrayLadderBuild(build_opts)
   end
 
   showConfirm = function(spacing)
-    local rungs, rung_labels = planFor(spacing)
+    local rungs, rung_labels, seed = planFor(spacing)
     if #rungs == 0 then
       -- Also the no-ladder-but-live-at-100% case — say why, not "complete"
       UIManager:show(InfoMessage:new{ text = _("Nothing to build — the X-Ray already covers the whole book."), timeout = 3 })
@@ -10709,6 +10855,10 @@ function AskGPT:_startXrayLadderBuild(build_opts)
           #rungs, math.floor(spacing * 100 + 0.5))
         or T(_("%1 checkpoints are planned, every %2% of the book."),
           #rungs, math.floor(spacing * 100 + 0.5))
+      if seed then
+        plan_line = plan_line .. " " .. T(_("The first stops at your position (%1%), so a usable X-Ray installs right away."),
+          math.floor(seed * 100 + 0.5))
+      end
       cost_line = _("Each is generated in the background from the next slice of the text, with no further prompts. The text is read once in total, plus a small per-checkpoint overhead. The book must stay open; you can keep reading, cancel anytime, and resume later.")
     end
     local confirm
@@ -10897,6 +11047,10 @@ function AskGPT:_fireXrayLadderRung()
         })
         return
       end
+      -- Round 19: a finished rung at-or-below the reader installs NOW — the
+      -- seed (and any catch-up rung) must not wait for the whole chain.
+      -- pickPromotableRung no-ops when nothing at-or-below qualifies.
+      self_ref:_fireXrayLadderPromotion({ mid_build = true })
       local next_target = XrayAuto.advanceLadderBuild()
       if next_target and self_ref.ui and self_ref.ui.document
           and self_ref.ui.document.file == file then

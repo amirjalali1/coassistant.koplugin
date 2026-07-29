@@ -317,6 +317,12 @@ Registry.entries = {
         category = "internal", backup = false,
         notes = "Distinct from the settings-dir koassistant_last_opened.lua pointer.",
     },
+    {
+        id = "dockey_xray_coverage_asked", label = "Per-book X-Ray coverage-ask stamp",
+        location = "sidecar_dockey", ref = "koassistant_book_xray_coverage_asked",
+        category = "internal", backup = false,
+        notes = "Once-per-book stamp for the first-auto-fire coverage ask (round 19); deliberately not in SIDECAR_KEYS (not an override).",
+    },
 
     --========================= Plugin-folder files (USER_FILES) ===============
     {

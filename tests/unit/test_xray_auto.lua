@@ -558,6 +558,45 @@ TestRunner:test("planLadderRungs: target_end bounds the build", function()
         "invalid target clamps to 1.0")
 end)
 
+TestRunner:test("seedForBuild: from-nothing builds seed the reader's position (round 19)", function()
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.05, nil), 0.05,
+        "reader below the first spacing rung gets a seed at the position")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(nil, 0.123, 1.0), 0.123,
+        "nil base is from-nothing; seed rounded to 3 decimals")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0.3, 0.35, nil), nil,
+        "an existing base means something is already promotable: no seed")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.02, nil), nil,
+        "below LADDER_SEED_MIN the seed is noise")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, nil, nil), nil,
+        "no position, no seed")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.595, 0.6), nil,
+        "position within 1% of the goal: the goal rung IS the seed")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.995, nil), nil,
+        "position at the end of the book: nothing to seed")
+end)
+
+TestRunner:test("planBuildRungs: seed first, tail planned FROM the seed", function()
+    local rungs, seed = XrayAuto.planBuildRungs(0, 0.15, nil, 0.05)
+    TestRunner:assertEqual(seed, 0.05, "seed reported")
+    TestRunner:assertEqual(rungs[1], 0.05, "seed is rung 1")
+    TestRunner:assertEqual(rungs[2], 0.15, "clear of the half-step rule: spacing rung kept")
+    TestRunner:assertEqual(rungs[#rungs], 1.0, "final rung unchanged")
+    -- Seed close under a spacing boundary: the half-step rule drops the
+    -- near-duplicate 15% rung — the tail continues at 30%
+    local near = XrayAuto.planBuildRungs(0, 0.15, nil, 0.12)
+    TestRunner:assertEqual(near[1], 0.12, "seed at the position")
+    TestRunner:assertEqual(near[2], 0.3, "near-duplicate spacing rung dropped")
+    -- Reader past the first rung: no seed, plan unchanged from planLadderRungs
+    local past, no_seed = XrayAuto.planBuildRungs(0, 0.15, nil, 0.4)
+    TestRunner:assertEqual(no_seed, 0.4, "seed still applies mid-book from nothing")
+    TestRunner:assertEqual(past[1], 0.4, "seed at 40%")
+    TestRunner:assertEqual(past[2], 0.6, "tail from the seed (half-step: 45% dropped)")
+    -- Position-coverage build (goal == position): no seed, goal rung covers it
+    local pos_cov, pos_seed = XrayAuto.planBuildRungs(0, 0.15, 0.4, 0.4)
+    TestRunner:assertEqual(pos_seed, nil, "goal == position: no seed")
+    TestRunner:assertEqual(pos_cov[#pos_cov], 0.4, "final rung = the position goal")
+end)
+
 TestRunner:test("ladderSpacingFor v2: max-pages ceiling narrows spacing on long books", function()
     TestRunner:assertEqual(XrayAuto.ladderSpacingFor(1000), 0.1,
         "1000 pages: ceiling lands exactly on baseline (100-page rungs)")

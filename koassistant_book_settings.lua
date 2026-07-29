@@ -64,6 +64,10 @@ BookSettings.KEY_TOOLS = "koassistant_book_tools"
 -- "on" only when the one-time migration recorded the old master as enabled —
 -- with the old master off, stored opt-ins were inert and must not re-activate.
 BookSettings.KEY_XRAY_AUTO = "koassistant_book_xray_auto"
+-- Round 19: once-per-book stamp for the first-auto-fire coverage ask (set by the
+-- ask itself and by every EXPLICIT follow opt-in — picker On, Create-form follow
+-- pick, the P4 offer — which already answer the question the ask would pose)
+BookSettings.KEY_XRAY_COVERAGE_ASKED = "koassistant_book_xray_coverage_asked"
 
 --- Per-book Automatic X-Ray override. Pure.
 --- @return string|nil "on" | "off" | nil (= follow global)
@@ -391,6 +395,9 @@ BookSettings.SIDECAR_KEYS = {
     BookSettings.KEY_HIGHLIGHT_CONTEXT,
     BookSettings.KEY_DICTIONARY_CONTEXT,
     BookSettings.KEY_XRAY_AUTO,
+    -- (KEY_XRAY_COVERAGE_ASKED is deliberately NOT here: a stamp, not an
+    -- override — it must not count as "customized" nor block on reset;
+    -- registered as its own storage-registry entry like the last-opened stamp)
     BookSettings.KEY_QUICK_ANSWER,
     BookSettings.KEY_TOOL_EFFORT,
     BookSettings.KEY_WEB_EFFORT,
@@ -707,6 +714,12 @@ function BookSettings.showXrayAutoPicker(opts)
         doc_settings:flush()
         UIManager:close(picker)
         if opts.on_change then opts.on_change() end
+        -- Round 19 (after on_change so the catch-up dialog lands ON TOP of a
+        -- re-opened popup): picking On on a book with no X-Ray yet gets the
+        -- same honest catch-up flow as the Create form's follow pick
+        if val == "on" and opts.plugin and opts.plugin._onXrayAutoTurnedOn then
+            opts.plugin:_onXrayAutoTurnedOn()
+        end
     end
     picker = ButtonDialog:new{
         title = _("Automatic X-Ray (this book)") .. "\n"

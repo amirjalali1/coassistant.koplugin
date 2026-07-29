@@ -227,6 +227,7 @@ XrayAuto.LADDER_MAX_RUNG_PAGES = 100 -- P2(a) v2 ceiling: one rung should not ex
 XrayAuto.LADDER_MIN_SPACING = 0.05   -- call-count bound: never more than ~20 rungs, even on monster books
 XrayAuto.LADDER_MAX_SPACING = 0.50   -- tiny books still get a midpoint + final rung
 XrayAuto.LADDER_SNAP_WINDOW = 0.03   -- P3: chapter-end snap distance (±3%; narrows with tight spacing)
+XrayAuto.LADDER_SEED_MIN = 0.03      -- round 19: below this much read text a seed rung is noise
 
 --- P2(a) formula v2 (§7, device round 2): rung spacing targets a pages-per-rung
 --- band. The 10% baseline is narrowed on long books so a single rung never
@@ -331,6 +332,41 @@ function XrayAuto.planLadderRungs(base_progress, spacing, target_end)
   end
   rungs[#rungs + 1] = goal
   return rungs
+end
+
+--- Round 19 (maintainer: "no openable X-Ray until the first checkpoint"): a
+--- from-nothing build whose reader sits BELOW the first spacing rung gets a SEED
+--- rung exactly at the reading position, so the very first finished checkpoint
+--- is promotable and the reader has a live X-Ray right away. Pure.
+--- Returns nil when a base exists (something is already live/promotable), when
+--- the reader hasn't read enough to be worth a call (LADDER_SEED_MIN), or when
+--- the position is within the goal's engagement threshold (the goal rung IS the
+--- seed then). The seed deliberately never snaps to a chapter boundary ahead of
+--- the reader — a seed past the position could not promote.
+--- @param base_progress number|nil build base 0..1 (nil/0 = from nothing)
+--- @param position number|nil reading position 0..1
+--- @param goal number|nil build target (nil = 1.0)
+--- @return number|nil seed ratio (3 decimals)
+function XrayAuto.seedForBuild(base_progress, position, goal)
+  local base = tonumber(base_progress) or 0
+  if base >= 0.01 then return nil end
+  local pos = tonumber(position)
+  if not pos or pos < XrayAuto.LADDER_SEED_MIN then return nil end
+  local g = tonumber(goal)
+  if not g or g <= 0 or g > 1.0 then g = 1.0 end
+  if pos >= g - 0.01 then return nil end
+  return math.floor(pos * 1000 + 0.5) / 1000
+end
+
+--- Full build plan incl. the seed: the tail is planned FROM the seed, so the
+--- half-spacing rule naturally drops a spacing rung the seed already covers
+--- (a seed at 12% with 15% spacing plans 30% next, not 15%). Pure.
+--- @return table ascending rung targets (seed first when present), number|nil seed
+function XrayAuto.planBuildRungs(base_progress, spacing, target_end, position)
+  local seed = XrayAuto.seedForBuild(base_progress, position, target_end)
+  local rungs = XrayAuto.planLadderRungs(seed or base_progress, spacing, target_end)
+  if seed then table.insert(rungs, 1, seed) end
+  return rungs, seed
 end
 
 --- Pick the rung to promote into the live cache: the highest rung at-or-below
