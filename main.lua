@@ -7413,16 +7413,15 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         }})
       end
     end
-    -- Coverage extension (round 21, R3): the cached-book entry into the
-    -- unified engine — pick a new goal and how to get there (front-load or as
-    -- I read). A paused mid-chain build keeps the Resume row; a goal-complete
-    -- build offers Extend, not a mislabeled Resume. Top-level (round 20b: the
-    -- Versions group holds versions only). Flowing docs only.
-    -- Round 22b (D3 follow-up, maintainer: "how are you supposed to resume
-    -- it?"): a cancelled AUTO chain shows an explicit "paused" resume row —
-    -- the only in-session exit from the cancel suppression. And for auto
-    -- books in steady state the front-load row says what it does ("build
-    -- remaining now"), instead of a misleading "Resume".
+    -- The cached-book authoring entry (round 23, item 30 — ONE surface): the
+    -- dual-mode creation chooser, labeled by what it will actually do
+    -- ("Extend coverage…" on a usable base / "Rebuild X-Ray…" on a
+    -- foreign-lineage live — closing the old Extend dead end where
+    -- complete-track/AI-knowledge books could only "Delete it first").
+    -- Replaces round 21's lean Extend chooser AND the Build-remaining row.
+    -- Round 22b rows kept: a cancelled AUTO chain shows the explicit "paused"
+    -- resume row (the in-session exit from the cancel suppression); a
+    -- genuinely paused MANUAL chain keeps its cheap top-level Resume.
     if doc and not (doc.info and doc.info.has_pages) and not ladder_building
         and self.ui and self.ui.document and self.ui.document.file == sx_file then
       local c_features = self.settings:readSetting("features") or {}
@@ -7439,27 +7438,32 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
             self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true })
           end,
         }})
-      elseif #ladder_rungs == 0
-          or (ext_goal and (ladder_highest or 0) >= ext_goal - 0.01) then
-        table.insert(buttons, {{
-          text = _("Extend coverage…"),
-          callback = function()
-            UIManager:close(dialog)
-            self_ref:_showXrayExtendChooser(action)
-          end,
-        }})
-      elseif (ladder_highest or 0) < 1.0 - 0.005 then
-        table.insert(buttons, {{
-          text = c_auto_on
-            and T(_("Build remaining checkpoints now (from %1%)…"),
-              math.floor((ladder_highest or 0) * 100 + 0.5))
-            or T(_("Resume building checkpoints (from %1%)…"),
+      else
+        if not c_auto_on and #ladder_rungs > 0 and (ladder_highest or 0) < 1.0 - 0.005
+            and not (ext_goal and (ladder_highest or 0) >= ext_goal - 0.01) then
+          table.insert(buttons, {{
+            text = T(_("Resume building checkpoints (from %1%)…"),
               math.floor((ladder_highest or 0) * 100 + 0.5)),
-          callback = function()
-            UIManager:close(dialog)
-            self_ref:_startXrayLadderBuild()
-          end,
-        }})
+            callback = function()
+              UIManager:close(dialog)
+              self_ref:_startXrayLadderBuild()
+            end,
+          }})
+        end
+        local a_mode, a_base = self:_xrayAuthoringMode(sx_file)
+        -- Fully covered incremental (100%): nothing to extend — Update/Redo
+        -- rows serve that book; hide the authoring row
+        if not (a_mode == "extend" and (a_base or 0) >= 0.995) then
+          table.insert(buttons, {{
+            text = a_mode == "rebuild" and _("Rebuild X-Ray…")
+              or a_mode == "create" and _("Create X-Ray…")
+              or _("Extend coverage…"),
+            callback = function()
+              UIManager:close(dialog)
+              self_ref:_showXrayCreationChooser(action, action_id, on_update, opts)
+            end,
+          }})
+        end
       end
     end
     -- Section X-Rays: list existing + new
@@ -7995,12 +7999,59 @@ function AskGPT:_showSectionRangePicker(action)
   })
 end
 
+--- Round 23 (plan item 30, maintainer GO): shared base-state derivation for
+--- the dual-mode authoring form and its popup row label. Same base rules as
+--- _startXrayLadderBuild: highest non-intro rung vs eligible live entry
+--- (terminal-100% incremental counts; intro entries never do).
+--- @return string mode "create" (nothing usable — incl. intro-only leftovers)
+---   | "extend" (usable incremental base) | "rebuild" (foreign-lineage live:
+---   complete-track / AI-knowledge source / legacy text, no rung base)
+--- @return number|nil base progress, boolean has_intro (live or rung),
+---   table|nil the live per-action entry
+function AskGPT:_xrayAuthoringMode(file)
+  local ActionCache = require("koassistant_action_cache")
+  local XrayParser = require("koassistant_xray_parser")
+  local XrayAuto = require("koassistant_xray_auto")
+  local ladder = ActionCache.getXrayLadder(file)
+  local base = ActionCache.highestXrayLadderProgress(ladder)
+  local has_intro = false
+  for _idx, r in ipairs(ladder) do
+    if r.intro then has_intro = true end
+  end
+  local entry = ActionCache.get(file, "xray")
+  if entry and entry.intro then has_intro = true end
+  local live_ok, live_progress = XrayAuto.eligibilityFromEntry(entry, XrayParser.isJSON)
+  if not live_ok and entry and entry.result then
+    -- A terminal (100%) incremental X-Ray is a valid base — eligibility only
+    -- rejects it because there is nothing left to UPDATE
+    local p = tonumber(entry.progress_decimal)
+    if p and p >= 1.0 and not entry.full_document and entry.source_mode ~= "ai_knowledge"
+        and XrayParser.isJSON(entry.result) then
+      live_ok, live_progress = true, p
+    end
+  end
+  if live_ok and not (entry and entry.intro)
+      and (base == nil or (live_progress or 0) > base) then
+    base = live_progress
+  end
+  local mode = "create"
+  if base ~= nil then
+    mode = "extend"
+  elseif entry and entry.result and not entry.intro then
+    mode = "rebuild"
+  end
+  return mode, base, has_intro, entry
+end
+
 --- Unified X-Ray creation chooser (round 18 re-shell of the round-16 two-step:
 --- the scope/source RADIO idiom — both axes visible at once, rebuild-on-change
 --- with the top-anchor trick from _showUnifiedActionPopup; dispatch identical).
 --- State-aware: reading position, per-book auto posture, live checkpoint counts.
---- Entry = the "Create X-Ray…" row (no-cache popup); the auto-toggle and
---- first-auto-fire entries come with the ask-flow phase.
+--- Round 23: DUAL-MODE — also the cached-branch authoring surface ("Extend
+--- coverage…" / "Rebuild X-Ray…" rows). Extend plans FROM the disk base and
+--- disables already-covered picks; rebuild archives the foreign-lineage live
+--- X-Ray (ring) and starts from scratch — closing the item-30 dead end where
+--- complete-track/AI-knowledge books could only "Delete it first".
 function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   local ButtonDialog = require("ui/widget/buttondialog")
   local XrayAuto = require("koassistant_xray_auto")
@@ -8034,6 +8085,13 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   local total_pages = doc:getPageCount() or 0
   local BookSettings = require("koassistant_book_settings")
   local auto_on = flowing and BookSettings.resolveXrayAuto(self.ui.doc_settings, features)
+  -- Round 23 (item 30): dual-mode — create / extend (usable base on disk) /
+  -- rebuild (foreign-lineage live, no base)
+  local cc_file = doc.file
+  local mode, base_progress, has_intro_rung, base_entry = self:_xrayAuthoringMode(cc_file)
+  -- Extend never plans an intro; create/rebuild do unless a leftover intro
+  -- rung exists (also fixes the round-20 "chooser overcounts by 1" residual)
+  local plan_intro_step = mode ~= "extend" and not has_intro_rung
 
   -- Round 20b (maintainer): whole book is the DEFAULT and top coverage option.
   -- Round 22 (§25(f)): checkpoints are the default DELIVERY when the plan is
@@ -8059,8 +8117,10 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     if not flowing then return 0 end
     local spacing = XrayAuto.ladderSpacingFor(total_pages)
     -- Seed-aware (round 19): whole-book/target builds gain a first checkpoint
-    -- at the reading position, and the shown step count must match the plan
-    local rungs = XrayAuto.planBuildRungs(0, spacing, goalFor(), decimal)
+    -- at the reading position, and the shown step count must match the plan.
+    -- Extend mode plans FROM the disk base (round 23).
+    local rungs = XrayAuto.planBuildRungs(
+      mode == "extend" and base_progress or 0, spacing, goalFor(), decimal)
     return #rungs
   end
 
@@ -8087,40 +8147,76 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   end
 
   local function dispatch()
-    -- Round 21: the coverage goal is a BOOK property bounding the auto
-    -- scheduler — target picks store it, whole-book picks clear it (position
-    -- is a snapshot: untouched)
-    if self_ref.ui and self_ref.ui.doc_settings and cr.coverage ~= "position" then
-      self_ref.ui.doc_settings:saveSetting(
-        require("koassistant_book_settings").KEY_XRAY_GOAL,
-        cr.coverage == "target" and cr.target or nil)
-    end
-    if cr.delivery == "follow" then
-      if auto_on then
-        -- Round 22 (D5): already on (per-book or via the global master) —
-        -- don't re-pin the per-book key, just start the engine now
-        self_ref:_xrayFollowCatchUp(decimal)
+    local function go()
+      -- Round 21: the coverage goal is a BOOK property bounding the auto
+      -- scheduler — target picks store it, whole-book picks clear it (position
+      -- is a snapshot: untouched). Round 23: written here, AFTER the rebuild
+      -- confirm — a cancelled rebuild must not have touched the goal.
+      if self_ref.ui and self_ref.ui.doc_settings and cr.coverage ~= "position" then
+        self_ref.ui.doc_settings:saveSetting(
+          require("koassistant_book_settings").KEY_XRAY_GOAL,
+          cr.coverage == "target" and cr.target or nil)
+      end
+      if cr.delivery == "follow" then
+        if auto_on then
+          -- Round 22 (D5): already on (per-book or via the global master) —
+          -- don't re-pin the per-book key, just start the engine now
+          self_ref:_xrayFollowCatchUp(decimal)
+        else
+          self_ref:_enableXrayFollowForBook(decimal)
+        end
+      elseif cr.delivery == "checkpoints" then
+        local bo
+        if cr.coverage == "position" then
+          bo = { target = decimal }
+        elseif cr.coverage == "target" then
+          bo = { target = cr.target, target_label = cr.target_label }
+        end
+        self_ref:_startXrayLadderBuild(bo)
       else
-        self_ref:_enableXrayFollowForBook(decimal)
-      end
-    elseif cr.delivery == "checkpoints" then
-      local bo
-      if cr.coverage == "position" then
-        bo = { target = decimal }
-      elseif cr.coverage == "target" then
-        bo = { target = cr.target, target_label = cr.target_label }
-      end
-      self_ref:_startXrayLadderBuild(bo)
-    else
-      if cr.coverage == "position" then
-        on_update()
-      elseif cr.coverage == "whole" then
-        self_ref:_executeBookLevelActionDirect(action, action_id, { full_document = true })
-      else
-        self_ref:_startXrayLadderBuild({
-          target = cr.target, target_label = cr.target_label, one_shot = true })
+        if cr.coverage == "position" then
+          on_update()
+        elseif cr.coverage == "whole" then
+          if mode == "extend" then
+            -- Round 23: extending an incremental base to 100% is an UPDATE,
+            -- not a fresh complete-track analysis
+            self_ref:_executeBookLevelActionDirect(action, action_id, { update_to_full = true })
+          else
+            self_ref:_executeBookLevelActionDirect(action, action_id, { full_document = true })
+          end
+        else
+          self_ref:_startXrayLadderBuild({
+            target = cr.target, target_label = cr.target_label, one_shot = true })
+        end
       end
     end
+    if mode ~= "rebuild" then return go() end
+    -- Round 23 (item 30): rebuild = archive the foreign-lineage live X-Ray to
+    -- the ring, clear it, then every downstream path behaves as from-nothing
+    -- (one-request picks would archive via the overwrite machinery anyway;
+    -- checkpoint/follow picks NEED the clear — the chain refuses to extend a
+    -- complete-track/AI-knowledge/legacy base)
+    local ConfirmBox = require("ui/widget/confirmbox")
+    local ActionCache = require("koassistant_action_cache")
+    local limit = ActionCache.checkpointLimitFromFeatures(features)
+    local confirm_text = limit ~= 0
+      and _("Replace the current X-Ray? The outgoing version is archived under \"All versions\".")
+      or _("Replace the current X-Ray? Version archiving is off, so the current one will be gone.")
+    UIManager:show(ConfirmBox:new{
+      text = confirm_text,
+      ok_text = _("Replace"),
+      ok_callback = function()
+        local live = ActionCache.getXrayCache(cc_file)
+        if live and live.result and limit ~= 0 then
+          ActionCache.pushXrayCheckpoint(cc_file, live, limit)
+        end
+        ActionCache.clearXrayCache(cc_file)
+        ActionCache.clear(cc_file, "xray")
+        self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+        self_ref:_refreshXrayAutoState()
+        go()
+      end,
+    })
   end
 
   buildAndShow = function()
@@ -8153,7 +8249,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       width = dialog_width,
       align = "left",
       with_bottom_line = true,
-      title = _("Create X-Ray"),
+      title = mode == "extend" and _("Extend X-Ray")
+        or mode == "rebuild" and _("Rebuild X-Ray")
+        or _("Create X-Ray"),
       title_shrink_font_to_fit = true,
       close_callback = function() UIManager:close(current_dialog) end,
     }
@@ -8166,14 +8264,39 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
     end
 
+    -- Round 23: state line — what exists, and what picking here does to it
+    local state_line
+    if mode == "extend" then
+      state_line = T(_("Your X-Ray covers to %1%."),
+        math.floor((base_progress or 0) * 100 + 0.5))
+    elseif mode == "rebuild" and base_entry then
+      local flavor = base_entry.full_document and _("analyzed as a whole")
+        or base_entry.source_mode == "ai_knowledge" and _("made from AI knowledge")
+        or _("in an older format")
+      state_line = T(_("Your current X-Ray was %1, so it can't be extended. Building here replaces it (the outgoing version is archived under \"All versions\")."), flavor)
+    end
+    if state_line then
+      table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
+      table.insert(vgroup, TextBoxWidget:new{
+        text = state_line, face = info_face, width = content_width,
+        color = Blitbuffer.COLOR_DARK_GRAY,
+      })
+    end
+
     -- === Coverage ===
     addLabel(_("Coverage"))
     local cov_rows = {}
     cov_rows[#cov_rows + 1] = { { text = _("The whole book"),
       provider = "whole", checked = cr.coverage == "whole" } }
     if progress and decimal > 0.01 then
-      cov_rows[#cov_rows + 1] = { { text = T(_("Up to where I am (%1)"), progress.formatted),
-        provider = "position", checked = cr.coverage == "position" } }
+      -- Round 23 (extend mode): a position at or below the base is already
+      -- covered — shown, but not a valid pick
+      local pos_covered = mode == "extend" and decimal <= (base_progress or 0) + 0.01
+      cov_rows[#cov_rows + 1] = { { text = pos_covered
+          and T(_("Up to where I am (%1) — already covered"), progress.formatted)
+          or T(_("Up to where I am (%1)"), progress.formatted),
+        provider = "position", enabled = not pos_covered,
+        checked = cr.coverage == "position" } }
     end
     if flowing and self.ui.toc and self.ui.toc.toc and #self.ui.toc.toc > 0 then
       local target_text = cr.coverage == "target" and cr.target
@@ -8190,6 +8313,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       face = radio_face,
       show_parent = self_ref, parent = self_ref,
       button_select_callback = function(btn)
+        if btn.enabled == false then return end
         if btn.provider == "target" then
           -- (Re-)pick the section even when already selected: tapping the row
           -- again is the natural way to change the target
@@ -8199,7 +8323,15 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
             on_cancel = function() buildAndShow() end,
             on_select = function(entry)
               local ratio = total_pages > 0 and (entry.end_page or 0) / total_pages or 0
-              if ratio >= 1.0 - 0.005 then
+              -- Round 23 (extend mode): a section ending inside the covered
+              -- range extends nothing — say so and keep the previous pick
+              if mode == "extend" and ratio <= (base_progress or 0) + 0.01 then
+                UIManager:show(InfoMessage:new{
+                  text = T(_("The X-Ray already covers that section (to %1%)."),
+                    math.floor((base_progress or 0) * 100 + 0.5)),
+                  timeout = 3,
+                })
+              elseif ratio >= 1.0 - 0.005 then
                 cr.coverage, cr.target, cr.target_label = "whole", nil, nil
               elseif ratio > 0.01 then
                 cr.coverage, cr.target, cr.target_label = "target", ratio, entry.title
@@ -8222,16 +8354,26 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
 
     -- === Build ===
     addLabel(_("Build"))
+    local one_label
+    if mode == "extend" then
+      one_label = cr.coverage == "whole" and _("In one request now (update to 100%)")
+        or cr.coverage == "position" and _("In one request now (update to your position)")
+        or _("In one request now (update)")
+    else
+      one_label = cr.coverage == "whole" and _("In one request now (analyzed as a whole)")
+        or _("In one request now")
+    end
     local del_rows = {
-      { { text = cr.coverage == "whole" and _("In one request now (analyzed as a whole)")
-          or _("In one request now"),
+      { { text = one_label,
         provider = "one", checked = cr.delivery == "one" } },
     }
     local n_steps = stepsFor()
     if n_steps > 1 then
-      -- +1: from-nothing checkpoint builds start with the introductory step
-      -- (round 20) — the shown count must match the build confirm's plan
-      del_rows[#del_rows + 1] = { { text = T(_("In checkpoints, now (%1 background steps)"), n_steps + 1),
+      -- From-nothing/rebuild checkpoint builds start with the introductory
+      -- step (round 20); extend builds never do (round 23) — the shown count
+      -- must match the build confirm's plan
+      del_rows[#del_rows + 1] = { { text = T(_("In checkpoints, now (%1 background steps)"),
+          n_steps + (plan_intro_step and 1 or 0)),
         provider = "checkpoints", checked = cr.delivery == "checkpoints" } }
     end
     if flowing and (cr.coverage == "whole" or cr.coverage == "target") then
@@ -8267,7 +8409,17 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
         hint = hint .. " " .. T(_("It stops at the end of \"%1\"."), cr.target_label)
       end
     elseif cr.delivery == "checkpoints" then
-      hint = _("Covers the range in bounded background steps, each a spoiler-safe version up to its position. A usable X-Ray installs after the first step; you can keep reading, cancel anytime, and resume later.")
+      hint = mode == "extend"
+        and _("Continues from your current coverage in bounded background steps, each a spoiler-safe version. You can keep reading, cancel anytime, and resume later.")
+        or _("Covers the range in bounded background steps, each a spoiler-safe version up to its position. A usable X-Ray installs after the first step; you can keep reading, cancel anytime, and resume later.")
+    elseif mode == "extend" then
+      if cr.coverage == "whole" then
+        hint = _("Updates your existing X-Ray to 100% in a single request.")
+      elseif cr.coverage == "position" then
+        hint = _("Updates your existing X-Ray up to your position in a single request.")
+      else
+        hint = _("Updates your existing X-Ray to the end of the chosen section in a single request.")
+      end
     elseif cr.coverage == "whole" then
       hint = _("Analyzes the whole book in a single request — large for long books, with no spoiler-safe intermediate versions.")
     elseif cr.coverage == "position" then
@@ -8292,7 +8444,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
           callback = function() UIManager:close(current_dialog) end,
         },
         {
-          text = _("Create"),
+          text = mode == "extend" and _("Extend")
+            or mode == "rebuild" and _("Rebuild")
+            or _("Create"),
           callback = function()
             UIManager:close(current_dialog)
             dispatch()
@@ -11130,75 +11284,8 @@ function AskGPT:_startXrayLadderBuild(build_opts)
   showConfirm(recommended)
 end
 
---- Round 21 (R3): the cached-book entry into the unified engine — pick a new
---- coverage goal, then how to get there. The front-load path derives its base
---- from disk as always; the "as I read" path stores the goal and starts the
---- auto scheduler. Lean two-step (ButtonDialog), back-nav per the round-17 rule.
-function AskGPT:_showXrayExtendChooser(action)
-  local self_ref = self
-  local BookSettings = require("koassistant_book_settings")
-  local function how(target, target_label)
-    local how_dialog
-    how_dialog = ButtonDialog:new{
-      title = target_label
-        and T(_("Extend the X-Ray to the end of \"%1\" (%2%):"),
-          target_label, math.floor((target or 0) * 100 + 0.5))
-        or _("Extend the X-Ray to the whole book:"),
-      buttons = {
-        {{ text = _("In checkpoints, now"), callback = function()
-          UIManager:close(how_dialog)
-          if self_ref.ui and self_ref.ui.doc_settings then
-            self_ref.ui.doc_settings:saveSetting(BookSettings.KEY_XRAY_GOAL, target)
-            self_ref.ui.doc_settings:flush()
-          end
-          self_ref:_startXrayLadderBuild(target
-            and { target = target, target_label = target_label } or nil)
-        end }},
-        {{ text = _("In checkpoints, as I read (automatic)"), callback = function()
-          UIManager:close(how_dialog)
-          if self_ref.ui and self_ref.ui.doc_settings then
-            self_ref.ui.doc_settings:saveSetting(BookSettings.KEY_XRAY_GOAL, target)
-          end
-          self_ref:_enableXrayFollowForBook()
-        end }},
-        {{ text = _("Back"), callback = function()
-          UIManager:close(how_dialog)
-          self_ref:_showXrayExtendChooser(action)
-        end }},
-      },
-    }
-    UIManager:show(how_dialog)
-  end
-  local chooser
-  chooser = ButtonDialog:new{
-    title = _("Extend coverage: how far?"),
-    buttons = {
-      {{ text = _("The whole book"), callback = function()
-        UIManager:close(chooser)
-        how(nil, nil)
-      end }},
-      {{ text = _("To the end of a section…"), callback = function()
-        UIManager:close(chooser)
-        self_ref:_showSectionPicker(action, {
-          title = _("Extend the X-Ray up to the end of…"),
-          on_cancel = function() self_ref:_showXrayExtendChooser(action) end,
-          on_select = function(entry)
-            local total = self_ref.ui and self_ref.ui.document
-              and self_ref.ui.document:getPageCount() or 0
-            local ratio = total > 0 and (entry.end_page or 0) / total or 0
-            if ratio >= 1.0 - 0.005 then
-              how(nil, nil)
-            elseif ratio > 0.01 then
-              how(math.floor(ratio * 1000 + 0.5) / 1000, entry.title)
-            end
-          end,
-        })
-      end }},
-      {{ text = _("Cancel"), callback = function() UIManager:close(chooser) end }},
-    },
-  }
-  UIManager:show(chooser)
-end
+-- (Round 21's lean Extend chooser retired in round 23 — the dual-mode
+-- creation chooser is the single cached-book authoring surface, item 30.)
 
 --- Shared grid planner (round 21, unified engine): the front-load chain and
 --- the auto scheduler MUST produce the same checkpoint grid — position seed,
