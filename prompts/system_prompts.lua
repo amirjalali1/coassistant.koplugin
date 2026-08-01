@@ -112,11 +112,12 @@ function SystemPrompts.resolveBehavior(config)
         if config.behavior_variant == "custom" then
             return config.custom_ai_behavior or (builtin.mini and builtin.mini.text) or FALLBACK_BEHAVIOR, "variant"
         end
-        -- Check built-in first
-        if builtin[config.behavior_variant] then
-            return builtin[config.behavior_variant].text, "variant"
-        end
-        -- Check all sources (folder, UI) for custom behavior ID
+        -- Merged lookup — user behaviors/ folder overrides builtin with the same id
+        -- (the documented loader contract), then UI-created behaviors. Builtin was
+        -- previously consulted FIRST here, which made a user override of a
+        -- variant-pinned behavior (e.g. behaviors/translator_direct.md for the
+        -- translate action — issue #100) a silent no-op on the wire while
+        -- getBehaviorById-based previews showed the user's text.
         local behavior = SystemPrompts.getBehaviorById(config.behavior_variant, config.custom_behaviors)
         if behavior then
             return behavior.text, "variant"
@@ -133,18 +134,17 @@ function SystemPrompts.resolveBehavior(config)
     if global_variant == "custom" then
         return config.custom_ai_behavior or (builtin.mini and builtin.mini.text) or FALLBACK_BEHAVIOR, "global"
     end
-    -- Check built-in first
-    if builtin[global_variant] then
-        return builtin[global_variant].text, "global"
-    end
-    -- Check all sources for behavior ID
+    -- Merged lookup (same contract as the variant branch above: user folder
+    -- overrides builtin, then UI-created behaviors)
     local behavior = SystemPrompts.getBehaviorById(global_variant, config.custom_behaviors)
     if behavior then
         return behavior.text, "global"
     end
     -- Final fallback: the documented default ("standard"), so a dangling/renamed behavior
-    -- id degrades to the intended default rather than the heavy "full" behavior.
-    return (builtin.standard and builtin.standard.text) or (builtin.full and builtin.full.text) or FALLBACK_BEHAVIOR, "global"
+    -- id degrades to the intended default rather than the heavy "full" behavior. Same
+    -- merged lookup, so a user standard.md stays authoritative here too.
+    local fallback = SystemPrompts.getBehaviorById("standard", config.custom_behaviors)
+    return (fallback and fallback.text) or (builtin.full and builtin.full.text) or FALLBACK_BEHAVIOR, "global"
 end
 
 -- Get combined cacheable content (behavior + domain)

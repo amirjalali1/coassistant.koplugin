@@ -117,9 +117,12 @@ local function getFirstBehaviorText()
     return id and BUILTIN_BEHAVIORS[id].text or nil
 end
 
--- Get specific behavior if it exists, otherwise first available
+-- Get specific behavior if it exists AND is not shadowed by a user behaviors/ file,
+-- otherwise first available. resolveBehavior resolves through the MERGED set (user
+-- folder overrides builtin — issue #100), so assertions against BUILTIN text must
+-- pick unshadowed ids.
 local function getBehaviorIdOr(preferred, fallback)
-    if BUILTIN_BEHAVIORS[preferred] then
+    if BUILTIN_BEHAVIORS[preferred] and not USER_BEHAVIORS[preferred] then
         return preferred
     end
     return fallback or getFirstBehaviorId()
@@ -245,10 +248,28 @@ end)
 
 TestRunner:test("empty config uses standard as default", function()
     local text, source = SystemPrompts.resolveBehavior({})
-    -- Default is "standard" per main.lua, should match that behavior
-    local expected_id = getBehaviorIdOr("standard", getFirstBehaviorId())
-    TestRunner:assertEqual(text, BUILTIN_BEHAVIORS[expected_id].text, "default matches standard behavior")
+    -- Default is "standard" per main.lua. Merged contract: a user
+    -- behaviors/standard.md wins over the builtin (issue #100 resolution order).
+    local expected = (USER_BEHAVIORS["standard"] and USER_BEHAVIORS["standard"].text)
+        or (BUILTIN_BEHAVIORS["standard"] and BUILTIN_BEHAVIORS["standard"].text)
+        or getFirstBehaviorText()
+    TestRunner:assertEqual(text, expected, "default matches standard behavior")
     TestRunner:assertEqual(source, "global", "source is global")
+end)
+
+TestRunner:test("user behaviors/ file overrides builtin for a variant-pinned id (issue #100)", function()
+    -- The loader reads the real plugin dir; use any actually-shadowed id (e.g. a
+    -- user behaviors/translator_direct.md or concise.md). Skip when the checkout
+    -- has no user override — the contract is still exercised on dev machines.
+    local shadowed
+    for id in pairs(USER_BEHAVIORS) do
+        if BUILTIN_BEHAVIORS[id] then shadowed = id break end
+    end
+    if not shadowed then return end
+    local text, source = SystemPrompts.resolveBehavior({ behavior_variant = shadowed })
+    TestRunner:assertEqual(text, USER_BEHAVIORS[shadowed].text,
+        "user folder text reaches the wire (was silently losing to builtin)")
+    TestRunner:assertEqual(source, "variant", "source is variant")
 end)
 
 -- Test parseUserLanguages()
