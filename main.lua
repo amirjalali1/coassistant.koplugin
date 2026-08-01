@@ -7074,7 +7074,11 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
             self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true })
           end,
         }})
-      elseif nc_rungs > 0 and (nc_highest or 0) < 1.0 - 0.005 then
+      elseif not nc_xa.isAutoSuppressed(self.ui.document.file)
+          and nc_rungs > 0 and (nc_highest or 0) < 1.0 - 0.005 then
+        -- Round 24b: a cancel this session means "stop" — with auto toggled
+        -- off afterwards the manual Resume row must not reappear either.
+        -- The suppression clears on book close, so next open offers it again.
         table.insert(buttons, {{
           text = T(_("Resume building checkpoints (%1 so far)…"), nc_rungs),
           callback = function()
@@ -7421,7 +7425,11 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           end,
         }})
       else
+        -- Round 24b: not while cancel-suppressed — cancelling then turning
+        -- auto off must not leave a lingering Resume nag (suppression clears
+        -- on book close; the authoring form is the in-session re-entry)
         if c_flowing and not c_auto_on and #ladder_rungs > 0
+            and not XrayAuto.isAutoSuppressed(sx_file)
             and (ladder_highest or 0) < 1.0 - 0.005
             and not (ext_goal and (ladder_highest or 0) >= ext_goal - 0.01) then
           table.insert(buttons, {{
