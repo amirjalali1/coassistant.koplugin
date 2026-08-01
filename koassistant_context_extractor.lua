@@ -259,10 +259,17 @@ function ContextExtractor:getReadingProgress()
 end
 
 --- Check if book text extraction is enabled globally.
+-- Trusted providers bypass the toggle (documented contract: trust bypasses ALL
+-- data-sharing controls AND text extraction). Every pre-flight/UI gate already
+-- honors the bypass — before this did too, extraction silently returned empty
+-- under trust while the UI claimed full text was read, and caches recorded
+-- used_book_text=false for text the user believed was extracted
+-- (injection_gating_audit).
 -- @return boolean
 function ContextExtractor:isBookTextExtractionEnabled()
     -- Default to false if not explicitly enabled
     return self.settings.enable_book_text_extraction == true
+        or self:isProviderTrusted()
 end
 
 --- Get book text up to current reading position.

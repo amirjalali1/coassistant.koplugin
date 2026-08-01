@@ -381,6 +381,33 @@ local function resolveQuickPresetModel(features, provider)
     return nil
 end
 
+-- Resolve the provider this request will ACTUALLY dispatch to, accounting for the
+-- pending one-shot session model override (⚡ menu pick / Quick preset model) the
+-- way buildUnifiedRequestConfig will apply it. The extraction trust gate runs
+-- BEFORE the bake — judging trust against the pre-override provider would let data
+-- extracted under a trusted provider's bypass be dispatched to an untrusted one
+-- (injection_gating_audit; extends audit v0.20.0 finding C4). Mirrors the bake's
+-- precedence exactly: action pin > manual ⚡ model pick > Quick preset model (only
+-- when the action accepts quick) > base provider. Reads only; consumption stays in
+-- the bake.
+local function effectiveDispatchProvider(features, action, base_provider)
+    if action and action.provider then return base_provider end
+    features = features or {}
+    -- The *_active consumables are set just-in-time at dispatch; before that point
+    -- (freeform Send's scope-consent check) the same pending state lives in the
+    -- _session_* chip keys. Direct entries carry neither (handlePredefinedPrompt's
+    -- direct-entry guard nulls _session_* before extraction).
+    local override = features._model_override_active or features._session_model
+    if override and override.provider then return override.provider end
+    local quick = features._quick_answer_active or features._session_quick_answer
+    if quick and action and action.accept_quick_answer ~= true then quick = nil end
+    if quick then
+        local preset = resolveQuickPresetModel(features, base_provider)
+        if preset and preset.provider then return preset.provider end
+    end
+    return base_provider
+end
+
 local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
     if not config then return false end
 
@@ -467,13 +494,30 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
 
     -- Per-book MAIN response-language override (Book Settings ▸ Languages ▸ AI response
     -- language) — applies to every action's system prompt, distinct from translate/dictionary.
-    -- Resolved from the book's sidecar; book/highlight only (general/library lack book_metadata).
     local lang_fields = {
         interaction_languages = features.interaction_languages,
         user_languages = features.user_languages or "",
         primary_language = features.primary_language,
     }
+    -- THE per-book identity for this request (response language, effort dials,
+    -- Background — one rule so they always resolve against the SAME book, the
+    -- identity invariant from ai-metadata-override-leaks): explicit book_metadata
+    -- target for book context (file browser / book chat), the OPEN book for
+    -- highlight context. Highlight entries null out book_metadata, which used to
+    -- leave the language override and effort dials inert on every highlight
+    -- request while Background had its own fallback (injection_gating_audit).
+    -- General/library: no single book → globals (library keeps its first-book
+    -- metadata behavior for the language override, as before).
     local lang_file = features.book_metadata and features.book_metadata.file
+    if not features.is_general_context and not features.is_library_context then
+        local doc_file = plugin and plugin.ui and plugin.ui.document
+            and plugin.ui.document.file
+        if features.is_book_context then
+            lang_file = lang_file or doc_file   -- explicit target (file browser) wins
+        else
+            lang_file = doc_file or lang_file   -- highlight: the open book wins
+        end
+    end
     if lang_file then
         lang_fields = require("koassistant_book_settings").applyResponseLanguageOverride(
             lang_fields, SafeDocSettings.resolve(lang_file))
@@ -518,30 +562,16 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
         -- point (direct actions, gestures, artifact chat), unlike the dialog-scoped
         -- Attach note. Per-action gating is a read-through: skip_background nil =
         -- follow skip_domain, true = never, false = always (book_reviews opts back in).
-        --
-        -- Book resolution deliberately does NOT reuse lang_file: highlight entries NULL
-        -- OUT features.book_metadata (main.lua), so lang_file is nil there, and a
-        -- leftover book_metadata can point at a DIFFERENT book from an earlier
-        -- file-browser action. This mirrors handlePredefinedPrompt's per_book_file rule
-        -- so Background and domain always resolve against the SAME book — the identity
-        -- invariant (ai-metadata-override-leaks). General/library: no single book.
+        -- Resolves from lang_file/eff_ds: since the unified per-book identity rule
+        -- above (open-book fallback for highlight, explicit target for book context),
+        -- Background, language and effort dials all read the SAME book by
+        -- construction. General/library are excluded here (Background is a
+        -- single-book note; library's first-book metadata must not leak in).
         local skip_background = action and action.skip_background
         if skip_background == nil then skip_background = action and action.skip_domain end
-        if not skip_background
+        if not skip_background and eff_ds
                 and not features.is_general_context and not features.is_library_context then
-            local doc_file = plugin and plugin.ui and plugin.ui.document
-                and plugin.ui.document.file
-            local bg_file
-            if features.is_book_context then
-                bg_file = lang_file or doc_file   -- explicit target (file browser) wins
-            else
-                bg_file = doc_file or lang_file   -- highlight: the open book wins
-            end
-            if bg_file then
-                local bg_ds = (bg_file == lang_file) and eff_ds or nil
-                if not bg_ds then bg_ds = SafeDocSettings.resolve(bg_file) end
-                book_background = BookSettings.getBackground(bg_ds)
-            end
+            book_background = BookSettings.getBackground(eff_ds)
         end
     end
 
@@ -3583,6 +3613,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         local original_prompt = prompt
         prompt = {}
         for k, v in pairs(original_prompt) do prompt[k] = v end
+        prompt._is_copy = true
         prompt._original_prompt_text = original_prompt.prompt
         prompt._original_update_prompt = original_prompt.update_prompt
         prompt._original_complete_prompt = original_prompt.complete_prompt
@@ -3603,6 +3634,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         for k, v in pairs(original_prompt) do
             prompt[k] = v
         end
+        prompt._is_copy = true
         prompt.prompt = original_prompt.complete_prompt
     end
 
@@ -3673,9 +3705,20 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
 
     -- Research mode web search override: academic papers benefit from web enrichment
     -- Actions with doi_web_override=true have their enable_web_search=false lifted to nil
-    -- (follow global setting) when research mode is active
+    -- (follow global setting) when research mode is active.
+    -- Copy-on-write like every other prompt mutation here: without it this writes through
+    -- to the LIVE ActionService cache entry, permanently stripping the action's web-off
+    -- for every book until the cache is invalidated (injection_gating_audit).
     if research_mode_active
             and prompt.doi_web_override and prompt.enable_web_search == false then
+        if not prompt._is_copy then
+            local original_prompt = prompt
+            prompt = {}
+            for k, v in pairs(original_prompt) do
+                prompt[k] = v
+            end
+            prompt._is_copy = true
+        end
         prompt.enable_web_search = nil
     end
 
@@ -3700,8 +3743,12 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     -- else the global). Evaluating trust against the global features.provider instead would let
     -- an action pinned to an untrusted provider bypass every data-sharing gate via a trusted
     -- global — data going to a provider the user never trusted. (audit v0.20.0 finding C4)
-    local effective_provider = (temp_config and temp_config.provider)
-        or (config.features and config.features.provider)
+    -- The pending session ⚡ model override re-points dispatch at bake time, AFTER this
+    -- gate — fold it in here so trust is judged against the post-override provider.
+    local effective_provider = effectiveDispatchProvider(
+        temp_config and temp_config.features, prompt,
+        (temp_config and temp_config.provider)
+            or (config.features and config.features.provider))
 
     -- Open book: full extraction (text, highlights, annotations, stats, etc.)
     -- File browser (sidecar): highlights, annotations, notebook, progress, caches from disk
@@ -7078,8 +7125,15 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                     else
                         local consent = configuration.features.enable_book_text_extraction == true
                         if not consent and configuration.features.trusted_providers then
+                            -- Trust is judged against the provider this Send will actually
+                            -- dispatch to — a pending ⚡ model override re-points it at bake
+                            -- time (injection_gating_audit; C4 pattern). Runtime self-require:
+                            -- a file-local reference here would add an upvalue (60-cap).
+                            local send_provider = require("koassistant_dialogs")
+                                .effectiveDispatchProvider(
+                                    configuration.features, nil, configuration.provider)
                             for _i, tp in ipairs(configuration.features.trusted_providers) do
-                                if tp == configuration.provider then consent = true; break end
+                                if tp == send_provider then consent = true; break end
                             end
                         end
                         if not consent then
@@ -9459,8 +9513,8 @@ local function launchArtifactChat(user_question, artifact_content, artifact_type
     -- stays raw for local bookkeeping (chat save metadata).
     local artifact_research = false
     local ai_book_metadata = book_metadata
+    local artifact_ds = document_path and SafeDocSettings.resolve(document_path, ui) or nil
     if document_path then
-        local artifact_ds = SafeDocSettings.resolve(document_path, ui)
         ai_book_metadata = require("koassistant_book_settings").applyMetadataOverride(book_metadata, artifact_ds)
         local book_research_setting = getBookResearchMode(artifact_ds)
         if book_research_setting == true then
@@ -9500,12 +9554,38 @@ local function launchArtifactChat(user_question, artifact_content, artifact_type
     configuration.features._session_reasoning = nil
     configuration.features._session_model = nil
 
+    -- Domain layer (injection_gating_audit): artifact chat used to pass a literal
+    -- nil domain_context — the only chat surface with no domain at all, silently
+    -- dropping the book's (or global) domain for every reply in the chat. Same
+    -- priority as freeform Send (no action layer): the ARTIFACT's book domain >
+    -- global selected_domain; "_none" sentinel blocks the global fallthrough.
+    local domain_context = nil
+    local artifact_domain_id = nil
+    do
+        local book_domain = getBookDomain(artifact_ds)
+        if book_domain ~= "_none" then
+            artifact_domain_id = book_domain
+                or (configuration.features and configuration.features.selected_domain)
+        end
+        if artifact_domain_id then
+            local DomainLoader = require("domain_loader")
+            local custom_domains = configuration.features
+                and configuration.features.custom_domains or {}
+            local domain = DomainLoader.getDomainById(artifact_domain_id, custom_domains)
+            if domain then
+                domain_context = domain.context
+            end
+        end
+    end
+
     -- Build system prompt (standard book chat)
-    buildUnifiedRequestConfig(configuration, nil, nil, plugin)
+    buildUnifiedRequestConfig(configuration, domain_context, nil, plugin)
 
     -- Create history with artifact type as prompt_action for title generation
     local history = MessageHistory:new(nil, nil)
     history.prompt_action = artifact_type_name
+    -- Store domain for chat-save parity with freeform Send
+    history.domain = artifact_domain_id
     -- Launch tag (device round 2): prompt_action holds the display name; this is
     -- the stable "came from an artifact viewer" marker for future grouping surfaces
     history.launched_from = "artifact"
@@ -9591,4 +9671,8 @@ return {
     attachChipLabel = attachChipLabel,
     -- Exported for the main-settings action row (AskGPT:showQuickPresetModelMode)
     showQuickPresetModelMode = showQuickPresetModelMode,
+    -- Exported for runtime self-require from performSend's scope-consent check
+    -- (60-upvalue cap — a direct file-local reference inside that closure breaks
+    -- the whole-plugin load)
+    effectiveDispatchProvider = effectiveDispatchProvider,
 }

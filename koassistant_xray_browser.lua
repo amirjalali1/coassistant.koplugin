@@ -1900,6 +1900,24 @@ function XrayBrowser:_addSearchTermInput(item, category_key, item_title, source,
     input_dialog:onShowKeyboard()
 end
 
+--- Build a FRESH book_metadata table for this artifact's book. Never mutate the
+--- inherited table in place: the 2-level config copy shares it BY REFERENCE with
+--- the module-level configuration, so writing through it permanently pairs this
+--- book's file with another book's title/author (injection_gating_audit).
+--- Existing fields are inherited only when the metadata already refers to THIS
+--- book (it may carry the per-book AI metadata override and reading progress).
+local function freshBookMetadata(existing, file, fallback_title, fallback_author)
+    local meta = {}
+    if existing and require("koassistant_doc_settings").samePath(existing.file, file) then
+        for k, v in pairs(existing) do meta[k] = v end
+    end
+    meta.file = file
+    meta.title = meta.title or fallback_title
+    meta.author = meta.author or fallback_author or ""
+    meta.author_clause = (meta.author ~= "") and (" by " .. meta.author) or ""
+    return meta
+end
+
 --- Launch a highlight-context book chat with the given text
 --- @param detail_text string The X-Ray detail text to discuss
 function XrayBrowser:chatAboutItem(detail_text)
@@ -1921,12 +1939,8 @@ function XrayBrowser:chatAboutItem(detail_text)
     -- Ensure book_metadata has the correct file for this artifact's book
     -- (may be stale if config was from a different book or file browser context)
     if self.metadata.book_file then
-        config.features.book_metadata = config.features.book_metadata or {}
-        config.features.book_metadata.file = self.metadata.book_file
-        config.features.book_metadata.title = config.features.book_metadata.title or self.metadata.title
-        config.features.book_metadata.author = config.features.book_metadata.author or self.metadata.book_author or ""
-        config.features.book_metadata.author_clause = (config.features.book_metadata.author and config.features.book_metadata.author ~= "")
-            and (" by " .. config.features.book_metadata.author) or ""
+        config.features.book_metadata = freshBookMetadata(config.features.book_metadata,
+            self.metadata.book_file, self.metadata.title, self.metadata.book_author)
     end
     -- Clear stale selection data - the "highlight" is AI-generated, not a real book selection,
     -- so "Save to Note" must be disabled (prevents saving to a random prior highlight position)
@@ -1988,12 +2002,8 @@ function XrayBrowser:runWikiForItem(item, category_key, title, source, nav_conte
 
     -- Ensure book_metadata has the correct file for this artifact's book
     if file then
-        config.features.book_metadata = config.features.book_metadata or {}
-        config.features.book_metadata.file = file
-        config.features.book_metadata.title = config.features.book_metadata.title or self.metadata.title
-        config.features.book_metadata.author = config.features.book_metadata.author or self.metadata.book_author or ""
-        config.features.book_metadata.author_clause = (config.features.book_metadata.author and config.features.book_metadata.author ~= "")
-            and (" by " .. config.features.book_metadata.author) or ""
+        config.features.book_metadata = freshBookMetadata(config.features.book_metadata,
+            file, self.metadata.title, self.metadata.book_author)
     end
 
     -- Set item description as disambiguation context (consumed by _forced_surrounding_context)

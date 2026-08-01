@@ -293,13 +293,9 @@ function AskGPT:init()
             self:ensureInitialized()
             -- Make sure we're using the latest configuration
             self:updateConfigFromSettings()
-            -- Clear context flags for highlight context (default context)
+            -- Scrub stale cross-context state for highlight context (default context)
             configuration.features = configuration.features or {}
-            configuration.features.is_general_context = nil
-            configuration.features.is_book_context = nil
-            configuration.features.is_library_context = nil
-            configuration.features.book_metadata = nil
-            configuration.features.books_info = nil
+            self:_scrubContextFeatures(configuration.features)
             -- Store selection data for "Save to Note" feature
             configuration.features.selection_data = selection_data
             configuration.features._selection_context_window = sc_window
@@ -4528,10 +4524,10 @@ function AskGPT:executeDictAction(action, word, dict_popup, non_reader_lookup)
         end
       end
 
-      -- Clear context flags to ensure highlight context (like executeQuickAction does)
-      dict_config.features.is_general_context = nil
-      dict_config.features.is_book_context = nil
-      dict_config.features.is_library_context = nil
+      -- Scrub stale cross-context state to ensure highlight context (like
+      -- executeQuickAction does; also drops a stale book_metadata that would
+      -- redirect sidecar reads to another book — injection_gating_audit)
+      self:_scrubContextFeatures(dict_config.features)
 
       -- Set dictionary-specific values
       if non_reader_lookup then
@@ -4839,12 +4835,9 @@ function AskGPT:onKOAssistantGeneralChat()
   -- Set context flag on the original configuration (no copy needed)
   -- This ensures settings changes are immediately visible
   configuration.features = configuration.features or {}
-  -- Clear other context flags and book metadata
+  -- Scrub inherited context state, then mark general
+  self:_scrubContextFeatures(configuration.features)
   configuration.features.is_general_context = true
-  configuration.features.is_book_context = nil
-  configuration.features.is_library_context = nil
-  configuration.features.book_metadata = nil
-  configuration.features.books_info = nil
 
   -- Show dialog with general context
   showChatGPTDialog(self.ui, nil, configuration, nil, self)
@@ -9563,7 +9556,13 @@ function AskGPT:viewCachedAction(action, action_id, cached_entry, opts)
   if action.use_response_caching and not (opts and opts.section_key) then
     local self_ref2 = self
     local captured_action_id = action_id
-    if self.ui and self.ui.document then
+    -- The live-execution branch must only run when the open book IS the artifact's
+    -- book: the artifact browser passes another book via opts.file, and
+    -- _executeBookLevelActionDirect reads self.ui — regenerating there would rebuild
+    -- the OPEN book and overwrite ITS cache (injection_gating_audit). A different
+    -- book falls through to the closed-book branch, which honours `file`.
+    if self.ui and self.ui.document
+        and require("koassistant_doc_settings").samePath(self.ui.document.file, file) then
       -- Open book: regenerate via direct execution (bypass cache popup)
       on_regenerate = function()
         if self_ref2:_checkRequirements(action) then return end
@@ -12015,10 +12014,11 @@ function AskGPT:executeGeneralAction(action_id)
   for k, v in pairs((configuration or {}).features or {}) do
     config_copy.features[k] = v
   end
-  -- Clear book metadata for general context
+  -- Scrub inherited context state, then mark general: a stale is_book_context from
+  -- an earlier book entry would otherwise win in getPromptContext and misclassify
+  -- this gesture-fired general action as book context (injection_gating_audit)
+  self:_scrubContextFeatures(config_copy.features)
   config_copy.features.is_general_context = true
-  config_copy.features.book_metadata = nil
-  config_copy.features.books_info = nil
 
   -- Execute the action
   NetworkMgr:runWhenConnected(function()
@@ -13785,13 +13785,11 @@ end
 --- Open library dialog directly to input/actions (no BookPicker gate)
 function AskGPT:openLibraryDialog()
   configuration.features = configuration.features or {}
-  -- Set library context, clear others
+  -- Scrub inherited context state (incl. a stale book_metadata, which would make
+  -- response-language/effort dials resolve against that book — injection_gating_audit),
+  -- then set library context. Books start unselected — user adds via presets/picker.
+  self:_scrubContextFeatures(configuration.features)
   configuration.features.is_library_context = true
-  configuration.features.is_book_context = nil
-  configuration.features.is_general_context = nil
-  -- Start with no books selected — user adds via presets/picker
-  configuration.features.books_info = nil
-  configuration.features.book_context = nil
 
   self:ensureInitialized()
   self:updateConfigFromSettings()
@@ -13861,10 +13859,8 @@ function AskGPT:translateCurrentPage()
     config_copy.features[k] = v
   end
   config_copy.context = "highlight"
-  -- Clear context flags to ensure highlight context
-  config_copy.features.is_general_context = nil
-  config_copy.features.is_book_context = nil
-  config_copy.features.is_library_context = nil
+  -- Scrub stale cross-context state to ensure highlight context
+  self:_scrubContextFeatures(config_copy.features)
   -- Explicitly ensure full view (not compact/dictionary)
   config_copy.features.compact_view = false
   config_copy.features.dictionary_view = false
@@ -14540,6 +14536,24 @@ function AskGPT:syncHighlightBypass()
   logger.info("KOAssistant: Highlight bypass synced")
 end
 
+-- Scrub cross-context state from a features table before entering a new context.
+-- The module-level `configuration` is SHARED between the FileManager and ReaderUI
+-- plugin instances and across entry points: general/library/file-browser entries
+-- write context flags plus book identity onto it, and updateConfigFromSettings
+-- deliberately preserves those keys (runtime_only_keys). An entry point that skips
+-- this scrub inherits another context's flags/identity — wrong context resolution,
+-- wrong-book sidecar reads (injection_gating_audit). Callers re-set what their own
+-- context actually knows AFTER scrubbing.
+function AskGPT:_scrubContextFeatures(features)
+  features.is_general_context = nil
+  features.is_book_context = nil
+  features.is_library_context = nil
+  features.book_metadata = nil
+  features.books_info = nil
+  features.book_context = nil
+  features.dictionary_context = nil
+end
+
 function AskGPT:executeHighlightBypassAction(action, selected_text, highlight_instance)
   -- Build configuration
   -- IMPORTANT: Create a proper shallow copy with a NEW features object
@@ -14553,6 +14567,11 @@ function AskGPT:executeHighlightBypassAction(action, selected_text, highlight_in
     config_copy.features[k] = v
   end
   config_copy.context = "highlight"
+  -- Scrub inherited context flags/identity: getPromptContext reads the is_*_context
+  -- flags (config_copy.context alone does NOT decide the context), so a stale
+  -- is_general_context from an earlier General Chat would re-context this request
+  -- to "general" and skip the entire highlight branch (injection_gating_audit).
+  self:_scrubContextFeatures(config_copy.features)
 
   -- Block actions when declared requirements are unmet
   if self:_checkRequirements(action) then
@@ -14682,11 +14701,9 @@ end
 -- @param context: Optional surrounding context (for dictionary actions)
 -- @param selection_data: Optional selection position data (for "Save to Note" feature)
 function AskGPT:executeQuickAction(action, highlighted_text, context, selection_data, sc_window)
-  -- Clear context flags for highlight context (default context)
+  -- Scrub stale cross-context state for highlight context (default context)
   configuration.features = configuration.features or {}
-  configuration.features.is_general_context = nil
-  configuration.features.is_book_context = nil
-  configuration.features.is_library_context = nil
+  self:_scrubContextFeatures(configuration.features)
   -- Pass surrounding context if provided (for dictionary actions). Set-or-clear:
   -- a stale value from an earlier launch must not attach to this one.
   configuration.features.dictionary_context = (context and context ~= "") and context or nil
@@ -14744,12 +14761,9 @@ function AskGPT:startGeneralChat()
   -- Set context flag on the original configuration (no copy needed)
   -- This ensures settings changes are immediately visible
   configuration.features = configuration.features or {}
-  -- Clear other context flags and book metadata
+  -- Scrub inherited context state, then mark general
+  self:_scrubContextFeatures(configuration.features)
   configuration.features.is_general_context = true
-  configuration.features.is_book_context = nil
-  configuration.features.is_library_context = nil
-  configuration.features.book_metadata = nil
-  configuration.features.books_info = nil
 
   -- Show dialog with general context
   showChatGPTDialog(self.ui, nil, configuration, nil, self)

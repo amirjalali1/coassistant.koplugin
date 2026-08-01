@@ -1683,6 +1683,42 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
         config.system = chat.system_metadata
     end
 
+    -- Mini-bake (injection_gating_audit): a resumed chat never passes through
+    -- buildUnifiedRequestConfig, so without this its replies reach the wire with
+    -- api_params = nil — no reasoning resolution at all (a thinking-by-default
+    -- model silently ignores the user's Minimal stance) and no default
+    -- temperature. Same layering as the bake minus the action layer; reply-time
+    -- ⚡ picks re-resolve on top via applyQuickReplyOverrides (it stashes and
+    -- restores this baseline, and no-ops when the chat carries no picks). The
+    -- saved system prompt (system_metadata above) is deliberately kept.
+    do
+        local ModelConstraints = require("model_constraints")
+        local ReasoningPrefs = require("reasoning_prefs")
+        local Defaults = require("koassistant_api.defaults")
+        config.api_params = {}
+        if config.features.default_temperature then
+            config.api_params.temperature = config.features.default_temperature
+        end
+        local bake_provider = config.provider or config.default_provider or "anthropic"
+        local bake_model = config.model
+        if not bake_model then
+            local pd = Defaults.ProviderDefaults[bake_provider]
+            bake_model = pd and pd.model or nil
+        end
+        local sr = config.features._session_reasoning
+        if sr and sr.follow then sr = nil end
+        local decision = ModelConstraints.resolveReasoning(bake_provider, bake_model, {
+            global_stance = ReasoningPrefs.getStance(config.features),
+            model_pref = ReasoningPrefs.getModelPref(config.features, bake_provider, bake_model),
+            session_override = sr
+                or ((config.features._session_quick_answer == true
+                    and config.features.quick_preset_reasoning_off ~= false)
+                    and { force = "off" } or nil),
+        })
+        config.api_params._reasoning = decision
+        ModelConstraints.applyReasoningParams(bake_provider, config.api_params, decision)
+    end
+
     -- Build chat_metadata for restoring cache/truncation notices
     local chat_metadata = nil
     if chat.used_cache or chat.book_text_truncated or chat.unavailable_data
