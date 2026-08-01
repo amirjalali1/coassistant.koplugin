@@ -333,19 +333,24 @@ end
 --- rung exactly at the reading position, so the very first finished checkpoint
 --- is promotable and the reader has a live X-Ray right away. Pure.
 --- Returns nil when a base exists (something is already live/promotable), when
---- the reader hasn't read enough to be worth a call (LADDER_SEED_MIN), or when
---- the position is within the goal's engagement threshold (the goal rung IS the
---- seed then). The seed deliberately never snaps to a chapter boundary ahead of
---- the reader — a seed past the position could not promote.
+--- the reader hasn't read enough to be worth a call (LADDER_SEED_MIN), when the
+--- reader sits AT or PAST the first spacing rung (round 22, D1: the grid itself
+--- has a promotable point then — a seed there would swallow every grid point
+--- below it into ONE unbounded request), or when the position is within the
+--- goal's engagement threshold (the goal rung IS the seed then). The seed
+--- deliberately never snaps to a chapter boundary ahead of the reader — a seed
+--- past the position could not promote.
 --- @param base_progress number|nil build base 0..1 (nil/0 = from nothing)
 --- @param position number|nil reading position 0..1
 --- @param goal number|nil build target (nil = 1.0)
+--- @param spacing number|nil rung spacing (nil = LADDER_SPACING) — the ceiling
 --- @return number|nil seed ratio (3 decimals)
-function XrayAuto.seedForBuild(base_progress, position, goal)
+function XrayAuto.seedForBuild(base_progress, position, goal, spacing)
   local base = tonumber(base_progress) or 0
   if base >= 0.01 then return nil end
   local pos = tonumber(position)
   if not pos or pos < XrayAuto.LADDER_SEED_MIN then return nil end
+  if pos >= (tonumber(spacing) or XrayAuto.LADDER_SPACING) then return nil end
   local g = tonumber(goal)
   if not g or g <= 0 or g > 1.0 then g = 1.0 end
   if pos >= g - 0.01 then return nil end
@@ -357,10 +362,88 @@ end
 --- (a seed at 12% with 15% spacing plans 30% next, not 15%). Pure.
 --- @return table ascending rung targets (seed first when present), number|nil seed
 function XrayAuto.planBuildRungs(base_progress, spacing, target_end, position)
-  local seed = XrayAuto.seedForBuild(base_progress, position, target_end)
+  local seed = XrayAuto.seedForBuild(base_progress, position, target_end, spacing)
   local rungs = XrayAuto.planLadderRungs(seed or base_progress, spacing, target_end)
   if seed then table.insert(rungs, 1, seed) end
   return rungs, seed
+end
+
+--- Round 22 (T2): the auto scheduler's pure decision core — everything
+--- _fireXrayAutoCheckpoints derives before planning the grid. Pure over its
+--- inputs; the caller does the disk reads.
+--- state = {
+---   entry         = ActionCache.get(file, "xray") result (or nil),
+---   ladder        = ActionCache.getXrayLadder(file) array,
+---   base_progress = ActionCache.highestXrayLadderProgress(ladder),
+---   position      = reading position 0..1 (nil = unknown),
+---   goal          = raw per-book coverage goal (validated here),
+---   is_json       = XrayParser.isJSON (or nil to skip the format check),
+--- }
+--- @return table {
+---   base            highest usable build base (nil = from nothing),
+---   has_intro       an intro exists (live or rung),
+---   has_any         a NON-intro artifact exists (D1: intro-only books are
+---                   still a first spend for the create guard and the ask),
+---   goal            validated goal or nil (= whole book),
+---   plan_intro      establishment should build the intro first,
+---   build           true when the engine should build now,
+---   lineage_blocked / reason ("no_position"|"goal_reached"|"ahead")
+---                   set when it should not,
+--- }
+function XrayAuto.planAutoWork(state)
+  local out = { base = tonumber(state.base_progress) }
+  local entry = state.entry
+  if entry and entry.result and not entry.intro then
+    if entry.full_document or entry.source_mode == "ai_knowledge"
+        or (state.is_json and not state.is_json(entry.result)) then
+      -- Different lineage (complete-track / AI-knowledge / legacy text):
+      -- automation never builds over or beside it
+      if out.base == nil then
+        out.lineage_blocked = true
+        return out
+      end
+    else
+      local p = tonumber(entry.progress_decimal)
+      if p and (out.base == nil or p > out.base) then out.base = p end
+    end
+  end
+  out.has_intro = false
+  out.has_any = (entry and entry.result and not entry.intro) and true or false
+  for _idx, r in ipairs(state.ladder or {}) do
+    if r.intro then out.has_intro = true else out.has_any = true end
+  end
+  local goal = tonumber(state.goal)
+  if goal and (goal <= 0.01 or goal >= 0.995) then goal = nil end
+  out.goal = goal
+  local pos = tonumber(state.position)
+  if not pos then
+    out.reason = "no_position"
+    return out
+  end
+  if (out.base or 0) >= (goal or 1.0) - 0.01 then
+    out.reason = "goal_reached"
+    return out
+  end
+  -- One-ahead invariant: a built checkpoint (or live coverage) ahead of the
+  -- reader means there is nothing to do yet
+  local ahead = false
+  for _idx, r in ipairs(state.ladder or {}) do
+    local p = tonumber(r.progress_decimal)
+    if p and r.result and not r.intro and p > pos + XrayAuto.LADDER_TOLERANCE then
+      ahead = true break
+    end
+  end
+  if not ahead and entry and entry.result and not entry.intro then
+    local p = tonumber(entry.progress_decimal)
+    if p and p > pos + XrayAuto.LADDER_TOLERANCE then ahead = true end
+  end
+  if ahead then
+    out.reason = "ahead"
+    return out
+  end
+  out.plan_intro = out.base == nil and not out.has_intro
+  out.build = true
+  return out
 end
 
 --- Pick the rung to promote into the live cache: the highest rung at-or-below
@@ -449,6 +532,27 @@ end
 --- additionally gets cancelInFlight from the caller).
 function XrayAuto.requestLadderCancel()
   if ladder_build then ladder_build.cancel_requested = true end
+end
+
+-- Round 22 (D3): an explicit user cancel must mean something distinct from
+-- "chain ended" — without this, the next page turn re-plans the very chain the
+-- user just cancelled (the cooldown was stamped at SCHEDULE time and has often
+-- already elapsed). Session-scoped per-file suppression: unattended auto fires
+-- skip suppressed books; any explicit engine start (follow pick, build confirm,
+-- offer accept) or a book close clears it. Cross-instance module state, same
+-- rationale as the flight state above.
+local auto_suppressed = {}
+
+function XrayAuto.suppressAuto(file)
+  if file then auto_suppressed[file] = true end
+end
+
+function XrayAuto.clearAutoSuppression(file)
+  if file then auto_suppressed[file] = nil end
+end
+
+function XrayAuto.isAutoSuppressed(file)
+  return file ~= nil and auto_suppressed[file] == true
 end
 
 return XrayAuto

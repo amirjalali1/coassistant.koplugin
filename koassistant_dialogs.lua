@@ -4757,42 +4757,69 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             local chars_k = math.floor(extracted_chars / 1000)
             local tokens_low = math.floor(extracted_chars / 4000)
             local tokens_high = math.floor(extracted_chars / 2000)
+            -- Round 22 (§25(f)): for a one-request X-Ray CREATE on an open
+            -- flowing book, the checkpoint escape is a button, not just prose.
+            -- Section-scoped runs and incremental updates are excluded — the
+            -- checkpoint build would silently change their scope.
+            local xray_checkpoint_offer = prompt and prompt.cache_as_xray
+                and not (config.features and (config.features._section_scope or config.features._section_xray))
+                and not message_data.incremental_book_text
+                and plugin and plugin._startXrayLadderBuild
+                and ui and ui.document and ui.document.info and not ui.document.info.has_pages
             local warning_dialog
+            local warning_buttons = {}
+            warning_buttons[#warning_buttons + 1] = {{
+                text = _("Cancel"),
+                callback = function()
+                    UIManager:close(warning_dialog)
+                end,
+            }}
+            if xray_checkpoint_offer then
+                warning_buttons[#warning_buttons + 1] = {{
+                    text = _("Build in checkpoints instead…"),
+                    callback = function()
+                        UIManager:close(warning_dialog)
+                        local target
+                        if not message_data.full_document then
+                            -- The user picked "up to where I am": bound the
+                            -- checkpoint build to the same coverage
+                            local ContextExtractor = require("koassistant_context_extractor")
+                            local prog = ContextExtractor:new(ui):getReadingProgress()
+                            local d = prog and tonumber(prog.decimal)
+                            if d and d > 0.01 and d < 0.995 then target = d end
+                        end
+                        plugin:_startXrayLadderBuild(target and { target = target } or nil)
+                    end,
+                }}
+            end
+            warning_buttons[#warning_buttons + 1] = {{
+                text = _("Continue"),
+                callback = function()
+                    UIManager:close(warning_dialog)
+                    checkSidecarDataAndSend()
+                end,
+            }}
+            warning_buttons[#warning_buttons + 1] = {{
+                text = _("Don't warn again"),
+                callback = function()
+                    UIManager:close(warning_dialog)
+                    -- Persist the preference
+                    if plugin and plugin.settings then
+                        local features_tbl = plugin.settings:readSetting("features") or {}
+                        features_tbl.suppress_large_extraction_warning = true
+                        plugin.settings:saveSetting("features", features_tbl)
+                        plugin.settings:flush()
+                    end
+                    -- Also update current config so it takes effect immediately
+                    if config.features then
+                        config.features.suppress_large_extraction_warning = true
+                    end
+                    checkSidecarDataAndSend()
+                end,
+            }}
             warning_dialog = ButtonDialog:new{
                 title = T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens). Make sure your model's context window can accommodate this.\n\nYou can focus on a specific section or section range instead of the full document, or use KOReader's Hidden Flows to exclude irrelevant content. For X-Ray, \"Build checkpoints\" covers the book in bounded steps instead of one large request."), chars_k, tokens_low, tokens_high),
-                buttons = {
-                    {{
-                        text = _("Cancel"),
-                        callback = function()
-                            UIManager:close(warning_dialog)
-                        end,
-                    }},
-                    {{
-                        text = _("Continue"),
-                        callback = function()
-                            UIManager:close(warning_dialog)
-                            checkSidecarDataAndSend()
-                        end,
-                    }},
-                    {{
-                        text = _("Don't warn again"),
-                        callback = function()
-                            UIManager:close(warning_dialog)
-                            -- Persist the preference
-                            if plugin and plugin.settings then
-                                local features_tbl = plugin.settings:readSetting("features") or {}
-                                features_tbl.suppress_large_extraction_warning = true
-                                plugin.settings:saveSetting("features", features_tbl)
-                                plugin.settings:flush()
-                            end
-                            -- Also update current config so it takes effect immediately
-                            if config.features then
-                                config.features.suppress_large_extraction_warning = true
-                            end
-                            checkSidecarDataAndSend()
-                        end,
-                    }},
-                },
+                buttons = warning_buttons,
             }
             UIManager:show(warning_dialog)
             return nil  -- Early return; continuation via callback

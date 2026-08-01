@@ -465,7 +465,7 @@ end)
 TestRunner:test("seedForBuild: from-nothing builds seed the reader's position (round 19)", function()
     TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.05, nil), 0.05,
         "reader below the first spacing rung gets a seed at the position")
-    TestRunner:assertEqual(XrayAuto.seedForBuild(nil, 0.123, 1.0), 0.123,
+    TestRunner:assertEqual(XrayAuto.seedForBuild(nil, 0.123, 1.0, 0.15), 0.123,
         "nil base is from-nothing; seed rounded to 3 decimals")
     TestRunner:assertEqual(XrayAuto.seedForBuild(0.3, 0.35, nil), nil,
         "an existing base means something is already promotable: no seed")
@@ -473,10 +473,27 @@ TestRunner:test("seedForBuild: from-nothing builds seed the reader's position (r
         "below LADDER_SEED_MIN the seed is noise")
     TestRunner:assertEqual(XrayAuto.seedForBuild(0, nil, nil), nil,
         "no position, no seed")
-    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.595, 0.6), nil,
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.595, 0.6, 0.7), nil,
         "position within 1% of the goal: the goal rung IS the seed")
     TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.995, nil), nil,
         "position at the end of the book: nothing to seed")
+end)
+
+TestRunner:test("seedForBuild: the round-22 CEILING (D1) — no seed at or past the first rung", function()
+    -- The docstring always specified "below the first spacing rung"; only the
+    -- floor was enforced. Without the ceiling, a from-nothing build at 71%
+    -- planned a seed AT 71% — ONE request carrying ~710 pages of a 1000-page
+    -- book (the device-round-3 field report).
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.71, nil, 0.10), nil,
+        "the field case: reader deep in the book gets NO seed")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.10, nil, 0.10), nil,
+        "at the first rung exactly: the rung itself is promotable, no seed")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.099, nil, 0.10), 0.099,
+        "just below the first rung: seed applies")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.12, nil), nil,
+        "nil spacing falls back to LADDER_SPACING for the ceiling")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.4, nil, 0.5), 0.4,
+        "wide novella spacing: below the first rung, seed applies (bounded by spacing)")
 end)
 
 TestRunner:test("planBuildRungs: seed first, tail planned FROM the seed", function()
@@ -490,15 +507,155 @@ TestRunner:test("planBuildRungs: seed first, tail planned FROM the seed", functi
     local near = XrayAuto.planBuildRungs(0, 0.15, nil, 0.12)
     TestRunner:assertEqual(near[1], 0.12, "seed at the position")
     TestRunner:assertEqual(near[2], 0.3, "near-duplicate spacing rung dropped")
-    -- Reader past the first rung: no seed, plan unchanged from planLadderRungs
+    -- Reader past the first rung (round 22, D1): NO seed — the plan is the
+    -- plain spaced grid, every step bounded
     local past, no_seed = XrayAuto.planBuildRungs(0, 0.15, nil, 0.4)
-    TestRunner:assertEqual(no_seed, 0.4, "seed still applies mid-book from nothing")
-    TestRunner:assertEqual(past[1], 0.4, "seed at 40%")
-    TestRunner:assertEqual(past[2], 0.6, "tail from the seed (half-step: 45% dropped)")
+    TestRunner:assertEqual(no_seed, nil, "reader past the first grid point: no seed")
+    TestRunner:assertEqual(past[1], 0.15, "grid starts at the first spacing rung")
+    TestRunner:assertEqual(past[2], 0.3, "spaced steps, nothing swallowed")
     -- Position-coverage build (goal == position): no seed, goal rung covers it
     local pos_cov, pos_seed = XrayAuto.planBuildRungs(0, 0.15, 0.4, 0.4)
     TestRunner:assertEqual(pos_seed, nil, "goal == position: no seed")
     TestRunner:assertEqual(pos_cov[#pos_cov], 0.4, "final rung = the position goal")
+end)
+
+TestRunner:test("T1 INVARIANT: no planned rung covers more than 1.5 spacings of new text", function()
+    -- The property the whole checkpoint system exists to guarantee — each
+    -- request's extraction delta is bounded by the spacing (×1.5 worst case:
+    -- the half-step rule may skip one near-duplicate boundary). This is the
+    -- test that would have caught D1. Scenarios: {pages, base, goal, position}.
+    local scenarios = {
+        { 1000, nil, nil, 0.71 },   -- the device-round-3 field report
+        { 1000, nil, nil, 0.05 },
+        { 1000, nil, nil, 0.98 },
+        { 1000, 0.3, nil, 0.71 },
+        { 1000, nil, 0.5, 0.45 },
+        { 300,  nil, nil, 0.5 },
+        { 90,   nil, nil, 0.6 },    -- novella: wide spacing
+        { 2500, nil, nil, 0.33 },   -- monster book: min-spacing bound
+        { 450,  0.48, nil, 0.52 },  -- half-step rule near the base
+    }
+    for _idx, s in ipairs(scenarios) do
+        local pages, base, goal, pos = s[1], s[2], s[3], s[4]
+        local spacing = XrayAuto.ladderSpacingFor(pages)
+        local rungs = XrayAuto.planBuildRungs(base, spacing, goal, pos)
+        local label = string.format("pages=%d base=%s goal=%s pos=%.2f",
+            pages, tostring(base), tostring(goal), pos)
+        local prev = base or 0
+        for i, target in ipairs(rungs) do
+            local delta = target - prev
+            TestRunner:assertEqual(delta <= spacing * 1.5 + XrayAuto.LADDER_TOLERANCE, true,
+                string.format("%s rung %d (%.3f): delta %.3f within 1.5×spacing %.2f",
+                    label, i, target, delta, spacing))
+            prev = target
+        end
+        -- The truncated (auto-establishment) prefix obeys the same bound by
+        -- construction — assert it stays a prefix
+        local trunc = XrayAuto.truncateToOneAhead(rungs, pos)
+        for i, target in ipairs(trunc) do
+            TestRunner:assertEqual(target, rungs[i], label .. ": truncation is a prefix")
+        end
+    end
+    -- The field case exactly: 8 bounded requests, not 2 unbounded ones
+    local spacing = XrayAuto.ladderSpacingFor(1000)
+    local rungs = XrayAuto.planBuildRungs(nil, spacing, nil, 0.71)
+    local trunc = XrayAuto.truncateToOneAhead(rungs, 0.71)
+    TestRunner:assertEqual(#trunc, 8, "establishment at 71%: grid to position + one ahead")
+    TestRunner:assertEqual(trunc[1], 0.1, "first checkpoint bounded at the first spacing rung")
+    TestRunner:assertEqual(trunc[#trunc], 0.8, "one ahead of the reader")
+end)
+
+print("")
+print("  [round 22: planAutoWork decision core (T2) + cancel suppression (D3)]")
+
+local function isJSON(s) return s == "{}" end
+
+TestRunner:test("planAutoWork: from-nothing establishment", function()
+    local w = XrayAuto.planAutoWork{ entry = nil, ladder = {}, base_progress = nil,
+        position = 0.2, goal = nil, is_json = isJSON }
+    TestRunner:assertEqual(w.build, true, "builds")
+    TestRunner:assertEqual(w.base, nil, "no base")
+    TestRunner:assertEqual(w.has_any, false, "nothing built")
+    TestRunner:assertEqual(w.plan_intro, true, "intro planned")
+end)
+
+TestRunner:test("planAutoWork: intro-only book is still a FIRST SPEND (D1 has_any hole)", function()
+    -- The field case: build cancelled after the introduction — a live intro
+    -- entry and an intro rung, nothing else. has_any must stay false so the
+    -- create guard and the coverage ask still apply.
+    local intro_entry = { result = "{}", intro = true, progress_decimal = 0 }
+    local w = XrayAuto.planAutoWork{
+        entry = intro_entry,
+        ladder = { { intro = true, result = "{}", progress_decimal = 0 } },
+        base_progress = nil,  -- highestXrayLadderProgress skips intro rungs
+        position = 0.71, goal = nil, is_json = isJSON,
+    }
+    TestRunner:assertEqual(w.build, true, "builds (once past the guards)")
+    TestRunner:assertEqual(w.has_any, false, "intro alone is not 'built'")
+    TestRunner:assertEqual(w.has_intro, true, "the intro is seen")
+    TestRunner:assertEqual(w.plan_intro, false, "no second intro planned")
+    TestRunner:assertEqual(w.base, nil, "the intro is never a base")
+end)
+
+TestRunner:test("planAutoWork: lineage blocks + live base folding", function()
+    local complete = { result = "{}", full_document = true }
+    local w = XrayAuto.planAutoWork{ entry = complete, ladder = {}, base_progress = nil,
+        position = 0.3, goal = nil, is_json = isJSON }
+    TestRunner:assertEqual(w.lineage_blocked, true, "complete-track blocks")
+    TestRunner:assertEqual(w.build, nil, "no build")
+    -- A rung base beside a different-lineage live entry: rungs win, not blocked
+    w = XrayAuto.planAutoWork{ entry = complete,
+        ladder = { { result = "{}", progress_decimal = 0.2 } }, base_progress = 0.2,
+        position = 0.35, goal = nil, is_json = isJSON }
+    TestRunner:assertEqual(w.build, true, "rung lineage continues past a foreign live entry")
+    TestRunner:assertEqual(w.base, 0.2, "rung base kept")
+    -- Live incremental ahead of the rungs: live wins as base
+    w = XrayAuto.planAutoWork{ entry = { result = "{}", progress_decimal = 0.4 },
+        ladder = { { result = "{}", progress_decimal = 0.2 } }, base_progress = 0.2,
+        position = 0.45, goal = nil, is_json = isJSON }
+    TestRunner:assertEqual(w.base, 0.4, "live coverage folds into the base")
+end)
+
+TestRunner:test("planAutoWork: idle reasons — ahead, goal reached, no position", function()
+    local w = XrayAuto.planAutoWork{ entry = nil,
+        ladder = { { result = "{}", progress_decimal = 0.3 } }, base_progress = 0.3,
+        position = 0.25, goal = nil, is_json = isJSON }
+    TestRunner:assertEqual(w.reason, "ahead", "built rung ahead of the reader: idle")
+    w = XrayAuto.planAutoWork{ entry = { result = "{}", progress_decimal = 0.5 },
+        ladder = {}, base_progress = nil,
+        position = 0.45, goal = nil, is_json = isJSON }
+    TestRunner:assertEqual(w.reason, "ahead", "live coverage ahead: idle")
+    w = XrayAuto.planAutoWork{ entry = nil,
+        ladder = { { result = "{}", progress_decimal = 0.5 } }, base_progress = 0.5,
+        position = 0.55, goal = 0.5, is_json = isJSON }
+    TestRunner:assertEqual(w.reason, "goal_reached", "goal-bounded scheduler idles at the goal")
+    w = XrayAuto.planAutoWork{ entry = nil, ladder = {}, base_progress = nil,
+        position = nil, goal = nil, is_json = isJSON }
+    TestRunner:assertEqual(w.reason, "no_position", "no position: nothing to plan")
+    -- Invalid goals are ignored, not treated as tiny targets
+    w = XrayAuto.planAutoWork{ entry = nil, ladder = {}, base_progress = nil,
+        position = 0.2, goal = 0.999, is_json = isJSON }
+    TestRunner:assertEqual(w.goal, nil, "near-1.0 goal normalizes to whole book")
+    TestRunner:assertEqual(w.build, true, "and still builds")
+end)
+
+TestRunner:test("planAutoWork: intro rung is never 'ahead'", function()
+    -- An intro (progress 0) plus nothing else, reader anywhere: not ahead
+    local w = XrayAuto.planAutoWork{ entry = nil,
+        ladder = { { intro = true, result = "{}", progress_decimal = 0 } },
+        base_progress = nil, position = 0.1, goal = nil, is_json = isJSON }
+    TestRunner:assertEqual(w.build, true, "intro alone never satisfies the invariant")
+end)
+
+TestRunner:test("auto suppression (D3): per-file, clearable, session-scoped semantics", function()
+    TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/a"), false, "clean start")
+    XrayAuto.suppressAuto("/a")
+    TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/a"), true, "suppressed after cancel")
+    TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/b"), false, "other books unaffected")
+    XrayAuto.clearAutoSuppression("/a")
+    TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/a"), false, "explicit start clears")
+    XrayAuto.suppressAuto(nil)
+    TestRunner:assertEqual(XrayAuto.isAutoSuppressed(nil), false, "nil file never suppresses")
 end)
 
 TestRunner:test("ladder build chain: intro step (round 20)", function()
