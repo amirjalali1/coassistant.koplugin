@@ -498,7 +498,7 @@ function Export.formatCacheContent(content, metadata, style)
             header = header .. ": " .. metadata.scope_label
         end
         if metadata.book_title then
-            header = header .. " — " .. metadata.book_title
+            header = header .. ": " .. metadata.book_title
         end
         table.insert(result, header)
         table.insert(result, "")
@@ -548,7 +548,7 @@ function Export.formatCacheContent(content, metadata, style)
             title_line = title_line .. ": " .. metadata.scope_label
         end
         if metadata.book_title then
-            title_line = title_line .. " — " .. metadata.book_title
+            title_line = title_line .. ": " .. metadata.book_title
         end
         table.insert(result, title_line)
         table.insert(result, header_line)

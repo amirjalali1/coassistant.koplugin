@@ -817,7 +817,7 @@ function PromptsManager:showPromptDetails(prompt)
 
     if prompt.local_handler then
         -- Local handler actions don't use AI — skip flags, AI settings, and prompt sections
-        info_text = info_text .. "\n\n" .. _("This is a local action — no AI call is made.")
+        info_text = info_text .. "\n\n" .. _("This is a local action: no AI call is made.")
     else
         -- Flags section (grouped together)
         info_text = info_text .. "\n\n" .. _("─── Flags ───")
@@ -1517,10 +1517,10 @@ function PromptsManager:showContextSelectorWizard(state)
                 local InfoMessage = require("ui/widget/infomessage")
                 UIManager:show(InfoMessage:new{
                     text = _("Context determines when your action appears and what data is available:") .. "\n\n" ..
-                           "• " .. _("Highlight") .. " — " .. _("When text is selected. Gets: selected text, optionally book info") .. "\n\n" ..
-                           "• " .. _("Book") .. " — " .. _("File browser or 'New Book Chat/Action'. Gets: title, author") .. "\n\n" ..
-                           "• " .. _("Library") .. " — " .. _("Multiple books selected. Gets: book list with count") .. "\n\n" ..
-                           "• " .. _("General") .. " — " .. _("Standalone chat. No automatic context"),
+                           "• " .. _("Highlight") .. ": " .. _("When text is selected. Gets: selected text, optionally book info") .. "\n\n" ..
+                           "• " .. _("Book") .. ": " .. _("File browser or 'New Book Chat/Action'. Gets: title, author") .. "\n\n" ..
+                           "• " .. _("Library") .. ": " .. _("Multiple books selected. Gets: book list with count") .. "\n\n" ..
+                           "• " .. _("General") .. ": " .. _("Standalone chat. No automatic context"),
                 })
             end,
         },
@@ -2165,10 +2165,10 @@ function PromptsManager:showViewModeSelector(state, refresh_callback)
                 local InfoMessage = require("ui/widget/infomessage")
                 UIManager:show(InfoMessage:new{
                     text = _("View modes control how results are displayed:") .. "\n\n" ..
-                           "• " .. _("Standard") .. " — " .. _("Full dialog with all response action buttons") .. "\n\n" ..
-                           "• " .. _("Dictionary") .. " — " .. _("Full-size dialog with dictionary buttons (language, context, action switcher). Expands to full chat via → Chat button") .. "\n\n" ..
-                           "• " .. _("Dictionary Compact") .. " — " .. _("Smaller dialog optimized for quick lookups, with the same dictionary buttons. Expands to Dictionary view") .. "\n\n" ..
-                           "• " .. _("Translate") .. " — " .. _("Translation view with language switch button and toggle to show/hide the original text"),
+                           "• " .. _("Standard") .. ": " .. _("Full dialog with all response action buttons") .. "\n\n" ..
+                           "• " .. _("Dictionary") .. ": " .. _("Full-size dialog with dictionary buttons (language, context, action switcher). Expands to full chat via → Chat button") .. "\n\n" ..
+                           "• " .. _("Dictionary Compact") .. ": " .. _("Smaller dialog optimized for quick lookups, with the same dictionary buttons. Expands to Dictionary view") .. "\n\n" ..
+                           "• " .. _("Translate") .. ": " .. _("Translation view with language switch button and toggle to show/hide the original text"),
                 })
             end,
         },

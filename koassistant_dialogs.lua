@@ -4987,9 +4987,9 @@ local function runSmartRetrieval(action, action_id, highlighted_text, ui_instanc
                 -- proceeds on AI knowledge with the fallback nudge.
                 note = _("No book lookups needed")
             elseif n == 1 then
-                note = _("Searched the book — 1 lookup")
+                note = _("Searched the book: 1 lookup")
             else
-                note = T(_("Searched the book — %1 lookups"), n)
+                note = T(_("Searched the book: %1 lookups"), n)
             end
             UIManager:show(Notification:new{ text = note, timeout = 2 })
             proceed()
@@ -5086,7 +5086,7 @@ local function showAttachMenu(opts)
         local n = Attachments.count()
         if n > 0 then
             table.insert(rows, {{
-                text = T(_("Attached (%1) — manage…"), n),
+                text = T(_("Attached (%1): manage…"), n),
                 callback = function()
                     UIManager:close(type_dialog)
                     showManage()
@@ -5198,7 +5198,7 @@ local function showAttachMenu(opts)
                 local note_dialog
                 note_dialog = require("ui/widget/inputdialog"):new{
                     title = _("Attach a note"),
-                    input_hint = _("Background context for this whole chat — sent alongside your messages as a note from you, not as a question.\ne.g. \"this is the 2nd edition\", \"I'm reading this for a course\", \"the file's author metadata is wrong\""),
+                    input_hint = _("Background context for this whole chat. Sent alongside your messages as a note from you, not as a question.\ne.g. \"this is the 2nd edition\", \"I'm reading this for a course\", \"the file's author metadata is wrong\""),
                     allow_newline = true,
                     -- Multi-line by default; only text_height works for
                     -- InputDialog sizing (input_height is a no-op)
@@ -6230,7 +6230,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 end,
                 hold_callback = function()
                     UIManager:show(InfoMessage:new{
-                        text = T(_("%1\n\n(Session folder — uncheck to remove)"), folder_path),
+                        text = T(_("%1\n\n(Session folder: uncheck to remove)"), folder_path),
                         timeout = 5,
                     })
                 end,
@@ -6581,7 +6581,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
         }})
 
         editor_dialog = ButtonDialog:new{
-            title = T(#books == 1 and _("%1 item selected — tap to remove") or _("%1 items selected — tap to remove"), #books),
+            title = T(#books == 1 and _("%1 item selected: tap to remove") or _("%1 items selected: tap to remove"), #books),
             buttons = menu_buttons,
         }
         UIManager:show(editor_dialog)
@@ -6903,7 +6903,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                     -- position/spoiler chip can change after the pick).
                                     if kind == "from_section" and entry.start_page > cur_page then
                                         UIManager:show(InfoMessage:new{
-                                            text = _("That section starts after your current position — pick an earlier one."),
+                                            text = _("That section starts after your current position: pick an earlier one."),
                                         })
                                         refreshInputDialog()
                                         return
@@ -7042,7 +7042,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             refreshInputDialog()
                         end
                         dialog = ButtonDialog:new{
-                            title = _("Context around the selection — for this chat"),
+                            title = _("Context around the selection (for this chat)"),
                             buttons = {
                                 {{ text = mark("none") .. _("Off"), callback = function() setMode("none") end }},
                                 {{ text = mark("sentence") .. _("Sentence"), callback = function() setMode("sentence") end }},

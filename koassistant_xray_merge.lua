@@ -580,7 +580,7 @@ local function pickTargetThenRun(opts)
         local warnings = {}
         for _idx, gap in ipairs(coverage.gaps) do
             warnings[#warnings + 1] = T(
-                _("No section X-Ray covers pp %1–%2 (between \"%3\" and \"%4\") — the merged result will have a gap there."),
+                _("No section X-Ray covers pp %1–%2 (between \"%3\" and \"%4\"). The merged result will have a gap there."),
                 gap.from_page, gap.to_page, gap.after_label or "?", gap.before_label or "?")
         end
         if target == "main" then
@@ -592,7 +592,7 @@ local function pickTargetThenRun(opts)
             local first_start = scoped[1] and tonumber(scoped[1].start_page)
             if base_page and first_start and first_start > base_page + 1 then
                 warnings[#warnings + 1] = T(
-                    _("The main X-Ray covers up to p. %1 and the first selected section starts at p. %2 — the pages between are in neither."),
+                    _("The main X-Ray covers up to p. %1 and the first selected section starts at p. %2. The pages between are in neither."),
                     base_page, first_start)
             end
             -- Raising the main's claim / passing the reader = spoiler-relevant
@@ -600,12 +600,12 @@ local function pickTargetThenRun(opts)
             local reader_p = opts.reading_decimal
             if coverage_ratio and reader_p and coverage_ratio > reader_p + 0.01 then
                 warnings[#warnings + 1] = T(
-                    _("The selected sections cover text beyond your reading position (%1%) — the merged X-Ray will contain later material."),
+                    _("The selected sections cover text beyond your reading position (%1%). The merged X-Ray will contain later material."),
                     math.floor(reader_p * 100 + 0.5))
             elseif coverage_ratio and main_p and not opts.main_entry.full_document
                 and coverage_ratio > main_p + 0.01 then
                 warnings[#warnings + 1] = T(
-                    _("The selected sections extend beyond the X-Ray's current coverage (%1%) — its coverage claim will rise to %2%."),
+                    _("The selected sections extend beyond the X-Ray's current coverage (%1%). Its coverage claim will rise to %2%."),
                     math.floor(main_p * 100 + 0.5), math.floor(coverage_ratio * 100 + 0.5))
             end
         end
@@ -650,7 +650,7 @@ local function pickTargetThenRun(opts)
         }})
     else
         table.insert(rows, {{
-            text = T(_("%1 — open the book first"), main_row_text),
+            text = T(_("%1 (open the book first)"), main_row_text),
             enabled = false,
         }})
     end
@@ -665,7 +665,7 @@ local function pickTargetThenRun(opts)
         }})
     else
         table.insert(rows, {{
-            text = _("Create combined section X-Ray — select at least two sections"),
+            text = _("Create combined section X-Ray: select at least two sections"),
             enabled = false,
         }})
     end
@@ -883,7 +883,7 @@ function XrayMerge.startFlow(opts)
             end,
         }})
         dialog = ButtonDialog:new{
-            title = _("Merge section X-Rays — pick inputs"),
+            title = _("Merge section X-Rays: pick inputs"),
             buttons = rows,
         }
         current_picker = dialog

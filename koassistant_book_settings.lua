@@ -531,7 +531,7 @@ function BookSettings.showBackgroundEditor(opts)
         title = _("Background (this book)"),
         description = _("Standing context for this book: why you're reading it, the stance you bring, anything the book's own description gets wrong. It is kept with this book and sent with every request about it, alongside your domain and behavior settings. Leave empty to remove."),
         input = doc_settings:readSetting(BookSettings.KEY_BACKGROUND) or "",
-        input_hint = _("e.g. \"I'm reading this biography critically — I admire its subject and I think the author has an axe to grind\"\ne.g. \"for a seminar on X\" · \"this is the Arberry translation\""),
+        input_hint = _("e.g. \"I'm reading this biography critically; I admire its subject and I think the author has an axe to grind\"\ne.g. \"for a seminar on X\" · \"this is the Arberry translation\""),
         allow_newline = true,
         -- Multi-line by default; only text_height works for InputDialog sizing
         text_height = require("device").screen:scaleBySize(200),
@@ -846,13 +846,13 @@ function BookSettings.showXrayAutoPicker(opts)
     end
     picker = ButtonDialog:new{
         title = _("Automatic X-Ray (this book)") .. "\n"
-            .. _("On: build this book's X-Ray automatically as you read — a spoiler-free introduction first, then checkpoints, always keeping the next one ready ahead of you (background API calls; WiFi + text-extraction consent required)."),
+            .. _("On: build this book's X-Ray automatically as you read: a spoiler-free introduction first, then checkpoints, always keeping the next one ready ahead of you (background API calls; WiFi + text-extraction consent required)."),
         buttons = {
             {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), global_on and _("On") or _("Off")),
                 callback = function() pick(nil) end }},
-            {{ text = dot(cur == "on") .. _("On — fully automatic"),
+            {{ text = dot(cur == "on") .. _("On: fully automatic"),
                 callback = function() pick("on") end }},
-            {{ text = dot(cur == "off") .. _("Off — never automatic"),
+            {{ text = dot(cur == "off") .. _("Off: never automatic"),
                 callback = function() pick("off") end }},
             {{ text = _("Cancel"), id = "close",
                 callback = function()
@@ -2098,7 +2098,7 @@ function BookSettings.showQuizConfig(opts)
             callback = function()
                 showOptions("enabled", _("Chapter-end quiz (this book)"),
                     features.enable_chapter_quiz == true and _("On") or _("Off"),
-                    { { value = false, label = _("Off — never quiz this book") } })
+                    { { value = false, label = _("Off: never quiz this book") } })
             end }},
         {{ text = T(_("Question count: %1"), numLabel(cur.count)),
             callback = function()

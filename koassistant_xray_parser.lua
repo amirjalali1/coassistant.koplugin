@@ -1073,7 +1073,7 @@ function XrayParser.renderToMarkdown(data, title, progress)
                         table.insert(desc_parts, char.description)
                     end
                     if #desc_parts > 0 then
-                        entry = entry .. " — " .. table.concat(desc_parts, ". ")
+                        entry = entry .. ": " .. table.concat(desc_parts, ". ")
                     end
                     table.insert(lines, entry)
 
@@ -1099,7 +1099,7 @@ function XrayParser.renderToMarkdown(data, title, progress)
                     if loc.details and loc.details ~= "" then table.insert(detail_parts, loc.details) end
                     if sig ~= "" then table.insert(detail_parts, sig) end
                     if #detail_parts > 0 then
-                        entry = entry .. " — " .. table.concat(detail_parts, ". ")
+                        entry = entry .. ": " .. table.concat(detail_parts, ". ")
                     end
                     table.insert(lines, entry)
                     local l_refs = ensure_array(loc.references)
@@ -1112,7 +1112,7 @@ function XrayParser.renderToMarkdown(data, title, progress)
                 for _idx2, theme in ipairs(cat.items) do
                     local entry = "**" .. (theme.name or "Unknown") .. "**"
                     if theme.description and theme.description ~= "" then
-                        entry = entry .. " — " .. theme.description
+                        entry = entry .. ": " .. theme.description
                     end
                     if theme.evidence and theme.evidence ~= "" then
                         entry = entry .. " " .. theme.evidence
@@ -1131,7 +1131,7 @@ function XrayParser.renderToMarkdown(data, title, progress)
                 for _idx2, term in ipairs(cat.items) do
                     local entry = "**" .. (term.term or "Unknown") .. "**"
                     if term.definition and term.definition ~= "" then
-                        entry = entry .. " — " .. term.definition
+                        entry = entry .. ": " .. term.definition
                     end
                     table.insert(lines, entry)
                     table.insert(lines, "")
@@ -1146,7 +1146,7 @@ function XrayParser.renderToMarkdown(data, title, progress)
                     end
                     local entry = prefix .. (event.event or "Unknown")
                     if event.significance and event.significance ~= "" then
-                        entry = entry .. " — " .. event.significance
+                        entry = entry .. ": " .. event.significance
                     end
                     local e_characters = ensure_array(event.characters) or ensure_array(event.references)
                     if e_characters and #e_characters > 0 then

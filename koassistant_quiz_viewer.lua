@@ -100,9 +100,9 @@ function QuizViewer:_buildUI()
     -- Title bar
     local title_text
     if self.opts.chapter then
-        title_text = T(_("Quiz: %1 — %2/%3"), self.opts.chapter, self.current_index, total)
+        title_text = T(_("Quiz: %1 (%2/%3)"), self.opts.chapter, self.current_index, total)
     else
-        title_text = T(_("Quiz — Question %1/%2"), self.current_index, total)
+        title_text = T(_("Quiz: Question %1/%2"), self.current_index, total)
     end
 
     local titlebar = TitleBar:new{
@@ -284,7 +284,7 @@ function QuizViewer:_buildQuestionButtons(q, idx)
             if self.correct[idx] then
                 result_text = _("Correct!")
             else
-                result_text = T(_("Incorrect — answer: %1"), q.correct or "?")
+                result_text = T(_("Incorrect. Answer: %1"), q.correct or "?")
             end
             table.insert(buttons, {{ text = result_text, enabled = false }})
         end
@@ -612,7 +612,7 @@ function QuizViewer:_buildResultText()
 
     table.insert(lines, "# " .. _("Quiz Results"))
     if chapter then
-        table.insert(lines, T(_("**Book:** %1 — %2"), book_title, chapter))
+        table.insert(lines, T(_("**Book:** %1, %2"), book_title, chapter))
     else
         table.insert(lines, T(_("**Book:** %1"), book_title))
     end
@@ -634,7 +634,7 @@ function QuizViewer:_buildResultText()
     for idx, q in ipairs(questions) do
         table.insert(lines, T("**%1.** %2", idx, q.question))
         if q.type == "multiple_choice" and self.answers[idx] then
-            table.insert(lines, T(_("Your answer: %1 — Correct: %2"), self.answers[idx], q.correct or "?"))
+            table.insert(lines, T(_("Your answer: %1. Correct: %2"), self.answers[idx], q.correct or "?"))
         end
         if self.correct[idx] == true then
             table.insert(lines, _("Result: Correct"))

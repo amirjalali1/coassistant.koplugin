@@ -444,7 +444,7 @@ local function commitEntityMerge(opts, state, pair, keep_side, merged_descriptio
     local changed, dropped_item = XrayDedup.applyMergeToData(
         data, pair.cat_key, keep_name, drop_name, merged_description, keep_idx, drop_idx)
     if not changed then
-        return false, _("These entries changed on disk — reopen the duplicate scan.")
+        return false, _("These entries changed on disk. Reopen the duplicate scan.")
     end
 
     local json = require("json")
@@ -614,7 +614,7 @@ function XrayDedup.startFlow(opts)
         end
         local data = XrayParser.parse(entry.result)
         if not data or data.error then
-            return { err = _("The main X-Ray is not in structured form — the duplicate scan needs a JSON X-Ray.") }
+            return { err = _("The main X-Ray is not in structured form. The duplicate scan needs a JSON X-Ray.") }
         end
         -- One sidecar read serves both the alias merge and the never list
         local user_aliases = ActionCache.getUserAliases(opts.file)
@@ -647,7 +647,7 @@ function XrayDedup.startFlow(opts)
             local keep_name = keep_side == "b" and pair.name_b or pair.name_a
             local drop_name = keep_side == "b" and pair.name_a or pair.name_b
             return {{
-                text = T(_("Merge — keep \"%1\""), keep_name),
+                text = T(_("Merge: keep \"%1\""), keep_name),
                 align = "left",
                 callback = function()
                     UIManager:close(dialog)
@@ -674,7 +674,7 @@ function XrayDedup.startFlow(opts)
         end
         if AI_MERGE_CATEGORIES[pair.cat_key] then
             rows[#rows + 1] = {{
-                text = T(_("AI merge — combined description, keep \"%1\""), pair.name_a),
+                text = T(_("AI merge: combined description, keep \"%1\""), pair.name_a),
                 align = "left",
                 callback = function()
                     UIManager:close(dialog)
@@ -735,7 +735,7 @@ function XrayDedup.startFlow(opts)
             end,
         }}
         dialog = ButtonDialog:new{
-            title = T(_("%1 — %2"), pair.cat_label, reasonLabel(pair.reason)) .. "\n\n"
+            title = T(_("%1: %2"), pair.cat_label, reasonLabel(pair.reason)) .. "\n\n"
                 .. pair.name_a .. ": " .. snippet(pair.item_a) .. "\n\n"
                 .. pair.name_b .. ": " .. snippet(pair.item_b),
             buttons = rows,
@@ -779,7 +779,7 @@ function XrayDedup.startFlow(opts)
             end,
         }}
         dialog = ButtonDialog:new{
-            title = _("Never-merge pairs — tap one to allow it again"),
+            title = _("Never-merge pairs: tap one to allow it again"),
             buttons = rows,
         }
         UIManager:show(dialog)
@@ -857,7 +857,7 @@ function XrayDedup.startFlow(opts)
         cat_rows[#cat_rows + 1] = {{ text = _("Cancel"),
             callback = function() UIManager:close(catdlg) end }}
         catdlg = ButtonDialog:new{
-            title = _("Merge entities manually — pick a category"),
+            title = _("Merge entities manually: pick a category"),
             buttons = cat_rows,
         }
         UIManager:show(catdlg)
@@ -917,7 +917,7 @@ function XrayDedup.startFlow(opts)
         end
         if res.truncated then
             rows[#rows + 1] = {{
-                text = T(_("Showing the first %1 — resolve some to see more"), XrayDedup.MAX_PAIRS),
+                text = T(_("Showing the first %1: resolve some to see more"), XrayDedup.MAX_PAIRS),
                 enabled = false,
             }}
         end

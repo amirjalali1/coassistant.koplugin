@@ -141,7 +141,7 @@ local SettingsSchema = {
             -- time, so a model-specific string would go stale after switching models via
             -- the Model row without leaving the menu. The live per-model state rides on
             -- suffix_func above, which is re-evaluated on every render.
-            help_text = _("Applies to free-form chat — most built-in actions set their own temperature.\nSome models ignore this setting or accept only a fixed value; the row says so when the current model is one of them."),
+            help_text = _("Applies to free-form chat: most built-in actions set their own temperature.\nSome models ignore this setting or accept only a fixed value; the row says so when the current model is one of them."),
             separator = true,
         },
         -- Display Settings submenu
@@ -476,7 +476,7 @@ local SettingsSchema = {
                             text = _("Quick Answer On by Default"),
                             path = "features.quick_answer_default",
                             default = false,
-                            help_text = _("Start new chats with the Quick Answer (⚡) button already on. You can still turn it off per chat — and override the default per book from Book Settings or the ⚡ button's menu."),
+                            help_text = _("Start new chats with the Quick Answer (⚡) button already on. You can still turn it off per chat: and override the default per book from Book Settings or the ⚡ button's menu."),
                         },
                         {
                             id = "quick_preset_nudge",
@@ -528,7 +528,7 @@ local SettingsSchema = {
                                 end
                                 return T(_("Model override: %1"), label)
                             end,
-                            help_text = _("Optionally switch models while Quick Answer is on (that chat only — your default model is untouched): the active provider's fastest listed model, a tier of the active provider, or a pinned specific model. Custom providers keep the current model unless custom_models.lua gives them tier placements. A one-shot model pick in the Quick chip's menu overrides this."),
+                            help_text = _("Optionally switch models while Quick Answer is on (that chat only: your default model is untouched): the active provider's fastest listed model, a tier of the active provider, or a pinned specific model. Custom providers keep the current model unless custom_models.lua gives them tier placements. A one-shot model pick in the Quick chip's menu overrides this."),
                             callback = "showQuickPresetModelMode",
                             keep_menu_open = true,
                         },
@@ -814,7 +814,7 @@ local SettingsSchema = {
                     text = _("Automatic X-Ray (all books)"),
                     path = "features.xray_auto_update",
                     default = false,
-                    help_text = _("Automatically build and maintain every book's X-Ray as you read (flowing formats like EPUB only): a spoiler-free introduction first, then checkpoints at chapter-sized steps, always keeping the next checkpoint ready ahead of you — reaching it installs it instantly and the one after starts building. Individual books can override this either way: X-Ray popup or Book Settings → Automatic X-Ray — a per-book On works even with this off, and a per-book Off always wins.\n\nSpend guards: at most one background build per cooldown, WiFi only, and text-extraction consent (or a trusted provider) required — background runs extract book text and use API tokens without a per-request tap. Leave off if every request should be explicit."),
+                    help_text = _("Automatically build and maintain every book's X-Ray as you read (flowing formats like EPUB only): a spoiler-free introduction first, then checkpoints at chapter-sized steps, always keeping the next checkpoint ready ahead of you; reaching it installs it instantly and the one after starts building. Individual books can override this either way: X-Ray popup or Book Settings → Automatic X-Ray; a per-book On works even with this off, and a per-book Off always wins.\n\nSpend guards: at most one background build per cooldown, WiFi only, and text-extraction consent (or a trusted provider) required; background runs extract book text and use API tokens without a per-request tap. Leave off if every request should be explicit."),
                     on_change = function(new_value, plugin)
                         -- Round 22 (R4 / known gap (a)): flipping the master with a
                         -- book open must reach that book immediately — refresh the
@@ -836,10 +836,10 @@ local SettingsSchema = {
                 {
                     id = "xray_auto_create",
                     type = "toggle",
-                    text = _("Auto-create X-Ray (early in a book)"),
+                    text = _("Also Start X-Rays Automatically"),
                     path = "features.xray_auto_create",
                     default = false,
-                    help_text = _("For books following the global setting with no X-Ray yet: allow the automatic first build (introduction + checkpoints to your position; the first build asks how you want coverage, once per book). Without this, automation only maintains X-Rays you started yourself. Books with an existing non-incremental X-Ray (complete, AI-knowledge, legacy) are never touched.\n\nBooks switched to Automatic individually (per-book On) always build the first one, regardless of this setting."),
+                    help_text = _("A sub-setting of Automatic X-Ray (all books), for books that have NO X-Ray yet: allow automation to make the FIRST build (introduction + checkpoints to your position; the first build asks how you want coverage, once per book). With this off, \"all books\" automation only maintains X-Rays you started yourself. Books with an existing non-incremental X-Ray (complete, AI-knowledge, legacy) are never touched.\n\nBooks switched to Automatic individually (per-book On) always build the first one, regardless of this setting."),
                     depends_on = { id = "xray_auto_update", value = true },
                 },
                 {
@@ -894,7 +894,7 @@ local SettingsSchema = {
                     text = _("Checkpoints at Chapter Ends"),
                     path = "features.xray_ladder_chapter_snap",
                     default = true,
-                    help_text = _("When building X-Ray checkpoints, place each checkpoint at the nearest chapter end (within a few percent) instead of an exact percentage — checkpoints then read as \"up to the end of a chapter\", and the versions list shows the chapter names. Needs a table of contents. Checkpoint spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones."),
+                    help_text = _("When building X-Ray checkpoints, place each checkpoint at the nearest chapter end (within a few percent) instead of an exact percentage; checkpoints then read as \"up to the end of a chapter\", and the versions list shows the chapter names. Needs a table of contents. Checkpoint spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones."),
                 },
                 {
                     id = "xray_versions_kept",
@@ -906,7 +906,7 @@ local SettingsSchema = {
                     max = 20,
                     step = 1,
                     precision = "%d",
-                    help_text = _("Whenever an update or redo overwrites the X-Ray, the outgoing version is archived — browse, view, or restore them via \"All versions\" in the X-Ray popup and browser menu. This sets how many are kept per book (oldest dropped first). 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself. Checkpoints are stored separately and are never trimmed by this."),
+                    help_text = _("Whenever an update or redo overwrites the X-Ray, the outgoing version is archived: browse, view, or restore them via \"All versions\" in the X-Ray popup and browser menu. This sets how many are kept per book (oldest dropped first). 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself. Checkpoints are stored separately and are never trimmed by this."),
                     separator = true,
                 },
                 -- Recap Reminder
@@ -1616,7 +1616,7 @@ local SettingsSchema = {
                             return T(_("Trusted Providers: %1"), table.concat(trusted, ", "))
                         end
                     end,
-                    help_text = _("Providers you trust bypass all data sharing controls below AND text extraction. All data types (highlights, annotations, notebook, book text) are available without toggling individual settings. Use for local Ollama instances or providers you fully trust.\n\nTrust also satisfies the consent that background features (such as Automatic X-Ray and X-Ray checkpoint builds) check before running — those can then extract text and spend tokens without a per-request tap."),
+                    help_text = _("Providers you trust bypass all data sharing controls below AND text extraction. All data types (highlights, annotations, notebook, book text) are available without toggling individual settings. Use for local Ollama instances or providers you fully trust.\n\nTrust also satisfies the consent that background features (such as Automatic X-Ray and X-Ray checkpoint builds) check before running; those can then extract text and spend tokens without a per-request tap."),
                     callback = "showTrustedProvidersDialog",
                     separator = true,
                 },
@@ -1740,7 +1740,7 @@ local SettingsSchema = {
                             text = _("Allow Text Extraction"),
                             path = "features.enable_book_text_extraction",
                             default = false,
-                            help_text = _("When enabled, actions can extract and send book text to the AI. Used by X-Ray, Recap, and actions with text placeholders.\n\nThis consent also covers background features you opt into separately (such as Automatic X-Ray and X-Ray checkpoint builds): those extract text and spend API tokens without a per-request confirmation, within their own size guards. Revoking this consent stops them.\n\nTip: Use Hidden Flows to exclude front matter, appendices, etc. You can also focus actions on a specific section or section range to extract only a chapter or part — and for X-Ray, checkpoints cover the book in bounded incremental steps."),
+                            help_text = _("When enabled, actions can extract and send book text to the AI. Used by X-Ray, Recap, and actions with text placeholders.\n\nThis consent also covers background features you opt into separately (such as Automatic X-Ray and X-Ray checkpoint builds): those extract text and spend API tokens without a per-request confirmation, within their own size guards. Revoking this consent stops them.\n\nTip: Use Hidden Flows to exclude front matter, appendices, etc. You can also focus actions on a specific section or section range to extract only a chapter or part; for X-Ray, checkpoints cover the book in bounded incremental steps."),
                             on_change = function(new_value, plugin)
                                 if new_value then
                                     -- Unlock QS panel toggle after first manual enable
@@ -1753,7 +1753,7 @@ local SettingsSchema = {
                                     local InfoMessage = require("ui/widget/infomessage")
                                     local UIManager = require("ui/uimanager")
                                     UIManager:show(InfoMessage:new{
-                                        text = _("Text extraction sends actual book content to the AI. This uses tokens (increases API costs) and processing time. Features like X-Ray and Recap use this to analyze your reading progress.\n\nBackground features you opt into separately (such as Automatic X-Ray) will also extract text without asking per request.\n\nTip: Use Hidden Flows to exclude front matter, appendices, etc. You can also focus actions on a specific section or section range to extract only a chapter or part — and for X-Ray, checkpoints cover the book in bounded incremental steps."),
+                                        text = _("Text extraction sends actual book content to the AI. This uses tokens (increases API costs) and processing time. Features like X-Ray and Recap use this to analyze your reading progress.\n\nBackground features you opt into separately (such as Automatic X-Ray) will also extract text without asking per request.\n\nTip: Use Hidden Flows to exclude front matter, appendices, etc. You can also focus actions on a specific section or section range to extract only a chapter or part; for X-Ray, checkpoints cover the book in bounded incremental steps."),
                                     })
                                 end
                             end,
@@ -1790,7 +1790,7 @@ local SettingsSchema = {
                             text = _("Don't warn about truncated extractions"),
                             path = "features.suppress_truncation_warning",
                             default = false,
-                            help_text = _("When unchecked, a blocking warning is shown before sending requests when extracted text was truncated to fit the character limit. Shows coverage percentage so you know how much of the book was included.\n\nBackground runs (Automatic X-Ray, checkpoint builds) never show this warning — a truncated background extraction aborts the run instead of sending dishonest coverage.\n\nCheck this if you don't need the reminder."),
+                            help_text = _("When unchecked, a blocking warning is shown before sending requests when extracted text was truncated to fit the character limit. Shows coverage percentage so you know how much of the book was included.\n\nBackground runs (Automatic X-Ray, checkpoint builds) never show this warning: a truncated background extraction aborts the run instead of sending dishonest coverage.\n\nCheck this if you don't need the reminder."),
                             depends_on = { id = "enable_book_text_extraction", value = true },
                         },
                         {
@@ -1799,7 +1799,7 @@ local SettingsSchema = {
                             text = _("Don't warn about large extractions"),
                             path = "features.suppress_large_extraction_warning",
                             default = false,
-                            help_text = _("When unchecked, a warning is shown before sending requests with large text extractions (over 500K characters / ~125K tokens). Most models have smaller context windows and will reject oversized requests.\n\nBackground runs (Automatic X-Ray, checkpoint builds) never show this warning; their size is bounded instead — automatic updates by the Maximum Progress Gap, checkpoints by their incremental steps.\n\nCheck this if you know your model's limits and don't need the reminder."),
+                            help_text = _("When unchecked, a warning is shown before sending requests with large text extractions (over 500K characters / ~125K tokens). Most models have smaller context windows and will reject oversized requests.\n\nBackground runs (Automatic X-Ray, checkpoint builds) never show this warning; their size is bounded instead: automatic updates by the Maximum Progress Gap, checkpoints by their incremental steps.\n\nCheck this if you know your model's limits and don't need the reminder."),
                             depends_on = { id = "enable_book_text_extraction", value = true },
                         },
                         {
@@ -2077,7 +2077,7 @@ local SettingsSchema = {
                     id = "rebuild_indexes",
                     type = "action",
                     text = _("Rebuild Data Indexes"),
-                    help_text = _("Finds books whose KOAssistant data (artifacts, chats, notebooks, pinned) exists on disk but doesn't show in this device's browsers — e.g. after syncing sidecar files from another device, restoring a backup, or migrating devices.\n\nChecks your reading history, KOReader's sidecar locations, and the scan folders configured below, then removes stale entries. Books on unmounted storage get pruned; run again with the storage mounted to re-add them.\n\nMay take a while on large libraries."),
+                    help_text = _("Finds books whose KOAssistant data (artifacts, chats, notebooks, pinned) exists on disk but doesn't show in this device's browsers, e.g. after syncing sidecar files from another device, restoring a backup, or migrating devices.\n\nChecks your reading history, KOReader's sidecar locations, and the scan folders configured below, then removes stale entries. Books on unmounted storage get pruned; run again with the storage mounted to re-add them.\n\nMay take a while on large libraries."),
                     callback = "rebuildAllIndexes",
                 },
                 {
@@ -2092,7 +2092,7 @@ local SettingsSchema = {
                             return T(_("Index Scan Folders: %1"), #folders)
                         end
                     end,
-                    help_text = _("Folders to scan during index rebuild — point this at your synced book folders. Only these folders are ever scanned, and only when a rebuild runs. Folders that don't exist on this device are skipped.\n\nNote: a settings reset clears this list."),
+                    help_text = _("Folders to scan during index rebuild: point this at your synced book folders. Only these folders are ever scanned, and only when a rebuild runs. Folders that don't exist on this device are skipped.\n\nNote: a settings reset clears this list."),
                     callback = "getIndexScanFoldersMenuItems",
                 },
                 {
@@ -2244,7 +2244,7 @@ local SettingsSchema = {
                             id = "enable_web_search",
                             type = "toggle",
                             text = _("Enable Web Search"),
-                            help_text = T(_("Allow AI to search the web for current information.\n\nSupported providers: %1.\n\nGemini supports it only on Search-grounding-capable models; OpenAI on GPT-5 models and xAI on Grok-4 models (via their Responses APIs); Perplexity always searches (no toggle needed); OpenRouter works for any model via the :online suffix.\n\nOther providers currently ignore this setting.\n\nThis is a global default — per-request toggles (input dialog, chat viewer) adapt to the active provider.\n\nIncreases token usage/cost."),
+                            help_text = T(_("Allow AI to search the web for current information.\n\nSupported providers: %1.\n\nGemini supports it only on Search-grounding-capable models; OpenAI on GPT-5 models and xAI on Grok-4 models (via their Responses APIs); Perplexity always searches (no toggle needed); OpenRouter works for any model via the :online suffix.\n\nOther providers currently ignore this setting.\n\nThis is a global default: per-request toggles (input dialog, chat viewer) adapt to the active provider.\n\nIncreases token usage/cost."),
                                 ModelConstraints.getWebSearchProvidersLabel())
                                 -- Appended as its own sentence rather than folded into the
                                 -- string above so the existing translations survive. Field
@@ -2268,7 +2268,7 @@ local SettingsSchema = {
                                 }
                                 return T(_("Web Search Effort: %1"), labels[effort] or effort)
                             end,
-                            help_text = _("How much web searching the AI may do per question.\n\nLight: fewest searches — fastest and cheapest.\nStandard: balanced (provider defaults).\nThorough: most searches and context — slower and costlier.\n\nApplies where the provider offers control: Anthropic (up to 2/5/10 searches), OpenAI and Perplexity (search context size), OpenRouter (3/5/10 results), Z.AI (result count and snippet size). Gemini and xAI decide automatically."),
+                            help_text = _("How much web searching the AI may do per question.\n\nLight: fewest searches, fastest and cheapest.\nStandard: balanced (provider defaults).\nThorough: most searches and context, slower and costlier.\n\nApplies where the provider offers control: Anthropic (up to 2/5/10 searches), OpenAI and Perplexity (search context size), OpenRouter (3/5/10 results), Z.AI (result count and snippet size). Gemini and xAI decide automatically."),
                             path = "features.web_search_effort",
                             default = "standard",
                             options = {
@@ -2313,7 +2313,7 @@ local SettingsSchema = {
                                 }
                                 return T(_("Provider: %1"), labels[v] or v)
                             end,
-                            help_text = _("Which provider generates images.\n\n'Follow main provider' uses your current chat provider when it supports images (OpenAI, xAI, Gemini). Picking one explicitly lets image generation work no matter which chat provider is active — it uses that provider's own API key.\n\nThe highlight-menu button only appears when the resolved provider has an API key."),
+                            help_text = _("Which provider generates images.\n\n'Follow main provider' uses your current chat provider when it supports images (OpenAI, xAI, Gemini). Picking one explicitly lets image generation work no matter which chat provider is active: it uses that provider's own API key.\n\nThe highlight-menu button only appears when the resolved provider has an API key."),
                             path = "features.image_gen_provider",
                             default = "auto",
                             options = {
@@ -2519,7 +2519,7 @@ local SettingsSchema = {
                         }
                         return T(_("AI Book Tools: %1"), labels[posture] or posture)
                     end,
-                    help_text = _("EXPERIMENTAL — Gemini, Claude (Anthropic), OpenAI, OpenRouter (Claude/GPT/Gemini models), DeepSeek, Mistral, Groq, and xAI. Book tools let the AI search the open book's text, read specific pages, and view the table of contents, so it can ground answers in the actual book instead of guessing. Requires \"Allow Text Extraction\".\n\nOff: no tool use anywhere — the Tools chip disappears from chats, and actions can't use smart retrieval.\nManual: the Tools chip in book chats starts OFF — tap it to allow tools for that chat.\nAuto (default): the Tools chip starts ON; the AI still decides per question whether to actually search. Manual and Auto only set the chip's starting position.\n\nPredefined actions are unaffected either way — they never use tools unless they explicitly offer smart retrieval. Override per book in Book Settings. Work in progress; behavior may change."),
+                    help_text = _("EXPERIMENTAL: Gemini, Claude (Anthropic), OpenAI, OpenRouter (Claude/GPT/Gemini models), DeepSeek, Mistral, Groq, and xAI. Book tools let the AI search the open book's text, read specific pages, and view the table of contents, so it can ground answers in the actual book instead of guessing. Requires \"Allow Text Extraction\".\n\nOff: no tool use anywhere: the Tools chip disappears from chats, and actions can't use smart retrieval.\nManual: the Tools chip in book chats starts OFF; tap it to allow tools for that chat.\nAuto (default): the Tools chip starts ON; the AI still decides per question whether to actually search. Manual and Auto only set the chip's starting position.\n\nPredefined actions are unaffected either way; they never use tools unless they explicitly offer smart retrieval. Override per book in Book Settings. Work in progress; behavior may change."),
                     path = "features.tools_posture",
                     default = "auto",
                     options = {
@@ -2540,7 +2540,7 @@ local SettingsSchema = {
                         }
                         return T(_("Book Tools Mode: %1"), labels[mode] or mode)
                     end,
-                    help_text = _("How AI Book Tools answer.\n\nGather then answer: the AI quietly collects passages from the book first, then answers as a normal request — the answer streams and web search stays available.\n\nInteractive: the original agentic loop — the AI narrates its way through lookups; no streaming or web search while tools run."),
+                    help_text = _("How AI Book Tools answer.\n\nGather then answer: the AI quietly collects passages from the book first, then answers as a normal request: the answer streams and web search stays available.\n\nInteractive: the original agentic loop; the AI narrates its way through lookups; no streaming or web search while tools run."),
                     path = "features.tool_mode",
                     default = "gather",
                     options = {
@@ -2561,7 +2561,7 @@ local SettingsSchema = {
                         }
                         return T(_("Book Tools Lookup Effort: %1"), labels[effort] or effort)
                     end,
-                    help_text = _("How much searching AI Book Tools may do per question.\n\nQuick: up to 4 lookups in 2 rounds — fastest, for simple factual questions.\nStandard: up to 8 lookups in 4 rounds — good balance.\nThorough: up to 16 lookups in 6 rounds, with a larger passage budget — slower and costlier, for questions that need evidence from many places in the book."),
+                    help_text = _("How much searching AI Book Tools may do per question.\n\nQuick: up to 4 lookups in 2 rounds, fastest, for simple factual questions.\nStandard: up to 8 lookups in 4 rounds, a good balance.\nThorough: up to 16 lookups in 6 rounds, with a larger passage budget; slower and costlier, for questions that need evidence from many places in the book."),
                     path = "features.tool_lookup_effort",
                     default = "standard",
                     options = {
@@ -2574,7 +2574,7 @@ local SettingsSchema = {
                     id = "show_book_tools_indicator",
                     type = "toggle",
                     text = _("AI Book Tools: Show Indicator in Chat"),
-                    help_text = _("Show '*[Searched the book — N lookups]*' indicator in chat when AI Book Tools ran for a response.\n\nThe individual lookups are always viewable via the chat menu's 'Show Sources' entry."),
+                    help_text = _("Show '*[Searched the book: N lookups]*' indicator in chat when AI Book Tools ran for a response.\n\nThe individual lookups are always viewable via the chat menu's 'Show Sources' entry."),
                     path = "features.show_book_tools_indicator",
                     default = true,
                 },
@@ -2584,7 +2584,7 @@ local SettingsSchema = {
                     text = _("AI Book Tools: Show Lookups (debug)"),
                     path = "features.tool_workflow_diagnostics",
                     default = false,
-                    help_text = _("Append the tool lookups, raw tool results, and token usage to each answer when AI Book Tools run. For debugging the experimental tools — leave off for clean answers. Note: the raw tool results can include book-text snippets."),
+                    help_text = _("Append the tool lookups, raw tool results, and token usage to each answer when AI Book Tools run. For debugging the experimental tools: leave off for clean answers. Note: the raw tool results can include book-text snippets."),
                     separator = true,
                 },
                 {

@@ -5273,8 +5273,11 @@ function AskGPT:showCacheViewer(cache_info)
           merged_from_sections = cache_info.data.merged_from_sections,
           info_popup_text = info_popup_text,
           -- Archived-version view: browser goes read-only (no update/delete rows,
-          -- no nested version history), title says "X-Ray Version"
+          -- no nested version history), title says "X-Ray Version". Round 24:
+          -- the raw entry rides along so the viewer can reach the version's
+          -- own options (restore/delete) instead of dead-ending at Info.
           checkpoint = cache_info.checkpoint,
+          checkpoint_data = cache_info.checkpoint and cache_info.data or nil,
         }
         -- Add scope metadata for section X-Rays
         if is_section_xray and cache_info.data.scope_label then
@@ -7011,7 +7014,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     local nc_build = nc_xa.ladderBuild()
     if nc_build then
       table.insert(buttons, {{
-        text = T(_("Building checkpoints — %1 of %2… (tap to cancel)"),
+        text = T(_("Building checkpoints: %1 of %2… (tap to cancel)"),
           nc_build.step or nc_build.idx, nc_build.total),
         callback = function()
           UIManager:close(dialog)
@@ -7044,7 +7047,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       -- exit here too (device round 2)
       if nc_rungs > 0 and (nc_highest or 0) >= 1.0 - 0.005 then
         table.insert(nc_ver_rows, {{
-          text = _("Switch to complete version (100%) — instant"),
+          text = _("Switch to complete version (100%), instant"),
           callback = function()
             UIManager:close(dialog)
             self_ref:_switchToCompleteXrayRung(opts)
@@ -7140,24 +7143,14 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       view_detail = " (" .. table.concat(parts, ", ") .. ")"
     end
 
-    -- Determine update vs redo based on progress delta
-    local update_text
-    local cached_progress = cached_entry.progress_decimal or 0
-    if current_progress and current_progress.decimal > cached_progress + 0.01 then
-      update_text = T(_("Update %1 (to %2)"), action_name, current_progress.formatted)
-    elseif current_progress and cached_progress > current_progress.decimal + 0.01 then
-      -- T14 + round 13 wording: the cache is AHEAD of the reader (merge-ahead
-      -- main / re-reader). Say BOTH halves plainly: it's a from-scratch NEW
-      -- X-Ray at the reader's position, and the outgoing version is archived
-      -- (browsable under All versions), not deleted.
-      update_text = T(_("Rebuild %1 from scratch to your position (%2) — the current %3% version is archived"),
-        action_name, current_progress.formatted,
-        math.floor(cached_progress * 100 + 0.5))
-    elseif current_progress then
-      update_text = T(_("Redo %1 (to %2)"), action_name, current_progress.formatted)
-    else
-      update_text = T(_("Redo %1"), action_name)
-    end
+    -- Round 24: the paid row is UPDATE-only. The old redo/rebuild-to-position
+    -- branches (T14 incl.) folded into the dual-mode creation chooser — a
+    -- below-coverage pick there is an explicit "from scratch" rebuild with
+    -- the archive confirm; the viewer keeps its own Redo.
+    local update_text = current_progress
+      and T(_("Update %1 (to %2)"), action_name, current_progress.formatted)
+    local update_case = current_progress
+      and current_progress.decimal > (cached_entry.progress_decimal or 0) + 0.01
 
     local ActionCache = require("koassistant_action_cache")
     local sx_file = (self.ui and self.ui.document and self.ui.document.file)
@@ -7259,20 +7252,19 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         end
       end
     end
-    local update_case = current_progress
-      and current_progress.decimal > (cached_entry.progress_decimal or 0) + 0.01
     local spacing_now = (doc and not (doc.info and doc.info.has_pages))
       and XrayAuto.ladderSpacingFor(doc:getPageCount()) or XrayAuto.LADDER_SPACING
-    -- Round-12 demotion (§7.4 batch item 12): the paid to-position update never
-    -- sits beside a free competitor — it moves into the Versions group when a
-    -- prepared version is ready now or lands within one spacing ahead.
+    -- Round-12 demotion, round-24 removal (maintainer: "Versions should just
+    -- be versions"): the paid to-position update never sits beside a free
+    -- competitor — with one ready now or landing within a spacing, the row is
+    -- DROPPED entirely (the creation chooser's extend mode covers it).
     local demote_paid = update_case
       and (promotable ~= nil
         or (next_ahead ~= nil
           and next_ahead - current_progress.decimal <= spacing_now + 0.005))
     if ladder_building then
       table.insert(buttons, {{
-        text = T(_("Building checkpoints — %1 of %2… (tap to cancel)"),
+        text = T(_("Building checkpoints: %1 of %2… (tap to cancel)"),
           ladder_building.step or ladder_building.idx, ladder_building.total),
         callback = function()
           UIManager:close(dialog)
@@ -7284,19 +7276,12 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       -- just wasteful — surface the state instead of the Update button. File-scoped
       -- (device round 1 T8): another book's flight must not gray out this book's rows.
       table.insert(buttons, {{ text = _("Auto-update in progress…"), enabled = false }})
-    else
+    elseif update_case then
       local paid_row = {{
         text = update_text,
         callback = function()
           UIManager:close(dialog)
           if self_ref:_checkRequirements(action) then return end
-          if not (current_progress
-              and current_progress.decimal > (cached_entry.progress_decimal or 0) + 0.01) then
-            -- Redo / rebuild-from-scratch: interactive only — the round-14
-            -- background path is incremental-update-only
-            on_update()
-            return
-          end
           -- Round 14: every paid to-position update confirms. The cost step
           -- carries the mid-ladder honesty lines (when checkpoints are around
           -- — recomputed at tap time, disk may have moved) AND the background
@@ -7309,7 +7294,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
             -- alternative — a rung already at-or-below the reader beats the
             -- paid call outright; otherwise say where the next one lands
             confirm_text = confirm_text .. "\n"
-              .. _("Checkpoints are not touched — they still swap in for free as you read past them.")
+              .. _("Checkpoints are not touched: they still swap in for free as you read past them.")
             local c_next, c_avail
             for _idx, r in ipairs(ladder_rungs) do
               local p = tonumber(r.progress_decimal)
@@ -7322,7 +7307,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
               end
             end
             if c_avail then
-              confirm_text = confirm_text .. "\n" .. T(_("A free checkpoint at %1% is available right now (\"Update to %1% — instant\")."),
+              confirm_text = confirm_text .. "\n" .. T(_("A free checkpoint at %1% is available right now (\"Update to %1%, instant\")."),
                 math.floor(c_avail * 100 + 0.5))
             elseif c_next then
               confirm_text = confirm_text .. "\n" .. T(_("The next free checkpoint arrives at %1%."),
@@ -7345,52 +7330,47 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           })
         end,
       }}
-      table.insert(demote_paid and c_ver_rows or buttons, paid_row)
+      if not demote_paid then
+        table.insert(buttons, paid_row)
+      end
     end
-    -- Free local update from a prepared version (§6 slice 1). With round-12
-    -- demotion the paid row moves into the Versions group whenever this row
-    -- renders — free never sits beside paid at the top level. Shown even while
-    -- a background update is in flight (device round 1 T6): promotion is local,
-    -- and the completion guard discards a stale flight write.
+    -- Free local update from a prepared version (§6 slice 1). With round-24
+    -- the paid row is dropped whenever this row renders — free never sits
+    -- beside paid, and the paid path stays reachable through the creation
+    -- chooser's extend mode. Shown even while a background update is in
+    -- flight (device round 1 T6): promotion is local, and the completion
+    -- guard discards a stale flight write.
     if promotable then
       table.insert(buttons, {{
-        text = T(_("Update to %1% — instant"),
+        text = T(_("Update to %1%, instant"),
           math.floor((tonumber(promotable.progress_decimal) or 0) * 100 + 0.5)),
         callback = function()
           UIManager:close(dialog)
           if not self_ref:_fireXrayLadderPromotion({ manual = true }) then
             -- Disk moved between drawing the row and tapping it
             UIManager:show(InfoMessage:new{
-              text = _("Nothing to update from checkpoints — the X-Ray moved in the meantime."),
+              text = _("Nothing to update from checkpoints: the X-Ray moved in the meantime."),
               timeout = 3,
             })
           end
         end,
       }})
     end
-    -- "Update to 100%" family (device round 2 gates): never offered when the
-    -- cache already covers the whole book; when a finished 1.0 rung exists, the
-    -- free install REPLACES the API row — same coverage, zero cost.
+    -- Free switch to a finished 1.0 rung (device round 2 gates): never offered
+    -- when the cache already covers the whole book. Round 24: the paid
+    -- "Update to 100%" row is GONE from the Versions group (maintainer:
+    -- versions only) — that path lives in the creation chooser's extend mode
+    -- (whole book, one request = update to 100%).
     local ladder_highest = ActionCache.highestXrayLadderProgress(ladder_rungs)
     local cache_complete = cached_entry.full_document
         or (cached_entry.progress_decimal or 0) >= 0.995
     if not cache_complete and (ladder_highest or 0) >= 0.995
         and cached_entry.source_mode ~= "ai_knowledge" then
       table.insert(c_ver_rows, {{
-        text = _("Switch to complete version (100%) — instant"),
+        text = _("Switch to complete version (100%), instant"),
         callback = function()
           UIManager:close(dialog)
           self_ref:_switchToCompleteXrayRung(opts)
-        end,
-      }})
-    elseif not cache_complete
-        and (not current_progress or current_progress.decimal < 0.995) then
-      table.insert(c_ver_rows, {{
-        text = T(_("Update %1 (to %2)"), action_name, "100%"),
-        callback = function()
-          UIManager:close(dialog)
-          if self_ref:_checkRequirements(action) then return end
-          self_ref:_executeBookLevelActionDirect(action, action_id, { update_to_full = true })
         end,
       }})
     end
@@ -7404,7 +7384,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       local back_rung = XrayAuto.pickPromotableRung(ladder_rungs, 0, current_progress.decimal)
       if back_rung then
         table.insert(c_ver_rows, {{
-          text = T(_("Switch back to your position (%1%) — instant"),
+          text = T(_("Switch back to your position (%1%), instant"),
             math.floor((tonumber(back_rung.progress_decimal) or 0) * 100 + 0.5)),
           callback = function()
             UIManager:close(dialog)
@@ -7422,11 +7402,13 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     -- Round 22b rows kept: a cancelled AUTO chain shows the explicit "paused"
     -- resume row (the in-session exit from the cancel suppression); a
     -- genuinely paused MANUAL chain keeps its cheap top-level Resume.
-    if doc and not (doc.info and doc.info.has_pages) and not ladder_building
+    if doc and not ladder_building
         and self.ui and self.ui.document and self.ui.document.file == sx_file then
+      local c_flowing = not (doc.info and doc.info.has_pages)
       local c_features = self.settings:readSetting("features") or {}
-      local c_auto_on = self.ui.doc_settings and require("koassistant_book_settings")
-        .resolveXrayAuto(self.ui.doc_settings, c_features)
+      local c_auto_on = c_flowing and self.ui.doc_settings
+        and require("koassistant_book_settings")
+          .resolveXrayAuto(self.ui.doc_settings, c_features)
       local ext_goal = self.ui.doc_settings and tonumber(self.ui.doc_settings:readSetting(
         require("koassistant_book_settings").KEY_XRAY_GOAL)) or nil
       if c_auto_on and XrayAuto.isAutoSuppressed(sx_file) then
@@ -7439,7 +7421,8 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           end,
         }})
       else
-        if not c_auto_on and #ladder_rungs > 0 and (ladder_highest or 0) < 1.0 - 0.005
+        if c_flowing and not c_auto_on and #ladder_rungs > 0
+            and (ladder_highest or 0) < 1.0 - 0.005
             and not (ext_goal and (ladder_highest or 0) >= ext_goal - 0.01) then
           table.insert(buttons, {{
             text = T(_("Resume building checkpoints (from %1%)…"),
@@ -7450,20 +7433,27 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
             end,
           }})
         end
+        -- Round 24: no flowing gate — the form's one-request picks (incl. the
+        -- redo replacement: below-coverage rebuilds) apply to PDFs too; the
+        -- checkpoint/follow rows gate themselves on flowing inside the form
         local a_mode, a_base = self:_xrayAuthoringMode(sx_file)
-        -- Fully covered incremental (100%): nothing to extend — Update/Redo
-        -- rows serve that book; hide the authoring row
-        if not (a_mode == "extend" and (a_base or 0) >= 0.995) then
-          table.insert(buttons, {{
-            text = a_mode == "rebuild" and _("Rebuild X-Ray…")
-              or a_mode == "create" and _("Create X-Ray…")
-              or _("Extend coverage…"),
-            callback = function()
-              UIManager:close(dialog)
-              self_ref:_showXrayCreationChooser(action, action_id, on_update, opts)
-            end,
-          }})
+        -- Fully covered incremental (100%): "Extend" would be a lie; the row
+        -- reads "Rebuild X-Ray…" and the form's picks all rebuild from scratch
+        local a_label
+        if a_mode == "rebuild" or (a_mode == "extend" and (a_base or 0) >= 0.995) then
+          a_label = _("Rebuild X-Ray…")
+        elseif a_mode == "create" then
+          a_label = _("Create X-Ray…")
+        else
+          a_label = _("Extend or rebuild…")
         end
+        table.insert(buttons, {{
+          text = a_label,
+          callback = function()
+            UIManager:close(dialog)
+            self_ref:_showXrayCreationChooser(action, action_id, on_update, opts)
+          end,
+        }})
       end
     end
     -- Section X-Rays: list existing + new
@@ -7546,13 +7536,15 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     local popup_title = action_name .. view_detail
     if current_progress and not cached_entry.full_document
         and (cached_entry.progress_decimal or 0) < 0.995 then
+      -- Round 24 (maintainer): both lines describe FINISHED checkpoints
+      -- waiting on disk, never a build trigger — say so plainly
       local pos_line
       if promotable then
-        pos_line = T(_("You're at %1 — a free checkpoint at %2% is ready."),
+        pos_line = T(_("You're at %1. A checkpoint at %2% is ready to install now, free."),
           current_progress.formatted,
           math.floor((tonumber(promotable.progress_decimal) or 0) * 100 + 0.5))
       elseif next_ahead then
-        pos_line = T(_("You're at %1 — next checkpoint at %2%."),
+        pos_line = T(_("You're at %1. The next checkpoint (%2%) is already built and installs when you reach it."),
           current_progress.formatted, math.floor(next_ahead * 100 + 0.5))
       else
         pos_line = T(_("You're at %1."), current_progress.formatted)
@@ -7970,10 +7962,10 @@ end
 function AskGPT:_showSectionRangePicker(action)
   local self_ref = self
   self:_showSectionPicker(action, {
-    title = _("Section range — pick the first section"),
+    title = _("Section range: pick the first section"),
     on_select = function(first)
       self_ref:_showSectionPicker(action, {
-        title = _("Section range — pick the last section"),
+        title = _("Section range: pick the last section"),
         on_cancel = function()
           -- Back one step: re-open the first pick, not abandon the flow
           self_ref:_showSectionRangePicker(action)
@@ -7997,6 +7989,21 @@ function AskGPT:_showSectionRangePicker(action)
       })
     end,
   })
+end
+
+--- Round 24: route a version entry to ITS options dialog (rung vs ring
+--- resolved by the identity match every version surface uses). The archived-
+--- version viewer's way out of the old Info-only dead end.
+function AskGPT:_showXrayVersionOptions(cp, file, opts)
+  local ActionCache = require("koassistant_action_cache")
+  for _idx, r in ipairs(ActionCache.getXrayLadder(file)) do
+    if r.timestamp == cp.timestamp
+        and math.abs((tonumber(r.progress_decimal) or -1)
+          - (tonumber(cp.progress_decimal) or -2)) < 1e-6 then
+      return self:_showXrayLadderRungOptions(cp, opts)
+    end
+  end
+  return self:_showXrayCheckpointOptions(cp, opts)
 end
 
 --- Round 23 (plan item 30, maintainer GO): shared base-state derivation for
@@ -8089,9 +8096,6 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   -- rebuild (foreign-lineage live, no base)
   local cc_file = doc.file
   local mode, base_progress, has_intro_rung, base_entry = self:_xrayAuthoringMode(cc_file)
-  -- Extend never plans an intro; create/rebuild do unless a leftover intro
-  -- rung exists (also fixes the round-20 "chooser overcounts by 1" residual)
-  local plan_intro_step = mode ~= "extend" and not has_intro_rung
 
   -- Round 20b (maintainer): whole book is the DEFAULT and top coverage option.
   -- Round 22 (§25(f)): checkpoints are the default DELIVERY when the plan is
@@ -8113,14 +8117,36 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     return 1.0
   end
 
+  -- Round 24 (maintainer: fold redo into the form): in extend mode a pick
+  -- whose coverage END is at or below the base is a REBUILD from scratch
+  -- (replaces the old "already covered" disable) — same dispatch family as
+  -- mode "rebuild". This absorbs the popup's old redo and
+  -- rebuild-to-your-position rows.
+  local function pickIsRebuild()
+    if mode == "rebuild" then return true end
+    if mode ~= "extend" then return false end
+    return goalFor() <= (base_progress or 0) + 0.01
+  end
+
+  -- Extend picks never plan an intro; create/rebuild picks do unless a
+  -- leftover intro rung exists (rebuild clears the ladder first, so it always
+  -- plans one). Also fixes the round-20 "chooser overcounts by 1" residual.
+  local function planIntroStep()
+    if pickIsRebuild() then return true end
+    if mode == "extend" then return false end
+    return not has_intro_rung
+  end
+
   local function stepsFor()
     if not flowing then return 0 end
     local spacing = XrayAuto.ladderSpacingFor(total_pages)
     -- Seed-aware (round 19): whole-book/target builds gain a first checkpoint
     -- at the reading position, and the shown step count must match the plan.
-    -- Extend mode plans FROM the disk base (round 23).
+    -- Extend picks plan FROM the disk base (round 23); rebuild picks plan
+    -- from nothing (round 24).
     local rungs = XrayAuto.planBuildRungs(
-      mode == "extend" and base_progress or 0, spacing, goalFor(), decimal)
+      (mode == "extend" and not pickIsRebuild()) and base_progress or 0,
+      spacing, goalFor(), decimal)
     return #rungs
   end
 
@@ -8147,6 +8173,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   end
 
   local function dispatch()
+    local rebuild_pick = pickIsRebuild()
     local function go()
       -- Round 21: the coverage goal is a BOOK property bounding the auto
       -- scheduler — target picks store it, whole-book picks clear it (position
@@ -8177,7 +8204,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
         if cr.coverage == "position" then
           on_update()
         elseif cr.coverage == "whole" then
-          if mode == "extend" then
+          if mode == "extend" and not rebuild_pick then
             -- Round 23: extending an incremental base to 100% is an UPDATE,
             -- not a fresh complete-track analysis
             self_ref:_executeBookLevelActionDirect(action, action_id, { update_to_full = true })
@@ -8190,21 +8217,26 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
         end
       end
     end
-    if mode ~= "rebuild" then return go() end
-    -- Round 23 (item 30): rebuild = archive the foreign-lineage live X-Ray to
-    -- the ring, clear it, then every downstream path behaves as from-nothing
-    -- (one-request picks would archive via the overwrite machinery anyway;
-    -- checkpoint/follow picks NEED the clear — the chain refuses to extend a
-    -- complete-track/AI-knowledge/legacy base)
+    if not rebuild_pick then return go() end
+    -- Round 23/24 (item 30): rebuild = archive the live X-Ray to the ring,
+    -- clear it AND the ladder (old-lineage rungs must never promote over the
+    -- new lineage), then every downstream path behaves as from-nothing.
+    -- Covers mode "rebuild" (foreign lineage) and extend-mode picks at or
+    -- below the base (the old redo / rebuild-to-your-position rows).
     local ConfirmBox = require("ui/widget/confirmbox")
     local ActionCache = require("koassistant_action_cache")
     local limit = ActionCache.checkpointLimitFromFeatures(features)
     local confirm_text = limit ~= 0
-      and _("Replace the current X-Ray? The outgoing version is archived under \"All versions\".")
-      or _("Replace the current X-Ray? Version archiving is off, so the current one will be gone.")
+      and _("Rebuild from scratch, replacing the current X-Ray? The outgoing version is archived under \"All versions\".")
+      or _("Rebuild from scratch, replacing the current X-Ray? Version archiving is off, so the current one will be gone.")
+    local n_rungs = ActionCache.getXrayLadderCount(cc_file)
+    if n_rungs > 0 then
+      confirm_text = confirm_text .. "\n"
+        .. T(_("Its %1 checkpoints belong to the old version and are deleted with it."), n_rungs)
+    end
     UIManager:show(ConfirmBox:new{
       text = confirm_text,
-      ok_text = _("Replace"),
+      ok_text = _("Rebuild"),
       ok_callback = function()
         local live = ActionCache.getXrayCache(cc_file)
         if live and live.result and limit ~= 0 then
@@ -8212,6 +8244,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
         end
         ActionCache.clearXrayCache(cc_file)
         ActionCache.clear(cc_file, "xray")
+        ActionCache.clearXrayLadder(cc_file)
         self_ref._file_dialog_row_cache = { file = nil, rows = nil }
         self_ref:_refreshXrayAutoState()
         go()
@@ -8249,8 +8282,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       width = dialog_width,
       align = "left",
       with_bottom_line = true,
-      title = mode == "extend" and _("Extend X-Ray")
-        or mode == "rebuild" and _("Rebuild X-Ray")
+      title = (mode == "rebuild" or (mode == "extend" and (base_progress or 0) >= 0.995))
+          and _("Rebuild X-Ray")
+        or mode == "extend" and _("Extend X-Ray")
         or _("Create X-Ray"),
       title_shrink_font_to_fit = true,
       close_callback = function() UIManager:close(current_dialog) end,
@@ -8289,19 +8323,25 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     cov_rows[#cov_rows + 1] = { { text = _("The whole book"),
       provider = "whole", checked = cr.coverage == "whole" } }
     if progress and decimal > 0.01 then
-      -- Round 23 (extend mode): a position at or below the base is already
-      -- covered — shown, but not a valid pick
-      local pos_covered = mode == "extend" and decimal <= (base_progress or 0) + 0.01
-      cov_rows[#cov_rows + 1] = { { text = pos_covered
-          and T(_("Up to where I am (%1) — already covered"), progress.formatted)
+      -- Round 24 (extend mode): a position at or below the base is a REBUILD
+      -- from scratch — pickable and labeled, no longer disabled (this absorbs
+      -- the old popup redo / rebuild-to-your-position rows)
+      local pos_rebuild = mode == "extend" and decimal <= (base_progress or 0) + 0.01
+      cov_rows[#cov_rows + 1] = { { text = pos_rebuild
+          and T(_("Up to where I am (%1), from scratch"), progress.formatted)
           or T(_("Up to where I am (%1)"), progress.formatted),
-        provider = "position", enabled = not pos_covered,
+        provider = "position",
         checked = cr.coverage == "position" } }
     end
     if flowing and self.ui.toc and self.ui.toc.toc and #self.ui.toc.toc > 0 then
+      local tgt_rebuild = mode == "extend" and cr.target
+        and cr.target <= (base_progress or 0) + 0.01
       local target_text = cr.coverage == "target" and cr.target
-        and T(_("To the end of \"%1\" (%2%)"), cr.target_label or "?",
-          math.floor(cr.target * 100 + 0.5))
+        and (tgt_rebuild
+          and T(_("To the end of \"%1\" (%2%), from scratch"), cr.target_label or "?",
+            math.floor(cr.target * 100 + 0.5))
+          or T(_("To the end of \"%1\" (%2%)"), cr.target_label or "?",
+            math.floor(cr.target * 100 + 0.5)))
         or _("To the end of a section…")
       cov_rows[#cov_rows + 1] = { { text = target_text,
         provider = "target", checked = cr.coverage == "target" } }
@@ -8323,15 +8363,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
             on_cancel = function() buildAndShow() end,
             on_select = function(entry)
               local ratio = total_pages > 0 and (entry.end_page or 0) / total_pages or 0
-              -- Round 23 (extend mode): a section ending inside the covered
-              -- range extends nothing — say so and keep the previous pick
-              if mode == "extend" and ratio <= (base_progress or 0) + 0.01 then
-                UIManager:show(InfoMessage:new{
-                  text = T(_("The X-Ray already covers that section (to %1%)."),
-                    math.floor((base_progress or 0) * 100 + 0.5)),
-                  timeout = 3,
-                })
-              elseif ratio >= 1.0 - 0.005 then
+              -- Round 24: a section inside the covered range is a valid pick
+              -- now — it reads ", from scratch" and rebuilds (no more bounce)
+              if ratio >= 1.0 - 0.005 then
                 cr.coverage, cr.target, cr.target_label = "whole", nil, nil
               elseif ratio > 0.01 then
                 cr.coverage, cr.target, cr.target_label = "target", ratio, entry.title
@@ -8354,13 +8388,16 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
 
     -- === Build ===
     addLabel(_("Build"))
+    local pick_rebuild = pickIsRebuild()
     local one_label
-    if mode == "extend" then
+    if mode == "extend" and not pick_rebuild then
       one_label = cr.coverage == "whole" and _("In one request now (update to 100%)")
         or cr.coverage == "position" and _("In one request now (update to your position)")
         or _("In one request now (update)")
     else
-      one_label = cr.coverage == "whole" and _("In one request now (analyzed as a whole)")
+      one_label = (cr.coverage == "whole" and not pick_rebuild)
+          and _("In one request now (analyzed as a whole)")
+        or cr.coverage == "whole" and _("In one request now (analyzed as a whole, fresh)")
         or _("In one request now")
     end
     local del_rows = {
@@ -8370,15 +8407,15 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     local n_steps = stepsFor()
     if n_steps > 1 then
       -- From-nothing/rebuild checkpoint builds start with the introductory
-      -- step (round 20); extend builds never do (round 23) — the shown count
-      -- must match the build confirm's plan
+      -- step (round 20); extend picks never do (rounds 23/24) — the shown
+      -- count must match the build confirm's plan
       del_rows[#del_rows + 1] = { { text = T(_("In checkpoints, now (%1 background steps)"),
-          n_steps + (plan_intro_step and 1 or 0)),
+          n_steps + (planIntroStep() and 1 or 0)),
         provider = "checkpoints", checked = cr.delivery == "checkpoints" } }
     end
     if flowing and (cr.coverage == "whole" or cr.coverage == "target") then
       del_rows[#del_rows + 1] = { { text = auto_on
-          and _("In checkpoints, as I read (already on — start now)")
+          and _("In checkpoints, as I read (already on; start now)")
           or _("In checkpoints, as I read (automatic)"),
         provider = "follow", checked = cr.delivery == "follow" } }
     end
@@ -8409,10 +8446,10 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
         hint = hint .. " " .. T(_("It stops at the end of \"%1\"."), cr.target_label)
       end
     elseif cr.delivery == "checkpoints" then
-      hint = mode == "extend"
+      hint = (mode == "extend" and not pick_rebuild)
         and _("Continues from your current coverage in bounded background steps, each a spoiler-safe version. You can keep reading, cancel anytime, and resume later.")
         or _("Covers the range in bounded background steps, each a spoiler-safe version up to its position. A usable X-Ray installs after the first step; you can keep reading, cancel anytime, and resume later.")
-    elseif mode == "extend" then
+    elseif mode == "extend" and not pick_rebuild then
       if cr.coverage == "whole" then
         hint = _("Updates your existing X-Ray to 100% in a single request.")
       elseif cr.coverage == "position" then
@@ -8421,11 +8458,15 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
         hint = _("Updates your existing X-Ray to the end of the chosen section in a single request.")
       end
     elseif cr.coverage == "whole" then
-      hint = _("Analyzes the whole book in a single request — large for long books, with no spoiler-safe intermediate versions.")
+      hint = _("Analyzes the whole book in a single request. Large for long books, with no spoiler-safe intermediate versions.")
     elseif cr.coverage == "position" then
-      hint = _("Reads the book up to your position in a single request — a snapshot; it does not grow as you read on.")
+      hint = _("Reads the book up to your position in a single request. A snapshot: it does not grow as you read on.")
     else
       hint = _("Reads the book up to the end of the chosen section in a single request.")
+    end
+    -- Round 24: rebuild picks carry the replacement fact in the hint too
+    if pick_rebuild and mode == "extend" then
+      hint = hint .. " " .. _("This range is already covered, so the X-Ray is rebuilt from scratch and replaces the current one (the outgoing version is archived).")
     end
     if hint then
       table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
@@ -8444,8 +8485,8 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
           callback = function() UIManager:close(current_dialog) end,
         },
         {
-          text = mode == "extend" and _("Extend")
-            or mode == "rebuild" and _("Rebuild")
+          text = (mode == "rebuild" or pick_rebuild) and _("Rebuild")
+            or mode == "extend" and _("Extend")
             or _("Create"),
           callback = function()
             UIManager:close(current_dialog)
@@ -8581,7 +8622,7 @@ function AskGPT:_xrayFollowCatchUp(_decimal)
   local self_ref = self
   local function start()
     UIManager:show(Notification:new{
-      text = _("Automatic X-Ray on — building as you read."),
+      text = _("Automatic X-Ray on: building as you read."),
     })
     self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true })
   end
@@ -9371,7 +9412,7 @@ function AskGPT:_showXrayCheckpointList(opts)
         and (live.full_document or live.source_mode == "ai_knowledge"))
       and (not live or (tonumber(live.progress_decimal) or 0) < 0.995) then
     table.insert(buttons, {{
-      text = _("Switch to complete version (100%) — instant"),
+      text = _("Switch to complete version (100%), instant"),
       callback = function()
         UIManager:close(list_dialog)
         if opts and opts.close_browser then opts.close_browser() end
@@ -9400,7 +9441,7 @@ function AskGPT:_showXrayCheckpointList(opts)
         local confirm
         if has_complete_rung and not live_complete then
           confirm = ButtonDialog:new{
-            title = T(_("Delete the %1 checkpoints? They include your complete version (100%), which is not installed as your current X-Ray — deleting now discards it."), #ladder),
+            title = T(_("Delete the %1 checkpoints? They include your complete version (100%), which is not installed as your current X-Ray; deleting now discards it."), #ladder),
             buttons = {
               {{
                 text = _("Switch to complete version first…"),
@@ -9425,7 +9466,7 @@ function AskGPT:_showXrayCheckpointList(opts)
         else
           local detail
           if live_complete then
-            detail = _("Your complete X-Ray stays — this deletes only the checkpoints.")
+            detail = _("Your complete X-Ray stays; this deletes only the checkpoints.")
             if live and not live.full_document then
               detail = detail .. " " .. _("It also removes the free \"Switch back to your position\" option.")
             end
@@ -9472,9 +9513,10 @@ function AskGPT:_showXrayCheckpointList(opts)
   UIManager:show(list_dialog)
 end
 
---- Options card for one ladder rung: view only. Rungs are the promotion source
---- and are never individually deleted (whole-ladder delete lives in the list) —
---- COPY semantics throughout (§5 decision 10).
+--- Options card for one ladder rung: view / delete — COPY semantics
+--- throughout (§5 decision 10). Round 24: per-rung delete added (maintainer);
+--- safe under the unified engine — a missing grid point is re-planned when it
+--- is ever needed again.
 function AskGPT:_showXrayLadderRungOptions(rung, opts)
   local ButtonDialog = require("ui/widget/buttondialog")
   local self_ref = self
@@ -9502,6 +9544,41 @@ function AskGPT:_showXrayLadderRungOptions(rung, opts)
             skip_stale_popup = true,
             checkpoint = true,
           })
+        end,
+      }},
+      {{
+        text = _("Delete this checkpoint"),
+        callback = function()
+          UIManager:close(card)
+          local confirm
+          confirm = ButtonDialog:new{
+            title = T(_("Delete the checkpoint from %1?"), label) .. "\n"
+              .. _("If automatic building needs this grid point again, it is rebuilt."),
+            buttons = {
+              {{
+                text = _("Delete"),
+                callback = function()
+                  UIManager:close(confirm)
+                  local ActionCache = require("koassistant_action_cache")
+                  ActionCache.removeXrayLadderRung(file, rung)
+                  self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+                  self_ref:_refreshXrayAutoState()
+                  UIManager:show(Notification:new{
+                    text = T(_("Checkpoint deleted (%1)"), label),
+                    timeout = 2,
+                  })
+                end,
+              }},
+              {{
+                text = _("Cancel"),
+                callback = function()
+                  UIManager:close(confirm)
+                  self_ref:_showXrayLadderRungOptions(rung, opts)
+                end,
+              }},
+            },
+          }
+          UIManager:show(confirm)
         end,
       }},
       {{
@@ -9581,7 +9658,7 @@ function AskGPT:_showXrayCheckpointOptions(cp, opts)
                     timeout = 2,
                   })
                 else
-                  UIManager:show(InfoMessage:new{ text = _("Restore failed — this version is no longer archived."), timeout = 3 })
+                  UIManager:show(InfoMessage:new{ text = _("Restore failed. This version is no longer archived."), timeout = 3 })
                 end
               end,
             }},
@@ -10922,7 +10999,7 @@ function AskGPT:_switchToCompleteXrayRung(opts)
   local confirm
   confirm = ButtonDialog:new{
     title = _("Switch to the complete X-Ray (100%)?") .. "\n"
-      .. _("It covers the whole book — including everything ahead of your reading position. The current version is kept in the version list."),
+      .. _("It covers the whole book, including everything ahead of your reading position. The current version is kept in the version list."),
     buttons = {
       {{
         text = _("Switch"),
@@ -10932,7 +11009,7 @@ function AskGPT:_switchToCompleteXrayRung(opts)
           local ok = ActionCache.promoteXrayLadderRung(file, rung,
               ActionCache.checkpointLimitFromFeatures(features), { manual = true })
           if not ok then
-            UIManager:show(InfoMessage:new{ text = _("Switch failed — the checkpoint could not be installed."), timeout = 3 })
+            UIManager:show(InfoMessage:new{ text = _("Switch failed. The checkpoint could not be installed."), timeout = 3 })
             return
           end
           self_ref._file_dialog_row_cache = { file = nil, rows = nil }
@@ -10947,7 +11024,7 @@ function AskGPT:_switchToCompleteXrayRung(opts)
             self_ref:viewCachedAction(xr_action, "xray", new_live, { skip_stale_popup = true })
           end
           UIManager:show(InfoMessage:new{
-            text = _("Switched to the complete X-Ray. The checkpoints are kept — they can be safely deleted under \"All versions\", or kept for the free \"Switch back to your position\" option."),
+            text = _("Switched to the complete X-Ray. The checkpoints are kept; they can be safely deleted under \"All versions\", or kept for the free \"Switch back to your position\" option."),
             timeout = 6,
           })
         end,
@@ -11006,11 +11083,11 @@ function AskGPT:_switchBackToPositionRung(opts)
       self:viewCachedAction(xr_action, "xray", new_live, { skip_stale_popup = true })
     end
     UIManager:show(Notification:new{
-      text = T(_("Switched back — X-Ray now at %1%"),
+      text = T(_("Switched back: X-Ray now at %1%"),
         math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5)),
     })
   else
-    UIManager:show(InfoMessage:new{ text = _("Switch failed — the checkpoint could not be installed."), timeout = 3 })
+    UIManager:show(InfoMessage:new{ text = _("Switch failed. The checkpoint could not be installed."), timeout = 3 })
   end
 end
 
@@ -11161,8 +11238,8 @@ function AskGPT:_startXrayLadderBuild(build_opts)
     for _idx, opt in ipairs(opts) do
       local rungs = planFor(opt.spacing)
       local row_text = opt.pct == math.floor(recommended * 100 + 0.5)
-        and T(_("Every %1% — %2 checkpoints (recommended)"), opt.pct, #rungs)
-        or T(_("Every %1% — %2 checkpoints"), opt.pct, #rungs)
+        and T(_("Every %1%: %2 checkpoints (recommended)"), opt.pct, #rungs)
+        or T(_("Every %1%: %2 checkpoints"), opt.pct, #rungs)
       rows[#rows + 1] = {{
         text = row_text,
         callback = function()
@@ -11189,7 +11266,7 @@ function AskGPT:_startXrayLadderBuild(build_opts)
     local rungs, rung_labels, seed = planFor(spacing)
     if #rungs == 0 then
       -- Also the no-ladder-but-live-at-100% case — say why, not "complete"
-      UIManager:show(InfoMessage:new{ text = _("Nothing to build — the X-Ray already covers the whole book."), timeout = 3 })
+      UIManager:show(InfoMessage:new{ text = _("Nothing to build: the X-Ray already covers the whole book."), timeout = 3 })
       return
     end
     local snapped = next(rung_labels) ~= nil
@@ -11234,7 +11311,7 @@ function AskGPT:_startXrayLadderBuild(build_opts)
       if plan_intro then
         -- Round 22 (D6): name the total so the confirm agrees with the
         -- progress toast's "1 of N+1"
-        plan_line = plan_line .. " " .. T(_("An introductory version is generated first — spoiler-free and readable from the very start of the book — so the build runs %1 background requests in total."), #rungs + 1)
+        plan_line = plan_line .. " " .. T(_("An introductory version is generated first (spoiler-free and readable from the very start of the book), so the build runs %1 background requests in total."), #rungs + 1)
       end
       -- Round 22 (D6): "read once" was false with an intro planned — the
       -- introduction re-reads the first checkpoint's slice
@@ -11473,8 +11550,8 @@ function AskGPT:_fireXrayLadderRung()
   if not build.silent or features.xray_auto_notify == true then
     UIManager:show(Notification:new{
       text = is_intro
-        and T(_("X-Ray checkpoints — %1 of %2 (introduction)…"), step_no, build.total)
-        or T(_("X-Ray checkpoints — %1 of %2 (to %3%)…"),
+        and T(_("X-Ray checkpoints: %1 of %2 (introduction)…"), step_no, build.total)
+        or T(_("X-Ray checkpoints: %1 of %2 (to %3%)…"),
           step_no, build.total, math.floor(target * 100 + 0.5)),
     })
   end
@@ -11495,7 +11572,7 @@ function AskGPT:_fireXrayLadderRung()
         logger.warn("KOAssistant: ladder step", cur.step or cur.idx, "timed out (watchdog,",
           XrayAuto.WATCHDOG_S, "s)")
         UIManager:show(InfoMessage:new{
-          text = T(_("Checkpoint build stopped at %1 of %2 (request timed out) — resume it from the X-Ray popup."),
+          text = T(_("Checkpoint build stopped at %1 of %2 (request timed out): resume it from the X-Ray popup."),
             cur.step or cur.idx, cur.total),
           timeout = 4,
         })
@@ -11524,7 +11601,7 @@ function AskGPT:_fireXrayLadderRung()
         logger.info("KOAssistant: ladder build stopped at step", cur.step or cur.idx, "-",
           tostring(meta_or_err or "rung not saved"))
         UIManager:show(InfoMessage:new{
-          text = T(_("Checkpoint build stopped at %1 of %2 — resume it from the X-Ray popup."),
+          text = T(_("Checkpoint build stopped at %1 of %2: resume it from the X-Ray popup."),
             cur.step or cur.idx, cur.total),
           timeout = 4,
         })
@@ -11588,7 +11665,7 @@ function AskGPT:_cancelXrayLadderBuild()
   -- popup's "Resume automatic building (paused)…" / Resume rows are the way
   -- back in, and reopening the book clears the pause
   UIManager:show(Notification:new{
-    text = _("Build cancelled — resume from the X-Ray popup."),
+    text = _("Build cancelled: resume from the X-Ray popup."),
   })
 end
 
@@ -13251,7 +13328,7 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       self_ref:updateConfigFromSettings()
       if not web_search_supported then
         UIManager:show(InfoMessage:new{
-          text = T(_("Saved as default. %1 can't use web search — switch to: %2."),
+          text = T(_("Saved as default. %1 can't use web search. Switch to: %2."),
             provider_display, ModelConstraints.getWebSearchProvidersLabel()),
           timeout = 4,
         })
@@ -15979,7 +16056,7 @@ function AskGPT:rebuildAllIndexes(opts)
     local checked = report.candidates.a + report.candidates.b + report.candidates.c
     local msg_lines = {
       _("Index rebuild complete."),
-      T(_("Checked %1 books — %2 with KOAssistant data."), checked, report.with_data),
+      T(_("Checked %1 books: %2 with KOAssistant data."), checked, report.with_data),
       T(_("Indexed books: artifacts %1, chats %2, notebooks %3, pinned %4."),
         report.totals["koassistant_artifact_index"],
         report.totals["koassistant_chat_index"],
@@ -17457,8 +17534,8 @@ function AskGPT:showSetupStep4Gestures(gestures_settings, gestures_available, bo
     -- Offer to auto-assign both gestures
     local text = _("GESTURE SETUP") .. "\n\n" ..
       _("KOAssistant has two quick-access panels:") .. "\n\n" ..
-      _("Quick Actions — book actions, artifacts, and utilities (reader mode)") .. "\n" ..
-      _("Quick Settings — change provider, model, behavior, and more (file browser)") .. "\n\n" ..
+      _("Quick Actions: book actions, artifacts, and utilities (reader mode)") .. "\n" ..
+      _("Quick Settings: change provider, model, behavior, and more (file browser)") .. "\n\n" ..
       _("Assign both to \"tap bottom right corner\"?") .. "\n\n" ..
       _("You can change these anytime in KOReader Settings (Gear icon) → Taps and Gestures.") .. "\n\n" ..
       _("Requires KOReader restart to take effect.")
@@ -17484,8 +17561,8 @@ function AskGPT:showSetupStep4Gestures(gestures_settings, gestures_available, bo
     -- Info-only: gesture slots already occupied or gestures.lua not ready
     local text = _("GESTURE TIP") .. "\n\n" ..
       _("KOAssistant has two quick-access panels you can assign to gestures:") .. "\n\n" ..
-      _("Quick Actions — book actions, artifacts, and utilities (assign in reader mode)") .. "\n" ..
-      _("Quick Settings — change provider, model, behavior, and more (assign in file browser mode)") .. "\n\n" ..
+      _("Quick Actions: book actions, artifacts, and utilities (assign in reader mode)") .. "\n" ..
+      _("Quick Settings: change provider, model, behavior, and more (assign in file browser mode)") .. "\n\n" ..
       _("Set them up in KOReader Settings (Gear icon) → Taps and Gestures.")
 
     UIManager:show(InfoMessage:new{

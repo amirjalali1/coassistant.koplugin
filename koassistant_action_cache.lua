@@ -1582,8 +1582,34 @@ function ActionCache.pushXrayLadderRung(document_path, rung)
     return true
 end
 
---- Remove the ladder file (whole-ladder delete; there is no per-rung delete —
---- promotion continuity depends on the set staying intact).
+--- Remove ONE rung, identity-matched (timestamp + progress). Round 24
+--- (maintainer: version viewers must allow deleting specific versions) —
+--- safe under the unified engine: the grid re-plans a missing point when it
+--- is ever needed again, and promotion simply has one fewer candidate.
+--- @param document_path string The document file path
+--- @param rung table A rung entry (from getXrayLadder or a viewer)
+--- @return boolean success
+function ActionCache.removeXrayLadderRung(document_path, rung)
+    if not document_path or not rung then return false end
+    local path = ActionCache.getXrayLadderPath(document_path)
+    if not path then return false end
+    local ladder = ActionCache.getXrayLadder(document_path)
+    local p = tonumber(rung.progress_decimal)
+    for i, existing in ipairs(ladder) do
+        if existing.timestamp == rung.timestamp and p
+            and math.abs((tonumber(existing.progress_decimal) or -1) - p) < 1e-6 then
+            table.remove(ladder, i)
+            if #ladder == 0 then
+                os.remove(path)
+                return true
+            end
+            return writeCheckpointRing(path, ladder)
+        end
+    end
+    return false
+end
+
+--- Remove the ladder file (whole-ladder delete; per-rung delete above).
 --- @param document_path string The document file path
 --- @return boolean success
 function ActionCache.clearXrayLadder(document_path)

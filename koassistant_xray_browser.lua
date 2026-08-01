@@ -3001,14 +3001,14 @@ function XrayBrowser:showMentions(chapter)
         local title
         if is_all then
             if chapter == "all_reveal" or self_ref.is_complete then
-                title = T(_("Entire document — %1 mentions"), #found)
+                title = T(_("Entire document: %1 mentions"), #found)
             else
-                title = T(_("To %1 — %2 mentions"), self_ref.metadata.progress or "?%", #found)
+                title = T(_("To %1: %2 mentions"), self_ref.metadata.progress or "?%", #found)
             end
         elseif chapter_title and chapter_title ~= "" then
-            title = T(_("%1 — %2 mentions"), chapter_title, #found)
+            title = T(_("%1: %2 mentions"), chapter_title, #found)
         else
-            title = T(_("This Chapter — %1 mentions"), #found)
+            title = T(_("This Chapter: %1 mentions"), #found)
         end
 
         self_ref:navigateForward(title, items)
@@ -3090,9 +3090,9 @@ function XrayBrowser:showChapterItemsAt(chapter)
 
         local title
         if chapter.title and chapter.title ~= "" then
-            title = T(_("%1 — %2 mentions"), chapter.title, #found)
+            title = T(_("%1: %2 mentions"), chapter.title, #found)
         else
-            title = T(_("Chapter — %1 mentions"), #found)
+            title = T(_("Chapter: %1 mentions"), #found)
         end
 
         self_ref:navigateForward(title, items)
@@ -3403,7 +3403,7 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
         data._focus_idx = chapter_to_item[data._focus_idx]
     end
 
-    local title = T(_("%1 — %2 chapters"), item_title,
+    local title = T(_("%1: %2 chapters"), item_title,
         data.has_unread and data.scanned_count or #chapters)
 
     if is_refresh then
@@ -3990,7 +3990,7 @@ function XrayBrowser:showOptions()
                             -- Decision support (round 9, popup parity): name the
                             -- concrete free alternative
                             confirm_text = confirm_text .. "\n"
-                                .. _("Checkpoints are not touched — they still swap in for free as you read past them.")
+                                .. _("Checkpoints are not touched: they still swap in for free as you read past them.")
                             local CbCache = require("koassistant_action_cache")
                             local next_ahead, avail_now
                             for _idx, r in ipairs(CbCache.getXrayLadder(self_ref.metadata.book_file)) do
@@ -4004,7 +4004,7 @@ function XrayBrowser:showOptions()
                                 end
                             end
                             if avail_now then
-                                confirm_text = confirm_text .. "\n" .. T(_("A free checkpoint at %1% is available right now (\"Update to %1% — instant\" in the X-Ray popup)."),
+                                confirm_text = confirm_text .. "\n" .. T(_("A free checkpoint at %1% is available right now (\"Update to %1%, instant\" in the X-Ray popup)."),
                                     math.floor(avail_now * 100 + 0.5))
                             elseif next_ahead then
                                 confirm_text = confirm_text .. "\n" .. T(_("The next free checkpoint arrives at %1%."),
@@ -4038,7 +4038,7 @@ function XrayBrowser:showOptions()
             if uladder_highest >= 0.995 and not ulive_other_lineage
                 and self.metadata.plugin then
                 table.insert(buttons, {{
-                    text = _("Switch to complete version (100%) — instant"), align = "left",
+                    text = _("Switch to complete version (100%), instant"), align = "left",
                     callback = function()
                         closeOptions()
                         -- The switch replaces the data this browser renders
@@ -4080,7 +4080,7 @@ function XrayBrowser:showOptions()
                 SbCache.getXrayLadder(self.metadata.book_file), 0, sb_cur.decimal)
             if sb_rung then
                 table.insert(buttons, {{
-                    text = T(_("Switch back to your position (%1%) — instant"),
+                    text = T(_("Switch back to your position (%1%), instant"),
                         math.floor((tonumber(sb_rung.progress_decimal) or 0) * 100 + 0.5)),
                     align = "left",
                     callback = function()
@@ -4207,6 +4207,48 @@ function XrayBrowser:showOptions()
                 end,
             }})
         end
+    end
+
+    -- Round 24 (maintainer: version viewers dead-ended at Info): an archived-
+    -- version view gets its version's own actions — restore/delete via the
+    -- same options dialogs the All-versions list uses, plus the list itself.
+    if not self.scope and self.metadata.checkpoint
+        and self.metadata.plugin and self.metadata.book_file
+        and self.metadata.checkpoint_data then
+        local v_opts = {
+            file = self.metadata.book_file,
+            book_title = self.metadata.title,
+            book_author = self.metadata.book_author,
+        }
+        table.insert(buttons, {{
+            text = _("Restore or delete this version…"), align = "left",
+            callback = function()
+                closeOptions()
+                -- Restore/delete replace or remove what this view renders —
+                -- retire the browser first
+                if self_ref.menu then UIManager:close(self_ref.menu) end
+                self_ref.metadata.plugin:_showXrayVersionOptions(
+                    self_ref.metadata.checkpoint_data, self_ref.metadata.book_file, v_opts)
+            end,
+        }})
+        table.insert(buttons, {{
+            text = _("Other versions…"), align = "left",
+            callback = function()
+                closeOptions()
+                local browser_closed = false
+                self_ref.metadata.plugin:_showXrayCheckpointList({
+                    file = self_ref.metadata.book_file,
+                    book_title = self_ref.metadata.title,
+                    book_author = self_ref.metadata.book_author,
+                    close_browser = function()
+                        if not browser_closed and self_ref.menu then
+                            browser_closed = true
+                            UIManager:close(self_ref.menu)
+                        end
+                    end,
+                })
+            end,
+        }})
     end
 
     -- Find duplicate entities (§6 slice 4, #90): main X-Ray views only, same
