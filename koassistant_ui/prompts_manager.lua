@@ -22,30 +22,33 @@ local PromptsManager = {}
 
 -- Helper: Get built-in behavior options for action editing
 -- Returns array of { id, text, desc } for radio button display
-local function getBuiltinBehaviorOptions()
+local function getBuiltinBehaviorOptions(custom_behaviors)
     local options = {}
-    local builtin_behaviors = SystemPrompts.getSortedBehaviors(nil)  -- Only built-ins, no custom
+    -- ALL behaviors: built-ins, user behaviors/ folder files ("(file)") and
+    -- UI-created ones ("(custom)"), in the global picker's order (builtins,
+    -- folder, ui, specialized last). Was builtin-only, which made user
+    -- behaviors unpickable on every per-action selector (#100 discussion).
+    local behaviors = SystemPrompts.getSortedBehaviors(custom_behaviors)
 
-    for _idx,behavior in ipairs(builtin_behaviors) do
-        if behavior.source == "builtin" then
-            -- Estimate tokens from text length (rough: chars/4)
-            local tokens = behavior.text and math.floor(#behavior.text / 4) or 0
-            table.insert(options, {
-                id = behavior.id,
-                text = behavior.name,
-                desc = T(_("~%1 tokens"), tokens),
-            })
-        end
+    for _idx,behavior in ipairs(behaviors) do
+        -- Estimate tokens from text length (rough: chars/4)
+        local tokens = behavior.text and math.floor(#behavior.text / 4) or 0
+        table.insert(options, {
+            id = behavior.id,
+            text = behavior.display_name or behavior.name,
+            desc = T(_("~%1 tokens"), tokens),
+        })
     end
 
     return options
 end
 
--- Helper: Check if a behavior_variant is a known built-in
-local function isBuiltinBehavior(variant)
+-- Helper: Check if a behavior_variant resolves to a known behavior (builtin,
+-- user behaviors/ folder, or UI-created — the per-action pickers list all
+-- three, so current-selection detection must accept all three)
+local function isBuiltinBehavior(variant, custom_behaviors)
     if not variant then return false end
-    local behavior = SystemPrompts.getBehaviorById(variant, nil)
-    return behavior and behavior.source == "builtin"
+    return SystemPrompts.getBehaviorById(variant, custom_behaviors) ~= nil
 end
 
 -- Helper: Get domain display text from state
@@ -769,7 +772,8 @@ function PromptsManager:showPromptDetails(prompt)
         behavior_text = _("None (disabled)")
     elseif prompt.behavior_variant then
         -- Look up the behavior name from built-ins
-        local behavior = SystemPrompts.getBehaviorById(prompt.behavior_variant, nil)
+        local behavior = SystemPrompts.getBehaviorById(prompt.behavior_variant,
+            (self.plugin.settings:readSetting("features") or {}).custom_behaviors)
         if behavior then
             behavior_text = behavior.name
         else
@@ -1542,22 +1546,23 @@ end
 
 -- Behavior selector for wizard Step 3 (returns to Step 3 Settings)
 function PromptsManager:showWizardBehaviorSelector(state)
+    local custom_behaviors = (self.plugin.settings:readSetting("features") or {}).custom_behaviors
     -- Determine current selection for radio button display
     local current_selection = "global"
     if state.behavior_override and state.behavior_override ~= "" then
         current_selection = "custom"
     elseif state.behavior_variant == "none" then
         current_selection = "none"
-    elseif isBuiltinBehavior(state.behavior_variant) then
+    elseif isBuiltinBehavior(state.behavior_variant, custom_behaviors) then
         current_selection = state.behavior_variant
     end
 
-    -- Build behavior options dynamically from built-in behaviors
+    -- Build behavior options dynamically (built-in + file + UI-created)
     local behavior_options = {
         { id = "global", text = _("Global (use setting)") },
     }
 
-    local builtin_options = getBuiltinBehaviorOptions()
+    local builtin_options = getBuiltinBehaviorOptions(custom_behaviors)
     for _idx,opt in ipairs(builtin_options) do
         table.insert(behavior_options, { id = opt.id, text = opt.text .. " (" .. opt.desc .. ")" })
     end
@@ -1731,7 +1736,8 @@ function PromptsManager:showStep3_Settings(state)
     elseif state.behavior_variant == "none" then
         behavior_display = _("None")
     elseif state.behavior_variant then
-        local behavior = SystemPrompts.getBehaviorById(state.behavior_variant, nil)
+        local behavior = SystemPrompts.getBehaviorById(state.behavior_variant,
+            (self.plugin.settings:readSetting("features") or {}).custom_behaviors)
         if behavior then
             behavior_display = behavior.name
         else
@@ -3294,7 +3300,8 @@ function PromptsManager:showBuiltinSettingsDialog(state)
         behavior_display = _("None")
     elseif state.behavior_variant then
         -- Look up the behavior name from built-ins
-        local behavior = SystemPrompts.getBehaviorById(state.behavior_variant, nil)
+        local behavior = SystemPrompts.getBehaviorById(state.behavior_variant,
+            (self.plugin.settings:readSetting("features") or {}).custom_behaviors)
         if behavior then
             behavior_display = behavior.name
         else
@@ -3602,23 +3609,24 @@ end
 
 -- Behavior selector for builtin actions
 function PromptsManager:showBuiltinBehaviorSelector(state)
+    local custom_behaviors = (self.plugin.settings:readSetting("features") or {}).custom_behaviors
     -- Determine current selection
     local current_selection = "global"
     if state.behavior_override and state.behavior_override ~= "" then
         current_selection = "custom"
     elseif state.behavior_variant == "none" then
         current_selection = "none"
-    elseif isBuiltinBehavior(state.behavior_variant) then
+    elseif isBuiltinBehavior(state.behavior_variant, custom_behaviors) then
         current_selection = state.behavior_variant
     end
 
-    -- Build behavior options dynamically from built-in behaviors
+    -- Build behavior options dynamically (built-in + file + UI-created)
     local behavior_options = {
         { id = "global", text = _("Global (use setting)") },
     }
 
-    -- Add all built-in behaviors
-    local builtin_options = getBuiltinBehaviorOptions()
+    -- Add all behaviors
+    local builtin_options = getBuiltinBehaviorOptions(custom_behaviors)
     for _idx,opt in ipairs(builtin_options) do
         table.insert(behavior_options, { id = opt.id, text = opt.text .. " (" .. opt.desc .. ")" })
     end
@@ -4207,7 +4215,8 @@ function PromptsManager:showCustomQuickSettingsDialog(state)
     elseif state.behavior_variant == "none" then
         behavior_display = _("None")
     elseif state.behavior_variant then
-        local behavior = SystemPrompts.getBehaviorById(state.behavior_variant, nil)
+        local behavior = SystemPrompts.getBehaviorById(state.behavior_variant,
+            (self.plugin.settings:readSetting("features") or {}).custom_behaviors)
         if behavior then
             behavior_display = behavior.name
         else
@@ -4565,13 +4574,14 @@ end
 
 -- Behavior selector for custom quick settings (reuses builtin behavior logic)
 function PromptsManager:showCustomBehaviorQuickSelector(state)
+    local custom_behaviors = (self.plugin.settings:readSetting("features") or {}).custom_behaviors
     -- Reuse the builtin behavior selector, just change the return path
     local current_selection = "global"
     if state.behavior_override and state.behavior_override ~= "" then
         current_selection = "custom"
     elseif state.behavior_variant == "none" then
         current_selection = "none"
-    elseif isBuiltinBehavior(state.behavior_variant) then
+    elseif isBuiltinBehavior(state.behavior_variant, custom_behaviors) then
         current_selection = state.behavior_variant
     end
 
@@ -4603,8 +4613,8 @@ function PromptsManager:showCustomBehaviorQuickSelector(state)
         },
     })
 
-    -- Built-in behaviors
-    local builtin_options = getBuiltinBehaviorOptions()
+    -- All behaviors (built-in + file + UI-created)
+    local builtin_options = getBuiltinBehaviorOptions(custom_behaviors)
     for _idx, opt in ipairs(builtin_options) do
         local is_selected = current_selection == opt.id
         table.insert(buttons, {
