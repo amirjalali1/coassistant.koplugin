@@ -7054,7 +7054,24 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       -- Round 20b (maintainer): the Versions group holds VERSIONS only — the
       -- from-nothing build lives in "Create X-Ray…". Only a PAUSED build keeps
       -- a top-level Resume row; with no rungs the group is empty and hides.
-      if nc_rungs > 0 and (nc_highest or 0) < 1.0 - 0.005 then
+      -- Round 22b (D3 follow-up): a cancelled AUTO chain gets the explicit
+      -- "paused" resume row — the in-session exit from the cancel suppression
+      -- (covers the cancelled-before-anything-built case too, where no rungs
+      -- exist and there was nothing to hang a Resume row on).
+      local nc_features = self.settings:readSetting("features") or {}
+      local nc_auto_on = self.ui.doc_settings and require("koassistant_book_settings")
+        .resolveXrayAuto(self.ui.doc_settings, nc_features)
+      if nc_auto_on and nc_xa.isAutoSuppressed(self.ui.document.file) then
+        local nc_file = self.ui.document.file
+        table.insert(buttons, {{
+          text = _("Resume automatic building (paused)…"),
+          callback = function()
+            UIManager:close(dialog)
+            nc_xa.clearAutoSuppression(nc_file)
+            self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true })
+          end,
+        }})
+      elseif nc_rungs > 0 and (nc_highest or 0) < 1.0 - 0.005 then
         table.insert(buttons, {{
           text = T(_("Resume building checkpoints (%1 so far)…"), nc_rungs),
           callback = function()
@@ -7401,11 +7418,28 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     -- I read). A paused mid-chain build keeps the Resume row; a goal-complete
     -- build offers Extend, not a mislabeled Resume. Top-level (round 20b: the
     -- Versions group holds versions only). Flowing docs only.
+    -- Round 22b (D3 follow-up, maintainer: "how are you supposed to resume
+    -- it?"): a cancelled AUTO chain shows an explicit "paused" resume row —
+    -- the only in-session exit from the cancel suppression. And for auto
+    -- books in steady state the front-load row says what it does ("build
+    -- remaining now"), instead of a misleading "Resume".
     if doc and not (doc.info and doc.info.has_pages) and not ladder_building
         and self.ui and self.ui.document and self.ui.document.file == sx_file then
+      local c_features = self.settings:readSetting("features") or {}
+      local c_auto_on = self.ui.doc_settings and require("koassistant_book_settings")
+        .resolveXrayAuto(self.ui.doc_settings, c_features)
       local ext_goal = self.ui.doc_settings and tonumber(self.ui.doc_settings:readSetting(
         require("koassistant_book_settings").KEY_XRAY_GOAL)) or nil
-      if #ladder_rungs == 0
+      if c_auto_on and XrayAuto.isAutoSuppressed(sx_file) then
+        table.insert(buttons, {{
+          text = _("Resume automatic building (paused)…"),
+          callback = function()
+            UIManager:close(dialog)
+            XrayAuto.clearAutoSuppression(sx_file)
+            self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true })
+          end,
+        }})
+      elseif #ladder_rungs == 0
           or (ext_goal and (ladder_highest or 0) >= ext_goal - 0.01) then
         table.insert(buttons, {{
           text = _("Extend coverage…"),
@@ -7416,8 +7450,11 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         }})
       elseif (ladder_highest or 0) < 1.0 - 0.005 then
         table.insert(buttons, {{
-          text = T(_("Resume building checkpoints (from %1%)…"),
-            math.floor((ladder_highest or 0) * 100 + 0.5)),
+          text = c_auto_on
+            and T(_("Build remaining checkpoints now (from %1%)…"),
+              math.floor((ladder_highest or 0) * 100 + 0.5))
+            or T(_("Resume building checkpoints (from %1%)…"),
+              math.floor((ladder_highest or 0) * 100 + 0.5)),
           callback = function()
             UIManager:close(dialog)
             self_ref:_startXrayLadderBuild()
@@ -8390,7 +8427,7 @@ function AskGPT:_xrayFollowCatchUp(_decimal)
   local self_ref = self
   local function start()
     UIManager:show(Notification:new{
-      text = _("Automatic X-Ray is on: checkpoints build in the background as you read."),
+      text = _("Automatic X-Ray on — building as you read."),
     })
     self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true })
   end
@@ -8407,8 +8444,9 @@ function AskGPT:_xrayFollowCatchUp(_decimal)
         {{ text = _("Not this session"), callback = function()
           UIManager:close(confirm)
           if file then XrayAuto.suppressAuto(file) end
-          UIManager:show(Notification:new{
-            text = _("Automatic X-Ray stays on; building waits until you next open this book."),
+          UIManager:show(InfoMessage:new{
+            text = _("Automatic X-Ray stays on. Resume from the X-Ray popup, or it continues next time you open this book."),
+            timeout = 4,
           })
         end }},
       },
@@ -11348,8 +11386,8 @@ function AskGPT:_fireXrayLadderRung()
   if not build.silent or features.xray_auto_notify == true then
     UIManager:show(Notification:new{
       text = is_intro
-        and T(_("Building X-Ray checkpoints — %1 of %2 (introduction)…"), step_no, build.total)
-        or T(_("Building X-Ray checkpoints — %1 of %2 (to %3%)…"),
+        and T(_("X-Ray checkpoints — %1 of %2 (introduction)…"), step_no, build.total)
+        or T(_("X-Ray checkpoints — %1 of %2 (to %3%)…"),
           step_no, build.total, math.floor(target * 100 + 0.5)),
     })
   end
@@ -11459,13 +11497,11 @@ function AskGPT:_cancelXrayLadderBuild()
     UIManager:unschedule(self._xray_auto_watchdog)
     self._xray_auto_watchdog = nil
   end
-  local features = self.settings:readSetting("features") or {}
-  local auto_on = self.ui and self.ui.doc_settings
-    and require("koassistant_book_settings").resolveXrayAuto(self.ui.doc_settings, features)
+  -- Short toast (Notification renders ONE line — long text truncates); the
+  -- popup's "Resume automatic building (paused)…" / Resume rows are the way
+  -- back in, and reopening the book clears the pause
   UIManager:show(Notification:new{
-    text = auto_on
-      and _("Checkpoint build cancelled. Automatic building is paused for this book until you start it again or reopen the book.")
-      or _("Checkpoint build cancelled."),
+    text = _("Build cancelled — resume from the X-Ray popup."),
   })
 end
 
@@ -13127,10 +13163,10 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       self_ref.settings:flush()
       self_ref:updateConfigFromSettings()
       if not web_search_supported then
-        UIManager:show(Notification:new{
+        UIManager:show(InfoMessage:new{
           text = T(_("Saved as default. %1 can't use web search — switch to: %2."),
             provider_display, ModelConstraints.getWebSearchProvidersLabel()),
-          timeout = 3,
+          timeout = 4,
         })
       end
       opening_subdialog = true
@@ -15347,9 +15383,9 @@ function AskGPT:applyPrivacyPresetDefault(touchmenu_instance)
   if touchmenu_instance then
     touchmenu_instance:updateItems()
   end
-  UIManager:show(Notification:new{
+  UIManager:show(InfoMessage:new{
     text = _("Default: Personal content private, basic context shared"),
-    timeout = 2,
+    timeout = 3,
   })
 end
 
@@ -15370,9 +15406,9 @@ function AskGPT:applyPrivacyPresetMinimal(touchmenu_instance)
   if touchmenu_instance then
     touchmenu_instance:updateItems()
   end
-  UIManager:show(Notification:new{
+  UIManager:show(InfoMessage:new{
     text = _("Minimal: All extended sharing disabled"),
-    timeout = 2,
+    timeout = 3,
   })
 end
 
@@ -15393,9 +15429,9 @@ function AskGPT:applyPrivacyPresetFull(touchmenu_instance)
   if touchmenu_instance then
     touchmenu_instance:updateItems()
   end
-  UIManager:show(Notification:new{
+  UIManager:show(InfoMessage:new{
     text = _("Full: All data sharing enabled (Text extraction must be enabled separately)"),
-    timeout = 2,
+    timeout = 3,
   })
 end
 

@@ -1878,7 +1878,7 @@ function PromptsManager:showStep3_Settings(state)
                 if state.use_book_text then
                     local features = self.plugin.settings:readSetting("features") or {}
                     if not features.enable_book_text_extraction then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Text extraction enabled. Note: Enable in Settings → Advanced first."),
                             timeout = 4,
                         })
@@ -1898,7 +1898,7 @@ function PromptsManager:showStep3_Settings(state)
             text = hl_checkbox .. _("Allow highlight use") .. hl_suffix,
             callback = function()
                 if hl_locked then
-                    UIManager:show(Notification:new{
+                    UIManager:show(InfoMessage:new{
                         text = _("Highlights are always on when annotations are enabled."),
                         timeout = 3,
                     })
@@ -1908,7 +1908,7 @@ function PromptsManager:showStep3_Settings(state)
                 if state.use_highlights then
                     local features = self.plugin.settings:readSetting("features") or {}
                     if features.enable_highlights_sharing ~= true and features.enable_annotations_sharing ~= true then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Highlight use enabled. Note: Enable in Settings → Privacy & Data first."),
                             timeout = 4,
                         })
@@ -1926,7 +1926,7 @@ function PromptsManager:showStep3_Settings(state)
                     state.use_highlights = true
                     local features = self.plugin.settings:readSetting("features") or {}
                     if features.enable_annotations_sharing ~= true then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Annotation use enabled. Note: Enable in Settings → Privacy & Data first."),
                             timeout = 4,
                         })
@@ -1943,7 +1943,7 @@ function PromptsManager:showStep3_Settings(state)
                 if state.use_notebook then
                     local features = self.plugin.settings:readSetting("features") or {}
                     if features.enable_notebook_sharing ~= true then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Notebook use enabled. Note: Enable in Settings → Privacy & Data first."),
                             timeout = 4,
                         })
@@ -1960,7 +1960,7 @@ function PromptsManager:showStep3_Settings(state)
                 if state.use_library then
                     local features = self.plugin.settings:readSetting("features") or {}
                     if features.enable_library_scanning ~= true then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Library use enabled. Note: Enable in Settings → Library Settings first."),
                             timeout = 4,
                         })
@@ -1981,7 +1981,7 @@ function PromptsManager:showStep3_Settings(state)
                 if state.use_advanced_stats then
                     local features = self.plugin.settings:readSetting("features") or {}
                     if features.enable_advanced_stats ~= true then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Advanced stats enabled. Note: Enable in Settings → Privacy & Data first."),
                             timeout = 4,
                         })
@@ -3444,7 +3444,7 @@ function PromptsManager:showBuiltinSettingsDialog(state)
                 if state.use_book_text then
                     local features = self.plugin.settings:readSetting("features") or {}
                     if not features.enable_book_text_extraction then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Text extraction enabled. Note: Enable in Settings → Advanced first."),
                             timeout = 4,
                         })
@@ -3469,7 +3469,7 @@ function PromptsManager:showBuiltinSettingsDialog(state)
             text = hl_checkbox .. _("Allow highlight use") .. hl_suffix,
             callback = function()
                 if hl_locked then
-                    UIManager:show(Notification:new{
+                    UIManager:show(InfoMessage:new{
                         text = _("Highlights are always on when annotations are enabled."),
                         timeout = 3,
                     })
@@ -3479,7 +3479,7 @@ function PromptsManager:showBuiltinSettingsDialog(state)
                 if state.use_highlights then
                     local features = self.plugin.settings:readSetting("features") or {}
                     if features.enable_highlights_sharing ~= true and features.enable_annotations_sharing ~= true then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Highlight use enabled. Note: Enable in Settings → Privacy & Data first."),
                             timeout = 4,
                         })
@@ -3497,7 +3497,7 @@ function PromptsManager:showBuiltinSettingsDialog(state)
                     state.use_highlights = true
                     local features = self.plugin.settings:readSetting("features") or {}
                     if features.enable_annotations_sharing ~= true then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Annotation use enabled. Note: Enable in Settings → Privacy & Data first."),
                             timeout = 4,
                         })
@@ -3515,7 +3515,7 @@ function PromptsManager:showBuiltinSettingsDialog(state)
                 if state.use_notebook then
                     local features = self.plugin.settings:readSetting("features") or {}
                     if features.enable_notebook_sharing ~= true then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Notebook use enabled. Note: Enable in Settings → Privacy & Data first."),
                             timeout = 4,
                         })
@@ -3541,7 +3541,7 @@ function PromptsManager:showBuiltinSettingsDialog(state)
                 if state.use_advanced_stats then
                     local features = self.plugin.settings:readSetting("features") or {}
                     if features.enable_advanced_stats ~= true then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Advanced stats enabled. Note: Enable in Settings → Privacy & Data first."),
                             timeout = 4,
                         })
@@ -4371,7 +4371,7 @@ function PromptsManager:showCustomQuickSettingsDialog(state)
                 if state.use_book_text then
                     local features = self.plugin.settings:readSetting("features") or {}
                     if not features.enable_book_text_extraction then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Text extraction enabled. Note: Enable in Settings → Advanced first."),
                             timeout = 4,
                         })
@@ -4396,7 +4396,7 @@ function PromptsManager:showCustomQuickSettingsDialog(state)
             text = hl_checkbox .. _("Allow highlight use") .. hl_suffix,
             callback = function()
                 if hl_locked then
-                    UIManager:show(Notification:new{
+                    UIManager:show(InfoMessage:new{
                         text = _("Highlights are always on when annotations are enabled."),
                         timeout = 3,
                     })
@@ -4406,7 +4406,7 @@ function PromptsManager:showCustomQuickSettingsDialog(state)
                 if state.use_highlights then
                     local features = self.plugin.settings:readSetting("features") or {}
                     if features.enable_highlights_sharing ~= true and features.enable_annotations_sharing ~= true then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Highlight use enabled. Note: Enable in Settings → Privacy & Data first."),
                             timeout = 4,
                         })
@@ -4424,7 +4424,7 @@ function PromptsManager:showCustomQuickSettingsDialog(state)
                     state.use_highlights = true
                     local features = self.plugin.settings:readSetting("features") or {}
                     if features.enable_annotations_sharing ~= true then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Annotation use enabled. Note: Enable in Settings → Privacy & Data first."),
                             timeout = 4,
                         })
@@ -4442,7 +4442,7 @@ function PromptsManager:showCustomQuickSettingsDialog(state)
                 if state.use_notebook then
                     local features = self.plugin.settings:readSetting("features") or {}
                     if features.enable_notebook_sharing ~= true then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Notebook use enabled. Note: Enable in Settings → Privacy & Data first."),
                             timeout = 4,
                         })
@@ -4468,7 +4468,7 @@ function PromptsManager:showCustomQuickSettingsDialog(state)
                 if state.use_advanced_stats then
                     local features = self.plugin.settings:readSetting("features") or {}
                     if features.enable_advanced_stats ~= true then
-                        UIManager:show(Notification:new{
+                        UIManager:show(InfoMessage:new{
                             text = _("Advanced stats enabled. Note: Enable in Settings → Privacy & Data first."),
                             timeout = 4,
                         })
@@ -5334,7 +5334,7 @@ function PromptsManager:showHighlightMenuManager()
                 self.plugin.action_service:toggleHighlightMenuAction(action.id)
                 -- Show restart reminder
                 UIManager:show(Notification:new{
-                    text = _("Takes effect the next time the highlight menu opens"),
+                    text = _("Takes effect when the highlight menu reopens"),
                     timeout = 2,
                 })
                 -- Refresh the menu after close completes
@@ -5392,7 +5392,7 @@ function PromptsManager:showHighlightMenuActionOptions(action, index, total)
                     UIManager:close(self.options_dialog)
                     UIManager:close(self.highlight_menu)
                     UIManager:show(Notification:new{
-                        text = _("Takes effect the next time the highlight menu opens"),
+                        text = _("Takes effect when the highlight menu reopens"),
                         timeout = 2,
                     })
                     self:showHighlightMenuManager()
@@ -5410,7 +5410,7 @@ function PromptsManager:showHighlightMenuActionOptions(action, index, total)
                     UIManager:close(self.options_dialog)
                     UIManager:close(self.highlight_menu)
                     UIManager:show(Notification:new{
-                        text = _("Takes effect the next time the highlight menu opens"),
+                        text = _("Takes effect when the highlight menu reopens"),
                         timeout = 2,
                     })
                     self:showHighlightMenuManager()
@@ -5427,7 +5427,7 @@ function PromptsManager:showHighlightMenuActionOptions(action, index, total)
                 UIManager:close(self.options_dialog)
                 UIManager:close(self.highlight_menu)
                 UIManager:show(Notification:new{
-                    text = _("Takes effect the next time the highlight menu opens"),
+                    text = _("Takes effect when the highlight menu reopens"),
                     timeout = 2,
                 })
                 self:showHighlightMenuManager()

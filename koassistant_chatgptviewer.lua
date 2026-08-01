@@ -1264,7 +1264,7 @@ function ChatGPTViewer:init()
     end,
     hold_callback = function()
       UIManager:show(Notification:new{
-        text = _("Pin response as artifact or star this conversation"),
+        text = _("Pin as artifact or star this conversation"),
         timeout = 2,
       })
     end,
@@ -1564,7 +1564,7 @@ function ChatGPTViewer:init()
       UIManager:show(Notification:new{
         text = self.selection_data
           and _("Save AI response as note on highlighted word")
-          or _("No selection data available (word position not captured)"),
+          or _("No selection data for this word"),
         timeout = 2,
       })
     end,
@@ -2094,7 +2094,7 @@ function ChatGPTViewer:init()
     end,
     hold_callback = function()
       UIManager:show(Notification:new{
-        text = _("Re-run translation with a different target language"),
+        text = _("Re-run translation in another language"),
         timeout = 2,
       })
     end,
@@ -4378,7 +4378,7 @@ function ChatGPTViewer:showRegenerateFreshDialog()
             if ok and ActionCache then
               local success = ActionCache.clear(document_path, action_id)
               if success then
-                UIManager:show(Notification:new{
+                UIManager:show(InfoMessage:new{
                   text = _("Cache cleared. Run the action again for fresh analysis."),
                   timeout = 3,
                 })
