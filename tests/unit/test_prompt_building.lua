@@ -1983,6 +1983,31 @@ local function runLanguagePlaceholderTests()
         })
         TestRunner:assertContains(result, "Define in English then translate to French")
     end)
+
+    TestRunner:test("{response_language} names the resolved primary (round 29, Arabic drift)", function()
+        -- The X-Ray JSON tails name the response language LOCALLY — the
+        -- system-level instruction alone lost to a wall of Arabic source text
+        local result = MessageBuilder.build({
+            prompt = { prompt = "Values must be written in {response_language}, regardless of the language of the source text." },
+            context = "book",
+            data = {
+                book_metadata = { title = "T", author = "A" },
+                response_language = "English",
+            },
+        })
+        TestRunner:assertContains(result, "must be written in English")
+        TestRunner:assertNotContains(result, "{response_language}")
+    end)
+
+    TestRunner:test("{response_language} falls back to English when not threaded", function()
+        local result = MessageBuilder.build({
+            prompt = { prompt = "Write in {response_language}." },
+            context = "highlight",
+            data = { highlighted_text = "x" },
+        })
+        TestRunner:assertContains(result, "Write in English.")
+        TestRunner:assertNotContains(result, "{response_language}")
+    end)
 end
 
 -- =============================================================================

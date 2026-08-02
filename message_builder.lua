@@ -202,6 +202,11 @@ function MessageBuilder.build(params)
     if data.dictionary_language then
         user_prompt = replace_placeholder(user_prompt, "{dictionary_language}", data.dictionary_language)
     end
+    -- Effective PRIMARY response language (X-Ray JSON tails name it locally —
+    -- the schema default English is the honest fallback for callers that
+    -- don't thread it)
+    user_prompt = replace_placeholder(user_prompt, "{response_language}",
+        data.response_language or "English")
     -- Strip when context is switched off OR simply unavailable. The empty/nil case
     -- matters since the dictionary default became "sentence" (D1): the substitute
     -- branch below would otherwise leave a dangling "In context:" label with nothing
@@ -725,6 +730,8 @@ function MessageBuilder.substituteVariables(prompt_text, data)
     if data.dictionary_language then
         result = replace_placeholder(result, "{dictionary_language}", data.dictionary_language)
     end
+    result = replace_placeholder(result, "{response_language}",
+        data.response_language or "English")
     if data.context then
         result = replace_placeholder(result, "{context}", data.context)
     end

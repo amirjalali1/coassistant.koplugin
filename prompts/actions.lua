@@ -830,7 +830,7 @@ local XRAY_PARTIAL_REPLACEMENTS = {
     "building_toward": ["What the author appears to be building toward"]
   }]],
     __NONFICTION_STATUS_GUIDANCE__ = "**Current Position**: A paragraph-length summary of what's been established so far, the current line of inquiry, and where the author seems to be heading.",
-    __CLOSING__ = [[CRITICAL: Do not reveal ANYTHING beyond {reading_progress}. This must be completely spoiler-free. Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values (descriptions, summaries, significance, definitions, connections, etc.) must follow your language instructions.]],
+    __CLOSING__ = [[CRITICAL: Do not reveal ANYTHING beyond {reading_progress}. This must be completely spoiler-free. Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values (descriptions, summaries, significance, definitions, connections, etc.) must be written in {response_language}, regardless of the language of the source text.]],
 }
 
 local XRAY_COMPLETE_REPLACEMENTS = {
@@ -849,7 +849,7 @@ local XRAY_COMPLETE_REPLACEMENTS = {
     "implications": ["Practical implication, recommendation, or open question"]
   }]],
     __NONFICTION_STATUS_GUIDANCE__ = "**Conclusion**: A paragraph-length summary of the document's overall conclusions and key findings, plus practical implications.",
-    __CLOSING__ = [[Output ONLY valid JSON — no other text. Cover the work comprehensively, including all events, resolutions, and conclusions. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values (descriptions, summaries, significance, definitions, connections, etc.) must follow your language instructions.]],
+    __CLOSING__ = [[Output ONLY valid JSON — no other text. Cover the work comprehensively, including all events, resolutions, and conclusions. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values (descriptions, summaries, significance, definitions, connections, etc.) must be written in {response_language}, regardless of the language of the source text.]],
 }
 
 -- Section X-Ray: uses complete-style analysis but scoped to a specific section
@@ -861,7 +861,7 @@ local XRAY_SECTION_REPLACEMENTS = {
     __FICTION_STATUS_GUIDANCE__ = XRAY_COMPLETE_REPLACEMENTS.__FICTION_STATUS_GUIDANCE__,
     __NONFICTION_STATUS__ = XRAY_COMPLETE_REPLACEMENTS.__NONFICTION_STATUS__,
     __NONFICTION_STATUS_GUIDANCE__ = XRAY_COMPLETE_REPLACEMENTS.__NONFICTION_STATUS_GUIDANCE__,
-    __CLOSING__ = [[Output ONLY valid JSON — no other text. Cover the section comprehensively. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values (descriptions, summaries, significance, definitions, connections, etc.) must follow your language instructions.]],
+    __CLOSING__ = [[Output ONLY valid JSON — no other text. Cover the section comprehensively. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values (descriptions, summaries, significance, definitions, connections, etc.) must be written in {response_language}, regardless of the language of the source text.]],
 }
 
 -- ============================================================
@@ -976,7 +976,7 @@ local ACADEMIC_PARTIAL_REPLACEMENTS = {
     "building_toward": ["What the paper appears to be building toward based on what's been read"]
   }]],
     __STATUS_GUIDANCE__ = "**Current Position**: A paragraph-length summary of what's been established so far, the current section's focus, and what the paper seems to be building toward.",
-    __CLOSING__ = [[CRITICAL: Do not reveal ANYTHING beyond {reading_progress}. Cover only what has been presented so far. Output ONLY valid JSON — no other text. JSON keys must remain in English. Technical terms, concept names, and figure references must match the paper's language. All other string values (descriptions, summaries, significance, definitions, etc.) must follow your language instructions.]],
+    __CLOSING__ = [[CRITICAL: Do not reveal ANYTHING beyond {reading_progress}. Cover only what has been presented so far. Output ONLY valid JSON — no other text. JSON keys must remain in English. Technical terms, concept names, and figure references must match the paper's language. All other string values (descriptions, summaries, significance, definitions, etc.) must be written in {response_language}, regardless of the language of the source text.]],
 }
 
 local ACADEMIC_COMPLETE_REPLACEMENTS = {
@@ -989,7 +989,7 @@ local ACADEMIC_COMPLETE_REPLACEMENTS = {
     "implications": ["Practical implication, future direction, or open question"]
   }]],
     __STATUS_GUIDANCE__ = "**Conclusion**: A paragraph-length summary of the paper's overall conclusions, key contributions, and implications for the field.",
-    __CLOSING__ = [[Output ONLY valid JSON — no other text. Cover the paper comprehensively, including all methods, results, and conclusions. JSON keys must remain in English. Technical terms, concept names, and figure references must match the paper's language. All other string values (descriptions, summaries, significance, definitions, etc.) must follow your language instructions.]],
+    __CLOSING__ = [[Output ONLY valid JSON — no other text. Cover the paper comprehensively, including all methods, results, and conclusions. JSON keys must remain in English. Technical terms, concept names, and figure references must match the paper's language. All other string values (descriptions, summaries, significance, definitions, etc.) must be written in {response_language}, regardless of the language of the source text.]],
 }
 
 local ACADEMIC_SECTION_REPLACEMENTS = {
@@ -998,7 +998,7 @@ local ACADEMIC_SECTION_REPLACEMENTS = {
     __SCOPE_INSTRUCTION__ = "Cover this section comprehensively. Focus on what appears within the provided text",
     __STATUS__ = ACADEMIC_COMPLETE_REPLACEMENTS.__STATUS__,
     __STATUS_GUIDANCE__ = ACADEMIC_COMPLETE_REPLACEMENTS.__STATUS_GUIDANCE__,
-    __CLOSING__ = [[Output ONLY valid JSON — no other text. Cover the section comprehensively. JSON keys must remain in English. Technical terms, concept names, and figure references must match the paper's language. All other string values (descriptions, summaries, significance, definitions, etc.) must follow your language instructions.]],
+    __CLOSING__ = [[Output ONLY valid JSON — no other text. Cover the section comprehensively. JSON keys must remain in English. Technical terms, concept names, and figure references must match the paper's language. All other string values (descriptions, summaries, significance, definitions, etc.) must be written in {response_language}, regardless of the language of the source text.]],
 }
 
 --- Build a Section X-Ray prompt for a specific scope.
@@ -1172,7 +1172,7 @@ Guidelines:
 
 {highlight_analysis_nudge}
 
-CRITICAL: This must cover only content up to {reading_progress}. Output ONLY valid JSON — no other text. JSON keys must remain in English. Technical terms and concept names must match the paper's language. All other string values must follow your language instructions.]],
+CRITICAL: This must cover only content up to {reading_progress}. Output ONLY valid JSON — no other text. JSON keys must remain in English. Technical terms and concept names must match the paper's language. All other string values must be written in {response_language}, regardless of the language of the source text.]],
         skip_language_instruction = false,
         reasoning_config = "off",  -- Structured JSON extraction; on thinking-default models reasoning roughly doubles latency (device round 1 T2 — ~100s/update) for no schema benefit, and covers section X-Rays + ladder rungs + background updates (all ride this action)
         api_params = {
@@ -1218,7 +1218,7 @@ Guidelines:
 
 {highlight_analysis_nudge}
 
-CRITICAL: This must remain spoiler-free up to {reading_progress}. Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values must follow your language instructions.]],
+CRITICAL: This must remain spoiler-free up to {reading_progress}. Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values must be written in {response_language}, regardless of the language of the source text.]],
     },
     -- X-Ray (Simple): Prose companion from AI knowledge (no text extraction)
     xray_simple = {

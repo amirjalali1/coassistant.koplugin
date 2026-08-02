@@ -3410,6 +3410,20 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     -- (temp_config.features is a separate copy from config.features)
     temp_config.features.dictionary_language = effective_dictionary_language
     temp_config.features.translation_language = effective_translation_language
+    -- Response language for prompt-LOCAL naming ({response_language} — the
+    -- X-Ray JSON tails): the SAME primary the system instruction announces,
+    -- incl. the per-book response-language override. Named again at the JSON
+    -- rules because thousands of chars of non-primary source text pull models
+    -- off the far-away system instruction (device report 2026-08-02: Arabic
+    -- book → Arabic X-Ray despite "Always respond in English" on the wire).
+    local response_lang_fields = require("koassistant_book_settings").applyResponseLanguageOverride({
+        interaction_languages = config.features.interaction_languages,
+        user_languages = config.features.user_languages,
+        primary_language = config.features.primary_language,
+    }, per_book_ds)
+    local effective_response_language = SystemPrompts.parseUserLanguages(
+        response_lang_fields.interaction_languages or response_lang_fields.user_languages,
+        response_lang_fields.primary_language)
 
     -- Build data for consolidated message
     logger.info("KOAssistant: buildConsolidatedMessage - highlightedText:", highlightedText and #highlightedText or "nil/empty")
@@ -3429,6 +3443,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         book_context = config.features.book_context,
         translation_language = effective_translation_language,
         dictionary_language = effective_dictionary_language,
+        response_language = effective_response_language,
         -- Context from dictionary hook (surrounding text)
         context = config.features.dictionary_context or "",
         -- Mode: dict-popup/bypass launches mark their config copies with
