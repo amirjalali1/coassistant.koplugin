@@ -369,6 +369,125 @@ TestRunner:test("isXrayLadderRung: identity is timestamp + progress", function()
     TestRunner:assertEqual(ActionCache.isXrayLadderRung(DOC_PATH, nil), false, "nil entry safe")
 end)
 
+print("")
+print("  [coverage spans — timeline slice 1 (plan item 37(b))]")
+
+TestRunner:test("parseSpans normalizes: sort, merge overlaps AND adjacents, drop invalid", function()
+    local norm = WriteBack.parseSpans("60-80, 1-40, 30-50, 51-55, 0-3, 9-7")
+    TestRunner:assertEqual(#norm, 2, "two merged spans")
+    TestRunner:assertEqual(norm[1].from, 1, "first span start")
+    TestRunner:assertEqual(norm[1].to, 55, "overlap (30-50) + adjacent (51-55) chain fuses to 1-55")
+    TestRunner:assertEqual(norm[2].from, 60, "hole 56-59 preserved")
+    TestRunner:assertEqual(norm[2].to, 80, "second span end")
+    TestRunner:assertEqual(#WriteBack.parseSpans(nil), 0, "nil is empty")
+    TestRunner:assertEqual(#WriteBack.parseSpans("garbage"), 0, "garbage is empty")
+end)
+
+TestRunner:test("formatSpans canonical string; nil for empty", function()
+    TestRunner:assertEqual(WriteBack.formatSpans("60-80,1-40"), "1-40,60-80", "canonical order")
+    TestRunner:assertEqual(WriteBack.formatSpans({ { from = 1, to = 10 }, { from = 11, to = 20 } }),
+        "1-20", "adjacent spans fuse")
+    TestRunner:assertEqual(WriteBack.formatSpans(nil), nil, "empty set omitted, never stored as \"\"")
+end)
+
+TestRunner:test("unionSpans: prefix chain fuses; holes survive union", function()
+    TestRunner:assertEqual(WriteBack.unionSpans("1-200", "201-250"), "1-250", "delta extends the prefix")
+    TestRunner:assertEqual(WriteBack.unionSpans("1-100,150-200", "201-250"),
+        "1-100,150-250", "the 101-149 hole is preserved — merged coverage never overstates")
+    TestRunner:assertEqual(WriteBack.unionSpans(nil, "1-40"), "1-40", "nil side is identity")
+    TestRunner:assertEqual(WriteBack.unionSpans(nil, nil), nil, "both nil stays nil")
+end)
+
+TestRunner:test("prefixCoverage: computed pointer eligibility (item 37(a))", function()
+    TestRunner:assertEqual(WriteBack.prefixCoverage("1-120"), 120, "prefix point eligible")
+    TestRunner:assertEqual(WriteBack.prefixCoverage("1-100,150-200"), 100,
+        "eligible only to the first hole")
+    TestRunner:assertEqual(WriteBack.prefixCoverage("40-60"), nil,
+        "section span is a member, never a pointer candidate")
+    TestRunner:assertEqual(WriteBack.prefixCoverage(nil), nil, "no spans, no eligibility")
+end)
+
+TestRunner:test("spanGaps: leading/middle/tail holes; empty spans yield NO gaps", function()
+    local gaps = WriteBack.spanGaps("10-20,30-40", 50)
+    TestRunner:assertEqual(#gaps, 3, "leading + middle + tail")
+    TestRunner:assertEqual(gaps[1].from, 1, "leading gap start")
+    TestRunner:assertEqual(gaps[1].to, 9, "leading gap end")
+    TestRunner:assertEqual(gaps[2].from, 21, "middle gap start")
+    TestRunner:assertEqual(gaps[2].to, 29, "middle gap end")
+    TestRunner:assertEqual(gaps[3].from, 41, "tail gap start")
+    TestRunner:assertEqual(gaps[3].to, 50, "tail gap end")
+    TestRunner:assertEqual(#WriteBack.spanGaps("1-50", 50), 0, "full coverage, no gaps")
+    TestRunner:assertEqual(#WriteBack.spanGaps(nil, 300), 0,
+        "unknown coverage must not read as everything-missing")
+end)
+
+TestRunner:test("spansFromEntry: stamped wins; sections beat full_document; legacy prefix; intro claims nothing", function()
+    TestRunner:assertEqual(WriteBack.spansFromEntry({ coverage_spans = "5-10,1-4" }), "1-10",
+        "stamped field wins, normalized")
+    TestRunner:assertEqual(
+        WriteBack.spansFromEntry({ scope_start_page = 40, scope_end_page = 60, full_document = true }),
+        "40-60", "section scope beats its scope-complete full_document marker")
+    TestRunner:assertEqual(WriteBack.spansFromEntry({ full_document = true }, 320), "1-320",
+        "whole-book claim resolves against a known total")
+    TestRunner:assertEqual(WriteBack.spansFromEntry({ full_document = true }), nil,
+        "whole-book claim without a total derives nothing (flag remains authoritative)")
+    TestRunner:assertEqual(WriteBack.spansFromEntry({ progress_decimal = 1.0 }, 320), "1-320",
+        "terminal incremental = whole-book claim")
+    TestRunner:assertEqual(WriteBack.spansFromEntry({ progress_page = 123, progress_decimal = 0.4 }),
+        "1-123", "legacy prefix claim")
+    TestRunner:assertEqual(WriteBack.spansFromEntry({ intro = true, progress_page = 0, progress_decimal = 0 }),
+        nil, "intro rung claims no coverage")
+    TestRunner:assertEqual(WriteBack.spansFromEntry(nil), nil, "nil entry safe")
+end)
+
+TestRunner:test("reconcileXrayMeta unions spans with the base and defaults base_timestamp", function()
+    local meta = WriteBack.reconcileXrayMeta(
+        { coverage_spans = "1-100,150-200", timestamp = 1700000123 },
+        { coverage_spans = "201-250", producer = "section_merge" })
+    TestRunner:assertEqual(meta.coverage_spans, "1-100,150-250", "union with base, hole kept")
+    TestRunner:assertEqual(meta.base_timestamp, 1700000123, "base identity defaulted")
+    TestRunner:assertEqual(meta.producer, "section_merge", "producer never inherited, caller's value kept")
+    -- Legacy base without stamped spans contributes its prefix claim
+    local meta2 = WriteBack.reconcileXrayMeta(
+        { progress_page = 120, progress_decimal = 0.4 }, {})
+    TestRunner:assertEqual(meta2.coverage_spans, "1-120", "legacy base derives through")
+    -- Fresh write: nothing invented
+    local meta3 = WriteBack.reconcileXrayMeta(nil, { model = "m" })
+    TestRunner:assertEqual(meta3.coverage_spans, nil, "no base, no spans")
+    TestRunner:assertEqual(meta3.base_timestamp, nil, "no base, no base identity")
+end)
+
+TestRunner:test("spans + provenance survive the rung → ring → live round-trip", function()
+    wipe()
+    -- Rung with stamped spans/provenance
+    ActionCache.pushXrayLadderRung(DOC_PATH, {
+        result = '{"rung": 1}', progress_decimal = 0.4, progress_page = 120,
+        timestamp = 1700000200, coverage_spans = "1-120", producer = "ladder",
+        base_timestamp = 1700000100,
+    })
+    local ladder = ActionCache.getXrayLadder(DOC_PATH)
+    TestRunner:assertEqual(ladder[1].coverage_spans, "1-120", "rung keeps spans on disk")
+    TestRunner:assertEqual(ladder[1].producer, "ladder", "rung keeps producer")
+    TestRunner:assertEqual(ladder[1].base_timestamp, 1700000100, "rung keeps base identity")
+    -- Promotion carries the point's own provenance into the live entry
+    ActionCache.promoteXrayLadderRung(DOC_PATH, ladder[1], 5, { manual = true })
+    local live = ActionCache.getXrayCache(DOC_PATH)
+    TestRunner:assertEqual(live.coverage_spans, "1-120", "promoted live keeps spans")
+    TestRunner:assertEqual(live.producer, "ladder", "promotion keeps the point's producer")
+    TestRunner:assertEqual(live.base_timestamp, 1700000100, "promotion keeps base identity")
+    -- Ring archive on a later overwrite keeps the fields too
+    -- The outgoing live IS a rung → not ring-archived (shared archive rule);
+    -- overwrite twice so a non-rung entry lands in the ring
+    WriteBack.commitXray(DOC_PATH, '{"live": 2}', 0.5,
+        { coverage_spans = "1-150", producer = "manual", base_timestamp = 1700000200 }, { limit = 5 })
+    WriteBack.commitXray(DOC_PATH, '{"live": 3}', 0.6,
+        { coverage_spans = "1-180", producer = "auto", base_timestamp = 1700000300 }, { limit = 5 })
+    local ring = ActionCache.getXrayCheckpoints(DOC_PATH)
+    TestRunner:assertEqual(ring[1].coverage_spans, "1-150", "ring checkpoint keeps spans")
+    TestRunner:assertEqual(ring[1].producer, "manual", "ring checkpoint keeps producer")
+    TestRunner:assertEqual(ring[1].base_timestamp, 1700000200, "ring checkpoint keeps base identity")
+end)
+
 wipe()
 os.execute(string.format("rm -rf %q", TMP_ROOT))
 

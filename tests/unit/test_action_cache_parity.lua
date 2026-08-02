@@ -99,6 +99,10 @@ local FULL_METADATA = {
     scope_start_xpointer = "/body/DocFragment[5]/body/p[1]",
     scope_end_xpointer = "/body/DocFragment[5]/body/p[99]",
     scope_page_summary = "pages 40-60",
+    -- Timeline slice 1 (xray_ecosystem_plan.md item 37)
+    coverage_spans = "1-40,60-80",
+    producer = "manual",
+    base_timestamp = 1753600123,
 }
 
 local RESULT_TEXT = "Line one\nLine two with \"quotes\" and ]] brackets and ]=] tricky closer"

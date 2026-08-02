@@ -4186,6 +4186,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 message_data.cached_used_book_text = cached_entry.used_book_text
                 message_data.cached_used_highlights = cached_entry.used_highlights
                 message_data.cached_used_annotations = cached_entry.used_annotations
+                -- Timeline slice 1: base identity + coverage union at save time
+                message_data.cached_timestamp = cached_entry.timestamp
+                message_data.cached_coverage_spans = cached_entry.coverage_spans
 
                 -- For X-Ray: parse cached result and build entity index for merge-based updates
                 if prompt.id == "xray" and XrayParser.isJSON(cached_entry.result) then
@@ -4458,6 +4461,36 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 end
             end
 
+            -- Timeline slice 1 (xray_ecosystem_plan.md item 37): coverage spans +
+            -- provenance for X-Ray-lineage writes, computed ONCE and stamped into
+            -- both cache keys and rung writes below. Spans record what the content
+            -- honestly covers: fresh prefix builds claim [1→page]; updates claim
+            -- base spans ∪ [base end+1→page] (a base with holes keeps its holes).
+            -- Whole-book one-shots stay flag-based (full_document — page totals
+            -- drift on reflow); intro rungs claim nothing (premise-only).
+            local xray_spans, xray_producer, xray_base_ts
+            if action.cache_as_xray then
+                local WriteBack = require("koassistant_artifact_writeback")
+                xray_producer = message_data._ladder_build and "ladder"
+                    or ((message_data._background_request or message_data._background_create) and "auto")
+                    or "manual"
+                xray_base_ts = using_cache and message_data.cached_timestamp or nil
+                local end_page = tonumber(message_data.progress_page)
+                if not message_data._ladder_intro
+                    and not (config.features and config.features._full_document_xray)
+                    and end_page and end_page > 0 then
+                    local base_spans = using_cache and message_data.cached_coverage_spans or nil
+                    local from_page = 1
+                    local norm = WriteBack.parseSpans(base_spans)
+                    if norm[#norm] then from_page = norm[#norm].to + 1 end
+                    if from_page <= end_page then
+                        xray_spans = WriteBack.unionSpans(base_spans, from_page .. "-" .. end_page)
+                    else
+                        xray_spans = WriteBack.formatSpans(base_spans)
+                    end
+                end
+            end
+
             -- Save to response cache if enabled (for incremental updates)
             -- Skip caching if response was truncated or was an error response (cache_answer set to nil)
             -- For progress actions: require progress_decimal (extraction must succeed)
@@ -4493,6 +4526,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                       progress_page = message_data.progress_page,
                       full_document = config.features and config.features._full_document_xray or nil,
                       source_mode = source_mode,
+                      coverage_spans = xray_spans,
+                      producer = xray_producer,
+                      base_timestamp = xray_base_ts,
                       unavailable_data_text = unavailable_text }
                 )
                 if save_success then
@@ -4535,6 +4571,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                         source_mode = source_mode,
                         chapter_label = message_data._ladder_chapter_label,
                         intro = message_data._ladder_intro or nil,
+                        coverage_spans = xray_spans,
+                        producer = xray_producer,
+                        base_timestamp = xray_base_ts,
                     })
                     logger.info("KOAssistant: ladder rung", rung_ok and "saved" or "SAVE FAILED",
                         "at", progress)
@@ -4560,6 +4599,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                         flow_visible_pages = message_data.flow_visible_pages,
                         progress_page = message_data.progress_page,
                         full_document = config.features and config.features._full_document_xray or nil,
+                        coverage_spans = xray_spans,
+                        producer = xray_producer,
+                        base_timestamp = xray_base_ts,
                         unavailable_data_text = unavailable_text,
                     }
                     -- Archive the pre-overwrite snapshot (ring of 5; incremental updates
@@ -4608,6 +4650,10 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                         scope_start_xpointer = section_scope.start_xpointer,
                         scope_end_xpointer = section_scope.end_xpointer,
                         scope_page_summary = section_scope.page_summary,
+                        -- Timeline slice 1: a section point covers exactly its scope
+                        coverage_spans = (section_scope.start_page and section_scope.end_page)
+                            and (section_scope.start_page .. "-" .. section_scope.end_page) or nil,
+                        producer = "manual",
                         unavailable_data_text = unavailable_text,
                     }
                     local section_success = ActionCache.set(cache_file, section_scope.cache_key, cache_answer, 1.0, section_metadata)

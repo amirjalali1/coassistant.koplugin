@@ -72,6 +72,17 @@ function WriteBack.reconcileXrayMeta(base_entry, new_meta)
     for _idx, field in ipairs(BASE_CONTINUITY_FIELDS) do
         if meta[field] == nil then meta[field] = base[field] end
     end
+    -- Coverage spans (timeline slice 1): the merged artifact still CONTAINS
+    -- the base's covered content — union, never overwrite. Legacy bases
+    -- derive through the read-through (scope pages / prefix claim); a
+    -- whole-book base contributes via the full_document continuity flag
+    -- instead (no page total here).
+    local base_spans = WriteBack.spansFromEntry(base)
+    if meta.coverage_spans ~= nil or base_spans ~= nil then
+        meta.coverage_spans = WriteBack.unionSpans(meta.coverage_spans, base_spans)
+    end
+    -- Provenance-per-point: base identity defaults to the entry built upon
+    if meta.base_timestamp == nil then meta.base_timestamp = base.timestamp end
     if type(meta.web_search_used) == "table" then
         -- Same rule as handleResponse's web_search_flag: a provenance table
         -- means web search only when its web_search field says so (it may
@@ -122,6 +133,140 @@ function WriteBack.coverageFromInputs(inputs, total_pages)
         ratio = math.min(1.0, end_page / total_pages)
     end
     return { end_page = end_page, progress_decimal = ratio, gaps = gaps }
+end
+
+-- ===================== Coverage spans (timeline slice 1) =====================
+-- A timeline point's coverage is a SET of inclusive page spans, canonically
+-- encoded as "a-b,c-d" (INTERNAL pages, ascending, overlapping/adjacent spans
+-- merged — same raw-pages convention as scope_start/end_page; display converts
+-- via getPageNumberInFlow). Spans record what the content actually covers,
+-- honestly across holes — merged spaced-apart sections no longer overstate.
+-- Whole-book claims stay flag-based (full_document / progress 1.0) and derive
+-- at read time via spansFromEntry: page totals drift on reflow, the flag
+-- doesn't. Pointer eligibility (plan item 37(a)) is COMPUTED, never chosen: a
+-- point may be live iff prefixCoverage() is non-nil.
+
+--- Normalize a span set: accepts the canonical string or an array of
+--- {from, to}; returns a NEW ascending array with overlapping/adjacent spans
+--- merged and invalid members dropped. Pure.
+--- @param spans string|table|nil
+--- @return table Array of { from, to }
+function WriteBack.parseSpans(spans)
+    if type(spans) == "string" then
+        local list = {}
+        for a, b in spans:gmatch("(%d+)%s*%-%s*(%d+)") do
+            list[#list + 1] = { from = tonumber(a), to = tonumber(b) }
+        end
+        spans = list
+    end
+    local list = {}
+    for _idx, s in ipairs(spans or {}) do
+        local from = tonumber(s.from)
+        local to = tonumber(s.to)
+        if from and to and from > 0 and to >= from then
+            list[#list + 1] = { from = math.floor(from), to = math.floor(to) }
+        end
+    end
+    table.sort(list, function(x, y) return x.from < y.from end)
+    local merged = {}
+    for _idx, s in ipairs(list) do
+        local last = merged[#merged]
+        if last and s.from <= last.to + 1 then
+            if s.to > last.to then last.to = s.to end
+        else
+            merged[#merged + 1] = { from = s.from, to = s.to }
+        end
+    end
+    return merged
+end
+
+--- Canonical string form of a span set; nil for an empty set (the cache field
+--- is omitted rather than stored empty). Pure.
+--- @param spans string|table|nil
+--- @return string|nil
+function WriteBack.formatSpans(spans)
+    local norm = WriteBack.parseSpans(spans)
+    if #norm == 0 then return nil end
+    local parts = {}
+    for _idx, s in ipairs(norm) do
+        parts[#parts + 1] = s.from .. "-" .. s.to
+    end
+    return table.concat(parts, ",")
+end
+
+--- Union of two span sets (either form, either nil). Pure.
+--- @return string|nil Canonical string
+function WriteBack.unionSpans(a, b)
+    local list = WriteBack.parseSpans(a)
+    for _idx, s in ipairs(WriteBack.parseSpans(b)) do
+        list[#list + 1] = s
+    end
+    return WriteBack.formatSpans(list)
+end
+
+--- Pointer eligibility: the end page x when the spans cover a contiguous
+--- prefix [1→x], nil otherwise (a hole at the start disqualifies — section
+--- points [a→b] are timeline members, never pointer candidates). Pure.
+--- @param spans string|table|nil
+--- @return number|nil
+function WriteBack.prefixCoverage(spans)
+    local norm = WriteBack.parseSpans(spans)
+    local first = norm[1]
+    if first and first.from <= 1 then return first.to end
+    return nil
+end
+
+--- Uncovered holes in [1 → total_pages] (or → the last span end when no total
+--- is given). Empty spans yield NO gaps — "unknown coverage" must not read as
+--- "everything missing". Feeds the slice-3 "Fill gap (pp X–Y)" offers. Pure.
+--- @param spans string|table|nil
+--- @param total_pages number|nil
+--- @return table Array of { from, to }
+function WriteBack.spanGaps(spans, total_pages)
+    local norm = WriteBack.parseSpans(spans)
+    if #norm == 0 then return {} end
+    local gaps = {}
+    local expect = 1
+    for _idx, s in ipairs(norm) do
+        if s.from > expect then
+            gaps[#gaps + 1] = { from = expect, to = s.from - 1 }
+        end
+        expect = s.to + 1
+    end
+    local total = tonumber(total_pages)
+    if total and total > 0 and expect <= total then
+        gaps[#gaps + 1] = { from = expect, to = total }
+    end
+    return gaps
+end
+
+--- Coverage spans for ANY cache entry, stamped or legacy (read-through).
+--- Precedence: an explicit coverage_spans field wins; section entries derive
+--- from their scope pages (BEFORE the full_document check — sections carry
+--- full_document=true as a scope-complete marker, not a whole-book claim);
+--- whole-book claims (full_document / progress 1.0) resolve only against a
+--- known page total; intro entries claim nothing; everything else is the
+--- legacy prefix claim [1→progress_page]. Pure.
+--- @param entry table|nil A cache entry / rung / ring checkpoint
+--- @param total_pages number|nil The document's page count, when known
+--- @return string|nil Canonical spans string
+function WriteBack.spansFromEntry(entry, total_pages)
+    if type(entry) ~= "table" then return nil end
+    if entry.coverage_spans then
+        return WriteBack.formatSpans(entry.coverage_spans)
+    end
+    if entry.scope_start_page and entry.scope_end_page then
+        return WriteBack.formatSpans({ { from = entry.scope_start_page, to = entry.scope_end_page } })
+    end
+    if entry.full_document or (tonumber(entry.progress_decimal) or 0) >= 1 then
+        local total = tonumber(total_pages)
+        if total and total > 0 then return "1-" .. math.floor(total) end
+        return nil
+    end
+    if entry.intro then return nil end
+    local page = tonumber(entry.progress_page)
+    if page and page > 0 then return "1-" .. math.floor(page) end
+    return nil
 end
 
 --- Parse (and repair) a model answer into X-Ray data, merging a delta into a

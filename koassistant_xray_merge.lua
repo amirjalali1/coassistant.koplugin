@@ -393,6 +393,14 @@ function XrayMerge.execute(opts)
             local used_reasoning = type(meta_or_err) == "table"
                 and meta_or_err.used_reasoning or nil
             local union = XrayMerge.unionInputMeta(input_entries)
+            -- Timeline slice 1: honest input coverage — the union of every
+            -- input's spans, holes preserved (spaced-apart sections no longer
+            -- overstate in metadata). The base's own spans union in via
+            -- reconcileXrayMeta on the delta path.
+            local input_spans
+            for _idx, e in ipairs(input_entries) do
+                input_spans = WriteBack.unionSpans(input_spans, WriteBack.spansFromEntry(e))
+            end
 
             if into_main then
                 local ok, res_or_err = WriteBack.applyXray({
@@ -410,6 +418,8 @@ function XrayMerge.execute(opts)
                         used_book_text = union.used_book_text,
                         used_highlights = union.used_highlights,
                         merged_from_sections = #opts.sections,
+                        coverage_spans = input_spans,
+                        producer = "section_merge",
                     },
                     features = config.features,
                     refresh_fn = function()
@@ -459,6 +469,8 @@ function XrayMerge.execute(opts)
                     used_highlights = union.used_highlights,
                     full_document = true,
                     merged_from_sections = #opts.sections,
+                    coverage_spans = input_spans,
+                    producer = "section_merge",
                     scope_label = scope.label,
                     scope_start_page = scope.start_page,
                     scope_end_page = scope.end_page,

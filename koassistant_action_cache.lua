@@ -313,6 +313,15 @@ local function saveCache(document_path, cache)
             if entry.scope_page_summary then
                 file:write(string.format("        scope_page_summary = %q,\n", entry.scope_page_summary))
             end
+            if entry.coverage_spans then
+                file:write(string.format("        coverage_spans = %q,\n", entry.coverage_spans))
+            end
+            if entry.producer then
+                file:write(string.format("        producer = %q,\n", entry.producer))
+            end
+            if entry.base_timestamp then
+                file:write(string.format("        base_timestamp = %s,\n", tostring(entry.base_timestamp)))
+            end
             -- Quiz state (answers, correct, revealed) — nested table serialization
             if entry.quiz_state and type(entry.quiz_state) == "table" then
                 file:write("        quiz_state = {\n")
@@ -447,6 +456,12 @@ function ActionCache.set(document_path, action_id, result, progress_decimal, met
         scope_start_xpointer = metadata and metadata.scope_start_xpointer,
         scope_end_xpointer = metadata and metadata.scope_end_xpointer,
         scope_page_summary = metadata and metadata.scope_page_summary,
+        -- Timeline slice 1 (xray_ecosystem_plan.md item 37): honest coverage
+        -- as a span set ("a-b,c-d", internal pages — WriteBack span helpers;
+        -- whole-book claims stay flag-based) + provenance-per-point
+        coverage_spans = metadata and metadata.coverage_spans,
+        producer = metadata and metadata.producer,
+        base_timestamp = metadata and metadata.base_timestamp,
     }
 
     return saveCache(document_path, cache)
@@ -1181,6 +1196,7 @@ local CHECKPOINT_COPY_FIELDS = {
     "used_highlights", "used_annotations", "used_book_text",
     "model", "full_document", "flow_visible_pages", "source_mode",
     "chapter_label", "intro",
+    "coverage_spans", "producer", "base_timestamp",
 }
 
 local function buildCheckpointEntry(source)
@@ -1241,6 +1257,15 @@ local function writeCheckpointRing(path, ring)
         end
         if cp.intro then
             file:write(string.format("        intro = %s,\n", tostring(cp.intro)))
+        end
+        if cp.coverage_spans then
+            file:write(string.format("        coverage_spans = %q,\n", cp.coverage_spans))
+        end
+        if cp.producer then
+            file:write(string.format("        producer = %q,\n", cp.producer))
+        end
+        if cp.base_timestamp then
+            file:write(string.format("        base_timestamp = %s,\n", tostring(cp.base_timestamp)))
         end
         local result_text = cp.result or ""
         local eq_str = string.rep("=", findSafeDelimiter(result_text))
@@ -1435,6 +1460,10 @@ function ActionCache.restoreXrayCheckpoint(document_path, index, limit)
         used_highlights = pickFlag(entry.used_highlights, live and live.used_highlights),
         used_annotations = pickFlag(entry.used_annotations, live and live.used_annotations),
         used_book_text = pickFlag(entry.used_book_text, live and live.used_book_text),
+        -- A restore moves the pointer; the point keeps its own provenance
+        coverage_spans = entry.coverage_spans,
+        producer = entry.producer,
+        base_timestamp = entry.base_timestamp,
     }
     local ok_doc = ActionCache.setXrayCache(document_path, entry.result, entry.progress_decimal or 0, meta)
     local ok_action = ActionCache.set(document_path, "xray", entry.result, entry.progress_decimal or 0, meta)
@@ -1674,6 +1703,10 @@ function ActionCache.promoteXrayLadderRung(document_path, rung, limit, opts)
         used_book_text = pickFlag(rung.used_book_text, live and live.used_book_text),
         updated_by_auto = not (opts and opts.manual) or nil,
         intro = rung.intro,
+        -- A promotion moves the pointer; the point keeps its own provenance
+        coverage_spans = rung.coverage_spans,
+        producer = rung.producer,
+        base_timestamp = rung.base_timestamp,
     }
     local ok_doc = ActionCache.setXrayCache(document_path, rung.result, rung.progress_decimal or 0, meta)
     local ok_action = ActionCache.set(document_path, "xray", rung.result, rung.progress_decimal or 0, meta)
