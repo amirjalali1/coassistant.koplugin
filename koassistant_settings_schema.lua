@@ -1274,6 +1274,14 @@ local SettingsSchema = {
                     help_text = _("Stream translation responses in real-time."),
                 },
                 {
+                    id = "translate_minimal_popup",
+                    type = "toggle",
+                    text = _("Minimal Popup View"),
+                    path = "features.translate_minimal_popup",
+                    default = false,
+                    help_text = _("Show highlight translations in a small popup next to the highlighted text: just the translation, no buttons. Tap the popup to open the full translate window; tap outside to dismiss. Streaming is skipped for these translations. Never applies to full-page translation."),
+                },
+                {
                     id = "translate_use_context",
                     type = "toggle",
                     text = _("Include Surrounding Context"),

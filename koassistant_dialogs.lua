@@ -2915,11 +2915,36 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
         end
     }
 
-    -- Set global reference
-    _G.ActiveChatViewer = chatgpt_viewer
-    
-    -- Show the viewer
-    UIManager:show(chatgpt_viewer)
+    -- Minimal popup view (Translation Settings override, default off): highlight
+    -- translations open in a chrome-less popup next to the selection; tapping it
+    -- opens this full viewer. Never for full-page translation. The viewer is
+    -- fully built either way — the popup only defers showing it, so expand keeps
+    -- every callback/history wire intact and dismissing leaves ActiveChatViewer
+    -- untouched (no restore needed: it was never claimed).
+    local use_minimal_popup = use_translate_view
+        and temp_config and temp_config.features
+        and temp_config.features.translate_minimal_popup == true
+        and not temp_config.features.is_full_page_translate
+    local popup_shown = false
+    if use_minimal_popup then
+        popup_shown = require("koassistant_minimal_popup").showForTranslate({
+            history = history,
+            configuration = temp_config,
+            selection_data = selection_data,
+            ui = ui_instance,
+            on_expand = function()
+                _G.ActiveChatViewer = chatgpt_viewer
+                UIManager:show(chatgpt_viewer)
+            end,
+        })
+    end
+    if not popup_shown then
+        -- Set global reference
+        _G.ActiveChatViewer = chatgpt_viewer
+
+        -- Show the viewer
+        UIManager:show(chatgpt_viewer)
+    end
 
     -- Auto-save if enabled
     if temp_config and temp_config.features and temp_config.features.auto_save_all_chats ~= false then
@@ -3240,6 +3265,14 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             temp_config.features.enable_streaming = false
         end
 
+        -- Minimal popup (Translation Settings override): the response appears on
+        -- completion in a small anchored popup — a full streaming dialog first
+        -- would be a jarring two-stage UX, so skip streaming for these requests.
+        if f.translate_minimal_popup == true
+                and not temp_config.features.is_full_page_translate then
+            temp_config.features.enable_streaming = false
+        end
+
         -- Determine initial hide state for original text
         -- Apply user's translate_hide_highlight_mode setting (default: hide_long per schema)
         local hide_mode = f.translate_hide_highlight_mode or "hide_long"
@@ -3490,7 +3523,15 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         -- non_document_selection guard: a dictionary lookup launched from a viewer/popup
         -- already had its context deliberately cleared — don't re-extract from the open
         -- book's live selection (B3).
-        if action_id == "dictionary" and not non_document_selection
+        -- Whole dictionary family (and custom dict-style actions): any action
+        -- whose prompt carries the {context}/{context_section} channel. The old
+        -- literal-id "dictionary" scoping left quick_define/dictionary_deep
+        -- permanently context-less off the dict-popup path (audit #37b) — with
+        -- the rerun row now live there, that read as a stuck "Ctx: OFF".
+        local dc_prompt_text = (prompt and prompt.prompt) or ""
+        local has_dict_channel = dc_prompt_text:find("{context_section}", 1, true) ~= nil
+            or dc_prompt_text:find("{context}", 1, true) ~= nil
+        if has_dict_channel and not non_document_selection
                 and (not message_data.context or message_data.context == "") then
             -- Resolved per-book > global mode; "none" extracts nothing
             local context_chars = config.features.dictionary_context_chars or 100
