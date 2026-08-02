@@ -24,6 +24,21 @@ ScopeResolver.MAX_CONTEXT_CHARS = 2000
 -- string.sub operates on bytes, splitting multibyte UTF-8 chars
 local UTF8_CHAR_PATTERN = '[%z\1-\127\194-\253][\128-\191]*'
 
+-- Minimum useful paragraph-window size per side (UTF-8 chars). Books where every
+-- line is its own block (dialogue, scripts, poetry) make "n paragraphs" nearly
+-- empty — the containing paragraph of a highlighted speech line is just the
+-- speaker tag — so paragraphWindow keeps absorbing outward segments until each
+-- side reaches this floor (or runs out). Prose is unaffected: one paragraph
+-- already clears it. Stays far under MAX_CONTEXT_CHARS, so the consent-exemption
+-- rationale above is untouched.
+ScopeResolver.PARAGRAPH_MIN_CHARS = 300
+
+local function utf8Len(s)
+    local count = 0
+    for _ in s:gmatch(UTF8_CHAR_PATTERN) do count = count + 1 end
+    return count
+end
+
 --- First n UTF-8 chars of str. @return trimmed, was_truncated
 function ScopeResolver.utf8First(str, n)
     local count = 0
@@ -56,8 +71,10 @@ end
 
 --- Real paragraph window: take the last/first n newline-separated segments around
 -- the selection. The segment adjacent to the selection is the remainder of the
--- paragraph containing it, so n=1 means "just the containing paragraph". Text with
--- no newlines (PDF/kopt word windows) degrades to the whole capped window.
+-- paragraph containing it, so n=1 means "just the containing paragraph". Sides
+-- shorter than PARAGRAPH_MIN_CHARS keep absorbing outward segments (single-line-
+-- paragraph books would otherwise yield almost nothing). Text with no newlines
+-- (PDF/kopt word windows) degrades to the whole capped window.
 -- @param prev string text before the selection ("" ok)
 -- @param next_text string text after the selection ("" ok)
 -- @param n number paragraphs per side (>= 1)
@@ -65,6 +82,8 @@ end
 -- @return before, after  (strings, possibly empty)
 function ScopeResolver.paragraphWindow(prev, next_text, n, max_per_side)
     n = (type(n) == "number" and n >= 1) and math.floor(n) or 1
+    local floor_chars = ScopeResolver.PARAGRAPH_MIN_CHARS
+    if floor_chars > max_per_side then floor_chars = max_per_side end
     local function segments(text)
         local segs = {}
         for seg in text:gmatch("[^\n]+") do
@@ -75,11 +94,21 @@ function ScopeResolver.paragraphWindow(prev, next_text, n, max_per_side)
     local before, after = "", ""
     local prev_segs = segments(prev or "")
     if #prev_segs > 0 then
-        before = table.concat(prev_segs, "\n", math.max(1, #prev_segs - n + 1), #prev_segs)
+        local count = math.min(n, #prev_segs)
+        before = table.concat(prev_segs, "\n", #prev_segs - count + 1, #prev_segs)
+        while utf8Len(before) < floor_chars and count < #prev_segs do
+            count = count + 1
+            before = table.concat(prev_segs, "\n", #prev_segs - count + 1, #prev_segs)
+        end
     end
     local next_segs = segments(next_text or "")
     if #next_segs > 0 then
-        after = table.concat(next_segs, "\n", 1, math.min(n, #next_segs))
+        local count = math.min(n, #next_segs)
+        after = table.concat(next_segs, "\n", 1, count)
+        while utf8Len(after) < floor_chars and count < #next_segs do
+            count = count + 1
+            after = table.concat(next_segs, "\n", 1, count)
+        end
     end
     before = (ScopeResolver.utf8Last(before, max_per_side))
     after = (ScopeResolver.utf8First(after, max_per_side))
@@ -222,11 +251,15 @@ function ScopeResolver.trimContext(prev, next_text, highlighted_text, mode, opts
         local sentence_before = findSentenceStart(prev)
         local sentence_after = findSentenceEnd(next_text)
 
-        -- If sentence parsing results in very little text, fall back to characters mode
-        local result = sentence_before .. " " .. word_marker .. " " .. sentence_after
-        if #result < 30 then  -- Threshold accounts for the marker
+        -- If sentence parsing finds very little actual context, fall back to
+        -- characters mode. Measure the found context alone: the old check measured
+        -- the whole result including the >>>highlight<<< marker, so any highlight
+        -- longer than ~30 bytes defeated the fallback — dialogue books (one line =
+        -- one sentence = one block) then got a starved window.
+        if #sentence_before + #sentence_after < 40 then
             return ScopeResolver.trimContext(prev, next_text, highlighted_text, "characters", opts)
         end
+        local result = sentence_before .. " " .. word_marker .. " " .. sentence_after
 
         if #sentence_before < #prev then
             result = "..." .. result

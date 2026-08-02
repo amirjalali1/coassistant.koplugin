@@ -1311,6 +1311,14 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         local highlights_allowed = provider_trusted
             or config_features.enable_highlights_sharing == true
             or config_features.enable_annotations_sharing == true
+        -- Per-book privacy override (Book Settings ▸ Privacy): the highlights come
+        -- from the OPEN book's live annotations, and this detail text is sent to
+        -- the provider by "Chat about this" — deny beats trusted.
+        if self.ui.doc_settings then
+            local ov = require("koassistant_book_settings")
+                .effectivePrivacyOverrides(self.ui.doc_settings).highlights
+            if ov ~= nil then highlights_allowed = ov end
+        end
         local highlights = highlights_allowed and findItemHighlights(item, self.ui) or {}
         if #highlights > 0 then
             detail_text = detail_text .. "\n\n" .. _("Your highlights:") .. "\n"

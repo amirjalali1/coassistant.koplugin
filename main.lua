@@ -5445,7 +5445,7 @@ end
 --- Shows an error popup identifying which gate is the problem.
 --- @param action table: Action definition (checks action.requires array)
 --- @return boolean: true if blocked (showed popup), false if OK to proceed
-function AskGPT:_checkRequirements(action)
+function AskGPT:_checkRequirements(action, target_file)
   if not action.requires then
     return false
   end
@@ -5467,6 +5467,23 @@ function AskGPT:_checkRequirements(action)
     return false
   end
 
+  -- Per-book privacy overrides (Book Settings ▸ Privacy): deny beats trusted,
+  -- allow satisfies the global gate only. `target_file` names the action's book
+  -- when it is not (or may not be) the open one (file browser, cross-book
+  -- artifact regenerate); default = the open book.
+  local book_priv = {}
+  do
+    local pf = target_file or (self.ui and self.ui.document and self.ui.document.file)
+    if pf then
+      local ok_r, ds = pcall(function()
+        return require("koassistant_doc_settings").resolve(pf, self.ui)
+      end)
+      if ok_r and ds then
+        book_priv = require("koassistant_book_settings").effectivePrivacyOverrides(ds)
+      end
+    end
+  end
+
   for _idx, req in ipairs(action.requires) do
     if req == "book_text" then
       -- Per-action gate: use_book_text explicitly overridden to false?
@@ -5476,10 +5493,15 @@ function AskGPT:_checkRequirements(action)
         })
         return true
       end
-      -- Global gate: text extraction enabled? (trusted providers bypass)
-      if features.enable_book_text_extraction ~= true and not isProviderTrusted() then
+      -- Global gate: text extraction enabled? (trusted providers bypass;
+      -- per-book override wins in both directions)
+      local bt_allowed = features.enable_book_text_extraction == true or isProviderTrusted()
+      if book_priv.book_text ~= nil then bt_allowed = book_priv.book_text end
+      if not bt_allowed then
         UIManager:show(InfoMessage:new{
-          text = _("Text extraction is required to generate this artifact.\n\nEnable it in Settings → Privacy & Data → Text Extraction.") .. hint,
+          text = (book_priv.book_text == false
+            and _("Text extraction is turned off for this book (Book Settings → Privacy).")
+            or _("Text extraction is required to generate this artifact.\n\nEnable it in Settings → Privacy & Data → Text Extraction.")) .. hint,
         })
         return true
       end
@@ -5518,10 +5540,16 @@ function AskGPT:_checkRequirements(action)
         })
         return true
       end
-      -- Global gate: is any highlight-type sharing enabled? (trusted providers bypass)
-      if features.enable_highlights_sharing ~= true and features.enable_annotations_sharing ~= true and not isProviderTrusted() then
+      -- Global gate: is any highlight-type sharing enabled? (trusted providers
+      -- bypass; per-book override wins in both directions)
+      local hl_allowed = features.enable_highlights_sharing == true
+        or features.enable_annotations_sharing == true or isProviderTrusted()
+      if book_priv.highlights ~= nil then hl_allowed = book_priv.highlights end
+      if not hl_allowed then
         UIManager:show(InfoMessage:new{
-          text = _("This action requires access to your highlights or annotations.\n\nEnable sharing in Settings → Privacy & Data.") .. hint,
+          text = (book_priv.highlights == false
+            and _("Highlights sharing is turned off for this book (Book Settings → Privacy).")
+            or _("This action requires access to your highlights or annotations.\n\nEnable sharing in Settings → Privacy & Data.")) .. hint,
         })
         return true
       end
@@ -6001,6 +6029,14 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
         break
       end
     end
+  end
+  -- Per-book privacy override (Book Settings ▸ Privacy) — the source picker must
+  -- agree with the extraction gate: deny beats trusted, allow satisfies the
+  -- global gate ("Full text" usable when this book allows it).
+  if self.ui and self.ui.doc_settings then
+    local bt_ov = require("koassistant_book_settings")
+      .effectivePrivacyOverrides(self.ui.doc_settings).book_text
+    if bt_ov ~= nil then text_extraction_enabled = bt_ov end
   end
 
   -- Check if action requires book_text (constrains source to text extraction only)
@@ -10103,7 +10139,7 @@ function AskGPT:viewCachedAction(action, action_id, cached_entry, opts)
       local Actions = require("prompts/actions")
       if not Actions.requiresOpenBook(action) then
         on_regenerate = function()
-          if self_ref2:_checkRequirements(action) then return end
+          if self_ref2:_checkRequirements(action, file) then return end
           self_ref2._file_dialog_row_cache = { file = nil, rows = nil }
           -- Set up context flags (same as executeFileBrowserAction)
           -- Required for cache_file resolution in handlePredefinedPrompt
@@ -10761,6 +10797,12 @@ end
 --- without _checkRequirements' UI.
 function AskGPT:_xrayBackgroundConsentOk(action, features)
   if action.use_book_text == false then return false end
+  -- Per-book privacy override wins in both directions (deny beats trusted)
+  if self.ui and self.ui.doc_settings then
+    local ov = require("koassistant_book_settings")
+      .effectivePrivacyOverrides(self.ui.doc_settings).book_text
+    if ov ~= nil then return ov end
+  end
   if features.enable_book_text_extraction == true then return true end
   local provider = action.provider or features.provider
   for _idx, trusted_id in ipairs(features.trusted_providers or {}) do
@@ -12377,7 +12419,7 @@ function AskGPT:executeFileBrowserAction(file, title, authors, book_props, actio
     -- Signal synthetic book metadata (same as _executeBookLevelActionDirect)
     config_copy.features._is_book_level_action = true
 
-    if self:_checkRequirements(action) then return end
+    if self:_checkRequirements(action, file) then return end
 
     if action.use_response_caching and not action.source_selection then
       local self_ref = self

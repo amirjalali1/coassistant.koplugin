@@ -1802,6 +1802,10 @@ function ChatGPTViewer:init()
           new_config.features.dictionary_context = nil
         end
       end
+      -- The user's explicit toggle must survive the re-run: without this marker,
+      -- handlePredefinedPrompt re-resolves per-book > global and a per-book
+      -- dictionary-context override would silently undo a "Ctx: OFF" pick.
+      new_config.features._dictionary_context_explicit = true
       -- Close viewer and re-execute
       UIManager:close(self)
       local Dialogs = require("koassistant_dialogs")
@@ -2779,6 +2783,9 @@ function ChatGPTViewer:init()
     }
   }
   self.movable = MovableContainer:new {
+    -- Anchored-translate prototype: nil (= today's centered behavior) for
+    -- everything except the translate view under "Highlight position".
+    anchor = self:buildSelectionAnchor(),
     -- We'll handle these events ourselves, and call appropriate
     -- MovableContainer's methods when we didn't process the event
     ignore_events = {
@@ -2797,6 +2804,40 @@ function ChatGPTViewer:init()
     dimen = self.region,
     self.movable,
   }
+end
+
+-- Anchored-translate prototype (first increment): when KOReader's "Highlight
+-- dialog position" is "Highlight position" ("gesture"), open the translate view
+-- next to the selection instead of centered, like KOReader's own highlight menu.
+-- EPUB/crengine only — sboxes are already screen coordinates there; paging (PDF)
+-- documents keep the centered default for now. Any missing piece → nil = centered
+-- (today's behavior, including on KOReader builds without MovableContainer.anchor).
+function ChatGPTViewer:buildSelectionAnchor()
+  local features = self.configuration and self.configuration.features
+  if not (self.translate_view or (features and features.translate_view)) then return nil end
+  if not MovableContainer.ensureAnchor then return nil end
+  local boxes = self.selection_data and self.selection_data.sboxes
+  if not boxes or #boxes == 0 then return nil end
+  local ui = self._ui
+  if not ui or ui.paging then return nil end
+  if G_reader_settings:readSetting("highlight_dialog_position", "center") ~= "gesture" then return nil end
+  return function()
+    local box0, box1 = boxes[1], boxes[#boxes]
+    if not (box0 and box0.y and box0.h and box1 and box1.y and box1.h) then return nil end
+    if box0.y > box1.y then box0, box1 = box1, box0 end
+    -- Stale-coordinates guard (rotation/page turn while the request was in
+    -- flight): off-screen boxes fall back to centered, like KOReader's own
+    -- _getDialogAnchor does when nothing fits.
+    if box0.y < 0 or (box1.y + box1.h) > Screen:getHeight() then return nil end
+    -- Small gap so the window doesn't abut the selection (mirrors the
+    -- Size.padding.small breathing room of the native highlight menu).
+    local pad = Size.padding.small
+    -- Plain table with x/w left nil so ensureAnchor centers horizontally (same
+    -- shape ReaderHighlight:_getDialogAnchor returns). Never hand back a live
+    -- sbox: ensureAnchor writes defaults onto the table it is given, and
+    -- selection_data is shared by reference with KOReader (SKIP_DEEP_COPY).
+    return { y = box0.y - pad, h = (box1.y + box1.h) - box0.y + 2 * pad }, true -- prefer below the highlight
+  end
 end
 
 function ChatGPTViewer:askAnotherQuestion()
@@ -3346,7 +3387,11 @@ function ChatGPTViewer:expandToFullView()
     -- Create a config copy with compact_view=false to regenerate with prefixes
     expanded_config = {}
     for k, v in pairs(self.configuration) do
-      if type(v) == "table" then
+      if type(k) == "string" and k:match("^_rerun_") then
+        -- Live ui/plugin/action handles: keep by reference — a shallow clone loses
+        -- metatables (class methods like getCombinedLanguages vanish)
+        expanded_config[k] = v
+      elseif type(v) == "table" then
         expanded_config[k] = {}
         for k2, v2 in pairs(v) do
           expanded_config[k][k2] = v2
@@ -3458,7 +3503,12 @@ function ChatGPTViewer:expandToDictionaryView()
   if self.configuration then
     dict_config = {}
     for k, v in pairs(self.configuration) do
-      if type(v) == "table" then
+      if type(k) == "string" and k:match("^_rerun_") then
+        -- Live ui/plugin/action handles: keep by reference — a shallow clone loses
+        -- metatables (class methods like getCombinedLanguages vanish), which broke
+        -- the Language button after Expand
+        dict_config[k] = v
+      elseif type(v) == "table" then
         dict_config[k] = {}
         for k2, v2 in pairs(v) do
           dict_config[k][k2] = v2

@@ -258,6 +258,29 @@ function ContextExtractor:getReadingProgress()
     return result
 end
 
+--- Per-book privacy overrides (Book Settings ▸ Privacy). Resolved fresh per call
+-- via SafeDocSettings (live instance for the open book, disk otherwise).
+-- Semantics: a per-book DENY beats everything including trusted providers (most
+-- specific intent — "never share this book's data"); a per-book ALLOW satisfies
+-- the GLOBAL gate only, so per-action flags still apply (double-gating holds).
+-- @return table { highlights = tri, annotations = tri, notebook = tri, book_text = tri }
+function ContextExtractor:getBookPrivacyOverrides()
+    local doc_path = self:getDocumentPath()
+    if not doc_path then return {} end
+    -- Memoized per extractor instance (extractors are per-request): in sidecar
+    -- mode every uncached call is a DocSettings:open() from disk, and this runs
+    -- several times per request (extractForAction + isBookTextExtractionEnabled).
+    if self._book_priv_cache and self._book_priv_cache_path == doc_path then
+        return self._book_priv_cache
+    end
+    local SafeDocSettings = require("koassistant_doc_settings")
+    local ok, ds = pcall(SafeDocSettings.resolve, doc_path, self.ui)
+    if not ok or not ds then return {} end
+    local out = require("koassistant_book_settings").effectivePrivacyOverrides(ds)
+    self._book_priv_cache, self._book_priv_cache_path = out, doc_path
+    return out
+end
+
 --- Check if book text extraction is enabled globally.
 -- Trusted providers bypass the toggle (documented contract: trust bypasses ALL
 -- data-sharing controls AND text extraction). Every pre-flight/UI gate already
@@ -267,6 +290,9 @@ end
 -- (injection_gating_audit).
 -- @return boolean
 function ContextExtractor:isBookTextExtractionEnabled()
+    -- Per-book override wins in both directions (deny beats trusted).
+    local override = self:getBookPrivacyOverrides().book_text
+    if override ~= nil then return override end
     -- Default to false if not explicitly enabled
     return self.settings.enable_book_text_extraction == true
         or self:isProviderTrusted()
@@ -1304,6 +1330,11 @@ function ContextExtractor:extractForAction(action)
     -- Check if current provider is trusted (bypasses all privacy settings)
     local provider_trusted = self:isProviderTrusted()
 
+    -- Per-book privacy overrides (Book Settings ▸ Privacy): tri-state per data
+    -- channel. Deny beats trusted; allow satisfies the global gate only — the
+    -- per-action flags below still apply (double-gating preserved).
+    local book_priv = self:getBookPrivacyOverrides()
+
     -- Reading progress - check basic stats privacy setting (default: enabled)
     if provider_trusted or self.settings.enable_basic_stats ~= false then
         local progress = self:getReadingProgress()
@@ -1318,9 +1349,14 @@ function ContextExtractor:extractForAction(action)
     -- Highlights - check both global setting AND per-action flag (default: disabled)
     -- Double-gate: user must enable sharing globally AND action must request it
     -- Annotations implies highlights: enable_annotations_sharing grants highlight access too
-    local highlights_allowed = provider_trusted
-        or self.settings.enable_highlights_sharing == true
-        or self.settings.enable_annotations_sharing == true
+    local highlights_allowed
+    if book_priv.highlights ~= nil then
+        highlights_allowed = book_priv.highlights
+    else
+        highlights_allowed = provider_trusted
+            or self.settings.enable_highlights_sharing == true
+            or self.settings.enable_annotations_sharing == true
+    end
     if highlights_allowed and action.use_highlights then
         data.highlights = self:getHighlights().formatted
     else
@@ -1332,8 +1368,13 @@ function ContextExtractor:extractForAction(action)
     --   1. Per-action gate: use_annotations OFF but use_highlights ON → degrade to highlights
     --   2. Global gate: enable_annotations_sharing OFF but enable_highlights_sharing ON → degrade
     -- Tracks degradation state for adaptive labels in {annotations_section}.
-    local annotations_allowed = provider_trusted
-        or self.settings.enable_annotations_sharing == true
+    local annotations_allowed
+    if book_priv.annotations ~= nil then
+        annotations_allowed = book_priv.annotations
+    else
+        annotations_allowed = provider_trusted
+            or self.settings.enable_annotations_sharing == true
+    end
     if action.use_annotations and annotations_allowed then
         -- Both gates pass: full annotations (highlighted text + user notes)
         data.annotations = self:getAnnotations().formatted or ""
@@ -1423,7 +1464,10 @@ function ContextExtractor:extractForAction(action)
     -- If cache was built without text extraction (used_book_text=false), no text extraction permission needed
     -- If cache was built with text extraction (used_book_text=true or nil/legacy), require text extraction permission
     -- Trusted providers bypass the text extraction setting (consistent with book text extraction)
-    local text_extraction_allowed = provider_trusted or self:isBookTextExtractionEnabled()
+    -- (isBookTextExtractionEnabled already folds in trusted providers AND the
+    -- per-book override — no extra provider_trusted OR here, it would let trust
+    -- bypass a per-book deny)
+    local text_extraction_allowed = self:isBookTextExtractionEnabled()
 
     -- {xray_cache} / {xray_cache_section} → cached X-Ray
     if action.use_xray_cache then
@@ -1485,8 +1529,13 @@ function ContextExtractor:extractForAction(action)
 
     -- Notebook content extraction: double-gated like other sensitive data
     -- Requires both use_notebook flag AND enable_notebook_sharing global setting
-    -- Trusted providers bypass the global setting
-    local notebook_allowed = provider_trusted or self.settings.enable_notebook_sharing == true
+    -- Trusted providers bypass the global setting; per-book override wins over both
+    local notebook_allowed
+    if book_priv.notebook ~= nil then
+        notebook_allowed = book_priv.notebook
+    else
+        notebook_allowed = provider_trusted or self.settings.enable_notebook_sharing == true
+    end
     if action.use_notebook and notebook_allowed then
         local notebook = self:getNotebookContent()
         data.notebook_content = notebook.content
@@ -1548,7 +1597,7 @@ function ContextExtractor:extractForAction(action)
 
     -- Book text: check if requested but not available
     if action.use_book_text then
-        local book_text_enabled = provider_trusted or self:isBookTextExtractionEnabled()
+        local book_text_enabled = self:isBookTextExtractionEnabled()
         if not book_text_enabled then
             -- Permission denied
             table.insert(unavailable, "book text (extraction disabled)")

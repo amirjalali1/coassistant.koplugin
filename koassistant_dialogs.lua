@@ -3494,8 +3494,33 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 and (not message_data.context or message_data.context == "") then
             -- Resolved per-book > global mode; "none" extracts nothing
             local context_chars = config.features.dictionary_context_chars or 100
-            message_data.context = extractSurroundingContext(ui, highlightedText,
-                message_data.dictionary_context_mode, context_chars)
+            message_data.context = extractSurroundingContext(ui,
+                highlightedText, message_data.dictionary_context_mode, context_chars)
+            -- Input-dialog launches: the live selection died when the dialog opened
+            -- (main.lua onClose), so the extraction above finds nothing — fall back
+            -- to the pre-extracted raw window (audit #37 starve; also what makes
+            -- the compact viewer's Ctx toggle meaningful on this path). Read-only:
+            -- the ambient block below still owns consumption of the transient.
+            if (not message_data.context or message_data.context == "")
+                    and message_data.dictionary_context_mode
+                    and message_data.dictionary_context_mode ~= "none" then
+                local w = config.features._selection_context_window
+                if w and w.text == highlightedText then
+                    message_data.context = ScopeResolver.trimContext(w.prev, w.next,
+                        highlightedText, message_data.dictionary_context_mode,
+                        { char_count = context_chars })
+                end
+            end
+        end
+        -- Mirror the resolved mode (and any context extracted here) back onto
+        -- temp_config, like the languages above: the compact viewer's Ctx label and
+        -- the rerun baseline (_original_context/_original_context_mode) read
+        -- features — without this, a per-book mode override showed "Ctx: OFF" while
+        -- context rode the request, and the Ctx toggle had nothing to restore.
+        temp_config.features.dictionary_context_mode = message_data.dictionary_context_mode
+        if message_data.context and message_data.context ~= ""
+                and (not temp_config.features.dictionary_context or temp_config.features.dictionary_context == "") then
+            temp_config.features.dictionary_context = message_data.context
         end
 
         -- Surrounding context (surrounding_context_plan.md): per-action tri-state over
@@ -3952,8 +3977,27 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             local total_sidecar_chars = 0
             for _idx, book in ipairs(message_data.books_info) do
                 if book.file then
+                    -- Per-book privacy overrides (Book Settings ▸ Privacy): each
+                    -- scanned book can allow/deny its own channels; deny beats
+                    -- trusted — same semantics as the single-book extractor.
+                    local b_ov = {}
+                    do
+                        local sds_ok, b_ds = pcall(function()
+                            return require("koassistant_doc_settings").resolve(book.file, ui)
+                        end)
+                        if sds_ok and b_ds then
+                            b_ov = require("koassistant_book_settings").effectivePrivacyOverrides(b_ds)
+                        end
+                    end
+                    local b_highlights = highlights_allowed
+                    if b_ov.highlights ~= nil then b_highlights = b_ov.highlights end
+                    local b_annotations = annotations_allowed
+                    if b_ov.annotations ~= nil then b_annotations = b_ov.annotations end
+                    local b_notebook = notebook_allowed
+                    if b_ov.notebook ~= nil then b_notebook = b_ov.notebook end
+
                     -- Highlights
-                    if prompt.use_highlights and highlights_allowed then
+                    if prompt.use_highlights and b_highlights then
                         local annotations = ContextExtractor.readSidecarAnnotations(book.file)
                         local result = ContextExtractor.formatHighlights(annotations)
                         if result.formatted ~= "" then
@@ -3964,7 +4008,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     end
 
                     -- Annotations (with degradation)
-                    if prompt.use_annotations and annotations_allowed then
+                    if prompt.use_annotations and b_annotations then
                         local annotations = ContextExtractor.readSidecarAnnotations(book.file)
                         local result = ContextExtractor.formatAnnotations(annotations)
                         if result.formatted ~= "" then
@@ -3973,7 +4017,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                             book._annotations_degraded = false
                             total_sidecar_chars = total_sidecar_chars + #result.formatted
                         end
-                    elseif prompt.use_annotations and highlights_allowed then
+                    elseif prompt.use_annotations and b_highlights then
                         -- Degrade to highlights-only when annotations blocked
                         local annotations = ContextExtractor.readSidecarAnnotations(book.file)
                         local result = ContextExtractor.formatHighlights(annotations)
@@ -3986,7 +4030,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     end
 
                     -- Notebook
-                    if prompt.use_notebook and notebook_allowed then
+                    if prompt.use_notebook and b_notebook then
                         local notebook_content = ContextExtractor.readSidecarNotebook(book.file)
                         if notebook_content ~= "" then
                             book._notebook = notebook_content
@@ -4149,14 +4193,32 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 end
             end
             local cf = config.features or {}
+            -- Per-book privacy overrides for the cache's book (deny beats trusted;
+            -- allow satisfies the global gate) — the update path re-sends cached
+            -- text/highlight-derived content, so it must honor them like fresh reads.
+            local cache_book_priv = {}
+            do
+                local cb_ok, cb_ds = pcall(function()
+                    return require("koassistant_doc_settings").resolve(cache_file, ui)
+                end)
+                if cb_ok and cb_ds then
+                    cache_book_priv = require("koassistant_book_settings").effectivePrivacyOverrides(cb_ds)
+                end
+            end
             local cache_requires_text = cached_entry.used_book_text ~= false
             local cache_text_ok = not cache_requires_text
                 or cache_trusted or cf.enable_book_text_extraction == true
+            if cache_requires_text and cache_book_priv.book_text ~= nil then
+                cache_text_ok = cache_book_priv.book_text
+            end
             local cache_requires_highlights = cached_entry.used_highlights == true
                 or (cached_entry.used_highlights == nil and cached_entry.used_annotations == true)
             local cache_highlights_ok = not cache_requires_highlights
                 or cache_trusted or cf.enable_highlights_sharing == true
                 or cf.enable_annotations_sharing == true
+            if cache_requires_highlights and cache_book_priv.highlights ~= nil then
+                cache_highlights_ok = cache_book_priv.highlights
+            end
             local cache_read_allowed = cache_text_ok and cache_highlights_ok
             if not cache_read_allowed then
                 logger.info("KOAssistant: Cached", prompt.id,
@@ -5184,12 +5246,21 @@ local function showAttachMenu(opts)
             table.insert(rows, {{
                 text = _("Notebook (this book)"),
                 callback = function()
-                    -- Same gate as use_notebook (attach_plan.md §4);
-                    -- trusted providers bypass as elsewhere.
-                    if feats.enable_notebook_sharing ~= true
-                            and not Attachments.isTrustedProvider(feats, configuration.provider) then
+                    -- Same gate as use_notebook (attach_plan.md §4); trusted
+                    -- providers bypass as elsewhere; the per-book privacy
+                    -- override wins in both directions (deny beats trusted).
+                    local allowed = feats.enable_notebook_sharing == true
+                        or Attachments.isTrustedProvider(feats, configuration.provider)
+                    local nb_ok, nb_ds = pcall(function()
+                        return require("koassistant_doc_settings").resolve(book_path, ui_instance)
+                    end)
+                    if nb_ok and nb_ds then
+                        local ov = require("koassistant_book_settings").effectivePrivacyOverrides(nb_ds).notebook
+                        if ov ~= nil then allowed = ov end
+                    end
+                    if not allowed then
                         UIManager:show(InfoMessage:new{
-                            text = _("Attaching your notebook needs \"Notebook sharing\" (Settings → Privacy & Data)."),
+                            text = _("Attaching your notebook needs \"Notebook sharing\" (Settings → Privacy & Data, or this book's Privacy overrides)."),
                         })
                         return
                     end
@@ -5774,6 +5845,10 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 local function onPromptComplete(history, temp_config_or_error)
                     if history then
                         local temp_config = temp_config_or_error
+                        -- Rerun row (switcher/Language/Ctx) for compact/translate views.
+                        -- Runtime self-require: a file-local reference here would add an
+                        -- upvalue to showChatGPTDialog (60-upvalue LuaJIT cap).
+                        require("koassistant_dialogs").attachRerunContext(temp_config, action, ui_instance, plugin)
                         local function addMessage(message, is_context, on_complete)
                             history:addUserMessage(message, is_context)
                             local answer_result = BookToolRunner.queryWith(queryChatGPT, history:getMessages(), temp_config, function(success, answer, err, reasoning, web_search_used)
@@ -6944,6 +7019,18 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 if tp == configuration.provider then consent = true break end
                             end
                         end
+                        -- Per-book privacy override — must agree with the Send-time
+                        -- gate (deny beats trusted). Runtime requires only (60-cap).
+                        do
+                            local pv_ok, pv_ds = pcall(function()
+                                return require("koassistant_doc_settings").resolve(nil, ui_instance)
+                            end)
+                            if pv_ok and pv_ds then
+                                local ov = require("koassistant_book_settings")
+                                    .effectivePrivacyOverrides(pv_ds).book_text
+                                if ov ~= nil then consent = ov end
+                            end
+                        end
                         local progress_fmt
                         do
                             local okr, CE = pcall(require, "koassistant_context_extractor")
@@ -7249,6 +7336,17 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             for _i, tp in ipairs(configuration.features.trusted_providers) do
                                 if tp == send_provider then consent = true; break end
                             end
+                        end
+                        -- Per-book privacy override (Book Settings ▸ Privacy): wins in
+                        -- both directions — deny beats trusted. Runtime requires only,
+                        -- no new upvalues (60-cap).
+                        local sc_ok, sc_ds = pcall(function()
+                            return require("koassistant_doc_settings").resolve(nil, ui_instance)
+                        end)
+                        if sc_ok and sc_ds then
+                            local ov = require("koassistant_book_settings")
+                                .effectivePrivacyOverrides(sc_ds).book_text
+                            if ov ~= nil then consent = ov end
                         end
                         if not consent then
                             UIManager:show(InfoMessage:new{
@@ -9050,6 +9148,25 @@ local executeActionForResult
 -- @param highlighted_text string: The highlighted text
 -- @param configuration table: The configuration table
 -- @param plugin table: The plugin instance
+-- Store rerun info for the compact/translate viewer's re-run row (action switcher,
+-- Language, Ctx toggle). Shared by executeDirectAction's onComplete and the input
+-- dialog's onPromptComplete so the two launch paths can't drift (the input-dialog
+-- path historically skipped this, leaving the row dead with a "?" switcher).
+-- NOTE: Only store complex objects at config top level, not in features (deepCopy
+-- would overflow on them); the viewer's re-run callbacks exclude ^_rerun_ keys.
+local function attachRerunContext(temp_config, action, ui, plugin)
+    if temp_config and temp_config.features and (temp_config.features.minimal_buttons or temp_config.features.translate_view) then
+        temp_config._rerun_action = action
+        temp_config._rerun_ui = ui
+        temp_config._rerun_plugin = plugin
+        -- Preserve original context across re-runs (don't overwrite if already set)
+        if not temp_config.features._original_context then
+            temp_config.features._original_context = temp_config.features.dictionary_context or ""
+            temp_config.features._original_context_mode = temp_config.features.dictionary_context_mode or "sentence"
+        end
+    end
+end
+
 local function executeDirectAction(ui, action, highlighted_text, configuration, plugin)
     local logger = require("logger")
 
@@ -9137,19 +9254,7 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
     local function onComplete(history, temp_config_or_error)
         if history then
             local temp_config = temp_config_or_error
-            -- Store rerun info for compact/translate view buttons (context toggle, language change)
-            -- NOTE: Only store simple/serializable data in features (deepCopy would overflow on complex objects)
-            if temp_config and temp_config.features and (temp_config.features.minimal_buttons or temp_config.features.translate_view) then
-                -- Store complex objects at config top level (not in features, to avoid deepCopy)
-                temp_config._rerun_action = action
-                temp_config._rerun_ui = ui
-                temp_config._rerun_plugin = plugin
-                -- Preserve original context across re-runs (don't overwrite if already set)
-                if not temp_config.features._original_context then
-                    temp_config.features._original_context = temp_config.features.dictionary_context or ""
-                    temp_config.features._original_context_mode = temp_config.features.dictionary_context_mode or "sentence"
-                end
-            end
+            attachRerunContext(temp_config, action, ui, plugin)
             -- For Section X-Ray: open browser directly from section cache
             if configuration and configuration.features and configuration.features._section_xray and ui and ui.document and ui.document.file then
                 local ActionCache = require("koassistant_action_cache")
@@ -9789,4 +9894,7 @@ return {
     -- (60-upvalue cap — a direct file-local reference inside that closure breaks
     -- the whole-plugin load)
     effectiveDispatchProvider = effectiveDispatchProvider,
+    -- Exported for runtime self-require from the input dialog's onPromptComplete
+    -- (same 60-upvalue cap)
+    attachRerunContext = attachRerunContext,
 }

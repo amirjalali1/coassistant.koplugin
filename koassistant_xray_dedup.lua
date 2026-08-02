@@ -689,7 +689,7 @@ function XrayDedup.startFlow(opts)
                     local provider = opts.configuration
                         and (opts.configuration.provider or opts.configuration.default_provider)
                     local entry = ActionCache.getXrayCache(opts.file)
-                    if not XrayMerge.consentOk({ entry or {} }, features, provider) then
+                    if not XrayMerge.consentOk({ entry or {} }, features, provider, opts.file, opts.ui) then
                         UIManager:show(InfoMessage:new{
                             text = _("This X-Ray was built from extracted book text. Enable \"Allow book text extraction\" (or use a trusted provider) for AI merge."),
                             timeout = 5,

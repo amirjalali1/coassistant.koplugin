@@ -74,20 +74,45 @@ end
 --==========================================================================
 TestRunner:suite("ScopeResolver.paragraphWindow")
 
-TestRunner:test("n=1 mid-paragraph: remainder of the containing paragraph only", function()
-    local prev = "Par one.\nPar two.\nStart of par three "
-    local nxt = " end of par three.\nPar four.\nPar five."
-    local before, after = ScopeResolver.paragraphWindow(prev, nxt, 1, 1000)
-    TestRunner:assertEqual(before, "Start of par three ", "before = containing-paragraph remainder")
-    TestRunner:assertEqual(after, " end of par three.", "after = containing-paragraph remainder")
+-- Prose-sized paragraphs (each clears PARAGRAPH_MIN_CHARS) so the n semantics
+-- are observable without the floor kicking in.
+local PAR_TWO = "Par two " .. string.rep("b", 320) .. "."
+local REMAINDER_BEFORE = "Start of par three " .. string.rep("c", 320)
+local REMAINDER_AFTER = string.rep("d", 320) .. " end of par three."
+local PAR_FOUR = "Par four " .. string.rep("e", 320) .. "."
+local PROSE_PREV = "Par one.\n" .. PAR_TWO .. "\n" .. REMAINDER_BEFORE
+local PROSE_NEXT = REMAINDER_AFTER .. "\n" .. PAR_FOUR .. "\nPar five."
+
+TestRunner:test("n=1 mid-paragraph (prose): remainder of the containing paragraph only", function()
+    local before, after = ScopeResolver.paragraphWindow(PROSE_PREV, PROSE_NEXT, 1, 1000)
+    TestRunner:assertEqual(before, REMAINDER_BEFORE, "before = containing-paragraph remainder")
+    TestRunner:assertEqual(after, REMAINDER_AFTER, "after = containing-paragraph remainder")
 end)
 
-TestRunner:test("n=2 adds one whole neighbor paragraph per side", function()
-    local prev = "Par one.\nPar two.\nStart of par three "
-    local nxt = " end of par three.\nPar four.\nPar five."
-    local before, after = ScopeResolver.paragraphWindow(prev, nxt, 2, 1000)
-    TestRunner:assertEqual(before, "Par two.\nStart of par three ", "before = prev paragraph + remainder")
-    TestRunner:assertEqual(after, " end of par three.\nPar four.", "after = remainder + next paragraph")
+TestRunner:test("n=2 adds one whole neighbor paragraph per side (prose)", function()
+    local before, after = ScopeResolver.paragraphWindow(PROSE_PREV, PROSE_NEXT, 2, 1000)
+    TestRunner:assertEqual(before, PAR_TWO .. "\n" .. REMAINDER_BEFORE, "before = prev paragraph + remainder")
+    TestRunner:assertEqual(after, REMAINDER_AFTER .. "\n" .. PAR_FOUR, "after = remainder + next paragraph")
+end)
+
+TestRunner:test("dialogue (one line = one block): floor absorbs neighboring lines", function()
+    local prev = "F.R.: Fine. Listen, we're here for a few more days and then we're going to France.\n"
+        .. "S.K.: (Overlapping) Because no, it's not. It's something else.\n"
+        .. "S.K.: "
+    local nxt = ".\nF.R.: Stanley, forgive me, I have to get something straight.\n"
+        .. "S.K.: I don't know yet if it's something you're going to want to do."
+    local before, after = ScopeResolver.paragraphWindow(prev, nxt, 1, 1000)
+    TestRunner:assertContains(before, "Because no", "previous dialogue line absorbed")
+    TestRunner:assertContains(before, "few more days", "second previous line absorbed too")
+    TestRunner:assertContains(after, "Stanley, forgive me", "next dialogue line absorbed")
+end)
+
+TestRunner:test("floor expansion is still bounded by max_per_side", function()
+    local lines = {}
+    for i = 1, 50 do lines[i] = "Line " .. i .. " " .. string.rep("z", 20) end
+    local prev = table.concat(lines, "\n") .. "\nTag: "
+    local before = (ScopeResolver.paragraphWindow(prev, "", 1, 100))
+    TestRunner:assertEqual(#before <= 100, true, "capped at max_per_side")
 end)
 
 TestRunner:test("no newlines (PDF/kopt) degrades to the whole capped window", function()
@@ -130,13 +155,31 @@ TestRunner:test("characters mode respects char_count and ellipsizes truncation",
     TestRunner:assertContains(result, string.rep("b", 50) .. "...", "after truncated + ellipsis")
 end)
 
-TestRunner:test("paragraph mode uses opts.paragraphs", function()
+TestRunner:test("paragraph mode uses opts.paragraphs (prose-sized)", function()
+    local p1 = "P1 " .. string.rep("a", 320) .. "."
+    local p2 = "P2 " .. string.rep("b", 320) .. "."
+    local p3s = "P3 start " .. string.rep("c", 320)
+    local p3e = string.rep("d", 320) .. " P3 end."
+    local p4 = "P4 " .. string.rep("e", 320) .. "."
+    local p5 = "P5 " .. string.rep("f", 320) .. "."
     local result = ScopeResolver.trimContext(
-        "P1.\nP2.\nP3 start ", " P3 end.\nP4.\nP5.", "SEL", "paragraph", { paragraphs = 2 })
-    TestRunner:assertContains(result, "P2.", "second paragraph back included")
-    TestRunner:assertContains(result, "P4.", "second paragraph forward included")
-    TestRunner:assertNotContains(result, "P1.", "third paragraph back excluded")
-    TestRunner:assertNotContains(result, "P5.", "third paragraph forward excluded")
+        p1 .. "\n" .. p2 .. "\n" .. p3s, p3e .. "\n" .. p4 .. "\n" .. p5,
+        "SEL", "paragraph", { paragraphs = 2 })
+    TestRunner:assertContains(result, "P2 ", "second paragraph back included")
+    TestRunner:assertContains(result, "P4 ", "second paragraph forward included")
+    TestRunner:assertNotContains(result, "P1 ", "third paragraph back excluded")
+    TestRunner:assertNotContains(result, "P5 ", "third paragraph forward excluded")
+end)
+
+TestRunner:test("sentence fallback triggers on tiny context even with a long highlight", function()
+    -- Dialogue: sentence boundaries collapse to the speaker tag; the old check
+    -- measured the marker-inclusive result, so a >30-byte highlight starved this.
+    local prev = "F.R.: We are here for a few more days.\nS.K.: "
+    local nxt = ".\nF.R.: Stanley, forgive me, I have to get something straight."
+    local result = ScopeResolver.trimContext(prev, nxt, "I'll get it to you there", "sentence")
+    TestRunner:assertContains(result, ">>>I'll get it to you there<<<", "marker present")
+    TestRunner:assertContains(result, "few more days",
+        "fallback pulled real context beyond the collapsed sentence boundary")
 end)
 
 TestRunner:test("mode none / empty window return empty string", function()

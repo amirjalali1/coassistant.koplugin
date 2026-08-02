@@ -800,7 +800,7 @@ TestRunner:test("KEY_WEB_SEARCH and KEY_DOMAIN/KEY_RESEARCH are in SIDECAR_KEYS"
         "koassistant_book_xray_goal missing from SIDECAR_KEYS (round 21)")
     TestRunner:assertEqual(found[BookSettings.KEY_BACKGROUND] == true, true,
         "koassistant_book_background missing from SIDECAR_KEYS (book_background_plan.md)")
-    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 20, "20 per-book keys expected")
+    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 24, "24 per-book keys expected (incl. 4 privacy overrides)")
 end)
 
 TestRunner:suite("Quick Answer default (controls_parity_plan.md §8c.7)")
@@ -961,6 +961,77 @@ TestRunner:test("backgroundRowLabel: 'not set' when empty, preview when set", fu
     TestRunner:assertEqual(#label < 40, true, "long value is previewed, not dumped")
     TestRunner:assertEqual(BookSettings.backgroundRowLabel(bgDs("two\nlines here")), "two lines here",
         "newlines collapsed for the row")
+end)
+
+--==========================================================================
+TestRunner:suite("Per-book privacy overrides (effectivePrivacyOverrides)")
+
+local function privDs(store)
+    return { readSetting = function(_self, key) return store[key] end }
+end
+
+TestRunner:test("no overrides: everything nil (follow global)", function()
+    local out = BookSettings.effectivePrivacyOverrides(privDs({}))
+    TestRunner:assertNil(out.highlights, "highlights")
+    TestRunner:assertNil(out.annotations, "annotations")
+    TestRunner:assertNil(out.notebook, "notebook")
+    TestRunner:assertNil(out.book_text, "book_text")
+    local none = BookSettings.effectivePrivacyOverrides(nil)
+    TestRunner:assertNil(none.highlights, "nil doc_settings tolerated")
+end)
+
+TestRunner:test("allow annotations implies allow highlights", function()
+    local out = BookSettings.effectivePrivacyOverrides(privDs({
+        [BookSettings.KEY_ANNOTATIONS_SHARING] = true,
+    }))
+    TestRunner:assertEqual(out.annotations, true, "annotations allowed")
+    TestRunner:assertEqual(out.highlights, true, "highlights implied")
+end)
+
+TestRunner:test("deny highlights implies deny annotations (deny wins over stored allow)", function()
+    local out = BookSettings.effectivePrivacyOverrides(privDs({
+        [BookSettings.KEY_HIGHLIGHTS_SHARING] = false,
+        [BookSettings.KEY_ANNOTATIONS_SHARING] = true,
+    }))
+    TestRunner:assertEqual(out.highlights, false, "highlights denied")
+    TestRunner:assertEqual(out.annotations, false, "annotations denied by implication")
+end)
+
+TestRunner:test("corrupt non-boolean sidecar values read as follow-global (fail-closed)", function()
+    local out = BookSettings.effectivePrivacyOverrides(privDs({
+        [BookSettings.KEY_TEXT_EXTRACTION] = "off",
+        [BookSettings.KEY_NOTEBOOK_SHARING] = 1,
+    }))
+    TestRunner:assertNil(out.book_text, "string value must not grant or deny")
+    TestRunner:assertNil(out.notebook, "number value must not grant or deny")
+end)
+
+TestRunner:test("notebook and book_text pass through in both directions", function()
+    local allow = BookSettings.effectivePrivacyOverrides(privDs({
+        [BookSettings.KEY_NOTEBOOK_SHARING] = true,
+        [BookSettings.KEY_TEXT_EXTRACTION] = true,
+    }))
+    TestRunner:assertEqual(allow.notebook, true, "notebook allow")
+    TestRunner:assertEqual(allow.book_text, true, "book_text allow")
+    local deny = BookSettings.effectivePrivacyOverrides(privDs({
+        [BookSettings.KEY_NOTEBOOK_SHARING] = false,
+        [BookSettings.KEY_TEXT_EXTRACTION] = false,
+    }))
+    TestRunner:assertEqual(deny.notebook, false, "notebook deny")
+    TestRunner:assertEqual(deny.book_text, false, "book_text deny")
+end)
+
+TestRunner:test("privacy keys are in SIDECAR_KEYS (reset/count/registry coverage)", function()
+    local want = {
+        [BookSettings.KEY_HIGHLIGHTS_SHARING] = true,
+        [BookSettings.KEY_ANNOTATIONS_SHARING] = true,
+        [BookSettings.KEY_NOTEBOOK_SHARING] = true,
+        [BookSettings.KEY_TEXT_EXTRACTION] = true,
+    }
+    for _i, key in ipairs(BookSettings.SIDECAR_KEYS) do
+        want[key] = nil
+    end
+    TestRunner:assertNil(next(want), "all four privacy keys registered")
 end)
 
 print("")

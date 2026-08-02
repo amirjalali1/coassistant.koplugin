@@ -279,8 +279,10 @@ end
 --- artifacts, and sending them must respect the same dynamic permission the
 --- cache read gates enforce (revoked consent blocks injection — it must block
 --- re-sending through a merge too). Trusted providers bypass, as everywhere.
+--- The book's per-book privacy override (book_file, optional) wins in both
+--- directions — deny beats trusted.
 --- @return boolean allowed
-function XrayMerge.consentOk(entries, features, provider)
+function XrayMerge.consentOk(entries, features, provider, book_file, ui)
     local needs_text = false
     for _idx, e in ipairs(entries) do
         if e.used_book_text ~= false then
@@ -289,6 +291,15 @@ function XrayMerge.consentOk(entries, features, provider)
         end
     end
     if not needs_text then return true end
+    if book_file then
+        local ok, ds = pcall(function()
+            return require("koassistant_doc_settings").resolve(book_file, ui)
+        end)
+        if ok and ds then
+            local ov = require("koassistant_book_settings").effectivePrivacyOverrides(ds).book_text
+            if ov ~= nil then return ov end
+        end
+    end
     if features and features.enable_book_text_extraction == true then return true end
     for _idx, trusted_id in ipairs((features and features.trusted_providers) or {}) do
         if trusted_id == provider then return true end
@@ -746,7 +757,7 @@ function XrayMerge.startFlow(opts)
     local gate_entries = {}
     for _idx, sec in ipairs(sections) do gate_entries[#gate_entries + 1] = sec.data end
     if main_entry then gate_entries[#gate_entries + 1] = main_entry end
-    if not XrayMerge.consentOk(gate_entries, features, provider) then
+    if not XrayMerge.consentOk(gate_entries, features, provider, opts.file, opts.ui) then
         UIManager:show(InfoMessage:new{
             text = _("These X-Rays were built from extracted book text. Enable \"Allow book text extraction\" (or use a trusted provider) to merge them."),
             timeout = 5,

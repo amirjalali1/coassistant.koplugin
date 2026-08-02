@@ -601,8 +601,16 @@ function BookToolRunner.sessionEligible(config, ui)
     if not (ModelConstraints.supportsCapability(provider, model, "tools") and ToolWire.hasAdapter(provider)) then
         return false, "provider"
     end
-    -- Tools are a form of book-text extraction → respect the consent gate (trusted bypass).
-    if features.enable_book_text_extraction ~= true and not isProviderTrusted(provider, features) then
+    -- Tools are a form of book-text extraction → respect the consent gate
+    -- (trusted bypass); the per-book privacy override wins in both directions
+    -- (deny beats trusted).
+    local consent = features.enable_book_text_extraction == true
+        or isProviderTrusted(provider, features)
+    if ui and ui.doc_settings then
+        local ov = BookSettings.effectivePrivacyOverrides(ui.doc_settings).book_text
+        if ov ~= nil then consent = ov end
+    end
+    if not consent then
         return false, "consent"
     end
     if ui == nil or ui.document == nil then

@@ -409,6 +409,49 @@ function BookSettings.applyResponseLanguageOverride(config, doc_settings)
     return c
 end
 
+-- Per-book PRIVACY overrides (2026-08-02): tri-state sidecar keys — true = allow
+-- for this book, false = deny for this book, nil = follow global. Enforcement
+-- semantics (koassistant_context_extractor.lua + the notebook/pre-flight/tools
+-- gates): a per-book DENY beats everything including trusted providers (most
+-- specific intent — "never share this book's data"); a per-book ALLOW satisfies
+-- the GLOBAL gate only, so per-action flags still apply (double-gating holds).
+BookSettings.KEY_HIGHLIGHTS_SHARING = "koassistant_book_highlights_sharing"
+BookSettings.KEY_ANNOTATIONS_SHARING = "koassistant_book_annotations_sharing"
+BookSettings.KEY_NOTEBOOK_SHARING = "koassistant_book_notebook_sharing"
+BookSettings.KEY_TEXT_EXTRACTION = "koassistant_book_text_extraction"
+
+--- Raw per-book privacy overrides. Pure.
+-- @return table { highlights = tri, annotations = tri, notebook = tri, book_text = tri }
+function BookSettings.getPrivacyOverrides(doc_settings)
+    if not doc_settings then return {} end
+    return {
+        highlights = doc_settings:readSetting(BookSettings.KEY_HIGHLIGHTS_SHARING),
+        annotations = doc_settings:readSetting(BookSettings.KEY_ANNOTATIONS_SHARING),
+        notebook = doc_settings:readSetting(BookSettings.KEY_NOTEBOOK_SHARING),
+        book_text = doc_settings:readSetting(BookSettings.KEY_TEXT_EXTRACTION),
+    }
+end
+
+--- Effective per-book privacy overrides, with the same implication the globals
+-- have: allowing annotations implies highlights; denying highlights denies
+-- annotations too (the promise is "no highlighted text from this book"). Pure.
+-- @return table { highlights = tri, annotations = tri, notebook = tri, book_text = tri }
+function BookSettings.effectivePrivacyOverrides(doc_settings)
+    local raw = BookSettings.getPrivacyOverrides(doc_settings)
+    -- Strict booleans only: a corrupt/hand-edited sidecar value (e.g. the string
+    -- "off") must read as "follow global", never as a truthy ALLOW (fail-closed).
+    local function tri(v)
+        if v == true then return true elseif v == false then return false end
+        return nil
+    end
+    local out = { notebook = tri(raw.notebook), book_text = tri(raw.book_text) }
+    if raw.highlights == false then out.highlights = false
+    elseif raw.highlights == true or raw.annotations == true then out.highlights = true end
+    if raw.annotations == false or raw.highlights == false then out.annotations = false
+    elseif raw.annotations == true then out.annotations = true end
+    return out
+end
+
 -- Every DocSettings sidecar key this module owns. Single source of truth for the
 -- "reset book settings" action, the customized-count indicator, and (later) Track 33's
 -- storage registry. Keep in sync when adding a per-book setting.
@@ -436,6 +479,10 @@ BookSettings.SIDECAR_KEYS = {
     BookSettings.KEY_QUICK_ANSWER,
     BookSettings.KEY_TOOL_EFFORT,
     BookSettings.KEY_WEB_EFFORT,
+    BookSettings.KEY_HIGHLIGHTS_SHARING,
+    BookSettings.KEY_ANNOTATIONS_SHARING,
+    BookSettings.KEY_NOTEBOOK_SHARING,
+    BookSettings.KEY_TEXT_EXTRACTION,
 }
 
 --- Count how many per-book settings deviate from the global defaults (any non-nil key).
@@ -1897,6 +1944,31 @@ function BookSettings.show(opts)
         callback = function()
             showContextModeSubPicker(BookSettings.KEY_DICTIONARY_CONTEXT,
                 _("Dictionary context (this book)"), features.dictionary_context_mode or "sentence")
+        end })
+    -- Per-book privacy overrides: Allow/Deny beat the global Privacy & Data
+    -- toggles for THIS book (deny also beats trusted providers); per-action
+    -- flags still apply on top (double-gating).
+    addHeader(_("Privacy"))
+    addButton({ text = T(_("Highlights sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHTS_SHARING))),
+        callback = function()
+            showBoolSubPicker(BookSettings.KEY_HIGHLIGHTS_SHARING,
+                _("Highlights sharing (this book)"),
+                features.enable_highlights_sharing == true or features.enable_annotations_sharing == true)
+        end })
+    addButton({ text = T(_("Annotations sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_ANNOTATIONS_SHARING))),
+        callback = function()
+            showBoolSubPicker(BookSettings.KEY_ANNOTATIONS_SHARING,
+                _("Annotations sharing (this book)"), features.enable_annotations_sharing == true)
+        end })
+    addButton({ text = T(_("Notebook sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_NOTEBOOK_SHARING))),
+        callback = function()
+            showBoolSubPicker(BookSettings.KEY_NOTEBOOK_SHARING,
+                _("Notebook sharing (this book)"), features.enable_notebook_sharing == true)
+        end })
+    addButton({ text = T(_("Text extraction: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_TEXT_EXTRACTION))),
+        callback = function()
+            showBoolSubPicker(BookSettings.KEY_TEXT_EXTRACTION,
+                _("Text extraction (this book)"), features.enable_book_text_extraction == true)
         end })
     addHeader(_("Identity"))
     addButton({ text = T(_("AI title: %1"), overrideLabel(title_ov)),
