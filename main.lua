@@ -8002,14 +8002,24 @@ end
 --- Round 24: route a version entry to ITS options dialog (rung vs ring
 --- resolved by the identity match every version surface uses). The archived-
 --- version viewer's way out of the old Info-only dead end.
-function AskGPT:_showXrayVersionOptions(cp, file, opts)
+--- True when this checkpoint identity-matches a ladder rung. Rungs install by
+--- position-crossing promotion, never by restore — their options card differs
+--- from a ring version's, and callers labeling an entry point need to know.
+function AskGPT:_xrayVersionIsRung(cp, file)
   local ActionCache = require("koassistant_action_cache")
   for _idx, r in ipairs(ActionCache.getXrayLadder(file)) do
     if r.timestamp == cp.timestamp
         and math.abs((tonumber(r.progress_decimal) or -1)
           - (tonumber(cp.progress_decimal) or -2)) < 1e-6 then
-      return self:_showXrayLadderRungOptions(cp, opts)
+      return true
     end
+  end
+  return false
+end
+
+function AskGPT:_showXrayVersionOptions(cp, file, opts)
+  if self:_xrayVersionIsRung(cp, file) then
+    return self:_showXrayLadderRungOptions(cp, opts)
   end
   return self:_showXrayCheckpointOptions(cp, opts)
 end
@@ -8321,7 +8331,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
       table.insert(vgroup, TextBoxWidget:new{
         text = state_line, face = info_face, width = content_width,
-        color = Blitbuffer.COLOR_DARK_GRAY,
+        fgcolor = Blitbuffer.COLOR_DARK_GRAY,
       })
     end
 
@@ -8330,7 +8340,10 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     local cov_rows = {}
     cov_rows[#cov_rows + 1] = { { text = _("The whole book"),
       provider = "whole", checked = cr.coverage == "whole" } }
-    if progress and decimal > 0.01 then
+    -- The row label rounds to the nearest percent, so gate on the rounded
+    -- value too: a book displayed at "1%" must never show the row (0.015
+    -- rounds to 2%, the lowest percent that does)
+    if progress and decimal >= 0.015 then
       -- Round 24 (extend mode): a position at or below the base is a REBUILD
       -- from scratch — pickable and labeled, no longer disabled (this absorbs
       -- the old popup redo / rebuild-to-your-position rows)
@@ -8454,9 +8467,11 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
         hint = hint .. " " .. T(_("It stops at the end of \"%1\"."), cr.target_label)
       end
     elseif cr.delivery == "checkpoints" then
+      -- Item 33(1): checkpoints are a quality/size mechanism first, spoiler
+      -- safety second — the copy names both, in that order
       hint = (mode == "extend" and not pick_rebuild)
-        and _("Continues from your current coverage in bounded background steps, each a spoiler-safe version. You can keep reading, cancel anytime, and resume later.")
-        or _("Covers the range in bounded background steps, each a spoiler-safe version up to its position. A usable X-Ray installs after the first step; you can keep reading, cancel anytime, and resume later.")
+        and _("Continues from your current coverage in background steps. Each step reads a bounded slice (requests stay small even on long books) and yields a spoiler-safe version. You can keep reading, cancel anytime, and resume later.")
+        or _("Covers the range in background steps. Each step reads a bounded slice (requests stay small even on long books) and yields a spoiler-safe version up to its position. A usable X-Ray installs after the first step; you can keep reading, cancel anytime, and resume later.")
     elseif mode == "extend" and not pick_rebuild then
       if cr.coverage == "whole" then
         hint = _("Updates your existing X-Ray to 100% in a single request.")
@@ -8480,7 +8495,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
       table.insert(vgroup, TextBoxWidget:new{
         text = hint, face = info_face, width = content_width,
-        color = Blitbuffer.COLOR_DARK_GRAY,
+        fgcolor = Blitbuffer.COLOR_DARK_GRAY,
       })
     end
 
@@ -8644,7 +8659,7 @@ function AskGPT:_xrayFollowCatchUp(_decimal)
           UIManager:close(confirm)
           start()
         end }},
-        {{ text = _("Not this session"), callback = function()
+        {{ text = _("Later (resumes when you reopen this book)"), callback = function()
           UIManager:close(confirm)
           if file then XrayAuto.suppressAuto(file) end
           UIManager:show(InfoMessage:new{

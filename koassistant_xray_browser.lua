@@ -4220,8 +4220,13 @@ function XrayBrowser:showOptions()
             book_title = self.metadata.title,
             book_author = self.metadata.book_author,
         }
+        -- Ladder rungs have no restore (they install by promotion) — the row
+        -- must not promise one
+        local viewed_is_rung = self.metadata.plugin:_xrayVersionIsRung(
+            self.metadata.checkpoint_data, self.metadata.book_file)
         table.insert(buttons, {{
-            text = _("Restore or delete this version…"), align = "left",
+            text = viewed_is_rung and _("Delete this checkpoint…")
+                or _("Restore or delete this version…"), align = "left",
             callback = function()
                 closeOptions()
                 -- Restore/delete replace or remove what this view renders —
