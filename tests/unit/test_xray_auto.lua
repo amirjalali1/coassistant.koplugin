@@ -497,9 +497,11 @@ TestRunner:test("seedForBuild: the round-22 CEILING (D1) — no seed at or past 
 end)
 
 TestRunner:test("planBuildRungs: seed first, tail planned FROM the seed", function()
-    local rungs, seed = XrayAuto.planBuildRungs(0, 0.15, nil, 0.05)
-    TestRunner:assertEqual(seed, 0.05, "seed reported")
-    TestRunner:assertEqual(rungs[1], 0.05, "seed is rung 1")
+    -- Position exactly at the half-step floor (item 38 E7: 0.075 for 15%
+    -- spacing) — the lowest position that still seeds
+    local rungs, seed = XrayAuto.planBuildRungs(0, 0.15, nil, 0.075)
+    TestRunner:assertEqual(seed, 0.075, "seed reported (at the half-step floor)")
+    TestRunner:assertEqual(rungs[1], 0.075, "seed is rung 1")
     TestRunner:assertEqual(rungs[2], 0.15, "clear of the half-step rule: spacing rung kept")
     TestRunner:assertEqual(rungs[#rungs], 1.0, "final rung unchanged")
     -- Seed close under a spacing boundary: the half-step rule drops the
@@ -517,6 +519,33 @@ TestRunner:test("planBuildRungs: seed first, tail planned FROM the seed", functi
     local pos_cov, pos_seed = XrayAuto.planBuildRungs(0, 0.15, 0.4, 0.4)
     TestRunner:assertEqual(pos_seed, nil, "goal == position: no seed")
     TestRunner:assertEqual(pos_cov[#pos_cov], 0.4, "final rung = the position goal")
+end)
+
+TestRunner:test("E7 (item 38): the seed floor is formula-based — max(SEED_MIN, spacing/2)", function()
+    -- The field case: 48-page book (spacing clamps to 50%), reader at 4%.
+    -- The flat 3% floor seeded a two-page checkpoint next to the intro; the
+    -- half-step floor (25% here) drops it — the plan is intro + 50 + 100.
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.04, nil, 0.5), nil,
+        "novella at 4%: below half a step, no seed")
+    local rungs, seed = XrayAuto.planBuildRungs(0, 0.5, nil, 0.04)
+    TestRunner:assertEqual(seed, nil, "plan agrees: no seed")
+    TestRunner:assertEqual(rungs[1], 0.5, "grid starts at the midpoint rung")
+    TestRunner:assertEqual(rungs[2], 1.0, "then the whole book")
+    -- The seed band on 50% spacing is [25%, 50%)
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.24, nil, 0.5), nil,
+        "just under half a step: still no seed")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.26, nil, 0.5), 0.26,
+        "past half a step: seed applies")
+    -- Normal 10% spacing: half-step (5%) beats the 3% absolute floor
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.04, nil, 0.10), nil,
+        "10% spacing at 4%: below the 5% half-step floor")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.05, nil, 0.10), 0.05,
+        "10% spacing at 5%: at the floor, seed applies")
+    -- Monster-book 5% spacing: the absolute 3% floor still binds (2.5% half-step)
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.028, nil, 0.05), nil,
+        "5% spacing at 2.8%: under LADDER_SEED_MIN")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.032, nil, 0.05), 0.032,
+        "5% spacing at 3.2%: above both floors")
 end)
 
 TestRunner:test("tiny-book field case (item 38): seed just under the novella midpoint rung", function()

@@ -221,7 +221,7 @@ XrayAuto.LADDER_MAX_RUNG_PAGES = 100 -- P2(a) v2 ceiling: one rung should not ex
 XrayAuto.LADDER_MIN_SPACING = 0.05   -- call-count bound: never more than ~20 rungs, even on monster books
 XrayAuto.LADDER_MAX_SPACING = 0.50   -- tiny books still get a midpoint + final rung
 XrayAuto.LADDER_SNAP_WINDOW = 0.03   -- P3: chapter-end snap distance (±3%; narrows with tight spacing)
-XrayAuto.LADDER_SEED_MIN = 0.03      -- round 19: below this much read text a seed rung is noise
+XrayAuto.LADDER_SEED_MIN = 0.03      -- round 19: absolute noise floor; the EFFECTIVE seed floor is max(this, spacing/2) — item 38 E7
 
 --- P2(a) formula v2 (§7, device round 2): rung spacing targets a pages-per-rung
 --- band. The 10% baseline is narrowed on long books so a single rung never
@@ -333,24 +333,29 @@ end
 --- rung exactly at the reading position, so the very first finished checkpoint
 --- is promotable and the reader has a live X-Ray right away. Pure.
 --- Returns nil when a base exists (something is already live/promotable), when
---- the reader hasn't read enough to be worth a call (LADDER_SEED_MIN), when the
---- reader sits AT or PAST the first spacing rung (round 22, D1: the grid itself
---- has a promotable point then — a seed there would swallow every grid point
---- below it into ONE unbounded request), or when the position is within the
---- goal's engagement threshold (the goal rung IS the seed then). The seed
---- deliberately never snaps to a chapter boundary ahead of the reader — a seed
---- past the position could not promote.
+--- the reader hasn't read HALF A STEP yet (item 38 E7: the seed is a call like
+--- any rung, so the grid's half-step economics apply to it too — floor =
+--- max(LADDER_SEED_MIN, spacing/2); a flat 3% floor let a 4% reader on a
+--- 50%-spacing novella buy a two-page checkpoint right next to the intro, which
+--- already serves that reader), when the reader sits AT or PAST the first
+--- spacing rung (round 22, D1: the grid itself has a promotable point then — a
+--- seed there would swallow every grid point below it into ONE unbounded
+--- request), or when the position is within the goal's engagement threshold
+--- (the goal rung IS the seed then). The seed deliberately never snaps to a
+--- chapter boundary ahead of the reader — a seed past the position could not
+--- promote.
 --- @param base_progress number|nil build base 0..1 (nil/0 = from nothing)
 --- @param position number|nil reading position 0..1
 --- @param goal number|nil build target (nil = 1.0)
---- @param spacing number|nil rung spacing (nil = LADDER_SPACING) — the ceiling
+--- @param spacing number|nil rung spacing (nil = LADDER_SPACING) — floor and ceiling
 --- @return number|nil seed ratio (3 decimals)
 function XrayAuto.seedForBuild(base_progress, position, goal, spacing)
   local base = tonumber(base_progress) or 0
   if base >= 0.01 then return nil end
   local pos = tonumber(position)
-  if not pos or pos < XrayAuto.LADDER_SEED_MIN then return nil end
-  if pos >= (tonumber(spacing) or XrayAuto.LADDER_SPACING) then return nil end
+  local step = tonumber(spacing) or XrayAuto.LADDER_SPACING
+  if not pos or pos < math.max(XrayAuto.LADDER_SEED_MIN, step / 2) then return nil end
+  if pos >= step then return nil end
   local g = tonumber(goal)
   if not g or g <= 0 or g > 1.0 then g = 1.0 end
   if pos >= g - 0.01 then return nil end
