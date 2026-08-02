@@ -1436,7 +1436,12 @@ function ActionCache.restoreXrayCheckpoint(document_path, index, limit)
     table.remove(ring, index)
 
     local live = ActionCache.getXrayCache(document_path)
-    if live and live.result and limit ~= 0 then
+    -- Shared archive rule (item 40 — this site MISSED it; promotion, the
+    -- write-back primitive, and the response path all had it): a live entry
+    -- that IS a ladder rung is already preserved there — archiving it here
+    -- duplicated it ("17% today" AND "17% today · checkpoint" on device).
+    if live and live.result and limit ~= 0
+        and not ActionCache.isXrayLadderRung(document_path, live) then
         table.insert(ring, 1, buildCheckpointEntry(live))
     end
     ActionCache.trimCheckpoints(ring, limit)
@@ -1956,12 +1961,17 @@ function ActionCache.findBestXray(document_path, doc)
     local main = ActionCache.getXrayCache(document_path)
     local has_main = main and main.result
 
-    -- 1. Check section X-Rays for one covering current page
+    -- 1. Check section X-Rays for one covering current page.
+    -- Item 40 (maintainer): a section already MERGED into main is part of the
+    -- timeline — main carries its content, so it no longer outranks main
+    -- here. Without a main (deleted later) the stamp is historical and the
+    -- section still serves in steps below.
     if current_page and #sections > 0 then
         local in_range = {}
         for _idx, sec in ipairs(sections) do
             local sp, ep = getSectionPageRange(sec.data, doc)
-            if sp and ep and current_page >= sp and current_page <= ep then
+            if sp and ep and current_page >= sp and current_page <= ep
+                and not (has_main and sec.data.merged_to_main) then
                 table.insert(in_range, sec)
             end
         end

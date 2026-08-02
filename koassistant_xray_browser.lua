@@ -4228,7 +4228,7 @@ function XrayBrowser:showOptions()
             text = viewed_is_rung and (self.metadata.checkpoint_data.intro
                     and _("Delete this checkpoint…")
                     or _("Install or delete this checkpoint…"))
-                or _("Restore or delete this version…"), align = "left",
+                or _("Install or delete this version…"), align = "left",
             callback = function()
                 closeOptions()
                 -- Restore/delete replace or remove what this view renders —

@@ -451,6 +451,20 @@ function XrayAuto.planAutoWork(state)
   return out
 end
 
+--- Rungs that evidence a BUILD CHAIN (item 40): ladder/auto products incl. the
+--- intro; legacy rungs predate producer stamping and were all chain-built, so
+--- nil counts. Manual folds (slice 2) are timeline points, NOT chain evidence —
+--- a lone manual update must never surface "Resume building checkpoints". Pure.
+--- @param ladder table Rung array (any order)
+--- @return number count
+function XrayAuto.chainRungCount(ladder)
+  local n = 0
+  for _idx, rung in ipairs(ladder or {}) do
+    if rung.producer ~= "manual" then n = n + 1 end
+  end
+  return n
+end
+
 --- Pick the rung to promote into the live cache: the highest rung at-or-below
 --- the reading position (½% tolerance) that is AHEAD of the live entry. Rungs
 --- ahead of the reader never qualify (spoiler by definition — same rule as

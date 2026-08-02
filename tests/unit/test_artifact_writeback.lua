@@ -488,6 +488,31 @@ TestRunner:test("spans + provenance survive the rung → ring → live round-tri
     TestRunner:assertEqual(ring[1].base_timestamp, 1700000200, "ring checkpoint keeps base identity")
 end)
 
+TestRunner:test("restore does not ring-archive a live that IS a rung (item 40 dup fix)", function()
+    wipe()
+    -- Manual-fold shape (slice 2): live == rung identity at 17%
+    ActionCache.pushXrayLadderRung(DOC_PATH, {
+        result = '{"v": 17}', progress_decimal = 0.17, timestamp = 1700000300, producer = "manual",
+    })
+    ActionCache.setXrayCache(DOC_PATH, '{"v": 17}', 0.17, { timestamp = 1700000300 })
+    ActionCache.set(DOC_PATH, "xray", '{"v": 17}', 0.17, { timestamp = 1700000300 })
+    -- A newer 35% version sits in the ring (an overwritten non-rung product)
+    ActionCache.pushXrayCheckpoint(DOC_PATH, {
+        result = '{"v": 35}', progress_decimal = 0.35, timestamp = 1700000400,
+    }, 5)
+    -- Reinstall the 35% from the ring: the outgoing 17% live IS a ladder rung
+    -- and must NOT be ring-archived (the device round saw "17% today" AND
+    -- "17% today · checkpoint" from exactly this move)
+    local ok_restore = ActionCache.restoreXrayCheckpoint(DOC_PATH, 1, 5)
+    TestRunner:assertEqual(ok_restore, true, "restore succeeds")
+    TestRunner:assertEqual(#ActionCache.getXrayCheckpoints(DOC_PATH), 0,
+        "ring emptied: the rung-live was not duplicated into it")
+    local live = ActionCache.getXrayCache(DOC_PATH)
+    TestRunner:assertEqual(live.timestamp, 1700000400, "the 35% is live again")
+    TestRunner:assertEqual(#ActionCache.getXrayLadder(DOC_PATH), 1,
+        "the 17% stays preserved as its ladder point")
+end)
+
 wipe()
 os.execute(string.format("rm -rf %q", TMP_ROOT))
 

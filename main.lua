@@ -7378,12 +7378,17 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         end,
       }})
     end
-    -- Free exit from ahead-mode (device round 3): live ahead of the reader
-    -- (e.g. after switch-to-complete) + a rung at-or-below the reader →
-    -- switching back re-enters position-tracking, promotion resumes naturally.
-    -- Reversible both ways while the ladder exists.
+    -- Free exit from ahead-mode (device round 3): live ahead of the reader +
+    -- a rung at-or-below the reader → switching back re-enters
+    -- position-tracking, promotion resumes naturally. Reversible both ways
+    -- while the ladder exists. Item 40 (maintainer): once CONVERTED TO THE
+    -- COMPLETE version (progress 1.0 — reached or opted in), it stays the
+    -- active one and earlier versions are no longer top-level promoted when
+    -- leafing back; they remain reachable via All versions. Non-complete
+    -- ahead installs (slice 2) keep the row.
     if current_progress and not cached_entry.full_document
         and cached_entry.source_mode ~= "ai_knowledge"
+        and (cached_entry.progress_decimal or 0) < 0.995
         and (cached_entry.progress_decimal or 0) > current_progress.decimal + 0.01 then
       local back_rung = XrayAuto.pickPromotableRung(ladder_rungs, 0, current_progress.decimal)
       if back_rung then
@@ -7427,8 +7432,10 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       else
         -- Round 24b: not while cancel-suppressed — cancelling then turning
         -- auto off must not leave a lingering Resume nag (suppression clears
-        -- on book close; the authoring form is the in-session re-entry)
-        if c_flowing and not c_auto_on and #ladder_rungs > 0
+        -- on book close; the authoring form is the in-session re-entry).
+        -- Item 40: CHAIN rungs only — a lone manual-fold point (slice 2) is a
+        -- kept version, not a paused build to resume.
+        if c_flowing and not c_auto_on and XrayAuto.chainRungCount(ladder_rungs) > 0
             and not XrayAuto.isAutoSuppressed(sx_file)
             and (ladder_highest or 0) < 1.0 - 0.005
             and not (ext_goal and (ladder_highest or 0) >= ext_goal - 0.01) then
@@ -9397,6 +9404,28 @@ function AskGPT:_showXrayCheckpointList(opts)
   local self_ref = self
   local list_dialog
   local buttons = {}
+  -- Item 40 (maintainer): the CURRENT version is a timeline point too — after
+  -- a ring reinstall it appeared nowhere in this list. Skip when it
+  -- identity-matches a rung (that row already reads "(current)"). Opens the
+  -- normal live X-Ray view, not a read-only version card.
+  if live and live.result and not ActionCache.isXrayLadderRung(file, live) then
+    table.insert(buttons, {{
+      text = self:_xrayCheckpointLabel(live) .. " " .. _("(current)"),
+      callback = function()
+        UIManager:close(list_dialog)
+        if opts and opts.close_browser then opts.close_browser() end
+        self_ref:showCacheViewer({
+          name = _("X-Ray"),
+          key = "_xray_cache",
+          data = live,
+          file = file,
+          book_title = opts and opts.book_title,
+          book_author = opts and opts.book_author,
+          skip_stale_popup = true,
+        })
+      end,
+    }})
+  end
   for idx, e in ipairs(entries) do
     local row_text = self:_xrayCheckpointLabel(e.cp)
     if e.is_rung then
@@ -9734,19 +9763,21 @@ function AskGPT:_showXrayCheckpointOptions(cp, opts)
   if XrayAuto.isInFlight() then
     -- Restoring under an in-flight background update would either lose the
     -- race at its completion or clobber its result — wait it out
-    table.insert(buttons, {{ text = _("Restore (auto-update in progress)"), enabled = false }})
+    table.insert(buttons, {{ text = _("Install (auto-update in progress)"), enabled = false }})
   else
+    -- Item 40: rung installs and ring restores are the same act (a pointer
+    -- move) — one language across both cards. Mechanics stay move-semantics
+    -- (the current version takes this ring slot).
     table.insert(buttons, {{
-      text = _("Restore this version"),
+      text = _("Install as current X-Ray (free)"),
       callback = function()
         UIManager:close(options_dialog)
         local confirm_dialog
         confirm_dialog = ButtonDialog:new{
-          title = T(_("Replace the current X-Ray with the version from %1?"), label)
-            .. "\n" .. _("The current version will be kept in the version list."),
+          title = T(_("Install the version from %1 as your current X-Ray? Your current version stays in the version list."), label),
           buttons = {
             {{
-              text = _("Restore"),
+              text = _("Install"),
               callback = function()
                 UIManager:close(confirm_dialog)
                 local idx = self_ref:_findXrayCheckpointIndex(file, cp)
@@ -9760,11 +9791,11 @@ function AskGPT:_showXrayCheckpointOptions(cp, opts)
                   -- Cache progress moved — resync the background pre-filter
                   self_ref:_refreshXrayAutoState()
                   UIManager:show(Notification:new{
-                    text = T(_("X-Ray restored (%1)"), label),
+                    text = T(_("Version installed (%1)"), label),
                     timeout = 2,
                   })
                 else
-                  UIManager:show(InfoMessage:new{ text = _("Restore failed. This version is no longer archived."), timeout = 3 })
+                  UIManager:show(InfoMessage:new{ text = _("Install failed. This version is no longer archived."), timeout = 3 })
                 end
               end,
             }},
