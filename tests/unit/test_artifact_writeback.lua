@@ -457,6 +457,13 @@ TestRunner:test("reconcileXrayMeta unions spans with the base and defaults base_
     TestRunner:assertEqual(meta3.base_timestamp, nil, "no base, no base identity")
 end)
 
+TestRunner:test("merged_from_books inherits through later passes (item 43 continuity)", function()
+    local meta = WriteBack.reconcileXrayMeta(
+        { merged_from_books = "Book One" }, { model = "m" })
+    TestRunner:assertEqual(meta.merged_from_books, "Book One",
+        "cross-book background provenance survives updates")
+end)
+
 TestRunner:test("spans + provenance survive the rung → ring → live round-trip", function()
     wipe()
     -- Rung with stamped spans/provenance

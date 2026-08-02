@@ -94,6 +94,33 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 
 CRITICAL: Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values must be written in {response_language}, regardless of the language of the source text.]]
 
+-- Cross-book merge (item 43, #90): fold ANOTHER book's X-Ray into this book's
+-- main as BACKGROUND — recurring entities get enriched, key carry-overs get
+-- added, but this book's timeline/current-state are never polluted with the
+-- other book's events. Same sentinel wire-safety as the section prompts.
+XrayMerge.CROSS_BOOK_DELTA_PROMPT = [[Update this X-Ray for "{title}"{author_clause} by folding in the X-Ray of a related book below (for example an earlier book in the same series, or a companion work).
+
+Previous analysis of "{title}" (covers up to %COVERAGE%):
+@@KOA_MERGE_MAIN@@
+
+@@KOA_MERGE_INDEX@@
+
+X-Ray of the related book:
+
+@@KOA_MERGE_INPUTS@@
+
+Output ONLY the new or changed entries as a JSON object. Use exactly the same JSON keys and structure as the previous analysis. Your output will be programmatically merged with the existing data, so:
+- OMIT categories entirely if nothing changed in them — they will be preserved as-is
+- When the related book's X-Ray adds background on an entity that ALSO appears in "{title}" (a recurring character, place, concept, or term), output the COMPLETE updated entry with all fields, weaving that background in (it will replace the old version)
+- Add entities from the related book ONLY when they matter for understanding "{title}" (recurring or referenced figures, shared places, carried-over concepts); their descriptions should present the related book's knowledge as background
+- timeline / argument_development and current_state / current_position belong to "{title}" alone — NEVER add the related book's events to them; omit these categories entirely
+- To reference an existing entity, use the EXACT name from the entity list above
+- Do not invent entities or events that appear in neither X-Ray
+
+@@KOA_MERGE_NEVER@@
+
+CRITICAL: Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values must be written in {response_language}, regardless of the language of the source text.]]
+
 --- Coverage-tagged inputs block (the shape the series merge reuses later:
 --- swap section labels for book labels). Rides the {incremental_book_text}
 --- late channel — never action.prompt. Pure.
@@ -170,6 +197,48 @@ function XrayMerge.buildDeltaPrompt(sections, main_entry, entity_index, never_pa
     prompt = fillLiteral(prompt, "%COVERAGE%", XrayMerge.coveragePhrase(main_entry))
     return prompt, {
         inputs = XrayMerge.buildInputsBlock(sections),
+        main = main_entry.result or "",
+        index = entity_index or "",
+        never = XrayMerge.neverLines(never_pairs),
+    }
+end
+
+--- Cross-book inputs block: ONE related book's X-Ray, labeled by book (the
+--- label swap buildInputsBlock's doc anticipated). Rides the sentinel payload,
+--- never action.prompt. Pure.
+--- @param source table { title, author, entry = cache entry }
+--- @return string block
+function XrayMerge.buildCrossBookInputsBlock(source)
+    local head = string.format('Related book — "%s"%s:', source.title or "?",
+        (source.author and source.author ~= "" and (" by " .. source.author)) or "")
+    return head .. "\n" .. ((source.entry and source.entry.result) or "")
+end
+
+--- Accumulate cross-book provenance titles ("A; B"), exact-dup safe. Pure.
+--- @param existing string|nil The entry's current merged_from_books
+--- @param title string|nil Source book title
+--- @return string
+function XrayMerge.appendBookProvenance(existing, title)
+    title = title or "?"
+    if not existing or existing == "" then return title end
+    for part in existing:gmatch("([^;]+)") do
+        if part:match("^%s*(.-)%s*$") == title then return existing end
+    end
+    return existing .. "; " .. title
+end
+
+--- Cross-book delta prompt + payload (fold one book's X-Ray into this book's
+--- JSON main). Pure.
+--- @param main_entry table Target live main cache entry (JSON result)
+--- @param entity_index string XrayParser.buildEntityIndex output (may be "")
+--- @param never_pairs table|nil Target book's reader-confirmed distinct pairs
+--- @param source table { title, author, entry }
+--- @return string prompt, table payload
+function XrayMerge.buildCrossBookPrompt(main_entry, entity_index, never_pairs, source)
+    local prompt = fillLiteral(XrayMerge.CROSS_BOOK_DELTA_PROMPT, "%COVERAGE%",
+        XrayMerge.coveragePhrase(main_entry))
+    return prompt, {
+        inputs = XrayMerge.buildCrossBookInputsBlock(source),
         main = main_entry.result or "",
         index = entity_index or "",
         never = XrayMerge.neverLines(never_pairs),
@@ -917,6 +986,262 @@ function XrayMerge.startFlow(opts)
     if opts.close_browser then opts.close_browser() end
     showPicker()
     logger.info("KOAssistant XrayMerge: flow started with", #sections, "sections for", opts.file)
+end
+
+-- ==================== Cross-book merge (item 43, #90 v1) ====================
+-- Merge, not connect: the source book's X-Ray is read-only INPUT (originals
+-- stay untouched and browsable); the result lands in the TARGET book's main
+-- via the ordinary delta write-back (the outgoing main is ring-archived —
+-- undoable from All versions). No series backend: the picker lists every book
+-- the artifact index knows with a JSON main X-Ray; manual pick covers series,
+-- same-author, and thematic cases alike. A standalone library-level series
+-- artifact stays deferred (§5 decisions 6/7).
+
+--- Run the cross-book merge headlessly and write the result into the target.
+--- @param opts table { file (target), ui, plugin, configuration, title, author
+---   (TARGET identity for the headless config), main_entry (target JSON main),
+---   source = { file, title, author, entry }, on_done(ok, err) }
+function XrayMerge.executeCrossBook(opts)
+    local Dialogs = require("koassistant_dialogs")
+    local ActionCache = require("koassistant_action_cache")
+    local WriteBack = require("koassistant_artifact_writeback")
+    local XrayParser = require("koassistant_xray_parser")
+
+    local main_entry = opts.main_entry
+    local parsed_main = XrayParser.parse(main_entry.result or "")
+    if not parsed_main or parsed_main.error then
+        if opts.on_done then opts.on_done(false, "main X-Ray is not valid JSON") end
+        return
+    end
+    local entity_index = XrayParser.buildEntityIndex(parsed_main) or ""
+    local never_pairs = ActionCache.getNeverMergePairs(opts.file)
+    local prompt_text, payload = XrayMerge.buildCrossBookPrompt(
+        main_entry, entity_index, never_pairs, opts.source)
+
+    -- Synthetic internal action — same shape as the section merge
+    local action = {
+        id = "xray_cross_merge",
+        text = _("Merge X-Ray from another book"),
+        context = "book",
+        prompt = prompt_text,
+        storage_key = "__SKIP__",
+        enable_web_search = false,
+        reasoning_config = "off",  -- xray-family parity (T2)
+        api_params = XrayMerge.API_PARAMS,
+        builtin = true,
+    }
+    if opts.plugin and opts.plugin.updateConfigFromSettings then
+        opts.plugin:updateConfigFromSettings()
+    end
+    local config, bm = XrayMerge.buildHeadlessConfig(opts, payload)
+    local plugin_ref = opts.plugin
+    local file = opts.file
+    local source = opts.source
+    Dialogs.executeActionForResult(action, config.features.book_context or "", opts.ui, config,
+        opts.plugin, bm,
+        function(result, meta_or_err)
+            if not result then
+                if opts.on_done then opts.on_done(false, tostring(meta_or_err or "no response")) end
+                return
+            end
+            local model_name = type(meta_or_err) == "table"
+                and meta_or_err.model ~= "" and meta_or_err.model or nil
+            local used_reasoning = type(meta_or_err) == "table"
+                and meta_or_err.used_reasoning or nil
+            local union = XrayMerge.unionInputMeta({ source.entry })
+            local ok, res_or_err = WriteBack.applyXray({
+                document_path = file,
+                answer = result,
+                base = main_entry,
+                base_entry = main_entry,
+                -- Cross-book knowledge claims NO target pages: progress stays
+                -- the base's (floor guard) and coverage_spans union base-only
+                -- (slice-1 reconcile — the new pass carries none)
+                progress_decimal = tonumber(main_entry.progress_decimal) or 0,
+                meta = {
+                    model = model_name,
+                    used_reasoning = used_reasoning,
+                    used_book_text = union.used_book_text,
+                    used_highlights = union.used_highlights,
+                    producer = "book_merge",
+                    merged_from_books = XrayMerge.appendBookProvenance(
+                        main_entry.merged_from_books, source.title),
+                },
+                features = config.features,
+                refresh_fn = function()
+                    if plugin_ref then
+                        plugin_ref._file_dialog_row_cache = { file = nil, rows = nil }
+                        if plugin_ref._refreshXrayAutoState and plugin_ref.ui
+                            and plugin_ref.ui.document and plugin_ref.ui.document.file == file then
+                            plugin_ref:_refreshXrayAutoState()
+                        end
+                    end
+                end,
+            })
+            if opts.on_done then opts.on_done(ok, not ok and res_or_err or nil) end
+        end)
+end
+
+--- Entry point: candidate books → spoiler confirm → run.
+--- @param opts table { file (target, required), ui, plugin, configuration
+---   (required), title, author, close_browser, on_done(ok, err) }
+function XrayMerge.startCrossBookFlow(opts)
+    local ActionCache = require("koassistant_action_cache")
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local InfoMessage = require("ui/widget/infomessage")
+    local Notification = require("ui/widget/notification")
+    local XrayParser = require("koassistant_xray_parser")
+
+    -- Cross-instance staleness: the consent gates below must see CURRENT settings
+    if opts.plugin and opts.plugin.updateConfigFromSettings then
+        opts.plugin:updateConfigFromSettings()
+    end
+    -- Identity fallback from the open document (same rule as startFlow)
+    if (not opts.title or opts.title == "") and opts.ui and opts.ui.doc_props
+        and opts.ui.document and opts.ui.document.file == opts.file then
+        opts.title = opts.ui.doc_props.display_title or opts.ui.doc_props.title
+        if not opts.author or opts.author == "" then
+            local authors = opts.ui.doc_props.authors or ""
+            if authors:find("\n") then authors = authors:gsub("\n", ", ") end
+            opts.author = authors
+        end
+    end
+
+    local main_entry = ActionCache.getXrayCache(opts.file)
+    if not (main_entry and main_entry.result and XrayParser.isJSON(main_entry.result)) then
+        UIManager:show(InfoMessage:new{
+            text = _("This book needs a main X-Ray before another book's can be merged into it."),
+            timeout = 4,
+        })
+        return
+    end
+
+    -- Candidates: every book the artifact index knows about with a JSON main
+    -- X-Ray (read on demand — the index only holds books WITH artifacts).
+    -- Title/author follow the identity rule: the per-book AI override on the
+    -- SOURCE book's sidecar dictates what the prompt calls it.
+    local index = G_reader_settings:readSetting("koassistant_artifact_index") or {}
+    local candidates = {}
+    for path in pairs(index) do
+        if path ~= opts.file then
+            local ok_read, entry = pcall(ActionCache.getXrayCache, path)
+            if ok_read and entry and entry.result and XrayParser.isJSON(entry.result) then
+                local title, author
+                local ok_ds, ds = pcall(function()
+                    return require("koassistant_doc_settings").resolve(path, opts.ui)
+                end)
+                if ok_ds and ds then
+                    local props = ds:readSetting("doc_props") or {}
+                    title = props.display_title or props.title
+                    author = props.authors
+                    if type(author) == "string" and author:find("\n") then
+                        author = author:gsub("\n", ", ")
+                    end
+                    local ov_t, ov_a = require("koassistant_book_settings").getMetadataOverride(ds)
+                    if ov_t ~= nil then title = ov_t end
+                    if ov_a ~= nil then author = ov_a end
+                end
+                if not title or title == "" then
+                    title = path:match("([^/]+)%.[^.]+$") or path:match("([^/]+)$") or path
+                end
+                candidates[#candidates + 1] = {
+                    file = path, title = title, author = author or "", entry = entry,
+                }
+            end
+        end
+    end
+    if #candidates == 0 then
+        UIManager:show(InfoMessage:new{
+            text = _("No other book has an X-Ray yet. Create one in the other book first."),
+            timeout = 4,
+        })
+        return
+    end
+    table.sort(candidates, function(a, b) return (a.title or "") < (b.title or "") end)
+
+    local features = (opts.configuration and opts.configuration.features) or {}
+    local provider = (opts.configuration
+        and (opts.configuration.provider or opts.configuration.default_provider))
+
+    local picker
+    local rows = {}
+    for _idx, cand in ipairs(candidates) do
+        local captured = cand
+        table.insert(rows, {{
+            text = captured.title
+                .. (captured.author ~= "" and (" (" .. captured.author .. ")") or ""),
+            align = "left",
+            callback = function()
+                UIManager:close(picker)
+                -- Read-gate parity, PER BOOK: the source artifact and the
+                -- target main are both re-sent; each book's own privacy
+                -- override wins (deny beats trusted)
+                if not XrayMerge.consentOk({ captured.entry }, features, provider, captured.file, opts.ui)
+                    or not XrayMerge.consentOk({ main_entry }, features, provider, opts.file, opts.ui) then
+                    UIManager:show(InfoMessage:new{
+                        text = _("These X-Rays were built from extracted book text. Enable \"Allow book text extraction\" (or use a trusted provider) to merge them."),
+                        timeout = 5,
+                    })
+                    return
+                end
+                local confirm
+                confirm = ButtonDialog:new{
+                    title = T(_("Merge the X-Ray of \"%1\" into this book's X-Ray?"), captured.title)
+                        .. "\n" .. _("Recurring characters, places, and concepts gain that book's background. This brings in everything its X-Ray covers, including its later events. Your current X-Ray is archived first, so this can be undone from All versions."),
+                    buttons = {
+                        {{
+                            text = _("Merge"),
+                            callback = function()
+                                UIManager:close(confirm)
+                                if opts.close_browser then opts.close_browser() end
+                                XrayMerge.executeCrossBook({
+                                    file = opts.file,
+                                    ui = opts.ui,
+                                    plugin = opts.plugin,
+                                    configuration = opts.configuration,
+                                    title = opts.title,
+                                    author = opts.author,
+                                    main_entry = main_entry,
+                                    source = captured,
+                                    on_done = opts.on_done or function(ok, err)
+                                        if ok then
+                                            UIManager:show(Notification:new{
+                                                text = T(_("Merged the X-Ray of \"%1\" into this book."), captured.title),
+                                            })
+                                        else
+                                            UIManager:show(InfoMessage:new{
+                                                text = T(_("X-Ray merge failed: %1"), tostring(err or "unknown error")),
+                                                timeout = 4,
+                                            })
+                                        end
+                                    end,
+                                })
+                            end,
+                        }},
+                        {{
+                            text = _("Back"),
+                            callback = function()
+                                UIManager:close(confirm)
+                                -- Back one step to the book list, not abandon
+                                XrayMerge.startCrossBookFlow(opts)
+                            end,
+                        }},
+                    },
+                }
+                UIManager:show(confirm)
+            end,
+        }})
+    end
+    table.insert(rows, {{
+        text = _("Cancel"),
+        callback = function() UIManager:close(picker) end,
+    }})
+    picker = ButtonDialog:new{
+        title = _("Merge from another book: pick its X-Ray"),
+        buttons = rows,
+    }
+    UIManager:show(picker)
+    logger.info("KOAssistant XrayMerge: cross-book picker with", #candidates, "candidates for", opts.file)
 end
 
 return XrayMerge

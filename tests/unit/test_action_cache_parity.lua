@@ -103,6 +103,8 @@ local FULL_METADATA = {
     coverage_spans = "1-40,60-80",
     producer = "manual",
     base_timestamp = 1753600123,
+    -- Cross-book merge provenance (item 43)
+    merged_from_books = "First Book; Second Book",
 }
 
 local RESULT_TEXT = "Line one\nLine two with \"quotes\" and ]] brackets and ]=] tricky closer"

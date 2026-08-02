@@ -322,6 +322,9 @@ local function saveCache(document_path, cache)
             if entry.base_timestamp then
                 file:write(string.format("        base_timestamp = %s,\n", tostring(entry.base_timestamp)))
             end
+            if entry.merged_from_books then
+                file:write(string.format("        merged_from_books = %q,\n", entry.merged_from_books))
+            end
             -- Quiz state (answers, correct, revealed) — nested table serialization
             if entry.quiz_state and type(entry.quiz_state) == "table" then
                 file:write("        quiz_state = {\n")
@@ -462,6 +465,8 @@ function ActionCache.set(document_path, action_id, result, progress_decimal, met
         coverage_spans = metadata and metadata.coverage_spans,
         producer = metadata and metadata.producer,
         base_timestamp = metadata and metadata.base_timestamp,
+        -- Cross-book merge provenance (item 43): accumulated source titles
+        merged_from_books = metadata and metadata.merged_from_books,
     }
 
     return saveCache(document_path, cache)
@@ -1196,7 +1201,7 @@ local CHECKPOINT_COPY_FIELDS = {
     "used_highlights", "used_annotations", "used_book_text",
     "model", "full_document", "flow_visible_pages", "source_mode",
     "chapter_label", "intro",
-    "coverage_spans", "producer", "base_timestamp",
+    "coverage_spans", "producer", "base_timestamp", "merged_from_books",
 }
 
 local function buildCheckpointEntry(source)
@@ -1266,6 +1271,9 @@ local function writeCheckpointRing(path, ring)
         end
         if cp.base_timestamp then
             file:write(string.format("        base_timestamp = %s,\n", tostring(cp.base_timestamp)))
+        end
+        if cp.merged_from_books then
+            file:write(string.format("        merged_from_books = %q,\n", cp.merged_from_books))
         end
         local result_text = cp.result or ""
         local eq_str = string.rep("=", findSafeDelimiter(result_text))
@@ -1469,6 +1477,7 @@ function ActionCache.restoreXrayCheckpoint(document_path, index, limit)
         coverage_spans = entry.coverage_spans,
         producer = entry.producer,
         base_timestamp = entry.base_timestamp,
+        merged_from_books = entry.merged_from_books,
     }
     local ok_doc = ActionCache.setXrayCache(document_path, entry.result, entry.progress_decimal or 0, meta)
     local ok_action = ActionCache.set(document_path, "xray", entry.result, entry.progress_decimal or 0, meta)
@@ -1712,6 +1721,7 @@ function ActionCache.promoteXrayLadderRung(document_path, rung, limit, opts)
         coverage_spans = rung.coverage_spans,
         producer = rung.producer,
         base_timestamp = rung.base_timestamp,
+        merged_from_books = rung.merged_from_books,
     }
     local ok_doc = ActionCache.setXrayCache(document_path, rung.result, rung.progress_decimal or 0, meta)
     local ok_action = ActionCache.set(document_path, "xray", rung.result, rung.progress_decimal or 0, meta)

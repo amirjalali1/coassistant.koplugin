@@ -198,5 +198,54 @@ TestRunner:test("consentOk: text-derived inputs gate on extraction consent + tru
         true, "explicit non-text inputs need no consent")
 end)
 
+print("")
+print("  [cross-book merge (item 43, #90 v1)]")
+
+local function has(haystack, needle)
+    return type(haystack) == "string" and haystack:find(needle, 1, true) ~= nil
+end
+
+TestRunner:test("buildCrossBookInputsBlock labels by book, carries the JSON", function()
+    local block = XrayMerge.buildCrossBookInputsBlock({
+        title = "First Book", author = "A. Author",
+        entry = { result = '{"characters": []}' },
+    })
+    TestRunner:assertTrue(has(block, 'Related book — "First Book" by A. Author:'), "book label")
+    TestRunner:assertTrue(has(block, '{"characters": []}'), "carries the JSON")
+    local no_author = XrayMerge.buildCrossBookInputsBlock({
+        title = "Solo", entry = { result = "{}" } })
+    TestRunner:assertTrue(has(no_author, 'Related book — "Solo":'), "author-less label")
+end)
+
+TestRunner:test("buildCrossBookPrompt: sentinels present, coverage phrased, no raw braces from data", function()
+    local prompt, payload = XrayMerge.buildCrossBookPrompt(
+        { result = '{"x":1}', progress_decimal = 0.62 },
+        "- Said (character)",
+        { { "Said", "Saeed" } },
+        { title = "Book One", author = "", entry = { result = '{"y":2}' } })
+    TestRunner:assertTrue(has(prompt, "@@KOA_MERGE_MAIN@@"), "main sentinel")
+    TestRunner:assertTrue(has(prompt, "@@KOA_MERGE_INDEX@@"), "index sentinel")
+    TestRunner:assertTrue(has(prompt, "@@KOA_MERGE_INPUTS@@"), "inputs sentinel")
+    TestRunner:assertTrue(has(prompt, "@@KOA_MERGE_NEVER@@"), "never sentinel")
+    TestRunner:assertTrue(has(prompt, "62% of the book"), "coverage phrase")
+    TestRunner:assertTrue(has(prompt, "{response_language}"), "language named locally (round 29)")
+    TestRunner:assertTrue(not has(prompt, '{"y":2}'),
+        "artifact JSON rides the payload, never the prompt")
+    TestRunner:assertEqual(payload.main, '{"x":1}', "payload main")
+    TestRunner:assertTrue(has(payload.inputs, '{"y":2}'), "payload inputs")
+    TestRunner:assertTrue(has(XrayMerge.neverLines({ { "Said", "Saeed" } }), "Said"), "never lines")
+    -- The timeline stays the target book's: the prompt must say so
+    TestRunner:assertTrue(has(prompt, "NEVER add the related book's events"), "timeline protection")
+end)
+
+TestRunner:test("appendBookProvenance accumulates and dedups exact titles", function()
+    TestRunner:assertEqual(XrayMerge.appendBookProvenance(nil, "Book One"), "Book One")
+    TestRunner:assertEqual(XrayMerge.appendBookProvenance("Book One", "Book Two"),
+        "Book One; Book Two")
+    TestRunner:assertEqual(XrayMerge.appendBookProvenance("Book One; Book Two", "Book One"),
+        "Book One; Book Two", "exact re-merge does not duplicate")
+    TestRunner:assertEqual(XrayMerge.appendBookProvenance("", "Book One"), "Book One")
+end)
+
 local ok = TestRunner:summary()
 return ok

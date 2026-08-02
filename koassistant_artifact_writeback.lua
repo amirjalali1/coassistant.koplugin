@@ -44,6 +44,9 @@ end
 -- hidden flows. Same field set as CHECKPOINT_COPY_FIELDS / restore / promote.
 local BASE_CONTINUITY_FIELDS = {
     "model", "source_mode", "full_document", "progress_page", "flow_visible_pages",
+    -- The artifact still CONTAINS the other books' background after later
+    -- updates (item 43 cross-book provenance)
+    "merged_from_books",
 }
 
 --- Reconcile permission/provenance metadata for a write that merges new

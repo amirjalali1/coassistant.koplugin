@@ -4215,6 +4215,31 @@ function XrayBrowser:showOptions()
                 end,
             }})
         end
+        -- Cross-book merge (item 43, #90 v1): fold another book's X-Ray into
+        -- this one as background. Main views only, same rationale as above;
+        -- the flow's early returns (no candidates / consent) leave the
+        -- browser up (close deferred to the actual merge start).
+        table.insert(buttons, {{
+            text = _("Merge from another book…"), align = "left",
+            callback = function()
+                closeOptions()
+                local xb_browser_closed = false
+                require("koassistant_xray_merge").startCrossBookFlow({
+                    file = self_ref.metadata.book_file,
+                    ui = self_ref.ui,
+                    plugin = self_ref.metadata.plugin,
+                    configuration = self_ref.metadata.configuration,
+                    title = self_ref.metadata.title,
+                    author = self_ref.metadata.book_author,
+                    close_browser = function()
+                        if not xb_browser_closed and self_ref.menu then
+                            xb_browser_closed = true
+                            UIManager:close(self_ref.menu)
+                        end
+                    end,
+                })
+            end,
+        }})
     end
 
     -- Round 24 (maintainer: version viewers dead-ended at Info): an archived-
@@ -4334,6 +4359,11 @@ function XrayBrowser:showOptions()
     if tonumber(self.metadata.merged_from_sections) then
         table.insert(info_parts, _("Merged from:") .. " "
             .. T(_("%1 section X-Rays"), self.metadata.merged_from_sections))
+    end
+    -- Cross-book provenance (item 43): accumulated source-book titles
+    if self.metadata.merged_from_books and self.metadata.merged_from_books ~= "" then
+        table.insert(info_parts, _("Includes background from:") .. " "
+            .. self.metadata.merged_from_books)
     end
     -- Ladder provenance (device round 2): derived from disk truth at tap time —
     -- no cache fields involved, so it stays honest across ladder deletion and

@@ -98,6 +98,11 @@ function QuizPrompt.build(quiz)
     end
     table.insert(parts, "- Adapt to content type (fiction: plot/characters/themes, non-fiction: arguments/evidence/concepts, academic: methodology/findings)")
     table.insert(parts, "- Use key terms in the work's original language where applicable")
+    -- Round 29 family: name the response language HERE, not only in the system
+    -- prompt — long non-primary book text pulls models into the book's language
+    -- (device report: Arabic book → Arabic X-Ray). The placeholder resolves in
+    -- message_builder after {quiz_instructions} injection.
+    table.insert(parts, "- Questions, options, answers, and explanations must be written in {response_language}, regardless of the language of the book text")
     table.insert(parts, "- CRITICAL for valid JSON: inside any question, option, or explanation, use single quotes for quotations (e.g. 'like this'). Never put a raw double quote inside a string value — if you must, escape it as \\\". Unescaped double quotes break the JSON.")
 
     return table.concat(parts, "\n")
