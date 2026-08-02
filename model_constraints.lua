@@ -1421,6 +1421,38 @@ end
 --- @param provider string
 --- @param api_params table  (mutated in place)
 --- @param decision table    (from resolveReasoning)
+-- Reasoning wire keys applyReasoningParams may write. Single source of truth:
+-- koassistant_dialogs.lua clears these when rebasing a config, and the loading
+-- dialog inspects them for display.
+ModelConstraints.REASONING_WIRE_KEYS = {
+    "thinking", "output_config", "reasoning", "thinking_budget", "thinking_level",
+    "deepseek_thinking", "zai_thinking", "sambanova_thinking",
+    "openrouter_reasoning", "requesty_reasoning", "groq_reasoning",
+    "together_reasoning", "fireworks_reasoning", "xai_reasoning",
+    "perplexity_reasoning", "custom_reasoning", "_reasoning",
+}
+
+--- Display-only: does this request's computed api_params actually ENABLE
+-- reasoning? The loading dialog used a bare truthiness check, so an explicit
+-- disable (thinking={type="disabled"}, {enabled=false}, {on=false},
+-- effort "none", budget 0) displayed as "Reasoning enabled" (maintainer device
+-- report 2026-08-02, translate action). Mirrors applyReasoningParams' off
+-- shapes; anything non-nil that is not an explicit disable counts as on.
+function ModelConstraints.reasoningDisplayEnabled(api_params)
+    if type(api_params) ~= "table" then return false end
+    for _idx, key in ipairs(ModelConstraints.REASONING_WIRE_KEYS) do
+        local v = api_params[key]
+        if v ~= nil and v ~= false and v ~= 0 and v ~= "none" then
+            if type(v) ~= "table" then return true end
+            if v.type ~= "disabled" and v.enabled ~= false
+                    and v.on ~= false and v.effort ~= "none" then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 function ModelConstraints.applyReasoningParams(provider, api_params, decision)
     if not api_params or not decision then return end
     if decision.send_nothing or decision.axis == "none" then return end

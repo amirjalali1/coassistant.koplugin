@@ -1235,13 +1235,7 @@ end
 -- The reply-override re-bake must wipe these before re-applying — a stale
 -- same-provider key (e.g. thinking={enabled}) would survive a send_nothing/off
 -- decision (applyReasoningParams only writes, never clears).
-local REASONING_WIRE_KEYS = {
-    "thinking", "output_config", "reasoning", "thinking_budget", "thinking_level",
-    "deepseek_thinking", "zai_thinking", "sambanova_thinking",
-    "openrouter_reasoning", "requesty_reasoning", "groq_reasoning",
-    "together_reasoning", "fireworks_reasoning", "xai_reasoning",
-    "perplexity_reasoning", "custom_reasoning", "_reasoning",
-}
+local REASONING_WIRE_KEYS = ModelConstraints.REASONING_WIRE_KEYS
 
 -- Reply-time Quick overrides (controls parity §8c, "live parts only" decision
 -- 2026-07-20): applies the chip/menu state on the chat's config
@@ -3267,10 +3261,14 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
 
         -- Minimal popup (Translation Settings override): the response appears on
         -- completion in a small anchored popup — a full streaming dialog first
-        -- would be a jarring two-stage UX, so skip streaming for these requests.
+        -- would be a jarring two-stage UX, so skip streaming for these requests,
+        -- and swap the provider/model status dialog for a one-line notice (still
+        -- tap-to-cancel: that dialog's dismiss is the only way to terminate the
+        -- request subprocess, so it cannot be suppressed outright).
         if f.translate_minimal_popup == true
                 and not temp_config.features.is_full_page_translate then
             temp_config.features.enable_streaming = false
+            temp_config.features.loading_message = _("Translating…")
         end
 
         -- Determine initial hide state for original text

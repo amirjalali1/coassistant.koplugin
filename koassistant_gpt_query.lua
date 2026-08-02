@@ -163,13 +163,12 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
         local model = ConfigHelper:getModelInfo(config) or config and config.model or "default"
         table.insert(status_lines, string.format("%s: %s", provider_name:gsub("^%l", string.upper), model))
 
-        -- Check for reasoning/thinking enabled using computed api_params
-        -- These are set by buildUnifiedRequestConfig based on action overrides and global settings
-        if config and config.api_params then
-            -- Anthropic: thinking, OpenAI: reasoning, Gemini: thinking_level
-            if config.api_params.thinking or config.api_params.reasoning or config.api_params.thinking_level then
-                table.insert(status_lines, _("Reasoning enabled"))
-            end
+        -- Check for reasoning/thinking enabled using computed api_params.
+        -- Shape-aware: an explicit disable (thinking={type="disabled"}, budget 0,
+        -- effort "none") is a TABLE and used to pass a bare truthiness check,
+        -- claiming "Reasoning enabled" on reasoning-off actions like translate.
+        if config and ModelConstraints.reasoningDisplayEnabled(config.api_params) then
+            table.insert(status_lines, _("Reasoning enabled"))
         end
 
         -- Show action name if available
