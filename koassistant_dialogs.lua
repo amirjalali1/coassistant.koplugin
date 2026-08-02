@@ -4468,16 +4468,32 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             -- base spans ∪ [base end+1→page] (a base with holes keeps its holes).
             -- Whole-book one-shots stay flag-based (full_document — page totals
             -- drift on reflow); intro rungs claim nothing (premise-only).
-            local xray_spans, xray_producer, xray_base_ts
+            local xray_spans, xray_producer, xray_base_ts, xray_fold_ts
             if action.cache_as_xray then
                 local WriteBack = require("koassistant_artifact_writeback")
                 xray_producer = message_data._ladder_build and "ladder"
                     or ((message_data._background_request or message_data._background_create) and "auto")
                     or "manual"
                 xray_base_ts = using_cache and message_data.cached_timestamp or nil
+                -- Slice 2 (item 37(c)): a MANUAL incremental point joins the
+                -- timeline as a KEPT grid point (auto fills stay
+                -- overwrite+ring — item 9: fills are prunable). One timestamp
+                -- shared by the live write and the rung push below gives them
+                -- the identity the shared archive rule matches on.
+                if xray_producer == "manual"
+                    and not (config.features and (config.features._full_document_xray
+                        or config.features._section_scope or config.features._section_xray))
+                    and source_mode ~= "ai_knowledge" then
+                    xray_fold_ts = os.time()
+                end
                 local end_page = tonumber(message_data.progress_page)
                 if not message_data._ladder_intro
                     and not (config.features and config.features._full_document_xray)
+                    -- Whole-book claims (incl. update-to-100 and the terminal
+                    -- ladder rung) stay FLAG-based per decision 37(b): a
+                    -- stamped page total would go stale on reflow, while
+                    -- progress 1.0 derives correctly at read time
+                    and (tonumber(message_data.progress_decimal) or 0) < 1
                     and end_page and end_page > 0 then
                     local base_spans = using_cache and message_data.cached_coverage_spans or nil
                     local from_page = 1
@@ -4529,6 +4545,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                       coverage_spans = xray_spans,
                       producer = xray_producer,
                       base_timestamp = xray_base_ts,
+                      timestamp = xray_fold_ts,
                       unavailable_data_text = unavailable_text }
                 )
                 if save_success then
@@ -4602,6 +4619,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                         coverage_spans = xray_spans,
                         producer = xray_producer,
                         base_timestamp = xray_base_ts,
+                        timestamp = xray_fold_ts,
                         unavailable_data_text = unavailable_text,
                     }
                     -- Archive the pre-overwrite snapshot (ring of 5; incremental updates
@@ -4621,6 +4639,29 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     local xray_success = ActionCache.setXrayCache(cache_file, cache_answer, progress, xray_metadata)
                     if xray_success then
                         logger.info("KOAssistant: Saved X-Ray to reusable cache at", progress, "used_highlights=", used_highlights, "used_book_text=", book_text_was_provided)
+                        -- Slice 2 (item 37(c)): fold the manual point into the
+                        -- ladder — it is now a timeline point kept like any
+                        -- checkpoint, not just live until the ring prunes its
+                        -- archive. Non-JSON results stay out (rungs feed delta
+                        -- merges); the shared timestamp makes isXrayLadderRung
+                        -- recognize live == this rung on the next overwrite.
+                        if xray_fold_ts and progress > 0
+                            and require("koassistant_xray_parser").isJSON(cache_answer) then
+                            ActionCache.pushXrayLadderRung(cache_file, {
+                                result = cache_answer,
+                                progress_decimal = progress,
+                                progress_page = message_data.progress_page,
+                                timestamp = xray_fold_ts,
+                                model = model_name,
+                                used_highlights = used_highlights,
+                                used_book_text = book_text_was_provided,
+                                flow_visible_pages = message_data.flow_visible_pages,
+                                source_mode = source_mode,
+                                coverage_spans = xray_spans,
+                                producer = xray_producer,
+                                base_timestamp = xray_base_ts,
+                            })
+                        end
                         -- Keep the background auto-update pre-filter in sync with the fresh
                         -- cache: a book opted in BEFORE its first X-Ray existed (or whose
                         -- cache just moved via a manual update) would otherwise stay

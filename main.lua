@@ -9405,10 +9405,16 @@ function AskGPT:_showXrayCheckpointList(opts)
     -- A rung whose copy IS the live X-Ray (installed via promotion/switch) is
     -- the same content in two roles — say so instead of looking like a
     -- mysterious duplicate (device round 2)
-    if e.is_rung and live and live.timestamp == e.cp.timestamp
+    local row_is_current = e.is_rung and live and live.timestamp == e.cp.timestamp
         and math.abs((tonumber(live.progress_decimal) or -1)
-          - (tonumber(e.cp.progress_decimal) or -2)) < 1e-6 then
+          - (tonumber(e.cp.progress_decimal) or -2)) < 1e-6
+    if row_is_current then
       row_text = row_text .. " " .. _("(current)")
+    elseif e.is_rung and not e.cp.intro and current_progress
+        and (tonumber(e.cp.progress_decimal) or 0) > current_progress.decimal + 0.01 then
+      -- Slice 2 (35 E4): posture awareness at a glance — this checkpoint
+      -- reaches past the reader (its card offers install behind a confirm)
+      row_text = row_text .. " " .. _("(ahead)")
     end
     if idx == mark_idx then
       -- "latest BEFORE your position", not numerically closest: a version ahead
@@ -9536,82 +9542,159 @@ function AskGPT:_showXrayCheckpointList(opts)
   UIManager:show(list_dialog)
 end
 
---- Options card for one ladder rung: view / delete — COPY semantics
+--- Options card for one ladder rung: view / install / delete — COPY semantics
 --- throughout (§5 decision 10). Round 24: per-rung delete added (maintainer);
 --- safe under the unified engine — a missing grid point is re-planned when it
---- is ever needed again.
+--- is ever needed again. Slice 2 (item 37(a), 35 E3(ii)): manual install —
+--- at-or-below the reader it is the same free switch promotion performs;
+--- AHEAD of the reader it is a posture choice behind a confirm that names the
+--- exposure (non-spoiler readers are first-class, item 33(1)). Intro rungs
+--- have no install (premise-only; the engine delivers them when nothing
+--- better exists).
 function AskGPT:_showXrayLadderRungOptions(rung, opts)
   local ButtonDialog = require("ui/widget/buttondialog")
+  local ActionCache = require("koassistant_action_cache")
+  local XrayAuto = require("koassistant_xray_auto")
   local self_ref = self
   local file = (self.ui and self.ui.document and self.ui.document.file) or (opts and opts.file)
   if not file then return end
   local label = self:_xrayCheckpointLabel(rung)
   local card
+  local buttons = {}
+  table.insert(buttons, {{
+    text = _("View"),
+    callback = function()
+      UIManager:close(card)
+      -- Viewing opens another X-Ray browser (module-level state) — the
+      -- originating browser must close now, not when the list was opened
+      if opts and opts.close_browser then opts.close_browser() end
+      self_ref:showCacheViewer({
+        name = _("X-Ray Version"),
+        key = "_xray_cache",
+        data = rung,
+        file = file,
+        book_title = opts and opts.book_title,
+        book_author = opts and opts.book_author,
+        skip_stale_popup = true,
+        checkpoint = true,
+      })
+    end,
+  }})
+  if not rung.intro then
+    local live = ActionCache.getXrayCache(file)
+    local is_current = live and live.timestamp == rung.timestamp
+      and math.abs((tonumber(live.progress_decimal) or -1)
+        - (tonumber(rung.progress_decimal) or -2)) < 1e-6
+    if is_current then
+      table.insert(buttons, {{ text = _("Installed as your current X-Ray"), enabled = false }})
+    elseif XrayAuto.isInFlight() then
+      -- Same rationale as the ring card's Restore: an in-flight background
+      -- update would lose the race or clobber the result
+      table.insert(buttons, {{ text = _("Install (auto-update in progress)"), enabled = false }})
+    else
+      local pos
+      if self.ui and self.ui.document and self.ui.document.file == file then
+        local progress = require("koassistant_context_extractor"):new(self.ui):getReadingProgress()
+        pos = progress and tonumber(progress.decimal) or nil
+      end
+      local p = tonumber(rung.progress_decimal) or 0
+      local ahead = (pos and p > pos + XrayAuto.LADDER_TOLERANCE) or false
+      local function doInstall()
+        local features = self_ref.settings:readSetting("features") or {}
+        local ok = ActionCache.promoteXrayLadderRung(file, rung,
+          ActionCache.checkpointLimitFromFeatures(features), { manual = true })
+        if ok then
+          if opts and opts.close_browser then opts.close_browser() end
+          self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+          self_ref:_refreshXrayAutoState()
+          UIManager:show(Notification:new{
+            text = T(_("Checkpoint installed (%1)"), label),
+            timeout = 2,
+          })
+        else
+          UIManager:show(InfoMessage:new{ text = _("Install failed. This checkpoint is no longer on disk."), timeout = 3 })
+        end
+      end
+      table.insert(buttons, {{
+        text = _("Install as current X-Ray (free)"),
+        callback = function()
+          UIManager:close(card)
+          if ahead or pos == nil then
+            local confirm
+            confirm = ButtonDialog:new{
+              title = ahead
+                and T(_("Install the checkpoint from %1? It reaches past your reading position (%2%), so its entries may mention people and events you have not reached yet. Your current version stays in the version list."),
+                  label, math.floor(pos * 100 + 0.5))
+                or T(_("Install the checkpoint from %1 as your current X-Ray? Your current version stays in the version list."), label),
+              buttons = {
+                {{
+                  text = _("Install"),
+                  callback = function()
+                    UIManager:close(confirm)
+                    doInstall()
+                  end,
+                }},
+                {{
+                  text = _("Cancel"),
+                  callback = function()
+                    UIManager:close(confirm)
+                    self_ref:_showXrayLadderRungOptions(rung, opts)
+                  end,
+                }},
+              },
+            }
+            UIManager:show(confirm)
+          else
+            doInstall()
+          end
+        end,
+      }})
+    end
+  end
+  table.insert(buttons, {{
+    text = _("Delete this checkpoint"),
+    callback = function()
+      UIManager:close(card)
+      local confirm
+      confirm = ButtonDialog:new{
+        title = T(_("Delete the checkpoint from %1?"), label) .. "\n"
+          .. _("If automatic building needs this grid point again, it is rebuilt."),
+        buttons = {
+          {{
+            text = _("Delete"),
+            callback = function()
+              UIManager:close(confirm)
+              ActionCache.removeXrayLadderRung(file, rung)
+              self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+              self_ref:_refreshXrayAutoState()
+              UIManager:show(Notification:new{
+                text = T(_("Checkpoint deleted (%1)"), label),
+                timeout = 2,
+              })
+            end,
+          }},
+          {{
+            text = _("Cancel"),
+            callback = function()
+              UIManager:close(confirm)
+              self_ref:_showXrayLadderRungOptions(rung, opts)
+            end,
+          }},
+        },
+      }
+      UIManager:show(confirm)
+    end,
+  }})
+  table.insert(buttons, {{
+    text = _("Back"),
+    callback = function()
+      UIManager:close(card)
+      self_ref:_showXrayCheckpointList(opts)
+    end,
+  }})
   card = ButtonDialog:new{
     title = T(_("Checkpoint: %1"), label),
-    buttons = {
-      {{
-        text = _("View"),
-        callback = function()
-          UIManager:close(card)
-          -- Viewing opens another X-Ray browser (module-level state) — the
-          -- originating browser must close now, not when the list was opened
-          if opts and opts.close_browser then opts.close_browser() end
-          self_ref:showCacheViewer({
-            name = _("X-Ray Version"),
-            key = "_xray_cache",
-            data = rung,
-            file = file,
-            book_title = opts and opts.book_title,
-            book_author = opts and opts.book_author,
-            skip_stale_popup = true,
-            checkpoint = true,
-          })
-        end,
-      }},
-      {{
-        text = _("Delete this checkpoint"),
-        callback = function()
-          UIManager:close(card)
-          local confirm
-          confirm = ButtonDialog:new{
-            title = T(_("Delete the checkpoint from %1?"), label) .. "\n"
-              .. _("If automatic building needs this grid point again, it is rebuilt."),
-            buttons = {
-              {{
-                text = _("Delete"),
-                callback = function()
-                  UIManager:close(confirm)
-                  local ActionCache = require("koassistant_action_cache")
-                  ActionCache.removeXrayLadderRung(file, rung)
-                  self_ref._file_dialog_row_cache = { file = nil, rows = nil }
-                  self_ref:_refreshXrayAutoState()
-                  UIManager:show(Notification:new{
-                    text = T(_("Checkpoint deleted (%1)"), label),
-                    timeout = 2,
-                  })
-                end,
-              }},
-              {{
-                text = _("Cancel"),
-                callback = function()
-                  UIManager:close(confirm)
-                  self_ref:_showXrayLadderRungOptions(rung, opts)
-                end,
-              }},
-            },
-          }
-          UIManager:show(confirm)
-        end,
-      }},
-      {{
-        text = _("Back"),
-        callback = function()
-          UIManager:close(card)
-          self_ref:_showXrayCheckpointList(opts)
-        end,
-      }},
-    },
+    buttons = buttons,
   }
   UIManager:show(card)
 end
