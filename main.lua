@@ -11322,14 +11322,30 @@ function AskGPT:_startXrayLadderBuild(build_opts)
       plan_line = _("It will be generated in one background request.")
       cost_line = _("The book must stay open; you can keep reading.")
     else
-      plan_line = snapped
-        and T(_("%1 checkpoints are planned, at chapter ends roughly every %2% of the book."),
-          #rungs, math.floor(spacing * 100 + 0.5))
-        or T(_("%1 checkpoints are planned, every %2% of the book."),
-          #rungs, math.floor(spacing * 100 + 0.5))
-      if seed then
-        plan_line = plan_line .. " " .. T(_("The first stops at your position (%1%), so a usable X-Ray installs right away."),
-          math.floor(seed * 100 + 0.5))
+      -- Session-2 device finding (item 38): a seeded plan must describe its
+      -- ACTUAL grid. The tail is planned FROM the seed (half-spacing rule), so
+      -- "every N%" is false for the run — worst on tiny books, where spacing
+      -- clamps to 50% and a 48% reader saw "every 50%" PLUS a 48% seed and
+      -- read it as two near-duplicate checkpoints. The real grid was 48+100.
+      if seed and #rungs == 2 then
+        -- Seed + final only: no spacing grid exists, name the two points
+        plan_line = goal
+          and T(_("2 checkpoints are planned: the first stops at your position (%1%) so a usable X-Ray installs right away, and the final one covers the rest of the range."),
+            math.floor(seed * 100 + 0.5))
+          or T(_("2 checkpoints are planned: the first stops at your position (%1%) so a usable X-Ray installs right away, and the final one covers the rest of the book."),
+            math.floor(seed * 100 + 0.5))
+      elseif seed then
+        plan_line = snapped
+          and T(_("%1 checkpoints are planned: the first stops at your position (%2%) so a usable X-Ray installs right away, and the rest follow at chapter ends roughly every %3% of the book."),
+            #rungs, math.floor(seed * 100 + 0.5), math.floor(spacing * 100 + 0.5))
+          or T(_("%1 checkpoints are planned: the first stops at your position (%2%) so a usable X-Ray installs right away, and the rest follow every %3% of the book."),
+            #rungs, math.floor(seed * 100 + 0.5), math.floor(spacing * 100 + 0.5))
+      else
+        plan_line = snapped
+          and T(_("%1 checkpoints are planned, at chapter ends roughly every %2% of the book."),
+            #rungs, math.floor(spacing * 100 + 0.5))
+          or T(_("%1 checkpoints are planned, every %2% of the book."),
+            #rungs, math.floor(spacing * 100 + 0.5))
       end
       if plan_intro then
         -- Round 22 (D6): name the total so the confirm agrees with the

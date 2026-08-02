@@ -519,6 +519,21 @@ TestRunner:test("planBuildRungs: seed first, tail planned FROM the seed", functi
     TestRunner:assertEqual(pos_cov[#pos_cov], 0.4, "final rung = the position goal")
 end)
 
+TestRunner:test("tiny-book field case (item 38): seed just under the novella midpoint rung", function()
+    -- 48-page book: spacing clamps to 50%; reader at 48%. The half-step rule
+    -- (planned FROM the seed) must drop the 50% near-duplicate — the grid is
+    -- seed + final ONLY. The session-2 device report read the confirm's
+    -- "every 50%" phrasing as a third checkpoint; the copy now names the
+    -- actual grid, and this pins the grid itself.
+    local spacing = XrayAuto.ladderSpacingFor(48)
+    TestRunner:assertEqual(spacing, 0.5, "novella clamp: 50% spacing")
+    local rungs, seed = XrayAuto.planBuildRungs(0, spacing, nil, 0.48)
+    TestRunner:assertEqual(seed, 0.48, "seed at the reader's position")
+    TestRunner:assertEqual(#rungs, 2, "seed + final only, NO 50% near-duplicate")
+    TestRunner:assertEqual(rungs[1], 0.48, "first = seed")
+    TestRunner:assertEqual(rungs[2], 1.0, "second = whole book")
+end)
+
 TestRunner:test("T1 INVARIANT: no planned rung covers more than 1.5 spacings of new text", function()
     -- The property the whole checkpoint system exists to guarantee — each
     -- request's extraction delta is bounded by the spacing (×1.5 worst case:
