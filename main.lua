@@ -5160,7 +5160,13 @@ end
 --- @return table|nil { prev = { title, entry, open }|nil, next = ... }
 function AskGPT:_groupNavFor(file, key, name)
   if not file or type(key) ~= "string" then return nil end
-  if key:find("_section:", 1, true) then return nil end
+  -- Section-scoped artifacts navigate too (both volumes often carry the same
+  -- section artifact — e.g. per-book "Key Insights"): the neighbor-presence
+  -- check below governs, since the neighbor only matches on an identical
+  -- section key. ONLY X-Ray section keys stay excluded — they must reopen
+  -- through the X-Ray browser machinery, which this helper doesn't route.
+  local SectionPrefix = require("koassistant_action_cache").SECTION_XRAY_PREFIX
+  if key:sub(1, #SectionPrefix) == SectionPrefix then return nil end
   local BookGroups = require("koassistant_book_groups")
   local prev_path, next_path = BookGroups.neighbors(file)
   if not prev_path and not next_path then return nil end
@@ -5169,18 +5175,55 @@ function AskGPT:_groupNavFor(file, key, name)
   local function side(p)
     if not p then return nil end
     local ok, entry
+    local open_key, open_name = key, name
     if key == "_xray_cache" then ok, entry = pcall(ActionCache.getXrayCache, p)
     elseif key == "_analyze_cache" then ok, entry = pcall(ActionCache.getAnalyzeCache, p)
     elseif key == "_summary_cache" then ok, entry = pcall(ActionCache.getSummaryCache, p)
-    else ok, entry = pcall(ActionCache.get, p, key) end
-    if not ok or not (entry and entry.result) then entry = nil end
+    else
+      ok, entry = pcall(ActionCache.get, p, key)
+      if not ok or not (entry and entry.result) then
+        entry = nil
+        -- Section-scoped fallback: different books rarely share section
+        -- LABELS (the key embeds one) — when the neighbor has exactly ONE
+        -- section artifact of the same type, navigate to it under its own
+        -- name; several would be an arbitrary pick, so no button then
+        local prefix = key:match("^(.*_section:)")
+        if prefix then
+          local ok2, secs = pcall(ActionCache.getSections, p, prefix)
+          if ok2 and type(secs) == "table" and #secs == 1
+              and secs[1].data and secs[1].data.result then
+            entry = secs[1].data
+            open_key = secs[1].key
+            local sec_type = prefix:gsub("_section:$", ""):gsub("^_", "")
+            local type_label = ActionCache.SECTION_TYPE_LABELS
+              and ActionCache.SECTION_TYPE_LABELS[sec_type] or sec_type
+            open_name = T(_("Section %1: %2"), type_label, secs[1].label or "?")
+          end
+        end
+      end
+    end
+    if not (entry and entry.result) then entry = nil end
     local title = BookGroups.displayTitle(p, self_ref.ui)
     local open = entry and function()
-      if key == "_xray_cache" or key == "_analyze_cache" or key == "_summary_cache" then
-        self_ref:showCacheViewer({ name = name, key = key, data = entry,
+      if open_key == "_xray_cache" or open_key == "_analyze_cache" or open_key == "_summary_cache" then
+        self_ref:showCacheViewer({ name = open_name, key = open_key, data = entry,
           book_title = title, file = p, skip_stale_popup = true })
+      elseif open_key:find("_section:", 1, true) then
+        -- Mirror the artifact browser's section routing: quiz sections need
+        -- the quiz viewer; everything else is the plain cache viewer
+        local sec_type = open_key:match("^(.*)_section:"):gsub("^_", "")
+        local action_def = self_ref.action_service
+          and self_ref.action_service:getAction("book", sec_type)
+        if action_def and action_def.interactive_quiz then
+          self_ref:viewCachedAction(action_def, sec_type, entry, {
+            file = p, book_title = title,
+            section_label = entry.scope_label, section_key = open_key })
+        else
+          self_ref:showCacheViewer({ name = open_name, key = open_key, data = entry,
+            book_title = title, file = p, skip_stale_popup = true })
+        end
       else
-        self_ref:viewCachedAction({ text = name }, key, entry,
+        self_ref:viewCachedAction({ text = open_name }, open_key, entry,
           { file = p, book_title = title })
       end
     end or nil
