@@ -174,8 +174,11 @@ local function mergeResponsesOutput(completed_items, terminal_items)
 end
 
 local function normalizeResponsesStreamError(err)
+    -- KOReader's json decodes JSON null to a truthy non-table sentinel; only
+    -- tables and strings carry real error information.
     if type(err) == "table" then return err end
-    return { message = tostring(err or "Unknown streaming error") }
+    if type(err) == "string" and err ~= "" then return { message = err } end
+    return { message = "Unknown streaming error" }
 end
 
 function ResponseParser.collectResponsesSSE(body)
@@ -183,8 +186,9 @@ function ResponseParser.collectResponsesSSE(body)
     local terminal
     local stream_error
 
-    for line in (tostring(body or "") .. "\n"):gmatch("([^\n]*)\n") do
-        line = line:gsub("\r$", "")
+    -- raw_line stays untouched: generic-for variables are const in Lua 5.4+.
+    for raw_line in (tostring(body or "") .. "\n"):gmatch("([^\n]*)\n") do
+        local line = raw_line:gsub("\r$", "")
         local data = line:match("^data:%s*(.*)$")
         if data and data ~= "" and data ~= "[DONE]" then
             local ok, event = pcall(json.decode, data)
