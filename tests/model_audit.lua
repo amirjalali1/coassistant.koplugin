@@ -7,7 +7,9 @@
 --   2. PROBE - for a chosen model, run the empirical capability battery that
 --      /models endpoints do NOT report: temperature acceptance, reasoning
 --      default on/off, effort ladder (incl. xhigh/max), disable support,
---      output-token ceiling, tools acceptance.
+--      output-token ceiling, tools acceptance, forced tool_choice (the runner's
+--      gather/final modes - the Z.AI wave-1.5 failure class a bare tools probe
+--      cannot see), and an SSE streaming smoke test.
 --   3. DRAFT - emit copy-pasteable stanzas for model_constraints.lua plus
 --      reminders for koassistant_model_lists.lua. NEVER auto-applied - a
 --      human reviews the diff and places tiers by hand.
@@ -21,7 +23,7 @@
 --   Options: --verbose   full error bodies + ignored-id lists
 --
 -- Probes make real API micro-requests (max_tokens 32..1024); a full battery is
--- ~10-14 requests, fractions of a cent on most providers. Perplexity caveat:
+-- ~13-19 requests, fractions of a cent on most providers. Perplexity caveat:
 -- every request also bills one web search.
 --
 -- Requires luarocks modules (luasocket, luasec, dkjson). Run this FIRST:
@@ -587,6 +589,30 @@ local function recordProbe(facts, name, ok, detail)
         #facts.probes, name, mark, C.dim, tostring(detail or ""):sub(1, 90), C.off)
 end
 
+-- SSE framing check for the streaming smoke: luasocket buffers the whole
+-- response, so this verifies the server ACCEPTS stream=true and answers in SSE
+-- framing - it does NOT verify incremental delivery (that needs the real
+-- handlers on-device).
+function ModelAudit.looksLikeSSE(text)
+    if type(text) ~= "string" then return false end
+    return text:find("^data:") ~= nil or text:find("\ndata:") ~= nil
+        or text:find("^event:") ~= nil or text:find("\nevent:") ~= nil
+end
+
+local function recordStreamProbe(facts, code, decoded, raw)
+    local name = "streaming (stream=true SSE smoke)"
+    if code == 200 and ModelAudit.looksLikeSSE(raw) then
+        facts.stream_ok = true
+        recordProbe(facts, name, true, "SSE framing in response")
+    elseif code == 200 then
+        facts.stream_ok = false
+        recordProbe(facts, name, false, "200 but non-SSE body - stream param likely ignored")
+    else
+        facts.stream_ok = verdict(code)
+        recordProbe(facts, name, facts.stream_ok, ModelAudit.errText(decoded, raw))
+    end
+end
+
 -- ---- Anthropic wire ---------------------------------------------------------
 
 local ANTHROPIC_LADDER = { "low", "medium", "high", "xhigh", "max" }
@@ -669,13 +695,40 @@ local function probeAnthropic(model, api_key, verbose)
     end
 
     -- 7. tools sanity
-    local wcode, wdec, wraw = req({
-        tools = { { name = "ping", description = "Connectivity test.",
-                    input_schema = { type = "object", properties = dummyProps() } } },
-    })
+    local probe_tools = { { name = "ping", description = "Connectivity test.",
+                            input_schema = { type = "object", properties = dummyProps() } } }
+    local wcode, wdec, wraw = req({ tools = probe_tools })
     facts.tools_ok = verdict(wcode)
     if not facts.tools_ok then facts.tools_err = ModelAudit.errText(wdec, wraw) end
     recordProbe(facts, "tools (minimal function def)", facts.tools_ok, facts.tools_err)
+
+    -- 8. forced tool_choice - the runner's gather ("any") and final ("none")
+    -- passes need non-auto tool_choice; a bare tools probe can't see this
+    -- (the Z.AI wave-1.5 failure class).
+    if facts.tools_ok then
+        local acode, adec, araw = req({ tools = probe_tools, tool_choice = { type = "any" } })
+        facts.tool_choice_any_ok = verdict(acode)
+        local adetail = acode ~= 200 and ModelAudit.errText(adec, araw) or nil
+        if facts.tool_choice_any_ok == false then
+            -- thinking-by-default models reject forced tool_choice; the runner
+            -- accommodation is disabling thinking on tool turns (deepseek precedent)
+            local rcode = req({ tools = probe_tools, tool_choice = { type = "any" },
+                                thinking = { type = "disabled" } })
+            if rcode == 200 then
+                facts.tool_choice_any_thinking_off = true
+                adetail = (adetail or "") .. " | OK with thinking disabled"
+            end
+        end
+        recordProbe(facts, 'tool_choice={type="any"} (gather)', facts.tool_choice_any_ok, adetail)
+        local ncode, ndec, nraw = req({ tools = probe_tools, tool_choice = { type = "none" } })
+        facts.tool_choice_none_ok = verdict(ncode)
+        recordProbe(facts, 'tool_choice={type="none"} (final)', facts.tool_choice_none_ok,
+            ncode ~= 200 and ModelAudit.errText(ndec, nraw) or nil)
+    end
+
+    -- 9. streaming smoke
+    local scode, sdec, sraw = req({ stream = true })
+    recordStreamProbe(facts, scode, sdec, sraw)
 
     if verbose and facts.temp_err then printf("  %stemp error: %s%s", C.dim, facts.temp_err, C.off) end
     return facts
@@ -810,16 +863,42 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
     end
 
     -- 5. tools sanity
-    local wcode, wdec, wraw = req({
-        tools = { { type = "function",
-                    ["function"] = { name = "ping", description = "Connectivity test.",
-                                     parameters = { type = "object", properties = dummyProps() } } } },
-    })
+    local probe_tools = { { type = "function",
+                            ["function"] = { name = "ping", description = "Connectivity test.",
+                                             parameters = { type = "object", properties = dummyProps() } } } }
+    local wcode, wdec, wraw = req({ tools = probe_tools })
     facts.tools_ok = verdict(wcode)
     if not facts.tools_ok then facts.tools_err = ModelAudit.errText(wdec, wraw) end
     recordProbe(facts, "tools (minimal function def)", facts.tools_ok, facts.tools_err)
 
-    -- 6. OpenRouter bonus: per-model endpoints metadata (what the derive layer reads)
+    -- 6. forced tool_choice (runner gather="required" / final="none" - the
+    -- Z.AI wave-1.5 failure class a bare tools probe cannot see)
+    if facts.tools_ok then
+        local acode, adec, araw = req({ tools = probe_tools, tool_choice = "required" })
+        facts.tool_choice_any_ok = verdict(acode)
+        local adetail = acode ~= 200 and ModelAudit.errText(adec, araw) or nil
+        if facts.tool_choice_any_ok == false and fam.binary_key then
+            -- deepseek V4 precedent: thinking mode rejects tool_choice=required;
+            -- the handler accommodation is forcing thinking off on tool turns
+            local rcode = req({ tools = probe_tools, tool_choice = "required",
+                                [fam.binary_key] = { type = "disabled" } })
+            if rcode == 200 then
+                facts.tool_choice_any_thinking_off = true
+                adetail = (adetail or "") .. " | OK with " .. fam.binary_key .. " disabled"
+            end
+        end
+        recordProbe(facts, 'tool_choice="required" (gather)', facts.tool_choice_any_ok, adetail)
+        local ncode, ndec, nraw = req({ tools = probe_tools, tool_choice = "none" })
+        facts.tool_choice_none_ok = verdict(ncode)
+        recordProbe(facts, 'tool_choice="none" (final)', facts.tool_choice_none_ok,
+            ncode ~= 200 and ModelAudit.errText(ndec, nraw) or nil)
+    end
+
+    -- 7. streaming smoke
+    local scode, sdec, sraw = req({ stream = true }, 32)
+    recordStreamProbe(facts, scode, sdec, sraw)
+
+    -- 8. OpenRouter bonus: per-model endpoints metadata (what the derive layer reads)
     if provider == "openrouter" then
         local text = httpGet("https://openrouter.ai/api/v1/models/" .. model .. "/endpoints", headers)
         if text then
@@ -925,13 +1004,36 @@ local function probeGemini(model, api_key, verbose)
         not facts.budget_ok and ModelAudit.errText(bdec, braw) or nil)
 
     -- 5. tools sanity
-    local wcode, wdec, wraw = req(nil, {
-        tools = { { functionDeclarations = { { name = "ping", description = "Connectivity test.",
-                    parameters = { type = "object", properties = dummyProps() } } } } },
-    }, 32)
+    local probe_tools = { { functionDeclarations = { { name = "ping", description = "Connectivity test.",
+                            parameters = { type = "object", properties = dummyProps() } } } } }
+    local wcode, wdec, wraw = req(nil, { tools = probe_tools }, 32)
     facts.tools_ok = verdict(wcode)
     if not facts.tools_ok then facts.tools_err = ModelAudit.errText(wdec, wraw) end
     recordProbe(facts, "tools (functionDeclarations)", facts.tools_ok, facts.tools_err)
+
+    -- 6. forced tool_choice (runner gather=ANY / final=NONE via toolConfig -
+    -- the Z.AI wave-1.5 failure class a bare tools probe cannot see)
+    if facts.tools_ok then
+        local acode, adec, araw = req(nil, { tools = probe_tools,
+            toolConfig = { functionCallingConfig = { mode = "ANY" } } }, 32)
+        facts.tool_choice_any_ok = verdict(acode)
+        recordProbe(facts, "toolConfig mode=ANY (gather)", facts.tool_choice_any_ok,
+            acode ~= 200 and ModelAudit.errText(adec, araw) or nil)
+        local ncode, ndec, nraw = req(nil, { tools = probe_tools,
+            toolConfig = { functionCallingConfig = { mode = "NONE" } } }, 32)
+        facts.tool_choice_none_ok = verdict(ncode)
+        recordProbe(facts, "toolConfig mode=NONE (final)", facts.tool_choice_none_ok,
+            ncode ~= 200 and ModelAudit.errText(ndec, nraw) or nil)
+    end
+
+    -- 7. streaming smoke (separate endpoint: :streamGenerateContent?alt=sse)
+    local stream_url = base .. "/" .. model .. ":streamGenerateContent?alt=sse&key=" .. api_key
+    local scode, sdec, sraw = httpPostJson(stream_url, nil, {
+        contents = { { parts = { { text = PROBE_PROMPT } } } },
+        generationConfig = { maxOutputTokens = 32 },
+    })
+    recordStreamProbe(facts, scode, sdec, sraw)
+
     printf("  %sgoogle_search grounding: not probed (separate quota) - set per family/docs%s",
         C.dim, C.off)
 
@@ -1032,6 +1134,24 @@ function ModelAudit.draftStanzas(facts, current)
         end
     end
 
+    -- Wire notes from the tool_choice / streaming probes
+    if facts.tools_ok and facts.tool_choice_any_ok == false then
+        add("%s-- NOTE: forced tool_choice (gather mode) REJECTED - runner-incompatible as-is (Z.AI class)%s",
+            C.yellow, C.off)
+        if facts.tool_choice_any_thinking_off then
+            add("%s--   but ACCEPTED with thinking disabled - deepseek-style handler accommodation works%s",
+                C.yellow, C.off)
+        end
+    end
+    if facts.tools_ok and facts.tool_choice_none_ok == false then
+        add("%s-- NOTE: tool_choice none/NONE REJECTED - runner final pass needs an accommodation%s",
+            C.yellow, C.off)
+    end
+    if facts.stream_ok == false then
+        add("%s-- NOTE: stream=true not honored (rejected or non-SSE response) - verify before relying on streaming%s",
+            C.yellow, C.off)
+    end
+
     -- Temperature constraint (non-anthropic wire: forced value, not capability)
     if facts.temp_ok == false and facts.family ~= "anthropic" then
         local covered = current.temp_after_apply ~= 0.7
@@ -1129,7 +1249,7 @@ local function probeModel(provider, model, api_key, verbose)
         printf("  %sno API key for %s in apikeys.lua%s", C.red, provider, C.off)
         return nil
     end
-    printf("  %s~10-14 micro-requests (max_tokens 32..1024) - fractions of a cent%s", C.dim, C.off)
+    printf("  %s~13-19 micro-requests (max_tokens 32..1024) - fractions of a cent%s", C.dim, C.off)
 
     local facts
     if provider == "anthropic" then

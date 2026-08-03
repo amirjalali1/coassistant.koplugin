@@ -250,6 +250,39 @@ TestRunner:check("binary can_disable/can_enable from probes",
 TestRunner:check("no temperature constraint drafted when temp accepted",
     btext:find("temperature = 1.0", 1, true) == nil)
 
+--==========================================================================
+TestRunner:suite("looksLikeSSE + tool_choice/stream wire notes")
+
+TestRunner:check("SSE: leading data line", ModelAudit.looksLikeSSE('data: {"x":1}\n\n') == true)
+TestRunner:check("SSE: event line after preamble",
+    ModelAudit.looksLikeSSE(': ping\nevent: message_start\ndata: {}\n') == true)
+TestRunner:check("SSE: plain JSON body is not SSE",
+    ModelAudit.looksLikeSSE('{"choices":[{"message":{}}]}') == false)
+TestRunner:check("SSE: nil-safe", ModelAudit.looksLikeSSE(nil) == false)
+
+local zfacts = {
+    family = "openai", provider = "zai", model = "glm-test-x",
+    reachable = true, default_reasoning = true, temp_ok = true,
+    binary = true, binary_on_ok = true, binary_off_ok = true, disable_ok = true,
+    efforts = {}, tools_ok = true, probes = {},
+    tool_choice_any_ok = false, tool_choice_any_thinking_off = true,
+    tool_choice_none_ok = false, stream_ok = false,
+}
+local zcurrent = ModelAudit.currentResolution("zai", "glm-test-x")
+local ztext = table.concat(ModelAudit.draftStanzas(zfacts, zcurrent), "\n")
+
+TestRunner:check("gather-mode rejection note drafted (Z.AI class)",
+    ztext:find("runner-incompatible as-is", 1, true) ~= nil)
+TestRunner:check("thinking-disabled accommodation note drafted",
+    ztext:find("thinking disabled - deepseek-style", 1, true) ~= nil)
+TestRunner:check("final-pass (none) rejection note drafted",
+    ztext:find("final pass needs an accommodation", 1, true) ~= nil)
+TestRunner:check("stream-not-honored note drafted",
+    ztext:find("stream=true not honored", 1, true) ~= nil)
+TestRunner:check("no wire notes when tool_choice/stream fine",
+    btext:find("runner-incompatible", 1, true) == nil
+    and btext:find("stream=true not honored", 1, true) == nil)
+
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))
 return TestRunner.failed == 0
