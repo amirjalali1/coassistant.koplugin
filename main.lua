@@ -7115,8 +7115,12 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         -- Round 24b: a cancel this session means "stop" — with auto toggled
         -- off afterwards the manual Resume row must not reappear either.
         -- The suppression clears on book close, so next open offers it again.
+        local nc_stop = nc_xa.lastLadderStop(self.ui.document.file)
+        local nc_reason = nc_stop and self:_xrayStopReasonLabel(nc_stop.kind)
         table.insert(buttons, {{
-          text = T(_("Resume building checkpoints (%1 so far)…"), nc_rungs),
+          text = nc_reason
+            and T(_("Resume building checkpoints (%1 so far — stopped: %2)…"), nc_rungs, nc_reason)
+            or T(_("Resume building checkpoints (%1 so far)…"), nc_rungs),
           callback = function()
             UIManager:close(dialog)
             self_ref:_startXrayLadderBuild()
@@ -7475,9 +7479,14 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
             and not XrayAuto.isAutoSuppressed(sx_file)
             and (ladder_highest or 0) < 1.0 - 0.005
             and not (ext_goal and (ladder_highest or 0) >= ext_goal - 0.01) then
+          local sx_stop = XrayAuto.lastLadderStop(sx_file)
+          local sx_reason = sx_stop and self:_xrayStopReasonLabel(sx_stop.kind)
           table.insert(buttons, {{
-            text = T(_("Resume building checkpoints (from %1%)…"),
-              math.floor((ladder_highest or 0) * 100 + 0.5)),
+            text = sx_reason
+              and T(_("Resume building checkpoints (from %1% — stopped: %2)…"),
+                math.floor((ladder_highest or 0) * 100 + 0.5), sx_reason)
+              or T(_("Resume building checkpoints (from %1%)…"),
+                math.floor((ladder_highest or 0) * 100 + 0.5)),
             callback = function()
               UIManager:close(dialog)
               self_ref:_startXrayLadderBuild()
@@ -11762,8 +11771,12 @@ function AskGPT:_fireXrayLadderRung()
       local cur = XrayAuto.ladderBuild()
       if not cur then return end  -- build ended (close/cancel) while in flight
       if was_watchdog and not cur.cancel_requested then
-        -- Timeout, not a user cancel (T1): stop honestly with the resume hint
+        -- Timeout, not a user cancel (T1): stop honestly with the resume hint.
+        -- No auto-retry here (item 45): the watchdog already waited 300s — a
+        -- silent retry would risk another 5 quiet minutes.
         XrayAuto.endLadderBuild()
+        XrayAuto.recordLadderStop(file, { step = cur.step or cur.idx, total = cur.total,
+          kind = "timeout" })
         logger.warn("KOAssistant: ladder step", cur.step or cur.idx, "timed out (watchdog,",
           XrayAuto.WATCHDOG_S, "s)")
         UIManager:show(InfoMessage:new{
@@ -11792,16 +11805,55 @@ function AskGPT:_fireXrayLadderRung()
         rung_written = result and on_disk and on_disk >= target - XrayAuto.LADDER_TOLERANCE
       end
       if not rung_written then
+        local err_text = tostring(meta_or_err or "rung not saved")
+        local kind, transient = XrayAuto.classifyStopReason(err_text)
+        -- Item 45: one silent retry per step for transient provider failures
+        -- (503/429/5xx/network) — the field specimen healed on a resume 76s
+        -- later. The build state stays ALIVE through the wait so cancel works.
+        if transient and (cur.retried or 0) < 1 and not cur.cancel_requested then
+          cur.retried = 1
+          logger.info("KOAssistant: ladder step", cur.step or cur.idx, "transient failure (",
+            kind, ") - retrying in", XrayAuto.RETRY_DELAY_S, "s:", err_text)
+          if not cur.silent or features.xray_auto_notify == true then
+            UIManager:show(Notification:new{
+              text = T(_("Model busy — retrying checkpoint %1 of %2 in %3 s…"),
+                cur.step or cur.idx, cur.total, XrayAuto.RETRY_DELAY_S),
+            })
+          end
+          local retry_fn = function()
+            self_ref._xray_ladder_retry = nil
+            local live = XrayAuto.ladderBuild()
+            if not live or live.file ~= file or live.cancel_requested then return end
+            if not (self_ref.ui and self_ref.ui.document
+                and self_ref.ui.document.file == file) then
+              -- Book closed during the wait: mirror the between-rung guard
+              XrayAuto.endLadderBuild()
+              return
+            end
+            self_ref:_fireXrayLadderRung()
+          end
+          self_ref._xray_ladder_retry = retry_fn
+          UIManager:scheduleIn(XrayAuto.RETRY_DELAY_S, retry_fn)
+          return
+        end
         XrayAuto.endLadderBuild()
+        XrayAuto.recordLadderStop(file, { step = cur.step or cur.idx, total = cur.total,
+          kind = kind })
         logger.info("KOAssistant: ladder build stopped at step", cur.step or cur.idx, "-",
-          tostring(meta_or_err or "rung not saved"))
+          err_text)
+        local reason = self_ref:_xrayStopReasonLabel(kind)
         UIManager:show(InfoMessage:new{
-          text = T(_("Checkpoint build stopped at %1 of %2: resume it from the X-Ray popup."),
-            cur.step or cur.idx, cur.total),
+          text = reason
+            and T(_("Checkpoint build stopped at %1 of %2 (%3): resume it from the X-Ray popup."),
+              cur.step or cur.idx, cur.total, reason)
+            or T(_("Checkpoint build stopped at %1 of %2: resume it from the X-Ray popup."),
+              cur.step or cur.idx, cur.total),
           timeout = 4,
         })
         return
       end
+      -- A landed rung refreshes the step's retry budget (item 45)
+      cur.retried = nil
       -- Round 19: a finished rung at-or-below the reader installs NOW — the
       -- seed (and any catch-up rung) must not wait for the whole chain.
       -- pickPromotableRung no-ops when nothing at-or-below qualifies; with no
@@ -11836,10 +11888,27 @@ function AskGPT:_fireXrayLadderRung()
     end)
 end
 
+--- Short translated label for a chain-stop reason kind (item 45); nil for
+--- kinds not worth a clause ("other").
+function AskGPT:_xrayStopReasonLabel(kind)
+  if kind == "overloaded" then return _("model overloaded") end
+  if kind == "rate_limited" then return _("rate limited") end
+  if kind == "server_error" then return _("provider error") end
+  if kind == "timeout" then return _("request timed out") end
+  if kind == "network" then return _("connection problem") end
+  if kind == "bad_json" then return _("unusable response") end
+  return nil
+end
+
 --- Stop the chain (popup row). An in-flight rung is killed; completed rungs stay
 --- (resume re-plans from the highest one).
 function AskGPT:_cancelXrayLadderBuild()
   local XrayAuto = require("koassistant_xray_auto")
+  -- Item 45: a pending transient-failure retry dies with the build
+  if self._xray_ladder_retry then
+    UIManager:unschedule(self._xray_ladder_retry)
+    self._xray_ladder_retry = nil
+  end
   -- Round 22 (D3): an explicit cancel must stick — without suppression the
   -- next page turn re-plans the very chain the user just cancelled (the
   -- cooldown was stamped at schedule time and has often already elapsed).

@@ -24,6 +24,9 @@ XrayAuto.CATCHUP_DELAY_S = 30    -- session-start catch-up delay (update-checker
 XrayAuto.WATCHDOG_S = 300        -- absolute cancel; don't rely on the child's socket timeout.
                                  -- Device round 1 (T1): thinking-default models take 100s+ per
                                  -- incremental update — 120 killed legitimate runs.
+XrayAuto.RETRY_DELAY_S = 60      -- item 45: single transient-failure retry per ladder step.
+                                 -- Field specimen (2026-08-03): a Gemini 503 healed on a
+                                 -- resume 76s later — one 60s retry makes that invisible.
 
 -- Cross-instance session state (file-local module state, NOT self._*)
 local last_attempt = nil   -- stamped at SCHEDULE time, not fire time
@@ -31,6 +34,7 @@ local in_flight = false
 local in_flight_file = nil -- which book the flight belongs to (popup display scoping, T8)
 local cancel_fn = nil
 local last_failure = nil   -- { file = path, message = string }
+local last_ladder_stop = nil -- { file, step, total, kind } — why the chain last paused (item 45)
 local session_updates = 0
 local cancelled = false    -- set when an actual flight was cancelled (close/watchdog)
 local discarded = false    -- set by the completion guard when it rejects the write
@@ -182,6 +186,55 @@ function XrayAuto.recordSuccess(file)
   if last_failure and last_failure.file == file then
     last_failure = nil
   end
+end
+
+--- Classify a request-failure message into a short reason kind (item 45).
+--- Wire-neutral: matches HTTP status classes and generic phrasings, never one
+--- provider's exact wording. Pure.
+--- @param err string|nil The error text (handler-formatted, e.g. "gemini/…: HTTP 503: …")
+--- @return string kind "overloaded"|"rate_limited"|"server_error"|"timeout"|"network"|"bad_json"|"other"
+--- @return boolean transient True when a short wait plausibly heals it (retry-worthy)
+function XrayAuto.classifyStopReason(err)
+  local text = type(err) == "string" and err:lower() or ""
+  if text:find("http 503", 1, true) or text:find("overload", 1, true)
+      or text:find("high demand", 1, true) or text:find("capacity", 1, true) then
+    return "overloaded", true
+  end
+  if text:find("http 429", 1, true) or text:find("rate limit", 1, true)
+      or text:find("quota", 1, true) or text:find("resource_exhausted", 1, true) then
+    return "rate_limited", true
+  end
+  if text:find("http 50%d") then
+    return "server_error", true
+  end
+  if text:find("timed out", 1, true) or text:find("timeout", 1, true) then
+    return "timeout", true
+  end
+  if text:find("connect", 1, true) or text:find("network", 1, true)
+      or text:find("socket", 1, true) or text:find("ssl", 1, true)
+      or text:find("wifi", 1, true) or text:find("resolve host", 1, true) then
+    return "network", true
+  end
+  if text:find("not a valid x%-ray json") or text:find("json", 1, true)
+      or text:find("truncated", 1, true) or text:find("rung not saved", 1, true) then
+    return "bad_json", false
+  end
+  return "other", false
+end
+
+--- Session-scoped "why the checkpoint chain last paused" (item 45): recorded
+--- on a non-cancel stop, cleared when a chain (re)starts for the file.
+function XrayAuto.recordLadderStop(file, info)
+  last_ladder_stop = { file = file, step = info and info.step,
+    total = info and info.total, kind = info and info.kind }
+end
+
+--- @return table|nil { step, total, kind } for this file
+function XrayAuto.lastLadderStop(file)
+  if last_ladder_stop and last_ladder_stop.file == file then
+    return last_ladder_stop
+  end
+  return nil
 end
 
 function XrayAuto.sessionUpdateCount()
@@ -514,6 +567,10 @@ function XrayAuto.beginLadderBuild(file, rungs, labels, opts)
     intro_pending = (opts and opts.intro) or nil,
     silent = (opts and opts.silent) or nil,
     step = 1 }
+  -- A (re)start supersedes the last pause reason (item 45)
+  if last_ladder_stop and last_ladder_stop.file == file then
+    last_ladder_stop = nil
+  end
 end
 
 --- The step the chain should fire next: { target, intro } or nil when done.

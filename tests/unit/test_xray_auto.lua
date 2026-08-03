@@ -977,6 +977,39 @@ TestRunner:test("clearAll clears companion files (ladder resurrection guard)", f
         "delete-all clears the ring (no orphan)")
 end)
 
+TestRunner:test("classifyStopReason: transient classes vs terminal ones (item 45)", function()
+    local cases = {
+        { "gemini/gemini-3.1-flash-lite: HTTP 503: This model is currently experiencing high demand. Spikes in demand are usually temporary.", "overloaded", true },
+        { "HTTP 429: rate limit exceeded", "rate_limited", true },
+        { "openai/gpt-5.5: quota exceeded for this billing period", "rate_limited", true },
+        { "HTTP 502: bad gateway", "server_error", true },
+        { "request timed out", "timeout", true },
+        { "SSL handshake failed", "network", true },
+        { "could not connect to server", "network", true },
+        { "response is not a valid X-Ray JSON structure", "bad_json", false },
+        { "rung not saved", "bad_json", false },
+        { "some entirely novel failure", "other", false },
+        { nil, "other", false },
+    }
+    for _idx, case in ipairs(cases) do
+        local kind, transient = XrayAuto.classifyStopReason(case[1])
+        TestRunner:assertEqual(kind, case[2], "kind for: " .. tostring(case[1]))
+        TestRunner:assertEqual(transient, case[3], "transient for: " .. tostring(case[1]))
+    end
+end)
+
+TestRunner:test("ladder stop record: per-file, superseded by a chain (re)start", function()
+    XrayAuto.recordLadderStop("/a.epub", { step = 7, total = 11, kind = "overloaded" })
+    local stop = XrayAuto.lastLadderStop("/a.epub")
+    TestRunner:assertEqual(stop.step, 7, "step recorded")
+    TestRunner:assertEqual(stop.kind, "overloaded", "kind recorded")
+    TestRunner:assertEqual(XrayAuto.lastLadderStop("/b.epub"), nil, "other file: nil")
+    XrayAuto.beginLadderBuild("/a.epub", { 0.5, 1.0 }, nil, nil)
+    TestRunner:assertEqual(XrayAuto.lastLadderStop("/a.epub"), nil,
+        "restart clears the pause reason")
+    XrayAuto.endLadderBuild()
+end)
+
 os.execute(string.format("rm -rf %q", TMP_ROOT))
 
 local ok = TestRunner:summary()
