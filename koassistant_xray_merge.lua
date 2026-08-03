@@ -530,13 +530,47 @@ function XrayMerge.buildHeadlessConfig(opts, payload)
     local bm = {}
     for k, v in pairs(config.features.book_metadata or {}) do bm[k] = v end
     bm.file = opts.file
-    bm.title = opts.title or bm.title
-    bm.author = opts.author or bm.author or ""
+    -- Identity comes from the TARGET book, NEVER inherited from whatever book
+    -- happens to be open — merges can launch from a cross-book-viewed X-Ray
+    -- (group nav / artifact browser), and "identity sent and sidecar consulted
+    -- must be the same book" (item 46 follow-up). Missing title/author resolve
+    -- from the target's own doc_props + AI override.
+    local title, author = opts.title, opts.author
+    if not title or title == "" or author == nil then
+        local ok, ds = pcall(function()
+            return require("koassistant_doc_settings").resolve(opts.file, opts.ui)
+        end)
+        if ok and ds then
+            local props = ds:readSetting("doc_props") or {}
+            local ok_ov, ov_t, ov_a = pcall(function()
+                return require("koassistant_book_settings").getMetadataOverride(ds)
+            end)
+            if not title or title == "" then
+                title = props.display_title or props.title
+                if ok_ov and ov_t ~= nil then title = ov_t end
+            end
+            if author == nil then
+                author = props.authors
+                if type(author) == "string" and author:find("\n") then
+                    author = author:gsub("\n", ", ")
+                end
+                if ok_ov and ov_a ~= nil then author = ov_a end
+            end
+        end
+    end
+    if not title or title == "" then
+        title = opts.file:match("([^/]+)%.[^.]+$") or opts.file:match("([^/]+)$") or opts.file
+    end
+    bm.title = title
+    bm.author = author or ""
     bm.author_clause = (bm.author ~= "" and (" by " .. bm.author)) or ""
     -- Stale DOI from another book would flip research mode on a structural merge
     bm.doi = nil
     bm.doi_clause = nil
     config.features.book_metadata = bm
+    -- The synthetic identity channel must match the gated one (book identity
+    -- reaches the AI via TWO channels — CLAUDE.md): never the open book's string
+    config.features.book_context = bm.title .. bm.author_clause
     -- Wire-safety: the payloads ride the late sentinel injection, never action.prompt
     config.features._merge_payload = payload
     return config, bm
@@ -1242,6 +1276,11 @@ function XrayMerge.startCrossBookFlow(opts)
             opts.author = authors
         end
     end
+    -- Cross-book-viewed target (group nav / artifact browser): identity from
+    -- the TARGET file, never the open book (item 46 follow-up)
+    if not opts.title or opts.title == "" then
+        opts.title = require("koassistant_book_groups").displayTitle(opts.file, opts.ui)
+    end
 
     local main_entry = ActionCache.getXrayCache(opts.file)
     if not (main_entry and main_entry.result and XrayParser.isJSON(main_entry.result)) then
@@ -1332,8 +1371,8 @@ function XrayMerge.startCrossBookFlow(opts)
                 end
                 -- Item 46: earlier feeds later — merging a LATER group-mate is
                 -- legal (re-readers) but the spoiler warning names the direction
-                local confirm_text = T(_("Merge the X-Ray of \"%1\" into this book's X-Ray?"), captured.title)
-                    .. "\n" .. _("Recurring characters, places, and concepts gain that book's background. This brings in everything its X-Ray covers, including its later events. Your current X-Ray is archived first, so this can be undone from All versions.")
+                local confirm_text = T(_("Merge the X-Ray of \"%1\" into \"%2\"?"), captured.title, opts.title or "?")
+                    .. "\n" .. _("Recurring characters, places, and concepts gain that book's background. This brings in everything its X-Ray covers, including its later events. The receiving X-Ray is archived first, so this can be undone from All versions.")
                 if captured.group_direction == "after" then
                     confirm_text = confirm_text .. "\n\n" .. T(_("Caution: \"%1\" comes LATER in %2 — its background includes events beyond this book."),
                         captured.title, captured.group_name)
@@ -1483,7 +1522,9 @@ function XrayMerge.startCrossBookFlow(opts)
         callback = function() UIManager:close(picker) end,
     }})
     picker = ButtonDialog:new{
-        title = _("Merge from another book: pick its X-Ray"),
+        -- Naming the TARGET matters: this flow can be launched from another
+        -- book's X-Ray via group navigation — "this book" would be ambiguous
+        title = T(_("Merge into \"%1\": pick the book to fold in"), opts.title or "?"),
         buttons = rows,
     }
     UIManager:show(picker)

@@ -82,29 +82,30 @@ function GroupsUI.showGroup(group_id, opts)
             text = i .. ". " .. title,
             align = "left",
             callback = function()
+                -- Same compact arrow dialog as the action/QS ordering managers
                 local book_dialog
                 book_dialog = ButtonDialog:new{
                     title = title,
                     buttons = {
-                        {{ text = _("Move up"), enabled = i > 1, callback = function()
-                            UIManager:close(book_dialog)
-                            BookGroups.moveBook(group_id, captured, -1)
-                            reopen()
-                        end }},
-                        {{ text = _("Move down"), enabled = i < #group.books, callback = function()
-                            UIManager:close(book_dialog)
-                            BookGroups.moveBook(group_id, captured, 1)
-                            reopen()
-                        end }},
+                        {
+                            { text = "\u{2191}", enabled = i > 1, callback = function()
+                                UIManager:close(book_dialog)
+                                BookGroups.moveBook(group_id, captured, -1)
+                                reopen()
+                            end },
+                            { text = "\u{2193}", enabled = i < #group.books, callback = function()
+                                UIManager:close(book_dialog)
+                                BookGroups.moveBook(group_id, captured, 1)
+                                reopen()
+                            end },
+                        },
                         {{ text = _("Remove from group"), callback = function()
                             UIManager:close(book_dialog)
                             BookGroups.removeBook(group_id, captured)
                             reopen()
                         end }},
-                        {{ text = _("Cancel"), callback = function()
-                            UIManager:close(book_dialog)
-                        end }},
                     },
+                    shrink_unneeded_width = true,
                 }
                 UIManager:show(book_dialog)
             end,

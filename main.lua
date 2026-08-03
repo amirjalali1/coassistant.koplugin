@@ -5367,12 +5367,8 @@ function AskGPT:showCacheViewer(cache_info)
           checkpoint = cache_info.checkpoint,
           checkpoint_data = cache_info.checkpoint and cache_info.data or nil,
         }
-        -- Item 46: prev/next volume rows (live main X-Rays only — archived
-        -- versions and sections are book-internal surfaces)
-        if not cache_info.checkpoint then
-          browser_metadata.group_nav = self:_groupNavFor(
-            browser_metadata.book_file, cache_info.key, cache_info.name)
-        end
+        -- (Item 46 prev/next rows are computed LAZILY in the browser's
+        -- hamburger — every show path gets them, incl. fresh generation)
         -- Add scope metadata for section X-Rays
         if is_section_xray and cache_info.data.scope_label then
           local scope_start = cache_info.data.scope_start_page

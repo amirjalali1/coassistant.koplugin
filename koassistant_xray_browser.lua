@@ -898,9 +898,18 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
     local title = self:buildMainTitle()
     self.current_title = title
 
+    -- Gray one-liner naming the book (item 46 follow-up): vital orientation
+    -- when hopping between group volumes' X-Rays
+    local menu_subtitle = self.metadata.title
+    if menu_subtitle and menu_subtitle ~= ""
+        and self.metadata.book_author and self.metadata.book_author ~= "" then
+        menu_subtitle = menu_subtitle .. " · " .. self.metadata.book_author
+    end
+
     local self_ref = self
     self.menu = Menu:new{
         title = title,
+        subtitle = menu_subtitle,
         item_table = items,
         is_borderless = true,
         is_popout = false,
@@ -4241,8 +4250,12 @@ function XrayBrowser:showOptions()
             end,
         }})
         -- Book groups prev/next (item 46): open the neighboring volume's
-        -- X-Ray. A neighbor without one shows as a disabled hint.
-        local nav = self.metadata.group_nav
+        -- X-Ray. A neighbor without one shows as a disabled hint. Computed
+        -- LAZILY here (not threaded through browser metadata): every show
+        -- path gets it — incl. the fresh-generation display — and a group
+        -- created while the browser is open appears on the next menu tap.
+        local nav = self.metadata.plugin and self.metadata.plugin._groupNavFor
+            and self.metadata.plugin:_groupNavFor(self.metadata.book_file, "_xray_cache", _("X-Ray"))
         if nav then
             for _idx, side in ipairs({
                 { info = nav.prev, label = _("Previous in group: %1") },
