@@ -86,6 +86,7 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 - OMIT categories entirely if nothing changed in them — they will be preserved as-is
 - When adding a new entry to a category, include ONLY the new entries in that category's array
 - When a section reveals significant new information about an existing entity, output the COMPLETE updated entry with all fields (it will replace the old version)
+- A modified entry REPLACES the old one — carry over its existing details (identifying facts, relationships, earlier developments) and add the new; anything you leave out is lost
 - To reference an existing entity, use the EXACT name from the entity list above
 - Include "current_state" (fiction) or "current_position" (nonfiction) ONLY if the sections extend past the previous analysis's coverage — otherwise omit it
 - Do not invent entities or events that appear in no section
@@ -94,10 +95,14 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 
 CRITICAL: Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values must be written in {response_language}, regardless of the language of the source text.]]
 
--- Cross-book merge (item 43, #90): fold ANOTHER book's X-Ray into this book's
--- main as BACKGROUND — recurring entities get enriched, key carry-overs get
--- added, but this book's timeline/current-state are never polluted with the
--- other book's events. Same sentinel wire-safety as the section prompts.
+-- Cross-book merge (items 43/44, #90): fold ANOTHER book's X-Ray into this
+-- book's main as BACKGROUND. Recurring entities are NEVER rewritten by the
+-- model (chained rewrites decay — the field report behind item 44): the model
+-- emits background_updates pairs and crossBookTransform attaches them
+-- mechanically, so the existing entry survives verbatim on every merge. Only
+-- genuinely new carry-over entities arrive as full entries. This book's
+-- timeline/current-state stay untouched (prompt + mechanical strip). Same
+-- sentinel wire-safety as the section prompts.
 XrayMerge.CROSS_BOOK_DELTA_PROMPT = [[Update this X-Ray for "{title}"{author_clause} by folding in the X-Ray of a related book below (for example an earlier book in the same series, or a companion work).
 
 Previous analysis of "{title}" (covers up to %COVERAGE%):
@@ -109,17 +114,16 @@ X-Ray of the related book:
 
 @@KOA_MERGE_INPUTS@@
 
-Output ONLY the new or changed entries as a JSON object. Use exactly the same JSON keys and structure as the previous analysis. Your output will be programmatically merged with the existing data, so:
-- OMIT categories entirely if nothing changed in them — they will be preserved as-is
-- When the related book's X-Ray adds background on an entity that ALSO appears in "{title}" (a recurring character, place, concept, or term), output the COMPLETE updated entry with all fields, weaving that background in (it will replace the old version)
-- Add entities from the related book ONLY when they matter for understanding "{title}" (recurring or referenced figures, shared places, carried-over concepts); their descriptions should present the related book's knowledge as background
-- timeline / argument_development and current_state / current_position belong to "{title}" alone — NEVER add the related book's events to them; omit these categories entirely
-- To reference an existing entity, use the EXACT name from the entity list above
-- Do not invent entities or events that appear in neither X-Ray
+Output ONLY a JSON object in this delta format — it will be programmatically merged with the existing data:
+- "background_updates": [{"name": "Exact Existing Name", "background": "One to three sentences of background from the related book.", "aliases": ["optional additional alias"]}] — one entry for each entity that appears in BOTH X-Rays (recurring characters, places, concepts, terms). Use the EXACT name from the entity list above. The existing entry is kept exactly as it is and your background text is attached alongside it, so cover only what the related book adds: who or what they were there, what they did, what carries over. This is the ONLY way to touch an existing entity — NEVER repeat an existing entity in the category arrays.
+- Category arrays (same JSON keys and structure as the previous analysis): ONLY for entities from the related book that do NOT appear in the previous analysis but matter for understanding "{title}" (recurring or referenced figures, shared places, carried-over concepts). Write their descriptions as background knowledge from the related book.
+- OMIT categories with nothing to add — they are preserved as-is
+- timeline / argument_development and current_state / current_position belong to "{title}" alone — NEVER include them
+- Do not invent entities that appear in neither X-Ray
 
 @@KOA_MERGE_NEVER@@
 
-CRITICAL: Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values must be written in {response_language}, regardless of the language of the source text.]]
+CRITICAL: Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values, including all background texts, must be written in {response_language}, regardless of the language of the source text.]]
 
 --- Coverage-tagged inputs block (the shape the series merge reuses later:
 --- swap section labels for book labels). Rides the {incremental_book_text}
@@ -243,6 +247,135 @@ function XrayMerge.buildCrossBookPrompt(main_entry, entity_index, never_pairs, s
         index = entity_index or "",
         never = XrayMerge.neverLines(never_pairs),
     }
+end
+
+-- Categories cross-book merges must never touch: append categories (the
+-- target's own narrative) and singletons (its reading state). Mirrors the
+-- parser's APPEND/SINGLETON sets; everything else is name-matched entities.
+local PROTECTED_CATEGORIES = {
+    timeline = true,
+    argument_development = true,
+    current_state = true,
+    current_position = true,
+    conclusion = true,
+    reader_engagement = true,
+}
+
+--- name/alias (lowercased) → item, over every entity category. First bind
+--- wins (duplicate names are the dedup engine's problem, not ours). Pure.
+local function buildEntityLookup(base_data)
+    local XrayParser = require("koassistant_xray_parser")
+    local lookup = {}
+    local function learn(key, item)
+        if type(key) == "string" and key ~= "" then
+            local norm = key:lower()
+            if lookup[norm] == nil then lookup[norm] = item end
+        end
+    end
+    for _idx, cat in ipairs(XrayParser.getCategories(base_data or {})) do
+        if not PROTECTED_CATEGORIES[cat.key] and type(cat.items) == "table" then
+            for _idx2, item in ipairs(cat.items) do
+                learn(XrayParser.getItemName(item, cat.key), item)
+                if type(item.aliases) == "table" then
+                    for _idx3, alias in ipairs(item.aliases) do learn(alias, item) end
+                end
+            end
+        end
+    end
+    return lookup
+end
+
+--- Union new aliases into an item, case-insensitive, never duplicating the
+--- item's own name. Mutates the item.
+local function mergeAliasesInto(item, additions)
+    if type(additions) ~= "table" then return end
+    local aliases = type(item.aliases) == "table" and item.aliases or {}
+    local seen = {}
+    if type(item.name) == "string" then seen[item.name:lower()] = true end
+    if type(item.term) == "string" then seen[item.term:lower()] = true end
+    for _idx, a in ipairs(aliases) do
+        if type(a) == "string" then seen[a:lower()] = true end
+    end
+    local added = false
+    for _idx, a in ipairs(additions) do
+        if type(a) == "string" and a ~= "" and not seen[a:lower()] then
+            aliases[#aliases + 1] = a
+            seen[a:lower()] = true
+            added = true
+        end
+    end
+    if added then item.aliases = aliases end
+end
+
+--- Attach cross-book background to existing entities MECHANICALLY (item 44):
+--- the matched entry keeps its description verbatim; the background rides the
+--- item's `background` array ({ source, text }, per-source replace — see
+--- XrayParser.mergeBackground) and optional new aliases are unioned in.
+--- Matching is by name OR alias, case-insensitive. Mutates base_data. Pure
+--- otherwise.
+--- @param base_data table Parsed target X-Ray
+--- @param updates table Array of { name, background, aliases? }
+--- @param source_title string The related book's title (provenance label)
+--- @return number applied, number unmatched
+function XrayMerge.applyBackgroundUpdates(base_data, updates, source_title)
+    local XrayParser = require("koassistant_xray_parser")
+    local applied, unmatched = 0, 0
+    if type(base_data) ~= "table" or type(updates) ~= "table" then
+        return applied, unmatched
+    end
+    local lookup = buildEntityLookup(base_data)
+    for _idx, upd in ipairs(updates) do
+        local name = type(upd) == "table" and type(upd.name) == "string" and upd.name
+        local item = name and lookup[name:lower()]
+        if item and type(upd.background) == "string" and upd.background ~= "" then
+            item.background = XrayParser.mergeBackground(item.background,
+                { { source = source_title, text = upd.background } })
+            mergeAliasesInto(item, upd.aliases)
+            applied = applied + 1
+        else
+            unmatched = unmatched + 1
+        end
+    end
+    return applied, unmatched
+end
+
+--- Pre-merge transform for cross-book deltas (rides WriteBack.applyXray's
+--- transform hook): applies background_updates to the BASE, strips the
+--- protected categories, and drops any disobedient full rewrite of an
+--- existing entity from the delta (salvaging its aliases) — so a cross-book
+--- merge can NEVER replace or shorten what the target book already knows,
+--- regardless of model tier.
+--- @param source_title string The related book's title
+--- @return function transform(delta, base_parsed)
+function XrayMerge.crossBookTransform(source_title)
+    return function(delta, base_parsed)
+        if type(delta) ~= "table" or type(base_parsed) ~= "table" then return end
+        local updates = delta.background_updates
+        delta.background_updates = nil
+        local applied, unmatched = XrayMerge.applyBackgroundUpdates(
+            base_parsed, updates or {}, source_title)
+        for key in pairs(PROTECTED_CATEGORIES) do delta[key] = nil end
+        local lookup = buildEntityLookup(base_parsed)
+        local dropped = 0
+        for key, arr in pairs(delta) do
+            if type(arr) == "table" and #arr > 0 then
+                local kept = {}
+                for _idx, entry in ipairs(arr) do
+                    local name = type(entry) == "table" and (entry.name or entry.term)
+                    local hit = type(name) == "string" and lookup[name:lower()]
+                    if hit then
+                        mergeAliasesInto(hit, entry.aliases)
+                        dropped = dropped + 1
+                    else
+                        kept[#kept + 1] = entry
+                    end
+                end
+                if #kept ~= #arr then delta[key] = kept end
+            end
+        end
+        logger.info("KOAssistant XrayMerge: cross-book background —",
+            applied, "applied,", unmatched, "unmatched,", dropped, "rewrites dropped")
+    end
 end
 
 --- Replace the sentinel tokens with the artifact JSON. Called from
@@ -1054,6 +1187,9 @@ function XrayMerge.executeCrossBook(opts)
                 answer = result,
                 base = main_entry,
                 base_entry = main_entry,
+                -- Item 44: background attaches mechanically; existing entries
+                -- can never be replaced or shortened by this merge
+                transform = XrayMerge.crossBookTransform(source.title),
                 -- Cross-book knowledge claims NO target pages: progress stays
                 -- the base's (floor guard) and coverage_spans union base-only
                 -- (slice-1 reconcile — the new pass carries none)

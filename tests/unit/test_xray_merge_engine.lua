@@ -235,7 +235,10 @@ TestRunner:test("buildCrossBookPrompt: sentinels present, coverage phrased, no r
     TestRunner:assertTrue(has(payload.inputs, '{"y":2}'), "payload inputs")
     TestRunner:assertTrue(has(XrayMerge.neverLines({ { "Said", "Saeed" } }), "Said"), "never lines")
     -- The timeline stays the target book's: the prompt must say so
-    TestRunner:assertTrue(has(prompt, "NEVER add the related book's events"), "timeline protection")
+    TestRunner:assertTrue(has(prompt, "NEVER include them"), "timeline protection")
+    -- Item 44: recurring entities ride the mechanical background channel
+    TestRunner:assertTrue(has(prompt, "background_updates"), "background_updates contract")
+    TestRunner:assertTrue(has(prompt, "NEVER repeat an existing entity"), "no-rewrite rule")
 end)
 
 TestRunner:test("appendBookProvenance accumulates and dedups exact titles", function()
@@ -245,6 +248,104 @@ TestRunner:test("appendBookProvenance accumulates and dedups exact titles", func
     TestRunner:assertEqual(XrayMerge.appendBookProvenance("Book One; Book Two", "Book One"),
         "Book One; Book Two", "exact re-merge does not duplicate")
     TestRunner:assertEqual(XrayMerge.appendBookProvenance("", "Book One"), "Book One")
+end)
+
+print("")
+print("  [cross-book mechanical background (item 44)]")
+
+local BASE_JSON = [[{
+  "type": "fiction",
+  "characters": [
+    {"name": "John Smith", "aliases": ["Johnny"], "role": "Supporting",
+     "description": "A farmer's son from the northern village."}
+  ],
+  "locations": [
+    {"name": "Northern Village", "description": "A small farming settlement."}
+  ],
+  "timeline": [
+    {"event": "John arrives", "chapter": "Ch 1"}
+  ]
+}]]
+
+TestRunner:test("applyBackgroundUpdates: attaches by name or alias, never touches the description", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local data = XrayParser.parse(BASE_JSON)
+    local applied, unmatched = XrayMerge.applyBackgroundUpdates(data, {
+        { name = "Johnny", background = "Grew up on his father's farm.",
+          aliases = { "The Farmer's Son", "Johnny" } },
+        { name = "Nobody Known", background = "Should not land." },
+    }, "First Book")
+    TestRunner:assertEqual(applied, 1, "one applied")
+    TestRunner:assertEqual(unmatched, 1, "one unmatched")
+    local john = data.characters[1]
+    TestRunner:assertEqual(john.description, "A farmer's son from the northern village.",
+        "description untouched")
+    TestRunner:assertEqual(john.background[1].source, "First Book", "background source")
+    TestRunner:assertEqual(john.background[1].text, "Grew up on his father's farm.", "background text")
+    local alias_set = table.concat(john.aliases, "|")
+    TestRunner:assertTrue(has(alias_set, "The Farmer's Son"), "new alias unioned")
+    TestRunner:assertEqual(#john.aliases, 2, "existing alias not duplicated")
+end)
+
+TestRunner:test("crossBookTransform: rewrite dropped (aliases salvaged), timeline stripped, new entity lands", function()
+    local WriteBack = require("koassistant_artifact_writeback")
+    local delta = [[{
+      "background_updates": [
+        {"name": "John Smith", "background": "Left the farm after the fire."}
+      ],
+      "characters": [
+        {"name": "Johnny", "aliases": ["J.S."], "description": "REWRITE ATTEMPT: teammate of protagonist."},
+        {"name": "New Guy", "description": "Carried over from the related book."}
+      ],
+      "timeline": [
+        {"event": "Other book's event", "chapter": "Elsewhere"}
+      ]
+    }]]
+    local parsed, err = WriteBack.parseXrayAnswer(delta, BASE_JSON,
+        XrayMerge.crossBookTransform("First Book"))
+    TestRunner:assertTrue(parsed ~= nil, "merge parses: " .. tostring(err))
+    local john
+    for _idx, c in ipairs(parsed.characters) do
+        if c.name == "John Smith" then john = c end
+    end
+    TestRunner:assertEqual(john.description, "A farmer's son from the northern village.",
+        "disobedient rewrite must not replace the entry")
+    TestRunner:assertEqual(john.background[1].text, "Left the farm after the fire.",
+        "background applied")
+    TestRunner:assertTrue(has(table.concat(john.aliases, "|"), "J.S."),
+        "rewrite's aliases salvaged")
+    TestRunner:assertEqual(#parsed.characters, 2, "new entity appended, rewrite dropped")
+    TestRunner:assertEqual(parsed.characters[2].name, "New Guy", "carry-over entity lands")
+    TestRunner:assertEqual(#parsed.timeline, 1, "related book's events stripped")
+    TestRunner:assertEqual(parsed.timeline[1].event, "John arrives", "target timeline intact")
+end)
+
+TestRunner:test("re-merging the same book replaces its background instead of duplicating", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local data = XrayParser.parse(BASE_JSON)
+    XrayMerge.applyBackgroundUpdates(data,
+        { { name = "John Smith", background = "Old text." } }, "First Book")
+    XrayMerge.applyBackgroundUpdates(data,
+        { { name = "John Smith", background = "Updated text." } }, "First Book")
+    XrayMerge.applyBackgroundUpdates(data,
+        { { name = "John Smith", background = "Companion note." } }, "Second Book")
+    local bg = data.characters[1].background
+    TestRunner:assertEqual(#bg, 2, "one entry per source book")
+    TestRunner:assertEqual(bg[1].text, "Updated text.", "same-source re-merge replaces")
+    TestRunner:assertEqual(bg[2].source, "Second Book", "second source appends")
+end)
+
+TestRunner:test("a background_updates-only delta parses (no category key needed)", function()
+    local WriteBack = require("koassistant_artifact_writeback")
+    local delta = [[{"background_updates": [
+      {"name": "Northern Village", "background": "Founded by settlers in the first book."}
+    ]}]]
+    local parsed, err = WriteBack.parseXrayAnswer(delta, BASE_JSON,
+        XrayMerge.crossBookTransform("First Book"))
+    TestRunner:assertTrue(parsed ~= nil, "parses: " .. tostring(err))
+    TestRunner:assertEqual(parsed.locations[1].background[1].text,
+        "Founded by settlers in the first book.", "location background applied")
+    TestRunner:assertEqual(#parsed.characters, 1, "characters untouched")
 end)
 
 local ok = TestRunner:summary()

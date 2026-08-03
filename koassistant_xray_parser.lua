@@ -5,6 +5,7 @@
 local json = require("json")
 local logger = require("logger")
 local _ = require("koassistant_gettext")
+local T = require("ffi/util").template
 local JsonRepair = require("koassistant_json_repair")
 
 local XrayParser = {}
@@ -254,6 +255,9 @@ local function isValidXrayData(data)
     if data.error then return true end
     -- Normalize common key variants before checking
     normalizeKeyAliases(data)
+    -- Cross-book merge deltas (item 44) may carry ONLY mechanical background
+    -- updates — recognize them so such a delta parses without a category key
+    if type(data.background_updates) == "table" then return true end
     -- Check for fiction keys
     for _idx, key in ipairs(FICTION_KEYS) do
         if data[key] then
@@ -960,7 +964,29 @@ function XrayParser.formatItemDetail(item, category_key)
         end
     end
 
+    -- Cross-book background (item 44): attached mechanically by the merge,
+    -- shown for any category that carries it
+    if type(item.background) == "table" then
+        for _idx, b in ipairs(item.background) do
+            if type(b) == "table" and type(b.text) == "string" and b.text ~= "" then
+                if #parts > 0 and parts[#parts] ~= "" then table.insert(parts, "") end
+                table.insert(parts, T(_("Background — \"%1\": %2"), b.source or "?", b.text))
+            end
+        end
+    end
+
     return table.concat(parts, "\n")
+end
+
+--- Append machine-facing background lines (cross-book merge, item 44) for one
+--- item to a markdown line buffer. English labels like the rest of the render.
+local function insertBackgroundLines(lines, item)
+    if type(item.background) ~= "table" then return end
+    for _idx, b in ipairs(item.background) do
+        if type(b) == "table" and type(b.text) == "string" and b.text ~= "" then
+            table.insert(lines, "*Background — \"" .. (b.source or "?") .. "\": " .. b.text .. "*")
+        end
+    end
 end
 
 --- Render structured X-Ray data to readable markdown
@@ -1085,6 +1111,7 @@ function XrayParser.renderToMarkdown(data, title, progress)
                     if c_connections and #c_connections > 0 then
                         table.insert(lines, "*Connections: " .. table.concat(c_connections, ", ") .. "*")
                     end
+                    insertBackgroundLines(lines, char)
                     table.insert(lines, "")
                 end
             elseif cat.key == "locations" or cat.key == "core_concepts"
@@ -1106,6 +1133,7 @@ function XrayParser.renderToMarkdown(data, title, progress)
                     if l_refs and #l_refs > 0 then
                         table.insert(lines, "*References: " .. table.concat(l_refs, ", ") .. "*")
                     end
+                    insertBackgroundLines(lines, loc)
                     table.insert(lines, "")
                 end
             elseif cat.key == "themes" or cat.key == "arguments" or cat.key == "findings" then
@@ -1125,6 +1153,7 @@ function XrayParser.renderToMarkdown(data, title, progress)
                     if t_refs and #t_refs > 0 then
                         table.insert(lines, "*References: " .. table.concat(t_refs, ", ") .. "*")
                     end
+                    insertBackgroundLines(lines, theme)
                     table.insert(lines, "")
                 end
             elseif cat.key == "lexicon" or cat.key == "terminology" or cat.key == "technical_terms" then
@@ -1134,6 +1163,7 @@ function XrayParser.renderToMarkdown(data, title, progress)
                         entry = entry .. ": " .. term.definition
                     end
                     table.insert(lines, entry)
+                    insertBackgroundLines(lines, term)
                     table.insert(lines, "")
                 end
             elseif cat.key == "timeline" or cat.key == "argument_development" then
@@ -1554,6 +1584,40 @@ local APPEND_CATEGORIES = {
     argument_development = true,
 }
 
+--- Merge cross-book background entries (arrays of { source, text }): an
+--- addition REPLACES an existing entry from the same source (re-merging an
+--- updated book never duplicates) and appends otherwise. Returns a NEW array,
+--- nil when nothing valid remains. Pure.
+--- @param existing table|nil The item's current background array
+--- @param additions table|nil Entries to fold in
+--- @return table|nil
+function XrayParser.mergeBackground(existing, additions)
+    local merged = {}
+    local by_source = {}
+    local function add(entry)
+        if type(entry) ~= "table" then return end
+        local text = entry.text
+        if type(text) ~= "string" or text == "" then return end
+        local source = type(entry.source) == "string" and entry.source ~= ""
+            and entry.source or "?"
+        local idx = by_source[source]
+        if idx then
+            merged[idx] = { source = source, text = text }
+        else
+            merged[#merged + 1] = { source = source, text = text }
+            by_source[source] = #merged
+        end
+    end
+    if type(existing) == "table" then
+        for _idx, entry in ipairs(existing) do add(entry) end
+    end
+    if type(additions) == "table" then
+        for _idx, entry in ipairs(additions) do add(entry) end
+    end
+    if #merged == 0 then return nil end
+    return merged
+end
+
 --- Merge array category items by name matching (case-insensitive).
 --- Matching items are replaced in-place; new items are appended.
 --- @param old_items table Existing items array (mutated)
@@ -1571,6 +1635,11 @@ local function mergeArrayCategory(old_items, new_items)
         local name = getItemSearchName(new_item)
         local idx = name and lookup[name:lower()]
         if idx then
+            -- background is attached mechanically (cross-book merge, item 44)
+            -- and never part of the model schema — a rewrite must not shed it
+            if new_item.background == nil then
+                new_item.background = old_items[idx].background
+            end
             old_items[idx] = new_item
         else
             old_items[#old_items + 1] = new_item

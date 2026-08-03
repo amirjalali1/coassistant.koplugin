@@ -344,6 +344,31 @@ function TestXrayMerge:runAll()
         self:assertEquals(#merged.locations, 1, "Locations preserved with empty new_data")
     end)
 
+    self:test("replace carries over background when the new entry lacks it (item 44)", function()
+        local old = deepcopy(makeFictionData())
+        local bg = { { source = "First Book", text = "Background line." } }
+        old.characters[1].background = bg
+        local rewrite_name = old.characters[1].name
+        local merged = XrayParser.merge(old, {
+            characters = { { name = rewrite_name, description = "Rewritten." } },
+        })
+        self:assertEquals(merged.characters[1].description, "Rewritten.", "Rewrite applied")
+        self:assert(merged.characters[1].background ~= nil, "Background survived the rewrite")
+        self:assertEquals(merged.characters[1].background[1].source, "First Book",
+            "Background source intact")
+    end)
+
+    self:test("mergeBackground: per-source replace, append, invalid entries dropped", function()
+        local merged = XrayParser.mergeBackground(
+            { { source = "A", text = "old" }, { source = "B", text = "keep" } },
+            { { source = "A", text = "new" }, { text = "" }, "junk" })
+        self:assertEquals(#merged, 2, "Two sources")
+        self:assertEquals(merged[1].text, "new", "Same source replaced in place")
+        self:assertEquals(merged[2].text, "keep", "Other source kept")
+        self:assertEquals(XrayParser.mergeBackground(nil, { { text = "" } }), nil,
+            "Nothing valid yields nil, not an empty array")
+    end)
+
     -- Print summary
     print(string.format("\n%d passed, %d failed", self.passed, self.failed))
     return self.failed == 0

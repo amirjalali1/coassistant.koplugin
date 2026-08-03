@@ -1158,6 +1158,7 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 - OMIT categories entirely if nothing changed in them — they will be preserved as-is
 - When adding a new entry to a category, include ONLY the new entries in that category's array
 - When modifying an existing entry, output the COMPLETE entry with all fields (it will replace the old version)
+- A modified entry REPLACES the old one — carry over its existing details (identifying facts, relationships, earlier developments) and add the new; anything you leave out is lost
 - To reference an existing entity, use the EXACT name from the entity list above
 - You MUST always include "current_position" — this is always considered changed
 
@@ -1204,6 +1205,7 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 - OMIT categories entirely if nothing changed in them — they will be preserved as-is
 - When adding a new entry to a category, include ONLY the new entries in that category's array
 - When modifying an existing entry, output the COMPLETE entry with all fields (it will replace the old version)
+- A modified entry REPLACES the old one — carry over its existing details (identifying facts, relationships, earlier developments) and add the new; anything you leave out is lost
 - To reference an existing entity, use the EXACT name from the entity list above
 - You MUST always include "current_state" (fiction) or "current_position" (nonfiction) — these are always considered changed
 

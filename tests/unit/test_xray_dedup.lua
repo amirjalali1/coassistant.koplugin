@@ -168,6 +168,24 @@ TestRunner:test("applyMergeToData: drop removed, aliases baked, description kept
     TestRunner:assertTrue(has_jack, "dropped name baked as alias")
 end)
 
+TestRunner:test("applyMergeToData: dropped entry's cross-book background moves to the kept one", function()
+    local data = {
+        characters = {
+            { name = "Ada", description = "old",
+              background = { { source = "First Book", text = "kept side" } } },
+            { name = "Ada Lovelace", description = "richer",
+              background = { { source = "First Book", text = "dropped side" },
+                             { source = "Second Book", text = "companion note" } } },
+        },
+    }
+    local changed = XrayDedup.applyMergeToData(data, "characters", "Ada", "Ada Lovelace", nil)
+    TestRunner:assertEqual(changed, true, "merge applied")
+    local bg = data.characters[1].background
+    TestRunner:assertEqual(#bg, 2, "per-source dedupe across the absorb")
+    TestRunner:assertEqual(bg[1].text, "dropped side", "same source: absorbed entry wins (later add)")
+    TestRunner:assertEqual(bg[2].source, "Second Book", "unique source transferred")
+end)
+
 TestRunner:test("applyMergeToData: AI description replaces; alias dedup vs keep name", function()
     local data = {
         characters = {

@@ -282,12 +282,16 @@ end
 --- @param base table|string|nil Base to merge INTO: a parsed X-Ray table, a
 ---   cache entry ({ result = json string }), or a raw JSON string. nil =
 ---   complete mode (the answer stands alone).
+--- @param transform function|nil transform(delta, base_parsed) called after
+---   both sides parse and BEFORE the delta merge — may mutate either in place
+---   (item 44: the cross-book merge applies mechanical background updates and
+---   strips disobedient rewrites here). base_parsed is nil in complete mode.
 --- @return table|nil parsed Merged/complete X-Ray data table
 --- @return string|nil err Error text (model refusal or unparseable output)
 --- @return string|nil cache_json Serialized JSON for cache storage (pretty
 ---   under dkjson in the test env; compact under KOReader's json — the cache
 ---   is machine-read either way)
-function WriteBack.parseXrayAnswer(answer, base)
+function WriteBack.parseXrayAnswer(answer, base, transform)
     local XrayParser = require("koassistant_xray_parser")
     local parsed = XrayParser.parse(answer or "")
     if parsed and parsed.error then
@@ -306,7 +310,12 @@ function WriteBack.parseXrayAnswer(answer, base)
         if type(base_parsed) ~= "table" or base_parsed.error then
             return nil, "base artifact is not a valid X-Ray JSON structure", nil
         end
+        if type(transform) == "function" then
+            transform(parsed, base_parsed)
+        end
         parsed = XrayParser.merge(base_parsed, parsed)
+    elseif type(transform) == "function" then
+        transform(parsed, nil)
     end
     local json = require("json")
     local ok, cache_json = pcall(json.encode, parsed, { pretty = true, indent = true })
@@ -368,15 +377,16 @@ end
 ---   base_entry (optional: the cache entry for flags/coverage when `base` is
 ---   a content form) · progress_decimal (coverage of the RESULT; guarded to
 ---   never regress below the base entry's) · meta (the new pass's metadata,
----   reconciled against the base entry) · limit / features (ring depth — see
----   commitXray) · refresh_fn
+---   reconciled against the base entry) · transform (pre-merge hook — see
+---   parseXrayAnswer) · limit / features (ring depth — see commitXray) ·
+---   refresh_fn
 --- @return boolean ok
 --- @return string result_or_err cache_json on success, error text on failure
 function WriteBack.applyXray(opts)
     if not (opts and opts.document_path and opts.answer) then
         return false, "missing document_path or answer"
     end
-    local parsed, err, cache_json = WriteBack.parseXrayAnswer(opts.answer, opts.base)
+    local parsed, err, cache_json = WriteBack.parseXrayAnswer(opts.answer, opts.base, opts.transform)
     if not parsed then
         return false, err or "parse failed"
     end

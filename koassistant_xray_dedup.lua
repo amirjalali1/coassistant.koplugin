@@ -305,6 +305,12 @@ function XrayDedup.applyMergeToData(data, cat_key, keep_name, drop_name, merged_
             if type(merged_description) == "string" and merged_description ~= "" then
                 keep_item.description = merged_description
             end
+            -- Cross-book background (item 44) survives the absorb: the
+            -- dropped entry's background moves over, deduped by source book
+            if type(drop_item.background) == "table" and #drop_item.background > 0 then
+                keep_item.background = XrayParser.mergeBackground(
+                    keep_item.background, drop_item.background)
+            end
             table.remove(cat.items, drop_idx)
             return true, drop_item
         end
