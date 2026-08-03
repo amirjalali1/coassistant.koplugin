@@ -45,6 +45,7 @@ end
 
 loadHandler("anthropic")
 loadHandler("openai")
+loadHandler("openai_codex")
 loadHandler("deepseek")
 loadHandler("ollama")
 loadHandler("gemini")
@@ -393,19 +394,32 @@ local function queryChatGPT(message_history, temp_config, on_complete, settings)
         return "Error: " .. err
     end
 
-    -- Get API key for the selected provider (GUI settings take priority over apikeys.lua)
-    config.api_key = getApiKey(provider, settings)
+    -- Get API key for ordinary providers. OpenAI Subscription stores OAuth
+    -- credentials separately and resolves/refreshes them only after WiFi is ready.
+    if provider ~= "openai_codex" then
+        config.api_key = getApiKey(provider, settings)
+    end
 
     -- Check if API key is required
     local api_key_required = true
-    if provider == "ollama" then
+    if provider == "ollama" or provider == "openai_codex" then
         api_key_required = false
     elseif is_custom_provider and custom_provider_config then
         -- Custom providers can optionally not require an API key (for local servers)
         api_key_required = custom_provider_config.api_key_required ~= false
     end
 
-    if not config.api_key and api_key_required then
+    if provider == "openai_codex" then
+        local OAuth = require("koassistant_openai_codex_oauth")
+        if not settings or not OAuth.isConfigured(settings) then
+            local err = "OpenAI Subscription is not connected. Connect it in Settings → API Keys."
+            if on_complete then
+                on_complete(false, nil, err)
+                return STREAMING_IN_PROGRESS
+            end
+            return "Error: " .. err
+        end
+    elseif not config.api_key and api_key_required then
         local err = string.format("No API key found for provider %s. Set it in Settings → API Keys or apikeys.lua", provider)
         if on_complete then
             on_complete(false, nil, err)
@@ -419,7 +433,7 @@ local function queryChatGPT(message_history, temp_config, on_complete, settings)
     -- When WiFi is off, shows the WiFi turn-on dialog and runs the callback after connection.
     local NetworkMgr = require("ui/network/manager")
     local query_return = STREAMING_IN_PROGRESS
-    local function doQuery()
+    local function doQueryWithAuth()
 
     local success, result = pcall(function()
         return handler:query(message_history, config)
@@ -574,7 +588,25 @@ local function queryChatGPT(message_history, temp_config, on_complete, settings)
     end
     query_return = result
 
-    end -- doQuery
+    end -- doQueryWithAuth
+
+    local function doQuery()
+        if provider ~= "openai_codex" then
+            return doQueryWithAuth()
+        end
+        require("koassistant_openai_codex_oauth").resolveAccessTokenAsync(settings, function(auth, oauth_err)
+            if not auth then
+                local err = oauth_err or "OpenAI Subscription authentication failed."
+                if on_complete then on_complete(false, nil, err) end
+                query_return = "Error: " .. err
+                return
+            end
+            config.api_key = auth.access_token
+            config.oauth = auth
+            doQueryWithAuth()
+        end)
+        return STREAMING_IN_PROGRESS
+    end
 
     -- Background requests never prompt (update-checker precedent): the auto-update
     -- fire pre-checked isWifiOn(), and a drop inside the schedule window should fail

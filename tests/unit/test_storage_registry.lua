@@ -269,9 +269,11 @@ TestRunner:test("SETTINGS_SUBKEYS has the five non-config buckets, non-empty", f
     end
 end)
 
-TestRunner:test("api_keys is classified as a credential sub-key", function()
+TestRunner:test("api_keys and subscription OAuth are classified as credential sub-keys", function()
     TestRunner:assertTrue(listContains(Registry.SETTINGS_SUBKEYS.credentials, "api_keys"),
         "api_keys must be in SETTINGS_SUBKEYS.credentials")
+    TestRunner:assertTrue(listContains(Registry.SETTINGS_SUBKEYS.credentials, "openai_codex_oauth"),
+        "openai_codex_oauth must be in SETTINGS_SUBKEYS.credentials")
 end)
 
 TestRunner:test("custom_domains is an asset (consistency with custom_behaviors)", function()

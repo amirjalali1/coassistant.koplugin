@@ -73,6 +73,14 @@ local ProviderDefaults = {
             max_tokens = 16384
         }
     },
+    openai_codex = {
+        provider = "openai_codex",
+        model = getDefaultModel("openai_codex"),
+        base_url = "https://chatgpt.com/backend-api/codex/responses",
+        additional_parameters = {
+            max_tokens = 16384
+        }
+    },
     deepseek = {
         provider = "deepseek",
         model = getDefaultModel("deepseek"),

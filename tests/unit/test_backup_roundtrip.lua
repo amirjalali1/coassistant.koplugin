@@ -156,7 +156,7 @@ local function freshManager()
 end
 
 -- Seed a realistic plugin state under the temp dir.
-local SETTINGS_BODY = 'return {\n  ["features"] = { ["api_keys"] = { ["anthropic"] = "sk-secret" } },\n  ["provider"] = "anthropic",\n}\n'
+local SETTINGS_BODY = 'return {\n  ["features"] = { ["api_keys"] = { ["anthropic"] = "sk-secret" }, ["openai_codex_oauth"] = { ["access_token"] = "oauth-access", ["refresh_token"] = "oauth-refresh", ["chatgpt_account_id"] = "acct-test" } },\n  ["provider"] = "anthropic",\n}\n'
 local CONFIG_BODY = '-- user config\nreturn { provider = "openai" }\n'
 local DOMAIN_BODY = '# Academic\nA custom domain.\n'
 local BEHAVIOR_BODY = '# Terse\nBe brief.\n'
@@ -222,6 +222,25 @@ TestRunner:test("listBackups sees the new backup", function()
     TestRunner:assertTrue(found, "listBackups should include the created backup")
 end)
 
+TestRunner:test("ordinary backup excludes API keys and subscription OAuth tokens", function()
+    local sanitized = bm:createBackup({
+        include_settings = true,
+        include_api_keys = false,
+        include_configs = false,
+        include_content = false,
+        include_chats = false,
+    })
+    TestRunner:assertTrue(sanitized and sanitized.success, "sanitized backup should succeed")
+    local check = TMP .. "/check_sanitized"
+    mkdirs(check)
+    TestRunner:assertTrue(sh(string.format('tar -xzf "%s" -C "%s"', sanitized.backup_path, check)),
+        "sanitized archive should extract")
+    local settings = LuaSettingsStub:open(check .. "/settings/koassistant_settings.lua")
+    local features = settings:readSetting("features") or {}
+    TestRunner:assertTrue(features.api_keys == nil, "API keys excluded")
+    TestRunner:assertTrue(features.openai_codex_oauth == nil, "OAuth tokens excluded")
+end)
+
 wipeTmp()
 
 --------------------------------------------------------------------------------
@@ -275,6 +294,9 @@ TestRunner:test("settings (incl. API keys) come back semantically", function()
     local features = s:readSetting("features") or {}
     TestRunner:assertTrue(features.api_keys and features.api_keys.anthropic == "sk-secret",
         "API key should restore (include_api_keys was on)")
+    TestRunner:assertTrue(features.openai_codex_oauth
+        and features.openai_codex_oauth.refresh_token == "oauth-refresh",
+        "subscription OAuth tokens should restore only with credentials")
 end)
 
 wipeTmp()

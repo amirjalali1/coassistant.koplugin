@@ -3057,7 +3057,8 @@ function PromptsManager:showProviderSelector(state, show_all)
         if configured or show_all or state.provider == provider then
             local prefix = (state.provider == provider) and "● " or "○ "
             local model_count = ModelLists[provider] and #ModelLists[provider] or 0
-            local label = prefix .. provider .. " (" .. model_count .. " models)"
+            local display = self.plugin:getProviderDisplayName(provider)
+            local label = prefix .. display .. " (" .. model_count .. " models)"
             if not configured then
                 label = T(_("%1 (no key)"), label)
             end
@@ -3859,7 +3860,8 @@ function PromptsManager:showBuiltinProviderSelector(state, show_all)
         if configured or show_all or state.provider == provider then
             local prefix = (state.provider == provider) and "● " or "○ "
             local model_count = ModelLists[provider] and #ModelLists[provider] or 0
-            local label = prefix .. provider .. " (" .. model_count .. " models)"
+            local display = self.plugin:getProviderDisplayName(provider)
+            local label = prefix .. display .. " (" .. model_count .. " models)"
             if not configured then
                 label = T(_("%1 (no key)"), label)
             end

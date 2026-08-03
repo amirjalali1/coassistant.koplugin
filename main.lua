@@ -2210,6 +2210,9 @@ function AskGPT:getProviderDisplayName(provider_id)
   if custom then
     return custom.name
   end
+  if provider_id == "openai_codex" then
+    return _("OpenAI Subscription")
+  end
   -- Built-in provider: capitalize first letter
   return provider_id:gsub("^%l", string.upper)
 end
@@ -2232,6 +2235,9 @@ end
 -- api_key_required = false). Mirrors the pre-flight gate in koassistant_gpt_query.
 function AskGPT:isProviderConfigured(provider_id, custom_config)
   if provider_id == "ollama" then return true end
+  if provider_id == "openai_codex" then
+    return require("koassistant_openai_codex_oauth").isConfigured(self.settings)
+  end
   local custom = custom_config or self:getCustomProvider(provider_id)
   if custom and custom.api_key_required == false then return true end
   local BaseHandler = require("koassistant_api.base")
@@ -2242,6 +2248,7 @@ end
 -- key. While false (fresh install), key-filtered pickers stay disarmed and show
 -- the full list; keyless-but-usable providers like Ollama don't count toward this.
 function AskGPT:hasAnyRealApiKey()
+  if require("koassistant_openai_codex_oauth").isConfigured(self.settings) then return true end
   local BaseHandler = require("koassistant_api.base")
   local ModelLists = require("koassistant_model_lists")
   for _idx, provider in ipairs(ModelLists.getAllProviders()) do
@@ -2471,7 +2478,7 @@ function AskGPT:buildProviderMenu(simplified, show_all)
   for _i, provider in ipairs(builtin_providers) do
     table.insert(all_providers, {
       id = provider,
-      display_name = provider:gsub("^%l", string.upper),  -- Capitalize
+      display_name = self:getProviderDisplayName(provider),
       is_custom = false,
     })
   end
@@ -3428,10 +3435,13 @@ function AskGPT:buildApiKeysMenu()
 
   -- Add built-in providers
   for _i, provider in ipairs(builtin_providers) do
-    local has_gui_key = gui_keys[provider] and gui_keys[provider] ~= ""
+    local is_subscription = provider == "openai_codex"
+    local has_gui_key = not is_subscription and gui_keys[provider] and gui_keys[provider] ~= ""
     local has_file_key = hasFileApiKey(provider)
     local status = ""
-    if has_gui_key then
+    if is_subscription and require("koassistant_openai_codex_oauth").isConfigured(self.settings) then
+      status = " [connected]"
+    elseif has_gui_key then
       status = " [set]"
     elseif has_file_key then
       status = " (file)"
@@ -3439,7 +3449,7 @@ function AskGPT:buildApiKeysMenu()
 
     table.insert(all_providers, {
       id = provider,
-      display_name = provider:gsub("^%l", string.upper),
+      display_name = self:getProviderDisplayName(provider),
       status = status,
       is_custom = false,
     })
@@ -3478,7 +3488,11 @@ function AskGPT:buildApiKeysMenu()
       text = text,
       keep_menu_open = true,
       callback = function()
-        self_ref:showApiKeyDialog(prov_copy.id, prov_copy.display_name, prov_copy.api_key_optional)
+        if prov_copy.id == "openai_codex" then
+          require("koassistant_openai_codex_oauth").showManageDialog(self_ref)
+        else
+          self_ref:showApiKeyDialog(prov_copy.id, prov_copy.display_name, prov_copy.api_key_optional)
+        end
       end,
     })
   end
@@ -15431,6 +15445,7 @@ function AskGPT:resetAllCustomizations()
   -- Apply defaults, preserving only API keys
   local new_features = SettingsSchema.applyDefaults(features, {
     "features.api_keys",
+    "features.openai_codex_oauth",
   })
 
   self.settings:saveSetting("features", new_features)
@@ -15645,6 +15660,7 @@ end
 function AskGPT:resetAPIKeys()
   local features = self.settings:readSetting("features") or {}
   features.api_keys = nil
+  features.openai_codex_oauth = nil
   self.settings:saveSetting("features", features)
   self.settings:flush()
   self:updateConfigFromSettings()

@@ -794,7 +794,10 @@ local function pickProviderModel(opts)
         end
         local all_providers = {}
         for _idx, provider in ipairs(ModelLists.getAllProviders()) do
-            table.insert(all_providers, { id = provider, name = provider:gsub("^%l", string.upper) })
+            local name = plugin and plugin.getProviderDisplayName
+                and plugin:getProviderDisplayName(provider)
+                or provider:gsub("^%l", string.upper)
+            table.insert(all_providers, { id = provider, name = name })
         end
         if plugin and plugin.getCustomProviders then
             for _idx, cp in ipairs(plugin:getCustomProviders()) do

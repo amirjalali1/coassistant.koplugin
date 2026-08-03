@@ -369,7 +369,13 @@ function BackupManager:_extractArchive(archive_path, dest_dir, specific_file)
     -- specific_file: optional, extract only this file (e.g., "manifest.json")
     local cmd
     if specific_file then
-        cmd = string.format('tar -xzf "%s" -C "%s" "%s" 2>&1', safe_archive, safe_dest, specific_file)
+        -- Archives created with `tar ... .` store entries as `./name` on GNU
+        -- tar, while older/platform archives may store `name`. Accept both.
+        cmd = string.format(
+            'tar -xzf "%s" -C "%s" "%s" 2>/dev/null || tar -xzf "%s" -C "%s" "./%s" 2>&1',
+            safe_archive, safe_dest, specific_file,
+            safe_archive, safe_dest, specific_file
+        )
     else
         cmd = string.format('tar -xzf "%s" -C "%s"', safe_archive, safe_dest)
     end
@@ -881,11 +887,10 @@ function BackupManager:createBackup(options)
                 local settings = LuaSettings:open(settings_file)
                 local features = settings:readSetting("features") or {}
 
-                -- Save API keys for later restoration
-                local api_keys = features.api_keys
-
-                -- Remove API keys temporarily
+                -- OAuth subscription tokens are credentials and follow the same
+                -- include/exclude switch as API keys.
                 features.api_keys = nil
+                features.openai_codex_oauth = nil
 
                 -- Save modified settings to temp location
                 local temp_settings = LuaSettings:open(settings_dir .. "/koassistant_settings.lua")
@@ -1443,7 +1448,7 @@ function BackupManager:restoreBackup(backup_path, options)
                 local current_features = current_settings:readSetting("features") or {}
                 local backup_features = backup_settings:readSetting("features") or {}
 
-                -- Merge API keys if requested
+                -- Merge API keys and subscription OAuth credentials if requested
                 if options.restore_api_keys and manifest.contents.api_keys then
                     if backup_features.api_keys then
                         current_features.api_keys = current_features.api_keys or {}
@@ -1451,11 +1456,15 @@ function BackupManager:restoreBackup(backup_path, options)
                             current_features.api_keys[provider] = key
                         end
                     end
+                    if backup_features.openai_codex_oauth then
+                        current_features.openai_codex_oauth = backup_features.openai_codex_oauth
+                    end
                 end
 
                 -- Merge other features (backup takes precedence)
                 for key, value in pairs(backup_features) do
-                    if key ~= "api_keys" or (options.restore_api_keys and manifest.contents.api_keys) then
+                    local credential = key == "api_keys" or key == "openai_codex_oauth"
+                    if not credential or (options.restore_api_keys and manifest.contents.api_keys) then
                         current_features[key] = value
                     end
                 end
@@ -1500,6 +1509,12 @@ function BackupManager:restoreBackup(backup_path, options)
                 -- Replace mode: replace entire settings file with validation
                 local backup_settings = LuaSettings:open(backup_settings_file)
                 local backup_features = backup_settings:readSetting("features") or {}
+
+                -- Never restore credentials unless the user explicitly requested it.
+                if not options.restore_api_keys or not manifest.contents.api_keys then
+                    backup_features.api_keys = nil
+                    backup_features.openai_codex_oauth = nil
+                end
 
                 -- Validate custom actions in features
                 if backup_features.custom_actions then

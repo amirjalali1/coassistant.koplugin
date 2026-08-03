@@ -1476,7 +1476,7 @@ function ModelConstraints.applyReasoningParams(provider, api_params, decision)
         end
         -- else (off + default-off, e.g. Opus/Sonnet 4.6): emit nothing (Anthropic reasons
         -- only when `thinking` is present).
-    elseif provider == "openai" then
+    elseif provider == "openai" or provider == "openai_codex" then
         if on then api_params.reasoning = { effort = decision.effort } end
     elseif provider == "gemini" then
         if decision.axis == "budget" then
@@ -1529,5 +1529,11 @@ function ModelConstraints.applyReasoningParams(provider, api_params, decision)
         end
     end
 end
+
+-- OpenAI Subscription uses the same model contracts as the direct OpenAI
+-- provider; only its authentication and endpoint differ.
+ModelConstraints.openai_codex = ModelConstraints.openai
+ModelConstraints.capabilities.openai_codex = ModelConstraints.capabilities.openai
+ModelConstraints.reasoning_profiles.openai_codex = ModelConstraints.reasoning_profiles.openai
 
 return ModelConstraints
