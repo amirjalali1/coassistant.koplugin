@@ -83,6 +83,13 @@ local SettingsSchema = {
             text = _("Browse Artifacts"),
             emoji = "\u{1F4E6}",
             callback = "showArtifactBrowser",
+        },
+        {
+            id = "book_groups",
+            type = "action",
+            text = _("Book Groups"),
+            emoji = "\u{1F5C2}\u{FE0F}",
+            callback = "showBookGroupsManager",
             separator = true,
         },
 

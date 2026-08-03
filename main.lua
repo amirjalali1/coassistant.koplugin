@@ -5144,6 +5144,51 @@ end
 
 --- Show a specific cache in the viewer
 --- @param cache_info table: { name, key, data } where data contains result, progress_decimal, model, timestamp, used_annotations, used_book_text
+--- Main-menu entry (settings schema "book_groups" action row, item 46)
+function AskGPT:showBookGroupsManager()
+  local GroupsUI = require("koassistant_book_groups_ui")
+  GroupsUI.showManager({ plugin = self, ui = self.ui })
+end
+
+--- Group prev/next navigation for an artifact surface (item 46). Returns nil
+--- when the book is in no group or the key is book-internal (section
+--- artifacts). A direction whose neighbor lacks the same artifact comes back
+--- with entry = nil (render as a disabled hint).
+--- @param file string The artifact's book
+--- @param key string Cache key ("_xray_cache"/"_summary_cache"/"_analyze_cache" or a per-action id)
+--- @param name string Display name for the reopened view
+--- @return table|nil { prev = { title, entry, open }|nil, next = ... }
+function AskGPT:_groupNavFor(file, key, name)
+  if not file or type(key) ~= "string" then return nil end
+  if key:find("_section:", 1, true) then return nil end
+  local BookGroups = require("koassistant_book_groups")
+  local prev_path, next_path = BookGroups.neighbors(file)
+  if not prev_path and not next_path then return nil end
+  local ActionCache = require("koassistant_action_cache")
+  local self_ref = self
+  local function side(p)
+    if not p then return nil end
+    local ok, entry
+    if key == "_xray_cache" then ok, entry = pcall(ActionCache.getXrayCache, p)
+    elseif key == "_analyze_cache" then ok, entry = pcall(ActionCache.getAnalyzeCache, p)
+    elseif key == "_summary_cache" then ok, entry = pcall(ActionCache.getSummaryCache, p)
+    else ok, entry = pcall(ActionCache.get, p, key) end
+    if not ok or not (entry and entry.result) then entry = nil end
+    local title = BookGroups.displayTitle(p, self_ref.ui)
+    local open = entry and function()
+      if key == "_xray_cache" or key == "_analyze_cache" or key == "_summary_cache" then
+        self_ref:showCacheViewer({ name = name, key = key, data = entry,
+          book_title = title, file = p, skip_stale_popup = true })
+      else
+        self_ref:viewCachedAction({ text = name }, key, entry,
+          { file = p, book_title = title })
+      end
+    end or nil
+    return { title = title, entry = entry, open = open }
+  end
+  return { prev = side(prev_path), next = side(next_path) }
+end
+
 function AskGPT:showCacheViewer(cache_info)
   local ChatGPTViewer = require("koassistant_chatgptviewer")
   local ActionCache = require("koassistant_action_cache")
@@ -5322,6 +5367,12 @@ function AskGPT:showCacheViewer(cache_info)
           checkpoint = cache_info.checkpoint,
           checkpoint_data = cache_info.checkpoint and cache_info.data or nil,
         }
+        -- Item 46: prev/next volume rows (live main X-Rays only — archived
+        -- versions and sections are book-internal surfaces)
+        if not cache_info.checkpoint then
+          browser_metadata.group_nav = self:_groupNavFor(
+            browser_metadata.book_file, cache_info.key, cache_info.name)
+        end
         -- Add scope metadata for section X-Rays
         if is_section_xray and cache_info.data.scope_label then
           local scope_start = cache_info.data.scope_start_page
@@ -5471,6 +5522,8 @@ function AskGPT:showCacheViewer(cache_info)
     _artifact_book_title = book_title,
     _artifact_book_author = book_author,
     _book_open = (self.ui and self.ui.document ~= nil),
+    group_nav = not cache_info.checkpoint
+      and self:_groupNavFor(file, cache_info.key, cache_info.name) or nil,
     on_launch_chat = self:_buildLaunchChatCallback(file, book_title, book_author, cache_info.data.result, cache_info.name),
   }
   UIManager:show(viewer)
@@ -10243,6 +10296,7 @@ function AskGPT:viewCachedAction(action, action_id, cached_entry, opts)
     _artifact_book_title = book_title,
     _artifact_book_author = book_author,
     _book_open = (self.ui and self.ui.document ~= nil),
+    group_nav = self:_groupNavFor(file, action_id, action_name),
     on_launch_chat = self:_buildLaunchChatCallback(file, book_title, book_author, cached_entry.result, action_name),
   }
   UIManager:show(viewer)
@@ -18207,6 +18261,10 @@ function AskGPT:patchDocSettingsForChatIndex()
     -- association, delete drops it (images are kept, global-only), copy no-ops
     local ImageGenerator = require("koassistant_image_generator")
     ImageGenerator.updateIndexForMove(old_path, new_path, copy)
+
+    -- Book groups (item 46): move re-keys memberships; copy never joins a
+    -- group; delete keeps the entry (missing-file policy — manual remove only)
+    require("koassistant_book_groups").updateForMove(old_path, new_path, copy)
   end
 
   DocSettings._koassistant_patched = true

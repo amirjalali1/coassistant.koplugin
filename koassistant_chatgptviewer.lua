@@ -997,6 +997,10 @@ local ChatGPTViewer = InputContainer:extend {
   _artifact_book_title = nil,
   _artifact_book_author = nil,
   _book_open = false,
+  -- group_nav (item 46): { prev = { title, open }|nil, next = ... } — prev/
+  -- next volume buttons for artifacts of books in a group; open() reopens the
+  -- neighbor's same artifact (caller-built, main.lua _groupNavFor)
+  group_nav = nil,
 
   -- Callbacks for notebook viewer (simple_view for notebooks)
   -- on_edit: function() called when user clicks Edit (should close viewer and open editor)
@@ -2388,6 +2392,28 @@ function ChatGPTViewer:init()
         end,
         hold_callback = self.default_hold_callback,
       })
+    end
+  end
+
+  -- Book groups prev/next (item 46): jump to the neighboring volume's same
+  -- artifact. Only directions whose neighbor HAS the artifact get a button.
+  if self.group_nav then
+    for _idx, side in ipairs({
+      { info = self.group_nav.prev, fmt = "◀ %1" },
+      { info = self.group_nav.next, fmt = "%1 ▶" },
+    }) do
+      if side.info and side.info.open then
+        local captured = side.info
+        table.insert(simple_view_row1, {
+          text = T(side.fmt, captured.title),
+          callback = function()
+            local open_fn = captured.open
+            UIManager:close(self)
+            open_fn()
+          end,
+          hold_callback = self.default_hold_callback,
+        })
+      end
     end
   end
 

@@ -1294,6 +1294,11 @@ function XrayMerge.startCrossBookFlow(opts)
         return
     end
     table.sort(candidates, function(a, b) return (a.title or "") < (b.title or "") end)
+    -- Item 46: group-aware order — predecessors first (nearest on top), then
+    -- later group-mates, then everything else; annotates group_name/group_pos/
+    -- group_direction for the labels and the directional warning below
+    local BookGroups = require("koassistant_book_groups")
+    candidates = BookGroups.orderCandidates(candidates, opts.file)
 
     local features = (opts.configuration and opts.configuration.features) or {}
     local provider = (opts.configuration
@@ -1303,9 +1308,14 @@ function XrayMerge.startCrossBookFlow(opts)
     local rows = {}
     for _idx, cand in ipairs(candidates) do
         local captured = cand
+        local row_label = captured.title
+            .. (captured.author ~= "" and (" (" .. captured.author .. ")") or "")
+        if captured.group_name then
+            row_label = row_label .. " · " .. T(_("%1, book %2"),
+                captured.group_name, captured.group_pos)
+        end
         table.insert(rows, {{
-            text = captured.title
-                .. (captured.author ~= "" and (" (" .. captured.author .. ")") or ""),
+            text = row_label,
             align = "left",
             callback = function()
                 UIManager:close(picker)
@@ -1320,10 +1330,17 @@ function XrayMerge.startCrossBookFlow(opts)
                     })
                     return
                 end
+                -- Item 46: earlier feeds later — merging a LATER group-mate is
+                -- legal (re-readers) but the spoiler warning names the direction
+                local confirm_text = T(_("Merge the X-Ray of \"%1\" into this book's X-Ray?"), captured.title)
+                    .. "\n" .. _("Recurring characters, places, and concepts gain that book's background. This brings in everything its X-Ray covers, including its later events. Your current X-Ray is archived first, so this can be undone from All versions.")
+                if captured.group_direction == "after" then
+                    confirm_text = confirm_text .. "\n\n" .. T(_("Caution: \"%1\" comes LATER in %2 — its background includes events beyond this book."),
+                        captured.title, captured.group_name)
+                end
                 local confirm
                 confirm = ButtonDialog:new{
-                    title = T(_("Merge the X-Ray of \"%1\" into this book's X-Ray?"), captured.title)
-                        .. "\n" .. _("Recurring characters, places, and concepts gain that book's background. This brings in everything its X-Ray covers, including its later events. Your current X-Ray is archived first, so this can be undone from All versions."),
+                    title = confirm_text,
                     buttons = {
                         {{
                             text = _("Merge"),
@@ -1368,6 +1385,99 @@ function XrayMerge.startCrossBookFlow(opts)
             end,
         }})
     end
+    -- Item 46: fold in ALL earlier group-mates as sequential DIRECT merges
+    -- (book 1 first) — each predecessor lands its own labeled background with
+    -- exact provenance (never a chained relay); the live main is re-read
+    -- between steps because each merge rewrites it
+    local predecessors = {}
+    for _idx, cand in ipairs(candidates) do
+        if cand.group_direction == "before" then
+            predecessors[#predecessors + 1] = cand
+        end
+    end
+    table.sort(predecessors, function(a, b) return a.group_pos < b.group_pos end)
+    if #predecessors >= 2 then
+        table.insert(rows, {{
+            text = T(_("Fold in all %1 earlier books…"), #predecessors),
+            callback = function()
+                UIManager:close(picker)
+                local confirm
+                confirm = ButtonDialog:new{
+                    title = T(_("Merge the X-Rays of %1 earlier books in %2, one at a time (oldest first)?"),
+                            #predecessors, predecessors[1].group_name)
+                        .. "\n" .. _("Each book lands as its own labeled background. Your current X-Ray is archived first."),
+                    buttons = {
+                        {{ text = _("Merge all"), callback = function()
+                            UIManager:close(confirm)
+                            if opts.close_browser then opts.close_browser() end
+                            local function step(idx)
+                                if idx > #predecessors then
+                                    UIManager:show(Notification:new{
+                                        text = T(_("Folded in %1 books."), #predecessors),
+                                    })
+                                    if opts.on_done then opts.on_done(true) end
+                                    return
+                                end
+                                local src = predecessors[idx]
+                                local fresh_main = ActionCache.getXrayCache(opts.file)
+                                if not (fresh_main and fresh_main.result and XrayParser.isJSON(fresh_main.result)) then
+                                    UIManager:show(InfoMessage:new{
+                                        text = _("Stopped: this book's X-Ray is no longer available."),
+                                        timeout = 4,
+                                    })
+                                    return
+                                end
+                                if not XrayMerge.consentOk({ src.entry }, features, provider, src.file, opts.ui)
+                                    or not XrayMerge.consentOk({ fresh_main }, features, provider, opts.file, opts.ui) then
+                                    UIManager:show(InfoMessage:new{
+                                        text = T(_("Stopped at \"%1\": text-extraction consent is missing for it."), src.title),
+                                        timeout = 5,
+                                    })
+                                    return
+                                end
+                                UIManager:show(Notification:new{
+                                    text = T(_("Merging %1 of %2: %3"), idx, #predecessors, src.title),
+                                })
+                                XrayMerge.executeCrossBook({
+                                    file = opts.file, ui = opts.ui, plugin = opts.plugin,
+                                    configuration = opts.configuration,
+                                    title = opts.title, author = opts.author,
+                                    main_entry = fresh_main, source = src,
+                                    on_done = function(ok, err)
+                                        if ok then
+                                            step(idx + 1)
+                                        else
+                                            UIManager:show(InfoMessage:new{
+                                                text = T(_("Stopped at \"%1\": %2"), src.title,
+                                                    tostring(err or "unknown error")),
+                                                timeout = 5,
+                                            })
+                                        end
+                                    end,
+                                })
+                            end
+                            step(1)
+                        end }},
+                        {{ text = _("Back"), callback = function()
+                            UIManager:close(confirm)
+                            XrayMerge.startCrossBookFlow(opts)
+                        end }},
+                    },
+                }
+                UIManager:show(confirm)
+            end,
+        }})
+    end
+    table.insert(rows, {{
+        text = _("Manage groups…"),
+        callback = function()
+            UIManager:close(picker)
+            require("koassistant_book_groups_ui").showManager({
+                plugin = opts.plugin, ui = opts.ui,
+                on_close = function() XrayMerge.startCrossBookFlow(opts) end,
+            })
+        end,
+    }})
     table.insert(rows, {{
         text = _("Cancel"),
         callback = function() UIManager:close(picker) end,

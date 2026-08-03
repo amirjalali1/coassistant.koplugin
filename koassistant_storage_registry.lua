@@ -172,6 +172,13 @@ Registry.entries = {
         reset_in = { "wipe_all" }, opt_in_reset = true, uninstall = true,
     },
     {
+        id = "book_groups", label = "Book groups",
+        location = "settings_dir", ref = "koassistant_book_groups.lua",
+        category = "artifacts", backup = true,
+        reset_in = { "wipe_all" }, opt_in_reset = true, uninstall = true,
+        notes = "User-authored ordered book groups (item 46). NOT an index — never auto-pruned or rebuilt; missing member files stay listed.",
+    },
+    {
         id = "legacy_multi_book_chats", label = "Legacy multi-book chats",
         location = "settings_dir", ref = "koassistant_multi_book_chats.lua",
         category = "conversations", backup = false, legacy = true,

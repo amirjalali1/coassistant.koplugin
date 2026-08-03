@@ -4240,6 +4240,30 @@ function XrayBrowser:showOptions()
                 })
             end,
         }})
+        -- Book groups prev/next (item 46): open the neighboring volume's
+        -- X-Ray. A neighbor without one shows as a disabled hint.
+        local nav = self.metadata.group_nav
+        if nav then
+            for _idx, side in ipairs({
+                { info = nav.prev, label = _("Previous in group: %1") },
+                { info = nav.next, label = _("Next in group: %1") },
+            }) do
+                if side.info then
+                    local captured = side.info
+                    table.insert(buttons, {{
+                        text = captured.open and T(side.label, captured.title)
+                            or (T(side.label, captured.title) .. " " .. _("(no X-Ray yet)")),
+                        align = "left",
+                        enabled = captured.open ~= nil,
+                        callback = function()
+                            closeOptions()
+                            if self_ref.menu then UIManager:close(self_ref.menu) end
+                            captured.open()
+                        end,
+                    }})
+                end
+            end
+        end
     end
 
     -- Round 24 (maintainer: version viewers dead-ended at Info): an archived-

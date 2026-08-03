@@ -1918,6 +1918,20 @@ function BookSettings.show(opts)
         end })
     addButton({ text = T(_("Book info: %1"), bookInfoLabel(doc_settings:readSetting(BookSettings.KEY_BOOK_INFO))),
         callback = showBookInfoSubPicker })
+    -- Book groups (item 46): membership lives in the groups store, not a
+    -- sidecar key — never counts toward "(N customized)"
+    local groups_file = opts.document_path or (ui and ui.document and ui.document.file)
+    if groups_file then
+        addButton({ text = T(_("Book group: %1"),
+                require("koassistant_book_groups_ui").rowLabel(groups_file)),
+            callback = function()
+                closeDialog()
+                require("koassistant_book_groups_ui").showBookRow(groups_file, {
+                    plugin = plugin, ui = ui,
+                    on_close = function() BookSettings.show(opts) end,
+                })
+            end })
+    end
     -- Tri-state Automatic X-Ray (§7 P1): On = create + update + promotion for
     -- this book, standalone — no global master required
     addButton({ text = T(_("Automatic X-Ray: %1"),
