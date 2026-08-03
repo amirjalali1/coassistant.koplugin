@@ -40,6 +40,19 @@ local ModelLists = {
         -- NOTE: *-pro variants are v1/responses only (not chat-completions) — excluded.
     },
 
+    openai_codex = {
+        -- OpenAI ChatGPT subscription (Codex OAuth) reuses the same curated
+        -- subscription model slugs as direct OpenAI, but authenticates with
+        -- device-code OAuth against ChatGPT's Codex backend.
+        "gpt-5.6-terra",                -- balanced (default)
+        "gpt-5.6-sol",                  -- flagship (most capable)
+        "gpt-5.6-luna",                 -- cost-optimized
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+    },
+
     deepseek = {
         -- DeepSeek V4 (current generation, 1M context, thinking on by default)
         "deepseek-v4-pro",              -- flagship (default) + reasoning
@@ -338,6 +351,7 @@ local ModelLists = {
     _shipped_defaults = {
         anthropic  = { "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929" },
         openai     = { "gpt-5.6-terra", "gpt-5.5", "gpt-5.4", "gpt-5.2" },
+        openai_codex = { "gpt-5.6-terra", "gpt-5.5", "gpt-5.4" },
         gemini     = { "gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-3-flash-preview" },
         deepseek   = { "deepseek-v4-pro", "deepseek-chat" },
         ollama     = { "llama4", "llama3.3" },
@@ -374,6 +388,7 @@ local ModelLists = {
         flagship = {
             anthropic = "claude-sonnet-5",
             openai = "gpt-5.6-sol",
+            openai_codex = "gpt-5.6-sol",
             deepseek = "deepseek-v4-pro",
             gemini = "gemini-3.6-flash",             -- Pro models are paid-only; keep tier free-tier usable (3.6 flash assumed free-tier)
             groq = "llama-3.3-70b-versatile",
@@ -397,6 +412,7 @@ local ModelLists = {
         standard = {
             anthropic = "claude-sonnet-5",
             openai = "gpt-5.6-terra",  -- standard/default
+            openai_codex = "gpt-5.6-terra",
             deepseek = "deepseek-v4-flash",
             gemini = "gemini-3.6-flash",
             groq = "llama-3.3-70b-versatile",
@@ -420,6 +436,7 @@ local ModelLists = {
         fast = {
             anthropic = "claude-haiku-4-5-20251001",
             openai = "gpt-5.6-luna",
+            openai_codex = "gpt-5.6-luna",
             deepseek = "deepseek-v4-flash",
             gemini = "gemini-3.6-flash",
             groq = "llama-3.1-8b-instant",
@@ -443,6 +460,7 @@ local ModelLists = {
         ultrafast = {
             anthropic = "claude-haiku-4-5-20251001",
             openai = "gpt-5.4-nano",
+            openai_codex = "gpt-5.4-nano",
             deepseek = "deepseek-v4-flash",
             gemini = "gemini-3.5-flash-lite",
             groq = "llama-3.1-8b-instant",
@@ -480,7 +498,10 @@ local ModelLists = {
         openai = {
             api_list = "https://api.openai.com/v1/models",
             docs = "https://platform.openai.com/docs/models",
-            curl = "curl https://api.openai.com/v1/models -H 'Authorization: Bearer $OPENAI_API_KEY'",
+            curl = "curl https://api.openai.com/v1/models -H 'Authorization: Bearer ***'",
+        },
+        openai_codex = {
+            docs = "https://auth.openai.com/codex/device",
         },
         deepseek = {
             api_list = "https://api.deepseek.com/v1/models",

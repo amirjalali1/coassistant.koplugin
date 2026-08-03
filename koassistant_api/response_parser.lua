@@ -117,6 +117,119 @@ local function formatCitations(citations)
     return "\n\n---\n**Sources:**\n\n" .. table.concat(parts, "\n")
 end
 
+-- Collect a mandatory Responses SSE stream into the ordinary response object used
+-- by non-streaming parsers. Terminal output is authoritative; output_item.done
+-- events backfill items omitted from response.completed at their protocol index.
+local function responsesOutputItemKey(item)
+    if type(item) ~= "table" then return nil end
+    local item_type = tostring(item.type or "item")
+    if type(item.id) == "string" and item.id ~= "" then
+        return item_type .. ":id:" .. item.id
+    end
+    if item_type == "function_call" and type(item.call_id) == "string" and item.call_id ~= "" then
+        return item_type .. ":call_id:" .. item.call_id
+    end
+    local ok, encoded = pcall(json.encode, item)
+    return ok and (item_type .. ":json:" .. encoded) or nil
+end
+
+local function mergeResponsesOutput(completed_items, terminal_items)
+    local merged = {}
+    local seen = {}
+    local function keySeen(item)
+        local key = responsesOutputItemKey(item)
+        return key, key and seen[key] == true
+    end
+    local function mark(item, key)
+        if key then seen[key] = true end
+        return item
+    end
+
+    for _, item in ipairs(terminal_items or {}) do
+        if type(item) == "table" then
+            local key, duplicate = keySeen(item)
+            if not duplicate then merged[#merged + 1] = mark(item, key) end
+        end
+    end
+
+    table.sort(completed_items, function(a, b)
+        local ai = type(a.output_index) == "number" and a.output_index or math.huge
+        local bi = type(b.output_index) == "number" and b.output_index or math.huge
+        if ai == bi then return a.sequence < b.sequence end
+        return ai < bi
+    end)
+    for _, completed in ipairs(completed_items) do
+        local item = completed.item
+        if type(item) == "table" then
+            local key, duplicate = keySeen(item)
+            if not duplicate then
+                local pos = type(completed.output_index) == "number"
+                    and math.max(1, math.min(#merged + 1, completed.output_index + 1))
+                    or (#merged + 1)
+                table.insert(merged, pos, mark(item, key))
+            end
+        end
+    end
+    return merged
+end
+
+local function normalizeResponsesStreamError(err)
+    -- KOReader's json decodes JSON null to a truthy non-table sentinel; only
+    -- tables and strings carry real error information.
+    if type(err) == "table" then return err end
+    if type(err) == "string" and err ~= "" then return { message = err } end
+    return { message = "Unknown streaming error" }
+end
+
+function ResponseParser.collectResponsesSSE(body)
+    local output = {}
+    local terminal
+    local stream_error
+
+    -- raw_line stays untouched: generic-for variables are const in Lua 5.4+.
+    for raw_line in (tostring(body or "") .. "\n"):gmatch("([^\n]*)\n") do
+        local line = raw_line:gsub("\r$", "")
+        local data = line:match("^data:%s*(.*)$")
+        if data and data ~= "" and data ~= "[DONE]" then
+            local ok, event = pcall(json.decode, data)
+            if ok and type(event) == "table" then
+                if event.type == "response.output_item.done" and type(event.item) == "table" then
+                    output[#output + 1] = {
+                        item = event.item,
+                        output_index = event.output_index,
+                        sequence = #output + 1,
+                    }
+                elseif (event.type == "response.completed" or event.type == "response.incomplete")
+                        and type(event.response) == "table" then
+                    terminal = event.response
+                elseif event.type == "response.failed" then
+                    terminal = type(event.response) == "table" and event.response or terminal
+                    stream_error = event.error or (terminal and terminal.error)
+                elseif event.type == "error" then
+                    stream_error = event.error or event
+                end
+            end
+        end
+    end
+
+    if not terminal then
+        if stream_error then
+            terminal = {
+                status = "failed",
+                error = normalizeResponsesStreamError(stream_error),
+                output = {},
+            }
+        else
+            error("Responses SSE ended without a terminal response event")
+        end
+    end
+    terminal.output = mergeResponsesOutput(output, terminal.output)
+    if stream_error and not terminal.error then
+        terminal.error = normalizeResponsesStreamError(stream_error)
+    end
+    return json.encode(terminal)
+end
+
 -- Response format transformers for each provider
 -- Returns: success, content, reasoning (reasoning is optional third return value)
 local RESPONSE_TRANSFORMERS = {

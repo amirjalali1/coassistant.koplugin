@@ -85,7 +85,7 @@ Registry.UNPREFIXED_GLOBAL_KEYS = {
 --                wipe/uninstall — EXCEPT setup_wizard_completed, which Fresh Start
 --                clears so onboarding re-runs.
 Registry.SETTINGS_SUBKEYS = {
-    credentials = { "api_keys" },
+    credentials = { "api_keys", "openai_codex_oauth" },
     assets = {
         "custom_actions", "custom_prompts",                 -- top-level (see TOPLEVEL_SUBKEYS)
         "custom_behaviors", "custom_domains",

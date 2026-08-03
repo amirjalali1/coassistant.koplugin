@@ -173,6 +173,10 @@ ToolWire.adapters.openai = {
 -- OpenRouter speaks the OpenAI tool wire format verbatim (it normalizes across backends).
 ToolWire.adapters.openrouter = ToolWire.adapters.openai
 
+-- OpenAI Subscription uses the Responses wire through the Codex backend. The
+-- handler adapts its mandatory SSE transport for non-streamed gather turns.
+ToolWire.adapters.openai_codex = ToolWire.adapters.openai
+
 -- Tools wave 1 (web_search_tool_plan.md rollout): these providers speak the OpenAI
 -- chat-completions tool wire verbatim. Each also has a `tools` capability list in
 -- model_constraints.lua (the load-bearing gate — some backends silently ignore the

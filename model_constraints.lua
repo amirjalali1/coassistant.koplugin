@@ -695,8 +695,9 @@ ModelConstraints.reasoning_profiles = {
 --   mode = "capability:<name>"    -> only models with that capability (e.g. Gemini's google_search)
 -- Mechanisms today: anthropic (web_search_20250305 tool), openrouter (:online / Exa),
 -- perplexity (built-in Sonar, always on), gemini (googleSearch grounding, capable models),
--- openai + xai (web_search tool on their Responses APIs — the handlers route web-on
--- requests to /v1/responses, responses_api_plan.md), zai (web_search tool on the chat
+-- OpenAI, OpenAI Subscription, and xAI use the web_search tool on their Responses
+-- APIs (the handlers route web-on requests to their Responses endpoints; see
+-- responses_api_plan.md), zai uses a web_search tool on the chat
 -- wire — server-side search, results array echoed back; verified live 2026-07-25 on
 -- glm-5.2 + glm-4.7-flash). Everything else has NO web search via the Chat Completions
 -- API the plugin uses (probed 2026-07-25: deepseek rejects the tool type outright,
@@ -705,6 +706,7 @@ ModelConstraints._web_search_providers = {
     { id = "anthropic",  label = "Anthropic",  mode = "all" },
     { id = "gemini",     label = "Gemini",     mode = "capability:google_search" },
     { id = "openai",     label = "OpenAI",     mode = "capability:responses_web_search" },
+    { id = "openai_codex", label = "OpenAI Subscription", mode = "capability:responses_web_search" },
     { id = "xai",        label = "xAI",        mode = "capability:responses_web_search" },
     { id = "perplexity", label = "Perplexity", mode = "all" },
     { id = "openrouter", label = "OpenRouter", mode = "all" },
@@ -1476,7 +1478,7 @@ function ModelConstraints.applyReasoningParams(provider, api_params, decision)
         end
         -- else (off + default-off, e.g. Opus/Sonnet 4.6): emit nothing (Anthropic reasons
         -- only when `thinking` is present).
-    elseif provider == "openai" then
+    elseif provider == "openai" or provider == "openai_codex" then
         if on then api_params.reasoning = { effort = decision.effort } end
     elseif provider == "gemini" then
         if decision.axis == "budget" then
@@ -1529,5 +1531,11 @@ function ModelConstraints.applyReasoningParams(provider, api_params, decision)
         end
     end
 end
+
+-- OpenAI Subscription uses the same model contracts as the direct OpenAI
+-- provider; only its authentication and endpoint differ.
+ModelConstraints.openai_codex = ModelConstraints.openai
+ModelConstraints.capabilities.openai_codex = ModelConstraints.capabilities.openai
+ModelConstraints.reasoning_profiles.openai_codex = ModelConstraints.reasoning_profiles.openai
 
 return ModelConstraints
