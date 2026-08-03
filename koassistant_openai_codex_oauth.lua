@@ -408,6 +408,8 @@ end
 
 function OAuth.buildDeviceDialogText(user_code, status_message)
     local lines = {
+        _("Unofficial integration. It may stop working if OpenAI changes the Codex service."),
+        "",
         _("Open this URL on another device:"),
         OAuth.VERIFICATION_URL,
         "",

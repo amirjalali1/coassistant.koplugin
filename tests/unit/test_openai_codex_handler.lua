@@ -17,6 +17,8 @@ setupPaths()
 require("mock_koreader")
 
 local Handler = require("koassistant_api.openai_codex")
+local ModelConstraints = require("model_constraints")
+local json = require("json")
 local TestRunner = require("test_runner"):new()
 
 print("")
@@ -58,8 +60,28 @@ TestRunner:test("buildRequestBody uses codex auth headers and account id", funct
     local result = Handler:buildRequestBody({ { role = "user", content = "hello" } }, config())
     TestRunner:assertEqual(result.headers["Authorization"], "Bearer access_token_123", "bearer token")
     TestRunner:assertEqual(result.headers["ChatGPT-Account-ID"], "acct_123", "account header")
-    TestRunner:assertEqual(result.headers["User-Agent"], "codex_cli_rs/0.0.0 (KOAssistant)", "user agent")
-    TestRunner:assertEqual(result.headers["originator"], "codex_cli_rs", "originator header")
+    TestRunner:assertTrue(result.headers["User-Agent"]:find("KOAssistant/", 1, true) == 1, "honest user agent")
+    TestRunner:assertEqual(result.headers["originator"], "koassistant", "honest originator header")
+end)
+
+TestRunner:test("OpenAI Subscription advertises web search support", function()
+    TestRunner:assertTrue(ModelConstraints.supportsWebSearch("openai_codex", "gpt-5.6-terra"), "web search gate")
+end)
+
+TestRunner:test("web-search effort maps to Codex Responses search context", function()
+    local light = config({
+        enable_web_search = true,
+        features = { enable_streaming = true, web_search_effort = "light" },
+    })
+    local thorough = config({
+        enable_web_search = true,
+        features = { enable_streaming = true, web_search_effort = "thorough" },
+    })
+    local light_body = Handler:buildRequestBody({ { role = "user", content = "news" } }, light).body
+    local thorough_body = Handler:buildRequestBody({ { role = "user", content = "news" } }, thorough).body
+    TestRunner:assertEqual(light_body.tools[1].type, "web_search", "hosted web-search tool")
+    TestRunner:assertEqual(light_body.tools[1].search_context_size, "low", "light search")
+    TestRunner:assertEqual(thorough_body.tools[1].search_context_size, "high", "thorough search")
 end)
 
 TestRunner:test("buildRequestBody keeps responses tools wire and include for tool turns", function()
@@ -72,22 +94,54 @@ TestRunner:test("buildRequestBody keeps responses tools wire and include for too
     TestRunner:assertTrue(result.body.include ~= nil, "reasoning include for stateless replay")
 end)
 
-TestRunner:test("query preserves built custom headers on the background request", function()
-    local captured
-    local original = Handler.backgroundRequest
-    Handler.backgroundRequest = function(self, url, headers, body)
-        captured = { url = url, headers = headers, body = body }
-        return function() end
+TestRunner:test("non-streaming query uses collected SSE transport with Codex headers", function()
+    local BaseHandler = require("koassistant_api.base")
+    local original_resolve = BaseHandler.resolveForSubprocess
+    local original_fetch = BaseHandler.fetchInSubprocess
+    local original_write = BaseHandler.writeAllToFD
+    local captured, written
+    BaseHandler.resolveForSubprocess = function() return "203.0.113.10" end
+    BaseHandler.fetchInSubprocess = function(url, opts)
+        captured = { url = url, opts = opts }
+        return 200, 'data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n'
     end
+    BaseHandler.writeAllToFD = function(_fd, value) written = value end
 
     local result = Handler:query({ { role = "user", content = "hello" } }, config())
-    Handler.backgroundRequest = original
+    result._background_fn(1, 2)
 
-    TestRunner:assertTrue(type(result) == "table" and result._background_fn ~= nil, "non-streaming background request returned")
+    BaseHandler.resolveForSubprocess = original_resolve
+    BaseHandler.fetchInSubprocess = original_fetch
+    BaseHandler.writeAllToFD = original_write
+
     TestRunner:assertEqual(captured.url, "https://chatgpt.com/backend-api/codex/responses", "request url")
-    TestRunner:assertEqual(captured.headers["ChatGPT-Account-ID"], "acct_123", "account header forwarded")
-    TestRunner:assertEqual(captured.headers["User-Agent"], "codex_cli_rs/0.0.0 (KOAssistant)", "user agent forwarded")
-    TestRunner:assertEqual(captured.headers["originator"], "codex_cli_rs", "originator forwarded")
+    TestRunner:assertEqual(captured.opts.headers["ChatGPT-Account-ID"], "acct_123", "account header forwarded")
+    TestRunner:assertTrue(captured.opts.headers["User-Agent"]:find("KOAssistant/", 1, true) == 1, "user agent forwarded")
+    TestRunner:assertEqual(captured.opts.headers["originator"], "koassistant", "originator forwarded")
+    TestRunner:assertEqual(captured.opts.headers["Accept"], "text/event-stream", "SSE requested")
+    TestRunner:assertEqual(json.decode(captured.opts.body).stream, true, "backend always receives stream=true")
+    TestRunner:assertEqual(json.decode(written).status, "completed", "SSE collected before pipe write")
+end)
+
+TestRunner:test("collected function calls pass through the Responses parser", function()
+    local result = Handler:query({ { role = "user", content = "find whales" } }, config({
+        tools = { specs = SPECS, mode = "ANY" },
+    }))
+
+    local parsed = {
+        status = "completed",
+        output = {{
+            type = "function_call",
+            call_id = "call_1",
+            name = "search_book",
+            arguments = '{"query":"whale"}',
+        }},
+    }
+    local ok, tool_turn = result._response_parser(parsed)
+    TestRunner:assertTrue(ok, "response parsed")
+    TestRunner:assertTrue(tool_turn._tool_calls, "neutral tool-call turn")
+    TestRunner:assertEqual(tool_turn.calls[1].id, "call_1", "call id")
+    TestRunner:assertEqual(tool_turn.calls[1].args.query, "whale", "arguments decoded")
 end)
 
 return TestRunner:summary()

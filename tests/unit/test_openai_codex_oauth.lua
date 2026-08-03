@@ -160,6 +160,8 @@ end)
 
 TestRunner:test("device dialog text displays URL code expiry and status", function()
     local text = OAuth.buildDeviceDialogText("ABCD-EFGH", "Not authorized yet.")
+    TestRunner:assertTrue(text:find("Unofficial integration", 1, true) ~= nil, "unofficial warning")
+    TestRunner:assertTrue(text:find("may stop working", 1, true) ~= nil, "breakage warning")
     TestRunner:assertTrue(text:find("https://auth.openai.com/codex/device", 1, true) ~= nil, "verification URL")
     TestRunner:assertTrue(text:find("ABCD-EFGH", 1, true) ~= nil, "device code")
     TestRunner:assertTrue(text:find("15 minutes", 1, true) ~= nil, "expiry guidance")

@@ -45,6 +45,12 @@ TestRunner:test("wave-1 providers alias the openai chat-wire adapter", function(
     TestRunner:assertFalse(ToolWire.hasAdapter("zai"), "zai stays out of wave 1")
 end)
 
+TestRunner:test("OpenAI Subscription reuses Responses replay after transport collection", function()
+    TestRunner:assertTrue(ToolWire.hasAdapter("openai_codex"), "adapter registered")
+    TestRunner:assertTrue(ToolWire.adapters.openai_codex == ToolWire.adapters.openai,
+        "same Responses replay shape")
+end)
+
 TestRunner:test("openai adapter echo keeps reasoning_content (DeepSeek V3.2+ replay contract)", function()
     local messages = {}
     local raw = { role = "assistant", content = nil, reasoning_content = "thinking...", tool_calls = {

@@ -26,6 +26,7 @@ local ResponseParser = require("koassistant_api.response_parser")
 local StreamHandler = require("stream_handler")
 local DebugUtils = require("koassistant_debug_utils")
 local ToolWire = require("koassistant_api.tool_wire")
+local json = require("json")
 local TestRunner = require("test_runner"):new()
 
 print("")
@@ -565,6 +566,94 @@ TestRunner:test("tool_wire: chat shape untouched by the Responses branch", funct
     TestRunner:assertEqual(#messages, 2, "assistant echo + tool result")
     TestRunner:assertEqual(messages[1].role, "assistant", "chat echo shape")
     TestRunner:assertEqual(messages[2].tool_call_id, "call_9", "chat result shape")
+end)
+
+--------------------------------------------------------------------------------
+print("\n  [Responses SSE collection]")
+--------------------------------------------------------------------------------
+
+TestRunner:test("SSE collector rebuilds output items from output_item.done events", function()
+    local body = table.concat({
+        'event: response.output_item.done',
+        'data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","name":"search_book","arguments":"{\\"query\\":\\"whale\\"}"}}',
+        '',
+        'event: response.completed',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{"total_tokens":12}}}',
+        '',
+    }, "\n")
+    local decoded = json.decode(ResponseParser.collectResponsesSSE(body))
+    TestRunner:assertEqual(decoded.status, "completed", "terminal status")
+    TestRunner:assertEqual(decoded.output[1].type, "function_call", "output item recovered")
+    TestRunner:assertEqual(decoded.output[1].call_id, "call_1", "call id recovered")
+    TestRunner:assertEqual(decoded.usage.total_tokens, 12, "terminal metadata preserved")
+end)
+
+TestRunner:test("SSE collector preserves incomplete terminal responses", function()
+    local body = table.concat({
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_partial","type":"message","content":[{"type":"output_text","text":"partial"}]}}',
+        '',
+        'data: {"type":"response.incomplete","response":{"status":"incomplete","output":[],"incomplete_details":{"reason":"max_output_tokens"}}}',
+        '',
+    }, "\n")
+    local decoded = json.decode(ResponseParser.collectResponsesSSE(body))
+    TestRunner:assertEqual(decoded.status, "incomplete", "terminal status")
+    TestRunner:assertEqual(decoded.output[1].content[1].text, "partial", "partial output recovered")
+    TestRunner:assertEqual(decoded.incomplete_details.reason, "max_output_tokens", "truncation reason preserved")
+end)
+
+TestRunner:test("SSE collector merges terminal-only items and dedupes completed items", function()
+    local body = table.concat({
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"search_book","arguments":"{}"}}',
+        '',
+        'data: {"type":"response.output_item.done","output_index":1,"item":{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"final answer"}]}}',
+        '',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"final answer"}]},{"id":"msg_terminal_only","type":"message","content":[{"type":"output_text","text":"terminal only"}]}]}}',
+        '',
+        'data: [DONE]',
+        '',
+    }, "\r\n")
+    local decoded = json.decode(ResponseParser.collectResponsesSSE(body))
+    TestRunner:assertEqual(#decoded.output, 3, "done and terminal items merged without duplicates")
+    TestRunner:assertEqual(decoded.output[1].id, "fc_1", "done-event order preserved")
+    TestRunner:assertEqual(decoded.output[2].id, "msg_1", "duplicate terminal item omitted")
+    TestRunner:assertEqual(decoded.output[3].id, "msg_terminal_only", "terminal-only item preserved")
+end)
+
+TestRunner:test("SSE collector inserts done items by output index around terminal reasoning", function()
+    local body = table.concat({
+        'data: {"type":"response.output_item.done","output_index":1,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"search_book","arguments":"{}"}}',
+        '',
+        'data: {"type":"response.output_item.done","output_index":2,"item":{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"final answer"}]}}',
+        '',
+        'data: {"type":"response.completed","response":{"status":"completed","output":[{"id":"rs_1","type":"reasoning","encrypted_content":"opaque"},{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"final answer"}]}]}}',
+        '',
+    }, "\n")
+    local decoded = json.decode(ResponseParser.collectResponsesSSE(body))
+    TestRunner:assertEqual(#decoded.output, 3, "reasoning, function call, and message retained")
+    TestRunner:assertEqual(decoded.output[1].type, "reasoning", "terminal reasoning remains before call")
+    TestRunner:assertEqual(decoded.output[2].type, "function_call", "done call inserted at output index")
+    TestRunner:assertEqual(decoded.output[3].type, "message", "terminal message remains after call")
+end)
+
+TestRunner:test("SSE collector preserves provider error without a terminal response", function()
+    local body = table.concat({
+        'data: {"type":"error","error":{"type":"server_error","message":"boom"}}',
+        '',
+    }, "\n")
+    local decoded = json.decode(ResponseParser.collectResponsesSSE(body))
+    TestRunner:assertEqual(decoded.status, "failed", "synthetic failed response")
+    TestRunner:assertEqual(decoded.error.message, "boom", "provider error preserved")
+    TestRunner:assertEqual(#decoded.output, 0, "failed response has empty output")
+end)
+
+TestRunner:test("SSE collector preserves response.failed error without response object", function()
+    local body = table.concat({
+        'data: {"type":"response.failed","error":{"code":"rate_limit_exceeded","message":"slow down"}}',
+        '',
+    }, "\n")
+    local decoded = json.decode(ResponseParser.collectResponsesSSE(body))
+    TestRunner:assertEqual(decoded.status, "failed", "synthetic failed response")
+    TestRunner:assertEqual(decoded.error.code, "rate_limit_exceeded", "failure code preserved")
 end)
 
 return TestRunner:summary()

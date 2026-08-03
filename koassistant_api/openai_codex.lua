@@ -1,15 +1,19 @@
 local OpenAIHandler = require("koassistant_api.openai")
+local BaseHandler = require("koassistant_api.base")
 local ResponseParser = require("koassistant_api.response_parser")
 local DebugUtils = require("koassistant_debug_utils")
 local ModelConstraints = require("model_constraints")
 local OAuth = require("koassistant_openai_codex_oauth")
+local ffi = require("ffi")
 local json = require("json")
+local meta = require("_meta")
 
 local CodexHandler = OpenAIHandler:new()
 
 local CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
-local USER_AGENT = "codex_cli_rs/0.0.0 (KOAssistant)"
-local ORIGINATOR = "codex_cli_rs"
+local USER_AGENT = "KOAssistant/" .. tostring(meta.version or "unknown")
+    .. " (unofficial OpenAI Codex subscription client)"
+local ORIGINATOR = "koassistant"
 
 local function buildHeaders(config)
     local account_id = config.oauth and config.oauth.chatgpt_account_id
@@ -20,6 +24,51 @@ local function buildHeaders(config)
         ["User-Agent"] = USER_AGENT,
         ["originator"] = ORIGINATOR,
     }
+end
+
+-- Codex requires SSE even when KOAssistant's caller expects one buffered
+-- response. Keep that transport quirk local while reusing BaseHandler's
+-- fork-safe HTTP implementation and pipe protocol.
+local function makeCollectedRequest(url, headers, body, response_transform)
+    local resolved_ip = BaseHandler.resolveForSubprocess(url)
+    return function(pid, child_write_fd)
+        if not pid or not child_write_fd then return end
+
+        local subprocess_ok, subprocess_err = pcall(function()
+            local status_code, response_body = BaseHandler.fetchInSubprocess(url, {
+                method = "POST",
+                headers = headers or {},
+                body = body or "",
+                resolved_ip = resolved_ip,
+                timeout = 180,
+            })
+            if status_code ~= 200 then
+                local message = status_code
+                    and BaseHandler.formatNon200(status_code, response_body)
+                    or ("Connection error: " .. tostring(response_body))
+                BaseHandler.writeAllToFD(child_write_fd,
+                    string.format("\r\n%s%s\n\n", BaseHandler.PROTOCOL_NON_200, message))
+                return
+            end
+
+            local transform_ok, transformed = pcall(response_transform, response_body)
+            if not transform_ok then
+                BaseHandler.writeAllToFD(child_write_fd,
+                    string.format("\r\n%sResponse transform error: %s\n\n",
+                        BaseHandler.PROTOCOL_NON_200, tostring(transformed)))
+                return
+            end
+            BaseHandler.writeAllToFD(child_write_fd, tostring(transformed or ""))
+        end)
+
+        if not subprocess_ok then
+            BaseHandler.writeAllToFD(child_write_fd,
+                string.format("\r\n%sSubprocess error: %s\n\n",
+                    BaseHandler.PROTOCOL_NON_200, tostring(subprocess_err)))
+        end
+        ffi.C.close(child_write_fd)
+        pcall(function() ffi.C._exit(0) end)
+    end
 end
 
 function CodexHandler:buildRequestBody(message_history, config)
@@ -54,17 +103,16 @@ function CodexHandler:query(message_history, config)
         print("Streaming enabled:", use_streaming and "yes" or "no")
     end
 
+    -- This backend rejects non-streaming requests. Always use SSE on the wire;
+    -- non-streaming callers (including book-tool gather rounds) collect it in
+    -- the subprocess and receive an ordinary Responses object.
+    request_body.stream = true
     local requestBody = json.encode(request_body)
     headers["Content-Length"] = tostring(#requestBody)
+    headers["Accept"] = "text/event-stream"
 
     if use_streaming then
-        local stream_request_body = json.decode(requestBody)
-        stream_request_body.stream = true
-        local stream_body = json.encode(stream_request_body)
-        headers["Content-Length"] = tostring(#stream_body)
-        headers["Accept"] = "text/event-stream"
-
-        local stream_fn = self:backgroundRequest(base_url, headers, stream_body)
+        local stream_fn = self:backgroundRequest(base_url, headers, requestBody)
         local effort = request_body.reasoning and request_body.reasoning.effort
         if effort then
             return {
@@ -95,7 +143,8 @@ function CodexHandler:query(message_history, config)
     end
 
     return {
-        _background_fn = self:backgroundRequest(base_url, headers, requestBody),
+        _background_fn = makeCollectedRequest(
+            base_url, headers, requestBody, ResponseParser.collectResponsesSSE),
         _non_streaming = true,
         _response_parser = response_parser,
     }
