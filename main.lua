@@ -1240,6 +1240,7 @@ function AskGPT:compareSelectedBooks(selected_files)
   configuration.features.is_general_context = nil
   configuration.features.is_book_context = nil
   configuration.features.is_library_context = true
+  configuration.features._group_launch = nil
 
   -- Store the books list as context
   configuration.features.book_context = prompt_text
@@ -14541,6 +14542,47 @@ function AskGPT:openLibraryDialog()
   showChatGPTDialog(ui_context, nil, configuration, nil, self)
 end
 
+--- Open the library dialog pre-filled with a group's members (item 48(a):
+--- groups as launch surface). Reading order kept; missing files skipped.
+--- Saved chats get stamped with the group via the _group_launch transient.
+function AskGPT:openLibraryDialogForGroup(group_id)
+  local BookGroups = require("koassistant_book_groups")
+  local group = BookGroups.byId(group_id)
+  if not group then return end
+  local books_info = BookGroups.booksInfoFor(group, self.ui)
+  if #books_info == 0 then
+    UIManager:show(InfoMessage:new{
+      text = _("No books from this group are available on this device."),
+      timeout = 3,
+    })
+    return
+  end
+  configuration.features = configuration.features or {}
+  self:_scrubContextFeatures(configuration.features)
+  configuration.features.is_library_context = true
+  -- Same shapes mergeBooks (koassistant_dialogs.lua) writes, so the dialog's
+  -- selected-books editor and Add Books menu work on this list seamlessly
+  local books_list = {}
+  for i, book in ipairs(books_info) do
+    if book.authors ~= "" then
+      table.insert(books_list, string.format('%d. "%s" by %s', i, book.title, book.authors))
+    else
+      table.insert(books_list, string.format('%d. "%s"', i, book.title))
+    end
+  end
+  configuration.features.books_info = books_info
+  configuration.features.book_context = string.format(
+    "Selected %d books:\n\n%s", #books_info, table.concat(books_list, "\n"))
+  configuration.features.book_metadata = buildBookMetadata(
+    books_info[1].title, books_info[1].authors)
+  configuration.features._group_launch = { id = group.id, name = group.name }
+
+  self:ensureInitialized()
+  self:updateConfigFromSettings()
+  local ui_context = self.ui or FileManager.instance
+  showChatGPTDialog(ui_context, nil, configuration, nil, self)
+end
+
 --- Legacy: open BookPicker for manual book selection (called from Add Books menu)
 function AskGPT:showLibraryPicker()
   local BookPicker = require("koassistant_book_picker")
@@ -15296,6 +15338,7 @@ function AskGPT:_scrubContextFeatures(features)
   features.books_info = nil
   features.book_context = nil
   features.dictionary_context = nil
+  features._group_launch = nil
 end
 
 function AskGPT:executeHighlightBypassAction(action, selected_text, highlight_instance)

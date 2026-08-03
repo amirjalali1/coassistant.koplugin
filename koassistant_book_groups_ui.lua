@@ -114,6 +114,17 @@ function GroupsUI.showGroup(group_id, opts)
     if #group.books == 0 then
         rows[#rows + 1] = {{ text = _("No books yet — add some below."), enabled = false }}
     end
+    -- Item 48(a): the group as launch surface — library chat/actions with the
+    -- members pre-selected (reading order kept; saved chats stamped with the group)
+    if #group.books > 0 and opts.plugin and opts.plugin.openLibraryDialogForGroup then
+        rows[#rows + 1] = {{
+            text = _("Library chat with this group…"),
+            callback = function()
+                UIManager:close(dialog)
+                opts.plugin:openLibraryDialogForGroup(group_id)
+            end,
+        }}
+    end
     rows[#rows + 1] = {{
         text = _("Add books…"),
         callback = function()

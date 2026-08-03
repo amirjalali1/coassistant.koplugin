@@ -31,7 +31,7 @@ Note: This README is the main documentation for now, and is being migrated to th
 - **AI Book Tools** → let the AI search and read the open book on demand to ground its answers (gather-then-generate by default, or an interactive agentic loop)
 - **Multilingual** → chat in any of 47 languages the AI understands, and use the KOAssistant UI in over 20 languages
 
-19 built-in providers (Anthropic, OpenAI, Gemini, Ollama, and more) plus custom OpenAI-compatible providers. Fully configurable: custom actions, behaviors, domains, per-action model overrides. Reasoning/thinking is configured per model (stance dial + per-model overrides). **One-tap auto-update** keeps the plugin current. Personal reading data (highlights, annotations, notebooks) is opt-in, not sent to the AI unless you enable it.
+19 built-in providers (Anthropic, OpenAI, Gemini, Ollama, and more) plus custom OpenAI-compatible providers. OpenAI can also be used without an API key by signing in with your ChatGPT plan (OpenAI Subscription). Fully configurable: custom actions, behaviors, domains, per-action model overrides. Reasoning/thinking is configured per model (stance dial + per-model overrides). **One-tap auto-update** keeps the plugin current. Personal reading data (highlights, annotations, notebooks) is opt-in, not sent to the AI unless you enable it.
 
 **Status:** Active development. [issues](https://github.com/zeeyado/koassistant.koplugin/issues), [discussions](https://github.com/zeeyado/koassistant.koplugin/discussions), and [translations](https://hosted.weblate.org/engage/koassistant/) welcome. If you are somewhat technical and don't want to wait for tested releases, you can run off main branch to get the latest features. Breakage may happen. Also see [Assistant Plugin](https://github.com/omer-faruq/assistant.koplugin); both can run side by side.
 
@@ -541,6 +541,8 @@ Anyone using local LLMs is encouraged to open Issues/Feature Requests/Discussion
 ### Provider Policies
 
 Cloud providers have their own data handling practices. Check their policies on data retention and model training. Remember that API policies are often different from web interface ones.
+
+The **OpenAI Subscription** provider authenticates with your consumer ChatGPT account rather than the API platform. Consumer data-handling and model-training policies differ from API-platform ones, so review your ChatGPT account's data settings if you use it.
 
 ### Design Choices
 
@@ -2439,9 +2441,10 @@ These launch entries sit at the top of the menu:
 
 ### API Keys
 - Enter API keys directly via the GUI (no file editing needed)
-- Shows status indicators: `[set]` for GUI-entered keys, `(file)` for keys from apikeys.lua
+- Shows status indicators: `[set]` for GUI-entered keys, `(file)` for keys from apikeys.lua, `[connected]` for OpenAI Subscription
 - GUI keys take priority over file-based keys
 - Tap a provider to enter, view (masked), or clear its key
+- **OpenAI Subscription** is managed here too, but opens a Connect / Disconnect dialog instead of key entry (device login with your ChatGPT plan). See [Quick Setup, Option C](#2-add-your-api-key)
 
 ### Temperature
 - **Temperature**: Response creativity (0.0-2.0, Anthropic max 1.0). Top-level setting for quick access.
@@ -2785,7 +2788,7 @@ Backup and restore functionality, index maintenance, plus reset options. See [Ba
   - **Show Indicator in Chat**: Display "*[Reasoning was used]*" in chat when reasoning is active (default: on). The full reasoning is always viewable via the "Show Reasoning" button regardless.
   - There is no global reasoning on/off switch — reasoning is per-model. A one-shot per-chat reasoning override is also available via the ⚡ **Quick** chip's hold-menu (Follow / Off / On).
 - **Web Search**: Allow AI to search the web for current information:
-  - **Enable Web Search**: Global default (default: off). Supported by Anthropic (all models), Gemini (Search-grounding-capable models), OpenAI (GPT-5 models via the Responses API), xAI (Grok-4 models via the Responses API), OpenRouter (any model via the `:online` suffix), and Perplexity (always searches, no toggle needed). Other providers ignore this. This is a global default — per-request toggles (the input dialog's **Web** chip, the chat viewer) adapt to the active provider, and it can be overridden per book.
+  - **Enable Web Search**: Global default (default: off). Supported by Anthropic (all models), Gemini (Search-grounding-capable models), OpenAI and OpenAI Subscription (GPT-5 models via the Responses API), xAI (Grok-4 models via the Responses API), OpenRouter (any model via the `:online` suffix), and Perplexity (always searches, no toggle needed). Other providers ignore this. This is a global default — per-request toggles (the input dialog's **Web** chip, the chat viewer) adapt to the active provider, and it can be overridden per book.
   - **Web Search Effort**: How much searching the AI may do per question — Light (fewest searches), Standard (provider defaults), or Thorough (most searches). Applies where the provider offers control: Anthropic (up to 2/5/10 searches), OpenAI and Perplexity (search context size), OpenRouter (3/5/10 results). Gemini and xAI decide automatically.
   - **Show Indicator in Chat**: Display "*[Web search was used]*" in chat when search is used (default: on). Sources (URLs, queries) are viewable via the chat menu's "Show Sources" entry.
 - **Image Generation**: Generate images from highlighted text. See [Image Generation](#image-generation).
@@ -2799,7 +2802,7 @@ Backup and restore functionality, index maintenance, plus reset options. See [Ba
 - **Provider Settings**:
   - **Z.AI Region**: Select endpoint (International: api.z.ai / China: open.bigmodel.cn). Same API key works on both.
   - **Qwen Region**: Select your Alibaba Cloud region (International: Singapore / China: Beijing / US: Virginia). API keys are region-specific and NOT interchangeable.
-- **AI Book Tools (Experimental)**: Let the AI search and read the open book on demand to ground its answers in the actual text. See [AI Book Tools](#ai-book-tools-experimental). Supported on Gemini, Claude (Anthropic), OpenAI, OpenRouter (Claude/GPT/Gemini models), plus DeepSeek, Mistral, Groq, and xAI; other providers fall back to normal chat. Requires "Allow Text Extraction".
+- **AI Book Tools (Experimental)**: Let the AI search and read the open book on demand to ground its answers in the actual text. See [AI Book Tools](#ai-book-tools-experimental). Supported on Gemini, Claude (Anthropic), OpenAI (API or Subscription), OpenRouter (Claude/GPT/Gemini models), plus DeepSeek, Mistral, Groq, and xAI; other providers fall back to normal chat. Requires "Allow Text Extraction".
   - **AI Book Tools** (posture): Off (no tool use anywhere; the Tools chip disappears) / Manual (the Tools chip in book chats starts OFF) / Auto (default; the Tools chip starts ON — the AI still decides per question whether to actually search). Predefined actions never use tools unless they explicitly offer smart retrieval. Overridable per book, and per-chat via the **Tools** chip.
   - **Book Tools Mode**: Gather then answer (default; the AI quietly collects passages first, then answers as a normal streamed request with web search available) or Interactive (the original agentic loop; no streaming or web search while tools run).
   - **Book Tools Lookup Effort**: Quick (up to 4 lookups in 2 rounds) / Standard (up to 8 in 4 rounds) / Thorough (up to 16 in 6 rounds, larger passage budget).
@@ -3217,7 +3220,7 @@ When chatting about an open book, the AI can call **local tools to look things u
 
   Set the posture globally in Settings, or **per book** (Book Settings, or hold the Tools chip for a For-this-book / Global picker). The per-book value wins over the global one; the Tools chip wins for the current chat once you tap it.
 - **Lookup effort dial** (quick / standard / thorough): caps how many lookups the AI may make per question — **quick** (2 turns / 4 calls), **standard** (4 / 8), **thorough** (6 / 16) — and tells the model its remaining budget so it plans its searches (broad → narrow) instead of being cut off mid-search.
-- **Providers**: **Gemini**, **Claude (Anthropic)**, **OpenAI**, and **OpenRouter**, plus **DeepSeek, Mistral, Groq, and xAI** on tool-capable models. Providers/models without tool support automatically fall back to normal chat.
+- **Providers**: **Gemini**, **Claude (Anthropic)**, **OpenAI** (API or Subscription), and **OpenRouter**, plus **DeepSeek, Mistral, Groq, and xAI** on tool-capable models. Providers/models without tool support automatically fall back to normal chat.
 - **Requires** "Allow Text Extraction" — the tools read book text (see [Text Extraction and Double-gating](#text-extraction-and-double-gating)). A trusted provider also satisfies this.
 - **Where it applies**: freeform chat and replies about an **open book** (book/highlight context), plus **Smart retrieval** for two context-aware actions (below). Not predefined artifact actions like X-Ray or Summary (those extract their own context and are deliberately kept tools-free, including their follow-up replies), and not general, library, or X-Ray chat.
 - **Smart retrieval (as an action source)**: two highlight-context actions — **Explain in Context** and **Analyze in Context** — offer "Smart retrieval (AI searches the book)" as a fourth source in the scope/source popup (alongside full text / summary / AI knowledge). The AI gathers the passages relevant to your highlight and question, then answers from them. It is **preselected** when your session is tools-capable; the row is shown grayed with the reason when it isn't (unsupported provider, extraction consent off, tools posture Off, or a non-full scope). Direct entry points (highlight long-press, dictionary) run the same gather silently, with no popup.
@@ -3478,6 +3481,7 @@ Supported providers can search the web to include current information in their r
 |----------|---------|-------|
 | **Anthropic** | `web_search_20250305` tool | All models; the effort dial sets max searches (2 / 5 / 10) |
 | **OpenAI** | Native web search (Responses API) | GPT-5 models; the effort dial sets search context size |
+| **OpenAI Subscription** | Native web search (Responses API via the Codex backend) | Same GPT-5 models and effort mapping as OpenAI |
 | **Gemini** | Google Search grounding | Search-grounding-capable models; search count automatic |
 | **xAI** | Live search (Responses API) | Grok-4 models (search decided automatically) |
 | **OpenRouter** | Exa search via `:online` suffix | Works with all models (~$0.02/search); effort sets result count (3 / 5 / 10) |
@@ -3491,7 +3495,7 @@ Other providers currently ignore web search and fall back to normal responses.
 3. During streaming, you'll see a "Searching the web..." indicator (with 🔍 prefix when [Emoji Menu Icons](#display-settings) enabled). Any prose the AI writes before searching stays visible, followed by an inline **"*[Searched the web]*"** marker so you can see where the search happened.
 4. After completion, "*[Web search was used]*" appears in chat and artifact viewers (if the indicator is enabled), and the actual URLs and search queries are viewable via **Show Sources** in the chat viewer's gear menu.
 
-**Web Search Effort dial** (Settings → Advanced → Web Search): **Light** (fewest searches — fastest, cheapest), **Standard** (provider defaults), or **Thorough** (most searches and context — slower, costlier). It maps to each provider's own control where one exists: Anthropic max searches, OpenAI and Perplexity search context size, OpenRouter result count. Gemini and xAI decide automatically.
+**Web Search Effort dial** (Settings → Advanced → Web Search): **Light** (fewest searches — fastest, cheapest), **Standard** (provider defaults), or **Thorough** (most searches and context — slower, costlier). It maps to each provider's own control where one exists: Anthropic max searches, OpenAI (API and Subscription) and Perplexity search context size, OpenRouter result count. Gemini and xAI decide automatically.
 
 **Show Sources / provenance:** when a response used web search, the sources it consulted (page titles + URLs) and the queries it ran are captured and persist with the chat. Open **Show Sources** from the chat viewer's gear menu (the same surface that lists AI Book Tools lookups) — right next to **Show Reasoning**.
 
@@ -3529,12 +3533,13 @@ The built-in **News Update** action demonstrates this. It uses `enable_web_searc
 
 ## Supported Providers + Settings
 
-KOAssistant supports **19 built-in AI providers**, plus any number of custom OpenAI-compatible providers you add yourself. Please test and give feedback -- fixes are quickly implemented
+KOAssistant supports **19 built-in AI providers**, plus any number of custom OpenAI-compatible providers you add yourself (OpenAI is listed twice below: once for API keys, once for ChatGPT-subscription login). Please test and give feedback -- fixes are quickly implemented
 
 | Provider | Description | Get API Key |
 |----------|-------------|-------------|
 | **Anthropic** | Claude models (primary focus) | [console.anthropic.com](https://console.anthropic.com/) |
 | **OpenAI** | GPT models | [platform.openai.com](https://platform.openai.com/) |
+| **OpenAI Subscription** | GPT models via your ChatGPT plan's Codex access (device login; no API key, no API credits; unofficial) | [Quick Setup, Option C](#2-add-your-api-key) |
 | **DeepSeek** | Cost-effective reasoning models | [platform.deepseek.com](https://platform.deepseek.com/) |
 | **Gemini** | Google's Gemini models | [aistudio.google.com](https://aistudio.google.com/) |
 | **Ollama** | Local models (no API key needed) | [ollama.ai](https://ollama.ai/) |
@@ -3566,7 +3571,7 @@ KOAssistant supports **19 built-in AI providers**, plus any number of custom Ope
 
 > **Tip:** Provider and model pickers only list providers you've actually configured an API key for (plus keyless/local providers like Ollama and any custom provider you marked as not needing a key). Once you've added at least one key, the rest are tucked behind a **"Show all providers"** row so the picker stays short. Add keys in **Settings → API Keys**.
 
-> **Experimental — AI Book Tools**: **Gemini**, **Claude (Anthropic)**, **OpenAI**, and **OpenRouter** — plus **DeepSeek**, **Mistral**, **Groq**, and **xAI** — can use local tools to search and read the open book on demand, for grounded, page-referenced answers. Availability and default behavior are controlled by a per-chat **Tools** chip and a 3-state posture (off / manual / auto; fresh installs default to *auto*). See [AI Book Tools](#ai-book-tools-experimental).
+> **Experimental — AI Book Tools**: **Gemini**, **Claude (Anthropic)**, **OpenAI** (API or Subscription), and **OpenRouter** — plus **DeepSeek**, **Mistral**, **Groq**, and **xAI** — can use local tools to search and read the open book on demand, for grounded, page-referenced answers. Availability and default behavior are controlled by a per-chat **Tools** chip and a 3-state posture (off / manual / auto; fresh installs default to *auto*). See [AI Book Tools](#ai-book-tools-experimental).
 
 ### Free Tier Providers
 

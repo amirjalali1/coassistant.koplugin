@@ -255,6 +255,37 @@ function BookGroups.displayTitle(path, ui)
     return title
 end
 
+--- Members as {title, authors, file} rows for the library machinery
+--- (item 48(a) launch surface). Existing files only; identity rule = AI
+--- metadata override > doc_props > filename, same as the merge picker.
+function BookGroups.booksInfoFor(group, ui)
+    local out = {}
+    for _idx, path in ipairs((group and group.books) or {}) do
+        if BookGroups.fileExists(path) then
+            local title, author
+            local ok, ds = pcall(function()
+                return require("koassistant_doc_settings").resolve(path, ui)
+            end)
+            if ok and ds then
+                local props = ds:readSetting("doc_props") or {}
+                title = props.display_title or props.title
+                author = props.authors
+                if type(author) == "string" and author:find("\n") then
+                    author = author:gsub("\n", ", ")
+                end
+                local ov_t, ov_a = require("koassistant_book_settings").getMetadataOverride(ds)
+                if ov_t ~= nil then title = ov_t end
+                if ov_a ~= nil then author = ov_a end
+            end
+            if not title or title == "" then
+                title = path:match("([^/]+)%.[^.]+$") or path:match("([^/]+)$") or path
+            end
+            out[#out + 1] = { title = title, authors = author or "", file = path }
+        end
+    end
+    return out
+end
+
 --- Order merge-picker candidates by group relation to the current book
 --- (item 46 "earlier feeds later"): predecessors first, NEAREST predecessor
 --- on top (book N-1, then N-2, …), then later group-mates in group order,

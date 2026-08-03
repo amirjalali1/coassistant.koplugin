@@ -1491,6 +1491,15 @@ local function createSaveDialog(document_path, history, chat_history_manager, is
                                 metadata.original_highlighted_text = highlighted_text
                             end
 
+                            -- Group stamp (item 48(a)): label group-launched library chats
+                            do
+                                local cf = config and config.features
+                                local gl = cf and cf.is_library_context and cf._group_launch
+                                if gl then
+                                    metadata.group_launch = { id = gl.id, name = gl.name }
+                                end
+                            end
+
                             -- Check storage version and route to appropriate method
                             if chat_history_manager:useDocSettingsStorage() then
                                 -- v2: DocSettings-based storage
@@ -2414,6 +2423,11 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                         if cfg.features.is_library_context and cfg.features.books_info then
                             metadata.books_info = cfg.features.books_info
                         end
+                        -- Group stamp (item 48(a)): label group-launched library chats
+                        local gl = cfg.features.is_library_context and cfg.features._group_launch
+                        if gl then
+                            metadata.group_launch = { id = gl.id, name = gl.name }
+                        end
 
                         -- Determine save path: check for action storage_key override
                         local storage_key = cfg.features and cfg.features.storage_key
@@ -2567,6 +2581,14 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                 end
                 if highlightedText and highlightedText ~= "" then
                     metadata.original_highlighted_text = highlightedText
+                end
+                -- Group stamp (item 48(a)): label group-launched library chats
+                do
+                    local tf = temp_config and temp_config.features
+                    local gl = tf and tf.is_library_context and tf._group_launch
+                    if gl then
+                        metadata.group_launch = { id = gl.id, name = gl.name }
+                    end
                 end
                 -- Library chats have no document_path; route them to the library store, not general
                 -- (audit C1: without this, Save duplicated the chat into general storage and
@@ -3010,6 +3032,11 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
             -- Store books_info for library context
             if temp_config.features.is_library_context and temp_config.features.books_info then
                 metadata.books_info = temp_config.features.books_info
+            end
+            -- Group stamp (item 48(a)): label group-launched library chats
+            local gl = temp_config.features.is_library_context and temp_config.features._group_launch
+            if gl then
+                metadata.group_launch = { id = gl.id, name = gl.name }
             end
 
             -- Determine save path: check for action storage_key override
@@ -6648,6 +6675,52 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             end,
         }})
 
+        -- From a group (item 48(f)(i)): a group's members as a selection source
+        local all_groups = require("koassistant_book_groups").all()
+        if #all_groups > 0 then
+            table.insert(menu_buttons, {{
+                text = _("From a Group…"),
+                callback = function()
+                    UIManager:close(add_books_dialog)
+                    local group_dialog
+                    local group_rows = {}
+                    for _idx, g in ipairs(all_groups) do
+                        local captured = g
+                        group_rows[#group_rows + 1] = {{
+                            text = T(_("%1 (%2 books)"), captured.name, #captured.books),
+                            align = "left",
+                            callback = function()
+                                UIManager:close(group_dialog)
+                                local new_books = require("koassistant_book_groups")
+                                    .booksInfoFor(captured, ui_instance)
+                                if #new_books == 0 then
+                                    UIManager:show(InfoMessage:new{
+                                        text = _("No books from this group are available on this device."),
+                                        timeout = 2,
+                                    })
+                                    return
+                                end
+                                local added = mergeBooks(new_books)
+                                if added == 0 then
+                                    UIManager:show(InfoMessage:new{
+                                        text = T(_("All %1 already selected."), #new_books),
+                                        timeout = 2,
+                                    })
+                                    return
+                                end
+                                refreshInputDialog()
+                            end,
+                        }}
+                    end
+                    group_dialog = ButtonDialog:new{
+                        title = _("Add books from a group"),
+                        buttons = group_rows,
+                    }
+                    UIManager:show(group_dialog)
+                end,
+            }})
+        end
+
         -- Browse History (opens BookPicker with full filter/search UI)
         table.insert(menu_buttons, {{
             text = _("Browse History…"),
@@ -6765,6 +6838,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                     configuration.features.books_info = nil
                     configuration.features.book_context = nil
                     configuration.features.book_metadata = nil
+                    configuration.features._group_launch = nil
                     refreshInputDialog()
                 end,
             }})

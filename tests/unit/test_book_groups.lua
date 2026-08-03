@@ -138,6 +138,25 @@ TestRunner:test("orderCandidates: nearest predecessor first, then later mates, t
     TestRunner:assertEqual(sorted[4].group_name, nil, "non-mates unannotated")
 end)
 
+TestRunner:test("booksInfoFor: reading order kept, {title, authors, file} shape, missing skipped", function()
+    -- Real temp files so fileExists passes; doc-settings resolution has no
+    -- sidecar → the filename fallback names the rows
+    local dir = (os.getenv("TMPDIR") or "/tmp"):gsub("/$", "")
+    local beta, alpha = dir .. "/koa_bg_beta.epub", dir .. "/koa_bg_alpha.epub"
+    for _idx, p in ipairs({ beta, alpha }) do
+        local fh = assert(io.open(p, "w")); fh:write("x"); fh:close()
+    end
+    local group = { id = "gx", name = "Shape",
+        books = { beta, alpha, dir .. "/koa_bg_gone.epub" } }
+    local rows = BookGroups.booksInfoFor(group, nil)
+    os.remove(beta); os.remove(alpha)
+    TestRunner:assertEqual(#rows, 2, "missing member skipped")
+    TestRunner:assertEqual(rows[1].file, beta, "reading order kept (not alphabetical)")
+    TestRunner:assertEqual(rows[1].title, "koa_bg_beta", "filename fallback strips extension")
+    TestRunner:assertEqual(rows[1].authors, "", "authors default to empty string")
+    TestRunner:assertEqual(rows[2].title, "koa_bg_alpha", "second member follows")
+end)
+
 TestRunner:test("orderCandidates: group_id lens picks the ordering group (multi-group book)", function()
     local groups = {
         { id = "g1", name = "Saga", books = { "/v1", "/v2", "/shared" } },
