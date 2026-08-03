@@ -138,6 +138,32 @@ TestRunner:test("orderCandidates: nearest predecessor first, then later mates, t
     TestRunner:assertEqual(sorted[4].group_name, nil, "non-mates unannotated")
 end)
 
+TestRunner:test("orderCandidates: group_id lens picks the ordering group (multi-group book)", function()
+    local groups = {
+        { id = "g1", name = "Saga", books = { "/v1", "/v2", "/shared" } },
+        { id = "g2", name = "Papers", books = { "/p1", "/shared", "/p2" } },
+    }
+    local candidates = {
+        { file = "/p2", title = "Paper 2" },
+        { file = "/v1", title = "Vol 1" },
+        { file = "/p1", title = "Paper 1" },
+    }
+    -- Lens g2: p1 is the predecessor, p2 the later mate, v1 unannotated rest
+    local sorted = BookGroups.orderCandidates(candidates, "/shared", groups, "g2")
+    TestRunner:assertEqual(sorted[1].file, "/p1", "g2 predecessor on top")
+    TestRunner:assertEqual(sorted[1].group_name, "Papers", "annotated from the lens group")
+    TestRunner:assertEqual(sorted[2].file, "/p2", "g2 later mate second")
+    TestRunner:assertEqual(sorted[3].file, "/v1", "other group's mate is rest under this lens")
+    TestRunner:assertEqual(sorted[3].group_name, nil, "no cross-lens annotation")
+    -- No lens: first containing group (g1) wins, as before
+    local candidates2 = {
+        { file = "/p1", title = "Paper 1" },
+        { file = "/v2", title = "Vol 2" },
+    }
+    local sorted2 = BookGroups.orderCandidates(candidates2, "/shared", groups)
+    TestRunner:assertEqual(sorted2[1].file, "/v2", "default lens = first containing group")
+end)
+
 TestRunner:test("orderCandidates: current book in no group returns given order", function()
     local groups = { { id = "g1", name = "Saga", books = { "/v1", "/v2" } } }
     local candidates = {

@@ -3913,6 +3913,11 @@ function XrayBrowser:showFullView()
         _artifact_book_author = self.metadata.book_author,
         _book_open = (self.ui and self.ui.document ~= nil),
         _plugin = self.metadata.plugin,
+        group_open = (self.metadata.plugin and self.metadata.plugin._inBookGroup
+            and self.metadata.plugin:_inBookGroup(self.metadata.book_file))
+            and function()
+                self.metadata.plugin:_showGroupMembersPopup(self.metadata.book_file, "artifacts")
+            end or nil,
         on_launch_chat = self.metadata.plugin and self.metadata.plugin._buildLaunchChatCallback
             and self.metadata.plugin:_buildLaunchChatCallback(self.metadata.book_file, self.metadata.title, self.metadata.book_author, markdown, _("X-Ray")) or nil,
     })
@@ -4259,7 +4264,7 @@ function XrayBrowser:showOptions()
             local plugin_ref = self.metadata.plugin
             local group_file = self.metadata.book_file
             table.insert(buttons, {{
-                text = _("Book group…"),
+                text = "\u{2192} " .. _("Group"),
                 align = "left",
                 callback = function()
                     closeOptions()

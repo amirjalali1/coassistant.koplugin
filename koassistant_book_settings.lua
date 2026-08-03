@@ -1922,7 +1922,7 @@ function BookSettings.show(opts)
     -- sidecar key — never counts toward "(N customized)"
     local groups_file = opts.document_path or (ui and ui.document and ui.document.file)
     if groups_file then
-        addButton({ text = T(_("Book group: %1"),
+        addButton({ text = T(_("Group: %1"),
                 require("koassistant_book_groups_ui").rowLabel(groups_file)),
             callback = function()
                 closeDialog()

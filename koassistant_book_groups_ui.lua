@@ -169,7 +169,7 @@ function GroupsUI.showGroup(group_id, opts)
         end,
     }}
     dialog = ButtonDialog:new{
-        title = T(_("Book group: %1"), group.name)
+        title = T(_("Group: %1"), group.name)
             .. "\n" .. _("Order is the reading order — it drives merge suggestions and previous/next navigation."),
         buttons = rows,
     }
@@ -224,7 +224,7 @@ function GroupsUI.showManager(opts)
         end,
     }}
     dialog = ButtonDialog:new{
-        title = _("Book groups"),
+        title = _("Groups"),
         buttons = rows,
     }
     UIManager:show(dialog)
@@ -294,7 +294,7 @@ function GroupsUI.showBookRow(path, opts)
         end,
     }}
     dialog = ButtonDialog:new{
-        title = T(_("Book groups — %1"), BookGroups.displayTitle(path, opts.ui)),
+        title = T(_("Groups — %1"), BookGroups.displayTitle(path, opts.ui)),
         buttons = rows,
     }
     UIManager:show(dialog)

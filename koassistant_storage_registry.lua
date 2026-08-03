@@ -172,7 +172,7 @@ Registry.entries = {
         reset_in = { "wipe_all" }, opt_in_reset = true, uninstall = true,
     },
     {
-        id = "book_groups", label = "Book groups",
+        id = "book_groups", label = "Groups",
         location = "settings_dir", ref = "koassistant_book_groups.lua",
         category = "artifacts", backup = true,
         reset_in = { "wipe_all" }, opt_in_reset = true, uninstall = true,

@@ -87,7 +87,7 @@ local SettingsSchema = {
         {
             id = "book_groups",
             type = "action",
-            text = _("Book Groups"),
+            text = _("Groups"),
             emoji = "\u{1F5C2}\u{FE0F}",
             callback = "showBookGroupsManager",
             separator = true,

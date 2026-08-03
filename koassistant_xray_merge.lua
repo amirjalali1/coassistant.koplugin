@@ -1291,6 +1291,37 @@ function XrayMerge.startCrossBookFlow(opts)
         return
     end
 
+    -- Multi-group target (round 37): the suggestion ordering needs ONE
+    -- group's lens — ask which, once per flow (the pick rides opts, so the
+    -- Back re-entries below keep it)
+    if not opts.group_id then
+        local BookGroups = require("koassistant_book_groups")
+        local memberships = BookGroups.groupsFor(opts.file)
+        if #memberships > 1 then
+            local gdialog
+            local grows = {}
+            for _idx, g in ipairs(memberships) do
+                local captured = g
+                grows[#grows + 1] = {{
+                    text = T(_("%1 (book %2 of %3)"), captured.name,
+                        BookGroups.positionOf(captured, opts.file) or 0, #captured.books),
+                    align = "left",
+                    callback = function()
+                        UIManager:close(gdialog)
+                        opts.group_id = captured.id
+                        XrayMerge.startCrossBookFlow(opts)
+                    end,
+                }}
+            end
+            gdialog = ButtonDialog:new{
+                title = T(_("\"%1\" is in several groups — order merge suggestions by which?"), opts.title or "?"),
+                buttons = grows,
+            }
+            UIManager:show(gdialog)
+            return
+        end
+    end
+
     -- Candidates: every book the artifact index knows about with a JSON main
     -- X-Ray (read on demand — the index only holds books WITH artifacts).
     -- Title/author follow the identity rule: the per-book AI override on the
@@ -1337,7 +1368,7 @@ function XrayMerge.startCrossBookFlow(opts)
     -- later group-mates, then everything else; annotates group_name/group_pos/
     -- group_direction for the labels and the directional warning below
     local BookGroups = require("koassistant_book_groups")
-    candidates = BookGroups.orderCandidates(candidates, opts.file)
+    candidates = BookGroups.orderCandidates(candidates, opts.file, nil, opts.group_id)
 
     local features = (opts.configuration and opts.configuration.features) or {}
     local provider = (opts.configuration

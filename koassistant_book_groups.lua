@@ -265,13 +265,15 @@ end
 --- @param candidates table Array of { file, ... } (mutated: annotations only)
 --- @param current_path string The target book
 --- @param groups table|nil Override for tests
+--- @param group_id string|nil Order by THIS group (multi-group books pick a
+---   lens in the merge flow); default = first group containing current_path
 --- @return table New sorted array (same candidate tables)
-function BookGroups.orderCandidates(candidates, current_path, groups)
+function BookGroups.orderCandidates(candidates, current_path, groups, group_id)
     groups = groups or load().groups
     local group, cur_pos
     for _idx, g in ipairs(groups) do
         local i = indexOf(g, current_path)
-        if i then group, cur_pos = g, i break end
+        if i and (not group_id or g.id == group_id) then group, cur_pos = g, i break end
     end
     local before, after, rest = {}, {}, {}
     for _idx, cand in ipairs(candidates or {}) do

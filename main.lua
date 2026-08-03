@@ -5217,7 +5217,7 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
     end
   end
   dialog = ButtonDialog:new{
-    title = #list == 1 and T(_("Book group: %1"), list[1].name) or _("Book groups"),
+    title = #list == 1 and T(_("Group: %1"), list[1].name) or _("Groups"),
     buttons = rows,
   }
   UIManager:show(dialog)
