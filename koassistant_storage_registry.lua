@@ -100,6 +100,7 @@ Registry.SETTINGS_SUBKEYS = {
         "selected_behavior", "selected_domain", "trusted_providers",
         "gesture_actions", "markdown_font_size", "export_custom_path",
         "session_chips", "_dismissed_session_chips",
+        "minimal_popup_actions",
     },
     internal = {
         "languages_migrated", "behavior_migrated", "prompts_migrated_v2",

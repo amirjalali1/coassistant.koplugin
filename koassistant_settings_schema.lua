@@ -1274,14 +1274,6 @@ local SettingsSchema = {
                     help_text = _("Stream translation responses in real-time."),
                 },
                 {
-                    id = "translate_minimal_popup",
-                    type = "toggle",
-                    text = _("Minimal Popup View"),
-                    path = "features.translate_minimal_popup",
-                    default = false,
-                    help_text = _("Show highlight translations in a small popup next to the highlighted text: just the translation, no buttons. Tap the popup to open the full translate window; tap outside to dismiss. Streaming is skipped for these translations. Never applies to full-page translation."),
-                },
-                {
                     id = "translate_use_context",
                     type = "toggle",
                     text = _("Include Surrounding Context"),
@@ -1369,6 +1361,57 @@ local SettingsSchema = {
                     path = "features.translate_hide_full_page",
                     default = true,
                     help_text = _("Always hide original text for full page translations. Overrides all other visibility settings when enabled. Disable to use your normal Original Text setting above."),
+                },
+            },
+        },
+
+        -- Minimal Popup (chrome-less anchored response popup — registered actions only)
+        {
+            id = "minimal_popup_settings",
+            type = "submenu",
+            text = _("Minimal Popup"),
+            emoji = "💬",
+            items = {
+                {
+                    id = "minimal_popup_mode",
+                    type = "dropdown",
+                    text = _("Minimal Popup View"),
+                    path = "features.minimal_popup_mode",
+                    default = "short",
+                    options = {
+                        { value = "off", label = _("Off") },
+                        { value = "short", label = _("Short responses") },
+                        { value = "always", label = _("Always") },
+                    },
+                    help_text = _("Show responses from the actions below in a small popup next to the highlighted text: just the response, no buttons. Tap the popup to open the full window; tap outside to dismiss. 'Short responses' uses the length limit below; longer responses open the full window directly. Streaming is skipped for these requests. Never applies to full-page translation."),
+                },
+                {
+                    id = "minimal_popup_threshold",
+                    type = "spinner",
+                    text = _("Short Response Limit"),
+                    path = "features.minimal_popup_threshold",
+                    default = 500,
+                    min = 100,
+                    max = 2000,
+                    step = 50,
+                    help_text = _("Responses up to this many characters open in the minimal popup; longer ones open the full window."),
+                    enabled_func = function(plugin)
+                        local f = plugin.settings:readSetting("features") or {}
+                        return (f.minimal_popup_mode or "short") == "short"
+                    end,
+                },
+                {
+                    id = "minimal_popup_actions",
+                    type = "submenu",
+                    text_func = function(plugin)
+                        local f = plugin.settings:readSetting("features") or {}
+                        local set = Constants.resolveMinimalPopupActions(f.minimal_popup_actions)
+                        local n = 0
+                        for _k in pairs(set) do n = n + 1 end
+                        return T(_("Actions Using Minimal Popup: %1"), n)
+                    end,
+                    callback = "buildMinimalPopupActionsMenu",
+                    help_text = _("Which highlight actions open in the minimal popup. Translate and Quick Define by default."),
                 },
             },
         },
@@ -2236,6 +2279,19 @@ local SettingsSchema = {
                             separator = true,
                         },
                     },
+                },
+                -- Per-action model tiers (feature plan item 18e): actions carrying a
+                -- model_tier hint switch to a faster model of the SAME provider for
+                -- that request — model only, prompt/reasoning unchanged. Opt-in so
+                -- existing installs keep their exact models until asked.
+                {
+                    id = "use_action_tiers",
+                    type = "toggle",
+                    text = _("Faster Models for Quick Actions"),
+                    path = "features.use_action_tiers",
+                    default = false,
+                    help_text = _("Actions that declare a speed tier (Translate and Quick Define by default; configurable per action in the action editor) use a faster model from your current provider for that request. Only the model changes — the prompt and settings stay the same. Providers without tier data keep the current model."),
+                    separator = true,
                 },
                 -- Web Search submenu
                 {

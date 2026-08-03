@@ -163,6 +163,53 @@ TestRunner.assert(ModelOverrides.tierOverride("anthropic", "flagship") == nil,
 -- Reset the seam so later tests in the same interpreter see no user layer
 ModelOverrides._setUserForTests(false)
 
+print("== resolveTierModel (item 18e per-action tier hints + ⚡ fastest walk) ==")
+
+-- "fastest" walks ultrafast toward slower, never frontier
+local fastest = ModelLists.resolveTierModel("anthropic", "fastest")
+TestRunner.assert(fastest ~= nil, "fastest resolves for a curated provider")
+TestRunner.assert(fastest == ModelLists.getModelForTier("anthropic", "ultrafast", false)
+    or fastest == ModelLists.getModelForTier("anthropic", "fast", false),
+    "fastest picks the quickest listed tier")
+TestRunner.assert(fastest ~= "claude-fable-5", "fastest never lands on frontier")
+
+-- Named tiers resolve with the toward-cheaper fallback
+TestRunner.assert(ModelLists.resolveTierModel("anthropic", "fast")
+    == ModelLists.getModelForTier("anthropic", "fast", true),
+    "named tier matches getModelForTier with fallback")
+
+-- No placements → nil (caller keeps the current model)
+TestRunner.assert(ModelLists.resolveTierModel("custom_nope", "fastest") == nil,
+    "fastest on a provider without tiers returns nil")
+TestRunner.assert(ModelLists.resolveTierModel("custom_nope", "fast") == nil,
+    "named tier on a provider without tiers returns nil")
+
+-- Strict tier names: garbage and sentinels must NOT normalize into a model switch
+TestRunner.assert(ModelLists.resolveTierModel("anthropic", "none") == nil,
+    "'none' sentinel resolves to nothing (not normalized to standard)")
+TestRunner.assert(ModelLists.resolveTierModel("anthropic", "fastst") == nil,
+    "typo'd tier resolves to nothing")
+TestRunner.assert(ModelLists.resolveTierModel(nil, "fast") == nil
+    and ModelLists.resolveTierModel("anthropic", nil) == nil,
+    "nil provider/tier resolve to nothing")
+
+-- User tier placements feed the fastest walk (custom providers work)
+ModelOverrides._setUserForTests({
+    tiers = {
+        custom_lm_studio = { fast = "qwen3-4b-instruct" },
+        -- Discriminating never-frontier case: a provider whose ONLY placement is
+        -- frontier. The fastest walk must come up empty — if anyone ever appends
+        -- "frontier" to the walk list, THIS assertion fails (the anthropic check
+        -- above short-circuits at ultrafast and would not).
+        custom_only_frontier = { frontier = "giant-model" },
+    },
+})
+TestRunner.assert(ModelLists.resolveTierModel("custom_lm_studio", "fastest") == "qwen3-4b-instruct",
+    "fastest walk consults user tier placements on custom providers")
+TestRunner.assert(ModelLists.resolveTierModel("custom_only_frontier", "fastest") == nil,
+    "fastest walk NEVER consults frontier (frontier-only provider resolves to nothing)")
+ModelOverrides._setUserForTests(false)
+
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))
 return TestRunner.failed == 0

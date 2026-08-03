@@ -699,6 +699,39 @@ function ModelLists.getModelForTier(provider, tier, fallback)
     return nil
 end
 
+-- Resolve a speed-tier hint to a model (item 18e per-action tiers + the ⚡ Quick
+-- preset's "fastest" mode — keep both consumers agreeing). "fastest" walks
+-- ultrafast toward slower until the provider has a listed tier — NEVER frontier
+-- (opt-in only); a named tier resolves via getModelForTier with its
+-- toward-cheaper fallback. Goes through the tier override layer, so
+-- custom_models.lua placements work (incl. custom providers; a provider without
+-- any placement returns nil → callers keep the current model).
+-- @param provider string
+-- @param tier string - "fastest" or a tier name (flagship/standard/fast/ultrafast)
+-- @return string|nil model id
+function ModelLists.resolveTierModel(provider, tier)
+    if not provider or not tier then return nil end
+    if tier == "fastest" then
+        for _idx, t in ipairs({ "ultrafast", "fast", "standard", "flagship" }) do
+            local m = ModelLists.getModelForTier(provider, t, false)
+            if m then return m end
+        end
+        return nil
+    end
+    -- Strict: only canonical tier names resolve. getModelForTier would
+    -- normalizeTier() garbage to "standard" — a silent model switch on a typo'd
+    -- or sentinel value ("none") is worse than doing nothing.
+    local canonical = false
+    for _idx, t in ipairs(TIER_ORDER) do
+        if t == tier then
+            canonical = true
+            break
+        end
+    end
+    if not canonical then return nil end
+    return ModelLists.getModelForTier(provider, tier, true)
+end
+
 -- Get the tier for a given model
 -- @param provider string - Provider name
 -- @param model_id string - Model ID

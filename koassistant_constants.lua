@@ -219,6 +219,29 @@ function Constants.resolveSessionChips(saved, dismissed)
     return result
 end
 
+-- Actions registered for the minimal popup view by default (Minimal Popup
+-- settings). Actions are just actions — "minimal popup" is not an action type
+-- but a registration: highlight actions on this list open their response in the
+-- chrome-less anchored popup (koassistant_minimal_popup.lua) per the
+-- minimal_popup_mode/threshold settings; everything else keeps its normal view.
+Constants.DEFAULT_MINIMAL_POPUP_ACTIONS = {
+    "translate", "quick_define",
+}
+
+--- Resolve the minimal-popup action registry into a lookup set. PURE.
+--- nil saved list = never customized → defaults (read-through, so new default
+--- registrations reach never-customized users automatically). A user-edited list
+--- is taken verbatim — including empty (deliberate "none"); later default
+--- additions won't resurrect for editors (discoverable in the picker, accepted).
+--- @param saved table|nil features.minimal_popup_actions (array of action ids)
+--- @return table set: { [action_id] = true }
+function Constants.resolveMinimalPopupActions(saved)
+    local list = type(saved) == "table" and saved or Constants.DEFAULT_MINIMAL_POPUP_ACTIONS
+    local set = {}
+    for _idx, id in ipairs(list) do set[id] = true end
+    return set
+end
+
 --- Get display text for a Quick Settings item
 --- @param id string: QS item ID
 --- @param _ function: gettext function

@@ -370,14 +370,11 @@ local function resolveQuickPresetModel(features, provider)
         if m then return { provider = provider, model = m } end
         return nil
     end
-    -- "fastest": walk from ultrafast toward slower until the provider has a
-    -- listed tier — NEVER frontier (opt-in only). Goes through getModelForTier
-    -- so custom_models.lua tier placements work (incl. custom providers; without
-    -- one there → nil → keep the current model).
-    for _idx, tier in ipairs({ "ultrafast", "fast", "standard", "flagship" }) do
-        local m = MLists.getModelForTier(provider, tier, false)
-        if m then return { provider = provider, model = m } end
-    end
+    -- "fastest": shared walk (ModelLists.resolveTierModel — also the 18e
+    -- per-action tier resolver; without a tier placement → nil → keep the
+    -- current model).
+    local m = MLists.resolveTierModel(provider, "fastest")
+    if m then return { provider = provider, model = m } end
     return nil
 end
 
@@ -444,6 +441,23 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
     if quick_answer and not model_override then
         model_override = resolveQuickPresetModel(features,
             config.provider or config.default_provider or "anthropic")
+    end
+    -- Per-action model tier (item 18e, opt-in via Advanced → Faster Models for
+    -- Quick Actions): actions carrying a model_tier hint switch to a faster model
+    -- of the SAME provider — model only, prompt/reasoning unchanged. Weakest rung
+    -- of the model precedence: action provider/model pins, the ⚡ session pick,
+    -- and the Quick preset model all win; the hint fills in only when nothing
+    -- else chose. No tier placement for the provider → nil → current model kept
+    -- (effectiveDispatchProvider needs no mirror: the provider never changes).
+    if not model_override and features.use_action_tiers == true
+            and action and action.model_tier
+            and not action.provider and not action.model then
+        local tier_provider = config.provider or config.default_provider or "anthropic"
+        local tier_model = require("koassistant_model_lists")
+            .resolveTierModel(tier_provider, action.model_tier)
+        if tier_model then
+            model_override = { provider = tier_provider, model = tier_model }
+        end
     end
     -- One-shot provider/model override — applied BEFORE every provider-dependent
     -- read below (caching gate, Perplexity check, reasoning resolution). An
@@ -2909,23 +2923,49 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
         end
     }
 
-    -- Minimal popup view (Translation Settings override, default off): highlight
-    -- translations open in a chrome-less popup next to the selection; tapping it
-    -- opens this full viewer. Never for full-page translation. The viewer is
-    -- fully built either way — the popup only defers showing it, so expand keeps
-    -- every callback/history wire intact and dismissing leaves ActiveChatViewer
+    -- Minimal popup view (Minimal Popup settings): registered highlight actions
+    -- open their response in a chrome-less popup next to the selection; tapping
+    -- it opens this full viewer. Eligibility (registration, highlight launch,
+    -- not full-page translate) was decided at dispatch (createTempConfig,
+    -- _minimal_popup_eligible); the short-response threshold is decided HERE
+    -- because it needs the finished response. The viewer is fully built either
+    -- way — the popup only defers showing it, so expand keeps every
+    -- callback/history wire intact and dismissing leaves ActiveChatViewer
     -- untouched (no restore needed: it was never claimed).
-    local use_minimal_popup = use_translate_view
-        and temp_config and temp_config.features
-        and temp_config.features.translate_minimal_popup == true
-        and not temp_config.features.is_full_page_translate
+    local mp_f = temp_config and temp_config.features
+    local use_minimal_popup = mp_f and mp_f._minimal_popup_eligible == true
+        and not mp_f.is_full_page_translate
+    if use_minimal_popup and (mp_f.minimal_popup_mode or "short") == "short" then
+        -- UTF-8 chars, not bytes — Arabic/CJK would otherwise hit the limit at a
+        -- fraction of the visible length.
+        local resp_text
+        local mp_msgs = history and history.getMessages and history:getMessages()
+        if mp_msgs then
+            for i = #mp_msgs, 1, -1 do
+                local m = mp_msgs[i]
+                if m.role == "assistant" and m.content and m.content ~= "" then
+                    resp_text = m.content
+                    break
+                end
+            end
+        end
+        local resp_len = resp_text and select(2, resp_text:gsub("[^\128-\191]", "")) or 0
+        if resp_len > (tonumber(mp_f.minimal_popup_threshold) or 500) then
+            use_minimal_popup = false
+        end
+    end
     local popup_shown = false
     if use_minimal_popup then
-        popup_shown = require("koassistant_minimal_popup").showForTranslate({
+        popup_shown = require("koassistant_minimal_popup").showForResponse({
             history = history,
-            configuration = temp_config,
             selection_data = selection_data,
             ui = ui_instance,
+            -- RTL hint: translate renders in the translation language, the
+            -- dictionary family in the dictionary language; anything else
+            -- auto-detects per paragraph.
+            rtl_language = (use_translate_view and mp_f.translation_language)
+                or ((use_compact_view or use_dictionary_view) and mp_f.dictionary_language)
+                or nil,
             on_expand = function()
                 _G.ActiveChatViewer = chatgpt_viewer
                 UIManager:show(chatgpt_viewer)
@@ -3259,18 +3299,6 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             temp_config.features.enable_streaming = false
         end
 
-        -- Minimal popup (Translation Settings override): the response appears on
-        -- completion in a small anchored popup — a full streaming dialog first
-        -- would be a jarring two-stage UX, so skip streaming for these requests,
-        -- and swap the provider/model status dialog for a one-line notice (still
-        -- tap-to-cancel: that dialog's dismiss is the only way to terminate the
-        -- request subprocess, so it cannot be suppressed outright).
-        if f.translate_minimal_popup == true
-                and not temp_config.features.is_full_page_translate then
-            temp_config.features.enable_streaming = false
-            temp_config.features.loading_message = _("Translating…")
-        end
-
         -- Determine initial hide state for original text
         -- Apply user's translate_hide_highlight_mode setting (default: hide_long per schema)
         local hide_mode = f.translate_hide_highlight_mode or "hide_long"
@@ -3322,6 +3350,34 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         -- Streaming setting (defaults to enabled)
         if f.dictionary_enable_streaming == false then
             temp_config.features.enable_streaming = false
+        end
+    end
+
+    -- Minimal popup routing (Minimal Popup settings), dispatch side: actions
+    -- REGISTERED for the minimal popup (features.minimal_popup_actions, defaults
+    -- in Constants) open their response in the chrome-less anchored popup. The
+    -- response appears on completion — a full streaming dialog first would be a
+    -- jarring two-stage UX, so skip streaming, and swap the provider/model status
+    -- dialog for a one-line notice (still tap-to-cancel: that dialog's dismiss is
+    -- the only way to terminate the request subprocess, so it cannot be
+    -- suppressed outright). The short-response threshold needs the FINISHED
+    -- response, so that decision lives at the seam (showResponseDialog) behind
+    -- the _minimal_popup_eligible marker set here. Highlight-only actions;
+    -- never full-page translation.
+    do
+        local f = config.features or {}
+        if (f.minimal_popup_mode or "short") ~= "off"
+                and prompt.id and prompt.context == "highlight"
+                and not (temp_config.features and temp_config.features.is_full_page_translate) then
+            local registered = require("koassistant_constants")
+                .resolveMinimalPopupActions(f.minimal_popup_actions)
+            if registered[prompt.id] then
+                temp_config.features = temp_config.features or {}
+                temp_config.features.enable_streaming = false
+                temp_config.features.loading_message = prompt.translate_view
+                    and _("Translating…") or (prompt.text and (prompt.text .. "…")) or nil
+                temp_config.features._minimal_popup_eligible = true
+            end
         end
     end
 

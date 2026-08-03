@@ -269,6 +269,7 @@ function PromptsManager:loadPrompts()
             reasoning_config = prompt.reasoning_config,
             provider = prompt.provider,
             model = prompt.model,
+            model_tier = prompt.model_tier,
             has_override = false,
             -- Context extraction flags
             use_book_text = prompt.use_book_text,
@@ -315,6 +316,14 @@ function PromptsManager:loadPrompts()
                 if override.thinking_budget then entry.thinking_budget = override.thinking_budget end
                 if override.provider then entry.provider = override.provider end
                 if override.model then entry.model = override.model end
+                -- Model tier (item 18e): "none" sentinel clears a built-in's hint
+                if override.model_tier ~= nil then
+                    if override.model_tier == "none" then
+                        entry.model_tier = nil
+                    else
+                        entry.model_tier = override.model_tier
+                    end
+                end
                 if override.behavior_variant then entry.behavior_variant = override.behavior_variant end
                 if override.behavior_override then entry.behavior_override = override.behavior_override end
                 if override.reasoning_config then entry.reasoning_config = override.reasoning_config end
@@ -1181,6 +1190,7 @@ function PromptsManager:duplicateAction(action)
         thinking_budget = duplicate.thinking_budget,
         provider = duplicate.provider,
         model = duplicate.model,
+        model_tier = duplicate.model_tier,
         -- Context extraction flags (for reading-only actions)
         use_book_text = duplicate.use_book_text,
         use_highlights = duplicate.use_highlights,
@@ -1253,6 +1263,7 @@ function PromptsManager:showPromptEditor(existing_prompt)
         thinking_budget = existing_prompt and existing_prompt.thinking_budget or nil,
         provider = existing_prompt and existing_prompt.provider or nil,  -- nil = use global
         model = existing_prompt and existing_prompt.model or nil,  -- nil = use global
+        model_tier = existing_prompt and existing_prompt.model_tier or nil,  -- nil = no speed hint (18e)
         -- Context extraction flags (off by default for custom actions)
         use_book_text = existing_prompt and existing_prompt.use_book_text or false,
         use_highlights = existing_prompt and existing_prompt.use_highlights or false,
@@ -1819,7 +1830,17 @@ function PromptsManager:showStep3_Settings(state)
         end,
     })
 
-    -- Row 4: Web | View (View only for highlight contexts)
+    -- Row 4: Tier | Web
+    table.insert(items, {
+        text = _("Tier: ") .. self:getModelTierDisplayText(state),
+        callback = function()
+            self:showModelTierSelector(state, function()
+                UIManager:close(self.step3_dialog)
+                self:showStep3_Settings(state)
+            end)
+        end,
+    })
+
     local web_display = state.enable_web_search == true and _("Always")
         or state.enable_web_search == false and _("Never")
         or _("Global")
@@ -2328,6 +2349,61 @@ function PromptsManager:getBackgroundDisplayText(state)
     if state.skip_background == true then return _("Never") end
     if state.skip_background == false then return _("Always") end
     return _("Follow domain")
+end
+
+-- Row label for the model tier hint (item 18e; shared by the three settings screens)
+function PromptsManager:getModelTierDisplayText(state)
+    local labels = {
+        fastest = _("Fastest"),
+        ultrafast = _("Ultrafast"),
+        fast = _("Fast"),
+        standard = _("Standard"),
+        flagship = _("Flagship"),
+        frontier = _("Frontier"),
+    }
+    -- Hand-edited values outside the picker's set (custom_actions.lua) must not
+    -- display as "None" while the hint is actually live — show them verbatim.
+    if state.model_tier and not labels[state.model_tier] then
+        return state.model_tier
+    end
+    return labels[state.model_tier] or _("None")
+end
+
+-- Model tier selector (item 18e): a speed hint — the action uses a faster model
+-- of the current provider when Advanced → "Faster Models for Quick Actions" is
+-- on. Model only; prompt/reasoning unchanged. Explicit provider/model pins on
+-- the action (and ⚡ session picks) win over the hint.
+-- @param state: Action state being edited (state.model_tier: nil/"fastest"/tier name)
+-- @param refresh_callback: Callback to refresh the parent dialog
+function PromptsManager:showModelTierSelector(state, refresh_callback)
+    local options = {
+        { value = nil, text = _("None (use configured model)") },
+        { value = "fastest", text = _("Fastest available") },
+        { value = "ultrafast", text = _("Ultrafast") },
+        { value = "fast", text = _("Fast") },
+        { value = "standard", text = _("Standard") },
+    }
+    local buttons = {}
+    for _idx, opt in ipairs(options) do
+        local is_selected = state.model_tier == opt.value
+        table.insert(buttons, {
+            {
+                text = (is_selected and "● " or "○ ") .. opt.text,
+                callback = function()
+                    state.model_tier = opt.value
+                    UIManager:close(self.model_tier_dialog)
+                    if refresh_callback then
+                        refresh_callback()
+                    end
+                end,
+            },
+        })
+    end
+    self.model_tier_dialog = ButtonDialog:new{
+        title = _("Model Tier (speed hint)"),
+        buttons = buttons,
+    }
+    UIManager:show(self.model_tier_dialog)
 end
 
 -- Extended thinking selector dialog
@@ -3256,6 +3332,9 @@ function PromptsManager:showBuiltinSettingsEditor(prompt)
         thinking_budget = prompt.thinking_budget,
         provider = prompt.provider,
         model = prompt.model,
+        -- Model tier hint (item 18e; nil = none / "fastest" / tier name)
+        model_tier = prompt.model_tier,
+        model_tier_base = base_action and base_action.model_tier,
         -- Context extraction flags
         use_book_text = prompt.use_book_text or false,
         use_book_text_base = base_use_book_text,
@@ -3386,7 +3465,17 @@ function PromptsManager:showBuiltinSettingsDialog(state)
         end,
     })
 
-    -- Row 4: Web | View (View only for highlight contexts)
+    -- Row 4: Tier | Web
+    table.insert(items, {
+        text = _("Tier: ") .. self:getModelTierDisplayText(state),
+        callback = function()
+            self:showModelTierSelector(state, function()
+                UIManager:close(self.builtin_settings_dialog)
+                self:showBuiltinSettingsDialog(state)
+            end)
+        end,
+    })
+
     local web_display = state.enable_web_search == true and _("Always")
         or state.enable_web_search == false and _("Never")
         or _("Global")
@@ -4124,6 +4213,17 @@ function PromptsManager:saveBuiltinOverride(prompt, state)
         has_any = true
     end
 
+    -- Save model_tier if it differs from base (item 18e).
+    -- "none" sentinel = clearing a built-in's default hint back to nil.
+    if state.model_tier ~= state.model_tier_base then
+        if state.model_tier == nil then
+            override.model_tier = "none"
+        else
+            override.model_tier = state.model_tier
+        end
+        has_any = true
+    end
+
     -- Save view mode flags if they differ from base
     if state.translate_view ~= (state.translate_view_base or false) then
         override.translate_view = state.translate_view
@@ -4184,6 +4284,7 @@ function PromptsManager:showCustomQuickSettings(prompt)
         thinking_budget = prompt.thinking_budget,
         provider = prompt.provider,
         model = prompt.model,
+        model_tier = prompt.model_tier,  -- 18e speed hint (nil = none)
         use_book_text = prompt.use_book_text or false,
         use_highlights = prompt.use_highlights or false,
         use_annotations = prompt.use_annotations or false,
@@ -4315,7 +4416,17 @@ function PromptsManager:showCustomQuickSettingsDialog(state)
         end,
     })
 
-    -- Row 4: Web | View (View only for highlight contexts)
+    -- Row 4: Tier | Web
+    table.insert(items, {
+        text = _("Tier: ") .. self:getModelTierDisplayText(state),
+        callback = function()
+            self:showModelTierSelector(state, function()
+                UIManager:close(self.custom_quick_dialog)
+                self:showCustomQuickSettingsDialog(state)
+            end)
+        end,
+    })
+
     local custom_web_display = state.enable_web_search == true and _("Always")
         or state.enable_web_search == false and _("Never")
         or _("Global")
@@ -5104,6 +5215,7 @@ function PromptsManager:addPrompt(state)
             thinking_budget = state.thinking_budget,
             provider = state.provider,  -- nil = use global
             model = state.model,        -- nil = use global
+            model_tier = state.model_tier,  -- 18e speed hint (nil = none)
             -- Context extraction flags (off by default)
             use_book_text = state.use_book_text or nil,
             use_highlights = state.use_highlights or nil,
@@ -5183,6 +5295,7 @@ function PromptsManager:updatePrompt(existing_prompt, state)
                 thinking_budget = state.thinking_budget,
                 provider = state.provider,
                 model = state.model,
+                model_tier = state.model_tier,  -- 18e speed hint (nil = none)
                 -- Context extraction flags (off by default)
                 use_book_text = state.use_book_text or nil,
                 use_highlights = state.use_highlights or nil,

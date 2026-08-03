@@ -3375,6 +3375,12 @@ function ChatGPTViewer:expandToFullView()
       -- Reset streaming to use large dialog (user's default setting)
       -- This is critical for replies after expand to use the full streaming dialog
       expanded_config.features.large_stream_dialog = true
+      -- Reset the streaming toggle itself: minimal-popup dispatch (and the
+      -- translate/dictionary per-view streaming settings) force
+      -- enable_streaming=false on this config, but this is the FULL chat view
+      -- now — replies follow the global streaming setting again. Without this,
+      -- every reply after expand silently blocks non-streaming forever.
+      expanded_config.features.enable_streaming = nil
       -- Remove __SKIP__ storage_key so expanded chats become saveable
       -- Dictionary/translate chats with "Don't Save" can be saved after expanding
       if expanded_config.features.storage_key == "__SKIP__" then
@@ -3486,6 +3492,11 @@ function ChatGPTViewer:expandToDictionaryView()
       dict_config.features.minimal_buttons = true
       -- Full-size window uses large streaming dialog for re-runs
       dict_config.features.large_stream_dialog = true
+      -- Minimal-popup dispatch forces enable_streaming=false; this full-size
+      -- dictionary view should follow the dictionary family's own streaming
+      -- setting again (false only when the user disabled it there).
+      dict_config.features.enable_streaming =
+        dict_config.features.dictionary_enable_streaming == false and false or nil
     end
   end
 

@@ -4220,6 +4220,49 @@ function AskGPT:buildTranslationLanguageMenu()
   return menu_items
 end
 
+-- Minimal Popup action registry picker (Minimal Popup settings): multi-select
+-- over highlight actions. Membership in features.minimal_popup_actions (nil =
+-- Constants.DEFAULT_MINIMAL_POPUP_ACTIONS read-through); dispatch gate in
+-- koassistant_dialogs.lua createTempConfig. Highlight-only actions listed, to
+-- match the dispatch gate (prompt.context == "highlight").
+function AskGPT:buildMinimalPopupActionsMenu()
+  local self_ref = self
+  local menu_items = {}
+  local actions = self.action_service
+    and self.action_service:getAllActions("highlight", true, true) or {}
+  for _idx, action in ipairs(actions) do
+    if (action.original_context or action.context) == "highlight" and action.id then
+      local action_id = action.id
+      table.insert(menu_items, {
+        text = action.text or action_id,
+        checked_func = function()
+          local f = self_ref.settings:readSetting("features") or {}
+          return Constants.resolveMinimalPopupActions(f.minimal_popup_actions)[action_id] == true
+        end,
+        keep_menu_open = true,
+        callback = function()
+          local f = self_ref.settings:readSetting("features") or {}
+          local set = Constants.resolveMinimalPopupActions(f.minimal_popup_actions)
+          if set[action_id] then
+            set[action_id] = nil
+          else
+            set[action_id] = true
+          end
+          -- Persist as a stable sorted array: consumers do set lookups, so order
+          -- is free — sorting keeps the settings file diff-friendly.
+          local list = {}
+          for id in pairs(set) do list[#list + 1] = id end
+          table.sort(list)
+          f.minimal_popup_actions = list
+          self_ref.settings:saveSetting("features", f)
+          self_ref.settings:flush()
+        end,
+      })
+    end
+  end
+  return menu_items
+end
+
 -- Build dictionary response language picker menu
 function AskGPT:buildDictionaryLanguageMenu()
   local self_ref = self

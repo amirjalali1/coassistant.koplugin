@@ -184,6 +184,17 @@ function ActionService:loadActions()
                     if override.skip_domain ~= nil then
                         action_data.skip_domain = override.skip_domain
                     end
+                    -- Model tier override (item 18e): a tier name/"fastest" sets the
+                    -- hint; "none" CLEARS a built-in's default hint (nil in the
+                    -- override table can't be told apart from "absent" — same
+                    -- sentinel shape as skip_background/domain below)
+                    if override.model_tier ~= nil then
+                        if override.model_tier == "none" then
+                            action_data.model_tier = nil
+                        else
+                            action_data.model_tier = override.model_tier
+                        end
+                    end
                     -- Background override (tri-state: true/false/"domain" sentinel —
                     -- a nil in the override table can't be told apart from "absent",
                     -- same shape as the web-search override above)
@@ -1771,6 +1782,7 @@ function ActionService:createDuplicateAction(action)
         reasoning_config = action.reasoning_config,
         provider = action.provider,
         model = action.model,
+        model_tier = action.model_tier,  -- 18e speed hint
         include_book_context = action.include_book_context,
         skip_language_instruction = action.skip_language_instruction,
         skip_domain = action.skip_domain,

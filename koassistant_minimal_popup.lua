@@ -9,8 +9,9 @@ and geometry-less launches fall back to centered). Deliberately independent of
 KOReader's own "highlight dialog position" setting: this mode is opted into via
 the plugin's Translation Settings and always anchors when it can.
 
-v1 consumer: the translate action behind `features.translate_minimal_popup`
-(showResponseDialog decides; this module never reads settings).
+Consumers: actions registered in the Minimal Popup settings
+(features.minimal_popup_actions — Translate and Quick Define by default;
+showResponseDialog decides; this module never reads settings).
 ]]
 
 local Blitbuffer = require("ffi/blitbuffer")
@@ -133,11 +134,14 @@ function MinimalPopup:onCloseWidget()
     end)
 end
 
---- Convenience for the translate flow: pull the latest assistant message out of
--- a MessageHistory, resolve RTL from the resolved translation language, show.
--- @param opts { history, configuration, selection_data, ui, on_expand, on_close }
+--- Convenience for the response flow: pull the latest assistant message out of
+-- a MessageHistory, resolve RTL from the caller-supplied language, show.
+-- @param opts { history, selection_data, ui, rtl_language, on_expand, on_close }
+--        rtl_language: the language the response renders in (caller resolves
+--        which setting that is — translation vs dictionary language); nil =
+--        auto-detect direction per paragraph.
 -- @return boolean shown (false = nothing to show; caller should fall back)
-function MinimalPopup.showForTranslate(opts)
+function MinimalPopup.showForResponse(opts)
     opts = opts or {}
     local msgs = opts.history and opts.history.getMessages and opts.history:getMessages()
     local text
@@ -151,12 +155,10 @@ function MinimalPopup.showForTranslate(opts)
         end
     end
     if not text then return false end
-    local features = (opts.configuration or {}).features or {}
     local para_direction_rtl = nil
-    local trans_lang = features.translation_language
-    if trans_lang then
+    if opts.rtl_language then
         local ok, Languages = pcall(require, "koassistant_languages")
-        if ok and Languages and Languages.isRTL and Languages.isRTL(trans_lang) then
+        if ok and Languages and Languages.isRTL and Languages.isRTL(opts.rtl_language) then
             para_direction_rtl = true
         end
     end
