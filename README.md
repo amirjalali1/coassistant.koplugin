@@ -107,6 +107,7 @@ Note: This README is the main documentation for now, and is being migrated to th
   - [Web Search](#web-search): AI searches the web for current information (Anthropic, Gemini, OpenAI, xAI, Perplexity, OpenRouter)
 - [Supported Providers + Settings](#supported-providers--settings) - Choose your model, etc
   - [Free Tier Providers](#free-tier-providers)
+  - [Using a Subscription Instead of API Credits](#using-a-subscription-instead-of-api-credits): ChatGPT-plan login available now; coding-plan subscriptions planned
   - [Adding Custom Providers](#adding-custom-providers): Local provider presets (LM Studio, llama.cpp, Jan, vLLM, KoboldCpp, LocalAI)
   - [Adding Custom Models](#adding-custom-models)
   - [Setting Default Models](#setting-default-models)
@@ -217,7 +218,7 @@ KOAssistant stores the OAuth access/refresh tokens in its settings and never dis
 
 See [Supported Providers](#supported-providers--settings) for full list with links to get API keys.
 
-> **Free Options Available:** Don't want to pay? Groq, Gemini, and Ollama offer free tiers. See [Free Tier Providers](#free-tier-providers).
+> **Free Options Available:** Don't want to pay? Groq, Gemini, and Ollama offer free tiers. See [Free Tier Providers](#free-tier-providers). Already paying for ChatGPT? Use it here instead of API credits (Option C above) -- see [Using a Subscription Instead of API Credits](#using-a-subscription-instead-of-api-credits).
 
 ### 3. Restart KOReader
 
@@ -3545,7 +3546,7 @@ KOAssistant supports **19 built-in AI providers**, plus any number of custom Ope
 | **Ollama** | Local models (no API key needed) | [ollama.ai](https://ollama.ai/) |
 | **Groq** | Extremely fast inference | [console.groq.com](https://console.groq.com/) |
 | **Fireworks** | Fast inference for open models | [fireworks.ai](https://fireworks.ai/) |
-| **SambaNova** | Fastest inference, free tier available | [cloud.sambanova.ai](https://cloud.sambanova.ai/) |
+| **SambaNova** | Fastest inference; small free tier (3 models, 20 requests/day) | [cloud.sambanova.ai](https://cloud.sambanova.ai/) |
 | **Together** | 200+ open source models | [api.together.xyz](https://api.together.xyz/) |
 | **Mistral** | European provider, coding models | [console.mistral.ai](https://console.mistral.ai/) |
 | **xAI** | Grok models, up to 1M context | [console.x.ai](https://console.x.ai/) |
@@ -3561,11 +3562,13 @@ KOAssistant supports **19 built-in AI providers**, plus any number of custom Ope
 > **Free & Low-Cost Options**
 >
 > Several providers offer free tiers perfect for testing or budget-conscious use:
-> - **Groq**: All models free with generous rate limits (250K tokens/min)
-> - **Gemini**: gemini-3.5-flash and free quota on other models
-> - **Ollama**: Completely free (runs locally on your hardware)
-> - **SambaNova**: Free tier for open-source models
+> - **Groq**: nearly all models free, no card (per-model limits, ~30 requests/min)
+> - **Gemini**: Flash-class models free, no card (Pro models are paid-only)
+> - **Ollama**: completely free (runs locally on your hardware)
+> - **Mistral**: free tier covers all its models (~1B tokens/month, phone verification)
+> - **OpenRouter**: rotating `:free` models -- 50 requests/day, or 1,000/day after a one-time $10 top-up
 > - **Z.AI**: GLM-4.7-Flash is free
+> - Already paying for ChatGPT? Use your plan here instead of API credits -- see [Using a Subscription](#using-a-subscription-instead-of-api-credits)
 >
 > See details below.
 
@@ -3575,19 +3578,27 @@ KOAssistant supports **19 built-in AI providers**, plus any number of custom Ope
 
 ### Free Tier Providers
 
-Several providers offer free tiers for testing or budget-conscious users:
+Several providers offer free tiers for testing or budget-conscious users. Details below verified August 2026 -- free tiers change often, so treat the numbers as indicative and check the provider's own limits page for the current state:
 
 | Provider | Free Tier Details |
 |----------|-------------------|
-| **Groq** | All models free with rate limits (250K tokens/min, 1K requests/min) |
-| **Gemini** | `gemini-3.5-flash` and `gemini-3.1-flash-lite` have free tiers; other models have free quota |
-| **SambaNova** | Free tier available for open-source models |
+| **Groq** | Nearly all models free, no card needed. Limits are per model, roughly 30 requests/min and 6-15K tokens/min (up to ~14K requests/day on small models). Also hosts OpenAI's open-weight `gpt-oss-120b`/`gpt-oss-20b` on the free tier |
+| **Gemini** | Flash and Flash-Lite class models free (`gemini-3.6-flash`, `gemini-3.5-flash`, the flash-lite variants, 2.5-flash family), no card needed. Pro models are paid-only (removed from the free tier April 2026). Caution: enabling billing on the Google Cloud project removes the free tier for that project -- keep your free key on a project without billing |
 | **Ollama** | Completely free (runs locally on your hardware) |
-| **Mistral** | Open-weight models free: `mistral-small-latest`, `magistral-small-latest` (Apache 2.0) |
-| **OpenRouter** | Some models have free tiers; check per-model pricing |
-| **Z.AI** | GLM-4.7-Flash free (1 concurrent request) |
+| **Mistral** | Free tier ("free mode" / Experiment plan) covers **all** La Plateforme models, roughly 1B tokens/month; phone verification required, no card. (Separately, `mistral-small-latest` and `magistral-small-latest` are Apache 2.0 open-weight -- you can also self-host them via Ollama) |
+| **OpenRouter** | `:free` model variants (rotating roster -- DeepSeek, Llama, `gpt-oss`, and more): 20 requests/min and 50 requests/day account-wide; a one-time $10 credit purchase permanently raises that to 1,000 requests/day |
+| **Z.AI** | GLM-4.7-Flash (and 4.5-Flash) free; 1 concurrent request |
+| **SambaNova** | Free tier limited to 3 models (DeepSeek-V3.1, Llama-3.3-70B, gpt-oss-120b) at 20 requests/day -- fine for a quick trial, too small for daily use |
 
-**Best for testing:** Groq (fastest free inference), Gemini (generous free quota), Ollama (no API key needed).
+**Best for testing:** Groq (fast free inference, no card), Gemini (free Flash models, no card), Ollama (no API key needed).
+
+### Using a Subscription Instead of API Credits
+
+If you already pay for an AI subscription, you may be able to use it in KOAssistant instead of buying API credits:
+
+- **Available now -- OpenAI Subscription**: if your ChatGPT plan includes Codex access, sign in with a device code and chat on your plan's quota instead of API billing. No API key needed. See [Quick Setup, Option C](#2-add-your-api-key). This is an unofficial integration: KOAssistant identifies itself honestly and it may stop working if OpenAI changes the Codex service.
+- **Planned -- coding-plan subscriptions** (Kimi Code, Z.AI GLM Coding Plan, MiniMax Coding Plan): these plans expose standard API endpoints that a subscriber's own plan key can use, so no technical circumvention is involved -- but their terms generally permit only a short list of named coding tools, and KOAssistant is not on those lists. Support is planned as a strictly opt-in feature behind an explicit warning you must acknowledge: it is against the plan's terms of service, it may stop working at any time, and in principle the provider could restrict your account. KOAssistant will always identify itself honestly and will never impersonate an allowlisted client -- if a provider blocks third-party clients, the integration stops working rather than sneaking around it.
+- **Not planned -- Claude (Anthropic), Google, GitHub Copilot subscriptions**: these providers ban third-party subscription use and enforce it server-side, so supporting them would require actively impersonating their official clients. That is out of scope permanently (barring a policy change on their side).
 
 ### Adding Custom Providers
 

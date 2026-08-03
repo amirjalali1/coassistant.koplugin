@@ -2574,6 +2574,15 @@ function AskGPT:buildProviderMenu(simplified, show_all)
       keep_menu_open = false,
     })
 
+    -- Add hosted provider preset option
+    table.insert(items, {
+      text = _("Quick setup: Hosted provider..."),
+      callback = function()
+        self_ref:showHostedProviderPresets()
+      end,
+      keep_menu_open = false,
+    })
+
     -- Add custom provider option
     table.insert(items, {
       text = _("Add custom provider..."),
@@ -2709,6 +2718,58 @@ function AskGPT:showLocalProviderPresets()
     buttons = buttons,
   }
   UIManager:show(self._local_presets_dialog)
+end
+
+-- Hosted OpenAI-compatible provider presets (2026-08 landscape research:
+-- docs/provider_landscape_2026-08.md §2). All speak the plain chat-completions
+-- wire with Bearer-key auth; tools/streaming verified in provider docs, so
+-- capability grants via custom_models.lua should work. URLs verified 2026-08;
+-- Parasail/Cloudflare omitted (unverified / account-specific URLs).
+local HOSTED_PROVIDER_PRESETS = {
+  { name = "Cerebras",         url = "https://api.cerebras.ai/v1/chat/completions" },
+  { name = "MiniMax",          url = "https://api.minimax.io/v1/chat/completions" },
+  { name = "GitHub Models",    url = "https://models.github.ai/inference/chat/completions" },
+  { name = "DeepInfra",        url = "https://api.deepinfra.com/v1/openai/chat/completions" },
+  { name = "Novita AI",        url = "https://api.novita.ai/openai/chat/completions" },
+  { name = "Hyperbolic",       url = "https://api.hyperbolic.xyz/v1/chat/completions" },
+  { name = "Nebius AI Studio", url = "https://api.studio.nebius.com/v1/chat/completions" },
+  { name = "Chutes",           url = "https://llm.chutes.ai/v1/chat/completions" },
+  { name = "Featherless",      url = "https://api.featherless.ai/v1/chat/completions" },
+  { name = "Vercel AI Gateway", url = "https://ai-gateway.vercel.sh/v1/chat/completions" },
+}
+
+-- Helper: Show hosted provider preset selection (mirror of the local picker)
+function AskGPT:showHostedProviderPresets()
+  local self_ref = self
+  local ButtonDialog = require("ui/widget/buttondialog")
+
+  local buttons = {}
+  for _idx, preset in ipairs(HOSTED_PROVIDER_PRESETS) do
+    table.insert(buttons, {{
+      text = preset.name,
+      callback = function()
+        UIManager:close(self_ref._hosted_presets_dialog)
+        self_ref:showAddCustomProviderDialog({
+          name = preset.name,
+          base_url = preset.url,
+          api_key_required = true,
+        })
+      end,
+    }})
+  end
+  table.insert(buttons, {{
+    text = _("Cancel"),
+    callback = function()
+      UIManager:close(self_ref._hosted_presets_dialog)
+    end,
+  }})
+
+  self._hosted_presets_dialog = ButtonDialog:new{
+    title = _("Select hosted provider"),
+    info_text = _("Pre-fills name and URL. You'll need an API key from the provider's site (GitHub Models uses a GitHub token). Set the model id from the provider's docs, and grant capabilities like tools in custom_models.lua if wanted."),
+    buttons = buttons,
+  }
+  UIManager:show(self._hosted_presets_dialog)
 end
 
 -- Helper: Show dialog to add a new custom provider
