@@ -48,10 +48,10 @@ local Constants = require("koassistant_constants")
 --   model_tier       - Speed hint (item 18e): use a faster model of the current provider
 --                      for this action — "fastest" (walk ultrafast→flagship) or a tier
 --                      name (ultrafast/fast/standard/flagship). Model only; prompt and
---                      settings unchanged. Inert unless the user enables Advanced →
---                      "Faster Models for Quick Actions"; explicit provider/model pins
---                      and ⚡ session picks win; providers without tier placements keep
---                      the current model (optional)
+--                      settings unchanged. Active by default; Advanced → "Faster Models
+--                      for Quick Actions" is the global kill-switch. Explicit
+--                      provider/model pins and ⚡ session picks win; providers without
+--                      tier placements keep the current model (optional)
 
 local _ = require("koassistant_gettext")
 
@@ -2103,7 +2103,7 @@ Actions.special = {
         reasoning_config = "off",  -- Translations don't benefit from reasoning
         skip_language_instruction = true,  -- Target language already in prompt
         skip_domain = true,  -- Domain context not relevant for translations
-        model_tier = "fastest",  -- 18e speed hint (only with "Faster Models for Quick Actions" on)
+        model_tier = "fast",  -- 18e speed hint ("fast" not "fastest": ultrafast-class quality drop is visible on translation)
         translate_view = true,  -- Use special translate view
         api_params = {
             temperature = 0.3,  -- Very deterministic for translations
@@ -2133,7 +2133,7 @@ One line only. No etymology, no synonyms. No headers.]],
         reasoning_config = "off",  -- Dictionary lookups don't benefit from reasoning
         skip_language_instruction = true,  -- Target language already in prompt
         skip_domain = true,  -- Domain context not relevant for dictionary lookups
-        model_tier = "fast",  -- 18e speed hint (only with "Faster Models for Quick Actions" on)
+        model_tier = "fast",  -- 18e speed hint
         compact_view = true,  -- Always use compact dictionary view
         minimal_buttons = true,  -- Use dictionary-specific buttons
         -- storage_key set dynamically based on dictionary_disable_auto_save setting

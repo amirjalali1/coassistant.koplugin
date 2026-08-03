@@ -442,14 +442,15 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
         model_override = resolveQuickPresetModel(features,
             config.provider or config.default_provider or "anthropic")
     end
-    -- Per-action model tier (item 18e, opt-in via Advanced → Faster Models for
-    -- Quick Actions): actions carrying a model_tier hint switch to a faster model
-    -- of the SAME provider — model only, prompt/reasoning unchanged. Weakest rung
-    -- of the model precedence: action provider/model pins, the ⚡ session pick,
-    -- and the Quick preset model all win; the hint fills in only when nothing
-    -- else chose. No tier placement for the provider → nil → current model kept
-    -- (effectiveDispatchProvider needs no mirror: the provider never changes).
-    if not model_override and features.use_action_tiers == true
+    -- Per-action model tier (item 18e, on unless disabled via Advanced → Faster
+    -- Models for Quick Actions): actions carrying a model_tier hint switch to a
+    -- faster model of the SAME provider — model only, prompt/reasoning unchanged.
+    -- Weakest rung of the model precedence: action provider/model pins, the ⚡
+    -- session pick, and the Quick preset model all win; the hint fills in only
+    -- when nothing else chose. No tier placement for the provider → nil →
+    -- current model kept (effectiveDispatchProvider needs no mirror: the
+    -- provider never changes). Default-true check pattern (~= false).
+    if not model_override and features.use_action_tiers ~= false
             and action and action.model_tier
             and not action.provider and not action.model then
         local tier_provider = config.provider or config.default_provider or "anthropic"
@@ -2927,30 +2928,26 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
     -- open their response in a chrome-less popup next to the selection; tapping
     -- it opens this full viewer. Eligibility (registration, highlight launch,
     -- not full-page translate) was decided at dispatch (createTempConfig,
-    -- _minimal_popup_eligible); the short-response threshold is decided HERE
-    -- because it needs the finished response. The viewer is fully built either
-    -- way — the popup only defers showing it, so expand keeps every
-    -- callback/history wire intact and dismissing leaves ActiveChatViewer
-    -- untouched (no restore needed: it was never claimed).
+    -- _minimal_popup_eligible); the fit decision is made HERE because it needs
+    -- the finished response ("When it fits" = only_if_fits below — the popup
+    -- reports whether the whole response renders without the ellipsis, so
+    -- script density and font size are handled by construction). The viewer is
+    -- fully built either way — the popup only defers showing it, so expand
+    -- keeps every callback/history wire intact and dismissing leaves
+    -- ActiveChatViewer untouched (no restore needed: it was never claimed).
     local mp_f = temp_config and temp_config.features
     local use_minimal_popup = mp_f and mp_f._minimal_popup_eligible == true
         and not mp_f.is_full_page_translate
-    if use_minimal_popup and (mp_f.minimal_popup_mode or "short") == "short" then
-        -- UTF-8 chars, not bytes — Arabic/CJK would otherwise hit the limit at a
-        -- fraction of the visible length.
-        local resp_text
-        local mp_msgs = history and history.getMessages and history:getMessages()
-        if mp_msgs then
-            for i = #mp_msgs, 1, -1 do
-                local m = mp_msgs[i]
-                if m.role == "assistant" and m.content and m.content ~= "" then
-                    resp_text = m.content
-                    break
-                end
-            end
-        end
-        local resp_len = resp_text and select(2, resp_text:gsub("[^\128-\191]", "")) or 0
-        if resp_len > (tonumber(mp_f.minimal_popup_threshold) or 500) then
+    if use_minimal_popup then
+        -- Dict-window guard: a DictQuickLookup on screen covers the book, so an
+        -- anchored popup buys nothing there (and drops the compact viewer's
+        -- dict buttons for nothing) — skip whenever one is open at show time.
+        -- Launches where the book is visible (highlight menu, dictionary
+        -- bypass, gesture) keep the popup. State is checked at RESPONSE time,
+        -- so a dict window closed while the request ran correctly un-skips.
+        local ok_dql, DictQuickLookup = pcall(require, "ui/widget/dictquicklookup")
+        if ok_dql and DictQuickLookup and DictQuickLookup.window_list
+                and #DictQuickLookup.window_list > 0 then
             use_minimal_popup = false
         end
     end
@@ -2960,6 +2957,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
             history = history,
             selection_data = selection_data,
             ui = ui_instance,
+            only_if_fits = (mp_f.minimal_popup_mode or "short") == "short",
             -- RTL hint: translate renders in the translation language, the
             -- dictionary family in the dictionary language; anything else
             -- auto-detects per paragraph.
@@ -3360,10 +3358,11 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     -- jarring two-stage UX, so skip streaming, and swap the provider/model status
     -- dialog for a one-line notice (still tap-to-cancel: that dialog's dismiss is
     -- the only way to terminate the request subprocess, so it cannot be
-    -- suppressed outright). The short-response threshold needs the FINISHED
-    -- response, so that decision lives at the seam (showResponseDialog) behind
-    -- the _minimal_popup_eligible marker set here. Highlight-only actions;
-    -- never full-page translation.
+    -- suppressed outright). The fit decision ("When it fits") needs the
+    -- FINISHED response, so it lives at the seam (showResponseDialog) behind
+    -- the _minimal_popup_eligible marker set here — as does the dict-window
+    -- guard, which needs the screen state at show time. Highlight-only
+    -- actions; never full-page translation.
     do
         local f = config.features or {}
         if (f.minimal_popup_mode or "short") ~= "off"

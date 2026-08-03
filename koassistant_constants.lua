@@ -223,7 +223,8 @@ end
 -- settings). Actions are just actions — "minimal popup" is not an action type
 -- but a registration: highlight actions on this list open their response in the
 -- chrome-less anchored popup (koassistant_minimal_popup.lua) per the
--- minimal_popup_mode/threshold settings; everything else keeps its normal view.
+-- minimal_popup_mode setting (off / "short" = when it fits / always);
+-- everything else keeps its normal view.
 Constants.DEFAULT_MINIMAL_POPUP_ACTIONS = {
     "translate", "quick_define",
 }

@@ -2370,9 +2370,9 @@ function PromptsManager:getModelTierDisplayText(state)
 end
 
 -- Model tier selector (item 18e): a speed hint — the action uses a faster model
--- of the current provider when Advanced → "Faster Models for Quick Actions" is
--- on. Model only; prompt/reasoning unchanged. Explicit provider/model pins on
--- the action (and ⚡ session picks) win over the hint.
+-- of the current provider (unless Advanced → "Faster Models for Quick Actions"
+-- is turned off). Model only; prompt/reasoning unchanged. Explicit
+-- provider/model pins on the action (and ⚡ session picks) win over the hint.
 -- @param state: Action state being edited (state.model_tier: nil/"fastest"/tier name)
 -- @param refresh_callback: Callback to refresh the parent dialog
 function PromptsManager:showModelTierSelector(state, refresh_callback)

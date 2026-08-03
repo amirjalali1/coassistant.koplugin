@@ -11,7 +11,11 @@ the plugin's Translation Settings and always anchors when it can.
 
 Consumers: actions registered in the Minimal Popup settings
 (features.minimal_popup_actions — Translate and Quick Define by default;
-showResponseDialog decides; this module never reads settings).
+showResponseDialog decides; this module never reads settings). "When it fits"
+mode rides opts.only_if_fits: the caller asks this module whether the whole
+response fits without the ellipsis (hasOverflow — rendered lines, so script
+density and font size are handled by construction) and falls back to the full
+viewer when it does not.
 ]]
 
 local Blitbuffer = require("ffi/blitbuffer")
@@ -104,6 +108,22 @@ function MinimalPopup:init()
     end
 end
 
+--- Did the response overflow the popup's height cap (ellipsis showing)?
+-- Reads TextBoxWidget's own overflow condition — the exact test it uses to
+-- decide `height_overflow_show_ellipsis` (#vertical_string_list >
+-- lines_per_page after init). Language- and font-agnostic: this is rendered
+-- lines, not characters, so CJK/Arabic density and the user's font size are
+-- accounted for by construction. Defensive nil-checks in case a future
+-- KOReader renames the internals (then: never overflows → popup always shown,
+-- same as "Always" mode — degraded but not broken).
+function MinimalPopup:hasOverflow()
+    local tw = self.textw
+    if tw and tw.vertical_string_list and tw.lines_per_page then
+        return #tw.vertical_string_list > tw.lines_per_page
+    end
+    return false
+end
+
 function MinimalPopup:onTap(_arg, ges)
     if ges.pos:intersectWith(self.frame.dimen) then
         UIManager:close(self)
@@ -136,11 +156,16 @@ end
 
 --- Convenience for the response flow: pull the latest assistant message out of
 -- a MessageHistory, resolve RTL from the caller-supplied language, show.
--- @param opts { history, selection_data, ui, rtl_language, on_expand, on_close }
+-- @param opts { history, selection_data, ui, rtl_language, only_if_fits,
+--               on_expand, on_close }
 --        rtl_language: the language the response renders in (caller resolves
 --        which setting that is — translation vs dictionary language); nil =
 --        auto-detect direction per paragraph.
--- @return boolean shown (false = nothing to show; caller should fall back)
+--        only_if_fits: "When it fits" mode — build the popup, and if the whole
+--        response does not fit without the ellipsis, discard it and return
+--        false so the caller opens the full viewer instead.
+-- @return boolean shown (false = nothing to show / does not fit; caller
+--         should fall back to the full viewer)
 function MinimalPopup.showForResponse(opts)
     opts = opts or {}
     local msgs = opts.history and opts.history.getMessages and opts.history:getMessages()
@@ -170,6 +195,10 @@ function MinimalPopup.showForResponse(opts)
         on_expand = opts.on_expand,
         on_close = opts.on_close,
     }
+    if opts.only_if_fits and popup:hasOverflow() then
+        popup:free()  -- constructed but never shown — release the text blitbuffers
+        return false
+    end
     UIManager:show(popup)
     return true
 end
