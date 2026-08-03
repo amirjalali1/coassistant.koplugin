@@ -290,6 +290,67 @@ function Constants.getEmojiText(emoji, text, enable_emoji)
     return text
 end
 
+--- Build the single-line usage indicator shown above AI responses, e.g.
+--- "*[Reasoning/Thinking and Web search were used. Tap the gear icon to review details]*".
+--- Combines every element that applies into ONE line so multi-feature responses
+--- don't stack separate bracket lines (chat viewer, artifact views, X-Ray full view).
+--- Deliberately untranslated, matching the previous per-line indicators (the exact
+--- literals are quoted in settings help text and docs).
+--- @param opts table:
+---   reasoning: true = used; {requested=true, effort="..."} = requested but content
+---              not exposed by the API (OpenAI)
+---   web_search: true when web search ran
+---   book_lookups: number of book-tool lookups (0 = ran, count unknown); nil = none
+---   gear_hint: append "Tap the gear icon to review details" (chat viewer, once)
+--- @return string|nil One "*[...]*" markdown line without trailing newlines, or nil
+function Constants.buildUsageIndicator(opts)
+    local items = {}
+    local requested_only = false
+    if opts.reasoning then
+        if type(opts.reasoning) == "table" and opts.reasoning.requested then
+            local effort = opts.reasoning.effort and (" (" .. opts.reasoning.effort .. ")") or ""
+            table.insert(items, "Reasoning requested" .. effort)
+            requested_only = true
+        else
+            table.insert(items, "Reasoning/Thinking")
+        end
+    end
+    if opts.web_search then
+        table.insert(items, "Web search")
+    end
+    if opts.book_lookups then
+        local n = tonumber(opts.book_lookups) or 0
+        if n == 1 then
+            table.insert(items, "Book search (1 lookup)")
+        elseif n > 1 then
+            table.insert(items, string.format("Book search (%d lookups)", n))
+        else
+            table.insert(items, "Book search")
+        end
+    end
+    if #items == 0 then return nil end
+    local joined
+    if #items == 1 then
+        joined = items[1]
+    elseif #items == 2 then
+        joined = items[1] .. " and " .. items[2]
+    else
+        joined = table.concat(items, ", ", 1, #items - 1) .. " and " .. items[#items]
+    end
+    -- "Reasoning requested (high)" alone already reads as a sentence; everything
+    -- else gets the verb ("was used" / "were used" for combinations).
+    local line
+    if #items == 1 and requested_only then
+        line = joined
+    else
+        line = joined .. (#items > 1 and " were used" or " was used")
+    end
+    if opts.gear_hint then
+        line = line .. ". Tap the gear icon to review details"
+    end
+    return "*[" .. line .. "]*"
+end
+
 --- Format a timestamp as relative time string (e.g., "3d ago", "1m2d ago")
 --- @param timestamp number Unix timestamp
 --- @return string Relative time string, or empty if invalid

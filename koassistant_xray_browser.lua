@@ -3883,17 +3883,18 @@ function XrayBrowser:showFullView()
         end
     end
 
-    -- Build inline indicators for reasoning/web search (matching chat viewer style)
+    -- Combined inline usage indicator (matching chat viewer style AND its
+    -- show_*_indicator settings, which this view previously ignored)
     local display_text = markdown
-    local indicators = {}
-    if self.metadata.used_reasoning then
-        table.insert(indicators, "*[Reasoning/Thinking was used]*")
-    end
-    if self.metadata.web_search_used then
-        table.insert(indicators, "*[Web search was used]*")
-    end
-    if #indicators > 0 then
-        display_text = table.concat(indicators, "\n") .. "\n\n" .. markdown
+    local ind_features = self.metadata.configuration and self.metadata.configuration.features
+    local usage = Constants.buildUsageIndicator({
+        reasoning = ((not ind_features or ind_features.show_reasoning_indicator ~= false)
+            and self.metadata.used_reasoning) or nil,
+        web_search = ((not ind_features or ind_features.show_web_search_indicator ~= false)
+            and self.metadata.web_search_used) or nil,
+    })
+    if usage then
+        display_text = usage .. "\n\n" .. markdown
     end
 
     -- Overlay on top of the menu — closing the viewer returns to the browser

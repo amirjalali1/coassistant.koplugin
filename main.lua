@@ -4997,11 +4997,14 @@ local function buildInlineIndicators(cached_entry, config)
   -- Default to showing indicators (matching chat viewer defaults)
   local show_reasoning = not features or features.show_reasoning_indicator ~= false
   local show_web_search = not features or features.show_web_search_indicator ~= false
-  if show_reasoning and cached_entry.used_reasoning then
-    table.insert(indicators, "*[Reasoning/Thinking was used]*")
-  end
-  if show_web_search and cached_entry.web_search_used then
-    table.insert(indicators, "*[Web search was used]*")
+  -- Combined single-line indicator (matching the chat viewer); no gear hint here —
+  -- artifact details live behind the Info button, not the gear
+  local usage = Constants.buildUsageIndicator({
+    reasoning = (show_reasoning and cached_entry.used_reasoning) or nil,
+    web_search = (show_web_search and cached_entry.web_search_used) or nil,
+  })
+  if usage then
+    table.insert(indicators, usage)
   end
   -- Source mode indicator (for source_selection actions with non-default source)
   if cached_entry.source_mode == "summary" then

@@ -667,7 +667,7 @@ local function runProvenanceTests()
             book_tools = { lookups = 4 },
         })
         local text = h:createResultText(nil, { features = {} })
-        TestRunner:assertContains(text, "*[Searched the book — 4 lookups]*")
+        TestRunner:assertContains(text, "Book search (4 lookups) was used")
     end)
 
     TestRunner:test("book-tools indicator respects show_book_tools_indicator=false", function()
@@ -677,7 +677,7 @@ local function runProvenanceTests()
             book_tools = { lookups = 4 },
         })
         local text = h:createResultText(nil, { features = { show_book_tools_indicator = false } })
-        TestRunner:assertEqual(text:find("Searched the book", 1, true), nil)
+        TestRunner:assertEqual(text:find("Book search", 1, true), nil)
     end)
 
     TestRunner:test("web indicator still shows for provenance tables", function()
@@ -688,7 +688,33 @@ local function runProvenanceTests()
             sources = { { url = "https://a.example" } },
         })
         local text = h:createResultText(nil, { features = {} })
-        TestRunner:assertContains(text, "*[Web search was used]*")
+        TestRunner:assertContains(text, "*[Web search was used")
+    end)
+
+    TestRunner:test("multiple usage elements combine into one indicator line", function()
+        local h = MessageHistory:new("system")
+        h:addUserMessage("question")
+        h:addAssistantMessage("answer", nil, "deep thinking", nil, {
+            web_search = true,
+            book_tools = { lookups = 2 },
+        })
+        local text = h:createResultText(nil, { features = {} })
+        TestRunner:assertContains(text,
+            "*[Reasoning/Thinking, Web search and Book search (2 lookups) were used. Tap the gear icon to review details]*")
+        -- One combined line, not stacked per-feature lines
+        local _, brackets = text:gsub("%*%[", "")
+        TestRunner:assertEqual(brackets, 1)
+    end)
+
+    TestRunner:test("gear hint appears only on first indicator-bearing response", function()
+        local h = MessageHistory:new("system")
+        h:addUserMessage("q1")
+        h:addAssistantMessage("a1", nil, "thinking")
+        h:addUserMessage("q2")
+        h:addAssistantMessage("a2", nil, "thinking")
+        local text = h:createResultText(nil, { features = {} })
+        local _, hints = text:gsub("Tap the gear icon", "")
+        TestRunner:assertEqual(hints, 1)
     end)
 end
 

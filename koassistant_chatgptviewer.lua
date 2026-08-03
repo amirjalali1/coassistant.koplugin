@@ -4748,6 +4748,8 @@ function ChatGPTViewer:toggleDebugMode()
         selected_behavior = self.configuration.features and self.configuration.features.selected_behavior,
         selected_domain = self.configuration.features and self.configuration.features.selected_domain,
         show_reasoning_indicator = self.configuration.features and self.configuration.features.show_reasoning_indicator,
+        show_web_search_indicator = self.configuration.features and self.configuration.features.show_web_search_indicator,
+        show_book_tools_indicator = self.configuration.features and self.configuration.features.show_book_tools_indicator,
       },
       model = self.configuration.model,
       additional_parameters = self.configuration.additional_parameters,
@@ -4854,6 +4856,8 @@ function ChatGPTViewer:toggleHighlightVisibility()
         selected_behavior = self.configuration.features and self.configuration.features.selected_behavior,
         selected_domain = self.configuration.features and self.configuration.features.selected_domain,
         show_reasoning_indicator = self.configuration.features and self.configuration.features.show_reasoning_indicator,
+        show_web_search_indicator = self.configuration.features and self.configuration.features.show_web_search_indicator,
+        show_book_tools_indicator = self.configuration.features and self.configuration.features.show_book_tools_indicator,
       },
       model = self.configuration.model,
       additional_parameters = self.configuration.additional_parameters,
@@ -5278,30 +5282,37 @@ function ChatGPTViewer:showViewerSettings()
     })
   end
 
-  table.insert(buttons, {
-    {
-      text = _("Show Reasoning"),
-      enabled_func = function()
-        return self:hasReasoningContent()
-      end,
-      callback = function()
-        UIManager:close(dialog)
-        self:showReasoningViewer()
-      end,
-    },
-  })
-  table.insert(buttons, {
-    {
-      text = _("Show Sources"),
-      enabled_func = function()
-        return self:hasProvenanceContent()
-      end,
-      callback = function()
-        UIManager:close(dialog)
-        self:showProvenanceViewer()
-      end,
-    },
-  })
+  -- Show Reasoning / Show Sources need conversation history, which artifact
+  -- (simple_view) viewers never have — caches persist only used_reasoning /
+  -- web_search_used booleans, so there is no content to show and the rows sat
+  -- permanently disabled there. Skip them like Export above; the Info button
+  -- already reports "Reasoning: Yes" / "Web search: Yes" for artifacts.
+  if not self.simple_view then
+    table.insert(buttons, {
+      {
+        text = _("Show Reasoning"),
+        enabled_func = function()
+          return self:hasReasoningContent()
+        end,
+        callback = function()
+          UIManager:close(dialog)
+          self:showReasoningViewer()
+        end,
+      },
+    })
+    table.insert(buttons, {
+      {
+        text = _("Show Sources"),
+        enabled_func = function()
+          return self:hasProvenanceContent()
+        end,
+        callback = function()
+          UIManager:close(dialog)
+          self:showProvenanceViewer()
+        end,
+      },
+    })
+  end
   table.insert(buttons, {
     {
       text_func = function()

@@ -1,6 +1,7 @@
 local ModelConstraints = require("model_constraints")
 local ReasoningPrefs = require("reasoning_prefs")
 local DebugUtils = require("koassistant_debug_utils")
+local Constants = require("koassistant_constants")
 
 local MessageHistory = {}
 
@@ -718,49 +719,34 @@ function MessageHistory:createResultText(highlightedText, config)
                 prefix = msg.role == self.ROLES.USER and "▶ User:\n\n" or "◉ KOAssistant:\n\n"
             end
 
-            -- If this is an assistant message with reasoning, show indicator
-            -- msg.reasoning can be:
+            -- Combined usage indicator: everything that applies to this response on
+            -- ONE line (reasoning + web search + book tools), instead of stacked
+            -- per-feature lines. msg.reasoning can be:
             --   string: actual reasoning content (Anthropic, DeepSeek, Gemini - non-streaming)
             --   true: reasoning detected but not captured (streaming mode)
             --   { _requested = true, effort = "..." }: requested but API doesn't expose (OpenAI)
-            -- Note: Full reasoning content is viewable via "Show Reasoning" button in ChatGPTViewer
-            if show_reasoning_indicator and msg.role == self.ROLES.ASSISTANT and msg.reasoning then
-                if type(msg.reasoning) == "table" and msg.reasoning._requested then
-                    -- OpenAI: reasoning was requested but API doesn't expose content
-                    local effort = msg.reasoning.effort and (" (" .. msg.reasoning.effort .. ")") or ""
-                    table.insert(result, "*[Reasoning requested" .. effort .. "]*\n\n")
-                else
-                    -- Reasoning confirmed (content may or may not be captured)
-                    table.insert(result, "*[Reasoning/Thinking was used]*\n\n")
+            -- Note: Full reasoning content is viewable via "Show Reasoning" behind the gear.
+            -- The gear hint (item 7) rides the first indicator-bearing response only.
+            if msg.role == self.ROLES.ASSISTANT then
+                local reasoning_opt
+                if show_reasoning_indicator and msg.reasoning then
+                    if type(msg.reasoning) == "table" and msg.reasoning._requested then
+                        reasoning_opt = { requested = true, effort = msg.reasoning.effort }
+                    else
+                        reasoning_opt = true
+                    end
                 end
-            end
-
-            -- If this is an assistant message with web search used, show indicator
-            if show_web_search_indicator and msg.role == self.ROLES.ASSISTANT and msg.web_search_used then
-                table.insert(result, "*[Web search was used]*\n\n")
-            end
-
-            -- If book tools ran for this response, show the lookup count (was formerly
-            -- baked into the answer text by the tool runner; now a proper indicator)
-            if show_book_tools_indicator and msg.role == self.ROLES.ASSISTANT and msg.book_tools_used then
-                local n = tonumber(msg.book_lookups) or 0
-                if n == 1 then
-                    table.insert(result, "*[Searched the book — 1 lookup]*\n\n")
-                elseif n > 1 then
-                    table.insert(result, string.format("*[Searched the book — %d lookups]*\n\n", n))
-                else
-                    table.insert(result, "*[Book tools were used]*\n\n")
+                local indicator = Constants.buildUsageIndicator({
+                    reasoning = reasoning_opt,
+                    web_search = (show_web_search_indicator and msg.web_search_used) or nil,
+                    book_lookups = (show_book_tools_indicator and msg.book_tools_used)
+                        and (tonumber(msg.book_lookups) or 0) or nil,
+                    gear_hint = not gear_hint_added,
+                })
+                if indicator then
+                    table.insert(result, indicator .. "\n\n")
+                    gear_hint_added = true
                 end
-            end
-
-            -- Once, after the first visible indicator: point users at the gear where
-            -- the full reasoning and sources live (item 7).
-            if not gear_hint_added and msg.role == self.ROLES.ASSISTANT
-                    and ((show_reasoning_indicator and msg.reasoning)
-                        or (show_web_search_indicator and msg.web_search_used)
-                        or (show_book_tools_indicator and msg.book_tools_used)) then
-                table.insert(result, "*[Tap the gear icon to review details]*\n\n")
-                gear_hint_added = true
             end
 
             table.insert(result, prefix .. msg.content .. "\n\n")
