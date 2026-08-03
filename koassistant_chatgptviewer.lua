@@ -997,10 +997,10 @@ local ChatGPTViewer = InputContainer:extend {
   _artifact_book_title = nil,
   _artifact_book_author = nil,
   _book_open = false,
-  -- group_nav (item 46): { prev = { title, open }|nil, next = ... } — prev/
-  -- next volume buttons for artifacts of books in a group; open() reopens the
-  -- neighbor's same artifact (caller-built, main.lua _groupNavFor)
-  group_nav = nil,
+  -- group_open (item 46): callback for the "→ Group" button on grouped
+  -- books' artifacts — opens the members popup (caller-built, main.lua
+  -- _showGroupMembersPopup); this viewer stays open underneath (peek & return)
+  group_open = nil,
 
   -- Callbacks for notebook viewer (simple_view for notebooks)
   -- on_edit: function() called when user clicks Edit (should close viewer and open editor)
@@ -2395,26 +2395,15 @@ function ChatGPTViewer:init()
     end
   end
 
-  -- Book groups prev/next (item 46): jump to the neighboring volume's same
-  -- artifact. Only directions whose neighbor HAS the artifact get a button.
-  if self.group_nav then
-    for _idx, side in ipairs({
-      { info = self.group_nav.prev, fmt = "◀ %1" },
-      { info = self.group_nav.next, fmt = "%1 ▶" },
-    }) do
-      if side.info and side.info.open then
-        local captured = side.info
-        table.insert(simple_view_row1, {
-          text = T(side.fmt, captured.title),
-          callback = function()
-            local open_fn = captured.open
-            UIManager:close(self)
-            open_fn()
-          end,
-          hold_callback = self.default_hold_callback,
-        })
-      end
-    end
+  -- Book group button (item 46): one popup listing the group's members —
+  -- tap a member to open their View-artifacts selector. This viewer stays
+  -- open underneath, so closing the member's artifact returns here.
+  if self.group_open then
+    table.insert(simple_view_row1, {
+      text = "\u{2192} " .. _("Group"),
+      callback = self.group_open,
+      hold_callback = self.default_hold_callback,
+    })
   end
 
   -- Export button (if cache_metadata or on_export callback is provided)

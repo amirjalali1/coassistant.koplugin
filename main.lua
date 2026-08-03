@@ -5150,86 +5150,77 @@ function AskGPT:showBookGroupsManager()
   GroupsUI.showManager({ plugin = self, ui = self.ui })
 end
 
---- Group prev/next navigation for an artifact surface (item 46). Returns nil
---- when the book is in no group or the key is book-internal (section
---- artifacts). A direction whose neighbor lacks the same artifact comes back
---- with entry = nil (render as a disabled hint).
---- @param file string The artifact's book
---- @param key string Cache key ("_xray_cache"/"_summary_cache"/"_analyze_cache" or a per-action id)
---- @param name string Display name for the reopened view
---- @return table|nil { prev = { title, entry, open }|nil, next = ... }
-function AskGPT:_groupNavFor(file, key, name)
-  if not file or type(key) ~= "string" then return nil end
-  -- Section-scoped artifacts navigate too (both volumes often carry the same
-  -- section artifact — e.g. per-book "Key Insights"): the neighbor-presence
-  -- check below governs, since the neighbor only matches on an identical
-  -- section key. ONLY X-Ray section keys stay excluded — they must reopen
-  -- through the X-Ray browser machinery, which this helper doesn't route.
-  local SectionPrefix = require("koassistant_action_cache").SECTION_XRAY_PREFIX
-  if key:sub(1, #SectionPrefix) == SectionPrefix then return nil end
+--- Cheap membership check — callers build "→ Group" buttons lazily from it.
+function AskGPT:_inBookGroup(file)
+  return file ~= nil and #require("koassistant_book_groups").groupsFor(file) > 0
+end
+
+--- Book-group members popup (item 46) — THE group-navigation idiom: one
+--- ordered list of the group's books (current one marked), replacing the old
+--- prev/next pair. What a tap opens depends on mode:
+---   "artifacts" — that book's View-artifacts selector (grayed "(no artifacts)")
+---   "xray"      — that book's live X-Ray (grayed "(no X-Ray)")
+--- @param file string The current book (its groups are listed)
+--- @param mode string "artifacts" | "xray"
+--- @param opts table|nil { before_open = fn } — runs before a member surface opens
+function AskGPT:_showGroupMembersPopup(file, mode, opts)
   local BookGroups = require("koassistant_book_groups")
-  local prev_path, next_path = BookGroups.neighbors(file)
-  if not prev_path and not next_path then return nil end
+  local list = BookGroups.groupsFor(file)
+  if #list == 0 then return end
+  local ButtonDialog = require("ui/widget/buttondialog")
   local ActionCache = require("koassistant_action_cache")
   local self_ref = self
-  local function side(p)
-    if not p then return nil end
-    local ok, entry
-    local open_key, open_name = key, name
-    if key == "_xray_cache" then ok, entry = pcall(ActionCache.getXrayCache, p)
-    elseif key == "_analyze_cache" then ok, entry = pcall(ActionCache.getAnalyzeCache, p)
-    elseif key == "_summary_cache" then ok, entry = pcall(ActionCache.getSummaryCache, p)
-    else
-      ok, entry = pcall(ActionCache.get, p, key)
-      if not ok or not (entry and entry.result) then
-        entry = nil
-        -- Section-scoped fallback: different books rarely share section
-        -- LABELS (the key embeds one) — when the neighbor has exactly ONE
-        -- section artifact of the same type, navigate to it under its own
-        -- name; several would be an arbitrary pick, so no button then
-        local prefix = key:match("^(.*_section:)")
-        if prefix then
-          local ok2, secs = pcall(ActionCache.getSections, p, prefix)
-          if ok2 and type(secs) == "table" and #secs == 1
-              and secs[1].data and secs[1].data.result then
-            entry = secs[1].data
-            open_key = secs[1].key
-            local sec_type = prefix:gsub("_section:$", ""):gsub("^_", "")
-            local type_label = ActionCache.SECTION_TYPE_LABELS
-              and ActionCache.SECTION_TYPE_LABELS[sec_type] or sec_type
-            open_name = T(_("Section %1: %2"), type_label, secs[1].label or "?")
-          end
-        end
-      end
+  local dialog
+  local rows = {}
+  for _g, group in ipairs(list) do
+    if #list > 1 then
+      rows[#rows + 1] = {{ text = group.name, enabled = false }}
     end
-    if not (entry and entry.result) then entry = nil end
-    local title = BookGroups.displayTitle(p, self_ref.ui)
-    local open = entry and function()
-      if open_key == "_xray_cache" or open_key == "_analyze_cache" or open_key == "_summary_cache" then
-        self_ref:showCacheViewer({ name = open_name, key = open_key, data = entry,
-          book_title = title, file = p, skip_stale_popup = true })
-      elseif open_key:find("_section:", 1, true) then
-        -- Mirror the artifact browser's section routing: quiz sections need
-        -- the quiz viewer; everything else is the plain cache viewer
-        local sec_type = open_key:match("^(.*)_section:"):gsub("^_", "")
-        local action_def = self_ref.action_service
-          and self_ref.action_service:getAction("book", sec_type)
-        if action_def and action_def.interactive_quiz then
-          self_ref:viewCachedAction(action_def, sec_type, entry, {
-            file = p, book_title = title,
-            section_label = entry.scope_label, section_key = open_key })
+    for i, path in ipairs(group.books) do
+      local captured = path
+      local title = BookGroups.displayTitle(captured, self.ui)
+      local cb
+      if captured == file then
+        title = title .. " " .. _("(this book)")
+      elseif mode == "xray" then
+        local ok, entry = pcall(ActionCache.getXrayCache, captured)
+        if ok and entry and entry.result then
+          cb = function()
+            UIManager:close(dialog)
+            if opts and opts.before_open then opts.before_open() end
+            self_ref:showCacheViewer({ name = _("X-Ray"), key = "_xray_cache",
+              data = entry, book_title = title, file = captured,
+              skip_stale_popup = true })
+          end
         else
-          self_ref:showCacheViewer({ name = open_name, key = open_key, data = entry,
-            book_title = title, file = p, skip_stale_popup = true })
+          title = title .. " " .. _("(no X-Ray)")
         end
       else
-        self_ref:viewCachedAction({ text = open_name }, open_key, entry,
-          { file = p, book_title = title })
+        local ok, arts = pcall(ActionCache.getAvailableArtifactsWithPinned, captured)
+        if ok and type(arts) == "table" and #arts > 0 then
+          cb = function()
+            UIManager:close(dialog)
+            if opts and opts.before_open then opts.before_open() end
+            local ArtifactBrowser = require("koassistant_artifact_browser")
+            ArtifactBrowser:showArtifactSelector(captured)
+          end
+        else
+          title = title .. " " .. _("(no artifacts)")
+        end
       end
-    end or nil
-    return { title = title, entry = entry, open = open }
+      rows[#rows + 1] = {{
+        text = i .. ". " .. title,
+        align = "left",
+        enabled = cb ~= nil,
+        callback = cb,
+      }}
+    end
   end
-  return { prev = side(prev_path), next = side(next_path) }
+  dialog = ButtonDialog:new{
+    title = #list == 1 and T(_("Book group: %1"), list[1].name) or _("Book groups"),
+    buttons = rows,
+  }
+  UIManager:show(dialog)
 end
 
 function AskGPT:showCacheViewer(cache_info)
@@ -5561,8 +5552,8 @@ function AskGPT:showCacheViewer(cache_info)
     _artifact_book_title = book_title,
     _artifact_book_author = book_author,
     _book_open = (self.ui and self.ui.document ~= nil),
-    group_nav = not cache_info.checkpoint
-      and self:_groupNavFor(file, cache_info.key, cache_info.name) or nil,
+    group_open = (not cache_info.checkpoint and self:_inBookGroup(file))
+      and function() self:_showGroupMembersPopup(file, "artifacts") end or nil,
     on_launch_chat = self:_buildLaunchChatCallback(file, book_title, book_author, cache_info.data.result, cache_info.name),
   }
   UIManager:show(viewer)
@@ -10335,7 +10326,8 @@ function AskGPT:viewCachedAction(action, action_id, cached_entry, opts)
     _artifact_book_title = book_title,
     _artifact_book_author = book_author,
     _book_open = (self.ui and self.ui.document ~= nil),
-    group_nav = self:_groupNavFor(file, action_id, action_name),
+    group_open = self:_inBookGroup(file)
+      and function() self:_showGroupMembersPopup(file, "artifacts") end or nil,
     on_launch_chat = self:_buildLaunchChatCallback(file, book_title, book_author, cached_entry.result, action_name),
   }
   UIManager:show(viewer)

@@ -4249,33 +4249,27 @@ function XrayBrowser:showOptions()
                 })
             end,
         }})
-        -- Book groups prev/next (item 46): open the neighboring volume's
-        -- X-Ray. A neighbor without one shows as a disabled hint. Computed
-        -- LAZILY here (not threaded through browser metadata): every show
-        -- path gets it — incl. the fresh-generation display — and a group
-        -- created while the browser is open appears on the next menu tap.
-        local nav = self.metadata.plugin and self.metadata.plugin._groupNavFor
-            and self.metadata.plugin:_groupNavFor(self.metadata.book_file, "_xray_cache", _("X-Ray"))
-        if nav then
-            for _idx, side in ipairs({
-                { info = nav.prev, label = _("Previous in group: %1") },
-                { info = nav.next, label = _("Next in group: %1") },
-            }) do
-                if side.info then
-                    local captured = side.info
-                    table.insert(buttons, {{
-                        text = captured.open and T(side.label, captured.title)
-                            or (T(side.label, captured.title) .. " " .. _("(no X-Ray yet)")),
-                        align = "left",
-                        enabled = captured.open ~= nil,
-                        callback = function()
-                            closeOptions()
+        -- Book group row (item 46): one popup of the group's members — tap a
+        -- volume to switch to ITS live X-Ray (grayed when it has none).
+        -- Checked LAZILY here (not threaded through browser metadata): every
+        -- show path gets it — incl. the fresh-generation display — and a
+        -- group created while the browser is open appears on the next tap.
+        if self.metadata.plugin and self.metadata.plugin._inBookGroup
+            and self.metadata.plugin:_inBookGroup(self.metadata.book_file) then
+            local plugin_ref = self.metadata.plugin
+            local group_file = self.metadata.book_file
+            table.insert(buttons, {{
+                text = _("Book group…"),
+                align = "left",
+                callback = function()
+                    closeOptions()
+                    plugin_ref:_showGroupMembersPopup(group_file, "xray", {
+                        before_open = function()
                             if self_ref.menu then UIManager:close(self_ref.menu) end
-                            captured.open()
                         end,
-                    }})
-                end
-            end
+                    })
+                end,
+            }})
         end
     end
 
