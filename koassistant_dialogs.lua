@@ -5063,13 +5063,16 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             local chars_k = math.floor(extracted_chars / 1000)
             local tokens_low = math.floor(extracted_chars / 4000)
             local tokens_high = math.floor(extracted_chars / 2000)
-            -- Round 22 (§25(f)): for a one-request X-Ray CREATE on an open
+            -- Round 22 (§25(f)): for a one-request X-Ray run on an open
             -- flowing book, the checkpoint escape is a button, not just prose.
-            -- Section-scoped runs and incremental updates are excluded — the
-            -- checkpoint build would silently change their scope.
+            -- Item 50 follow-up 3: incremental UPDATES offer it too — an
+            -- extend-from-base ladder covers the same base→goal range in
+            -- bounded steps (the round-22 exclusion predates extend
+            -- planning). Section-scoped runs stay excluded: a checkpoint
+            -- build would silently change their scope.
+            local is_incremental = message_data.incremental_book_text ~= nil
             local xray_checkpoint_offer = prompt and prompt.cache_as_xray
                 and not (config.features and (config.features._section_scope or config.features._section_xray))
-                and not message_data.incremental_book_text
                 and plugin and plugin._startXrayLadderBuild
                 and ui and ui.document and ui.document.info and not ui.document.info.has_pages
             local warning_dialog
@@ -5082,13 +5085,17 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             }}
             if xray_checkpoint_offer then
                 warning_buttons[#warning_buttons + 1] = {{
-                    text = _("Build in checkpoints instead…"),
+                    text = is_incremental and _("Continue in checkpoints instead…")
+                        or _("Build in checkpoints instead…"),
                     callback = function()
                         UIManager:close(warning_dialog)
                         local target
-                        if not message_data.full_document then
-                            -- The user picked "up to where I am": bound the
-                            -- checkpoint build to the same coverage
+                        local to_full = is_incremental and config.features
+                            and config.features._update_to_full_progress
+                        if not message_data.full_document and not to_full then
+                            -- "Up to where I am" (create) or a position-target
+                            -- update: bound the checkpoint build to the same
+                            -- coverage
                             local ContextExtractor = require("koassistant_context_extractor")
                             local prog = ContextExtractor:new(ui):getReadingProgress()
                             local d = prog and tonumber(prog.decimal)
@@ -5124,7 +5131,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 end,
             }}
             warning_dialog = ButtonDialog:new{
-                title = T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens). Make sure your model's context window can accommodate this.\n\nYou can focus on a specific section or section range instead of the full document, or use KOReader's Hidden Flows to exclude irrelevant content. For X-Ray, \"Build in checkpoints\" reads the same text in bounded steps, so each individual request stays small."), chars_k, tokens_low, tokens_high),
+                title = (is_incremental and xray_checkpoint_offer)
+                    and T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens). Make sure your model's context window can accommodate this.\n\nThis update reads the rest of the range in one request. \"Continue in checkpoints instead\" covers it in bounded steps, so each individual request stays small."), chars_k, tokens_low, tokens_high)
+                    or T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens). Make sure your model's context window can accommodate this.\n\nYou can focus on a specific section or section range instead of the full document, or use KOReader's Hidden Flows to exclude irrelevant content. For X-Ray, \"Build in checkpoints\" reads the same text in bounded steps, so each individual request stays small."), chars_k, tokens_low, tokens_high),
                 buttons = warning_buttons,
             }
             UIManager:show(warning_dialog)
@@ -5178,44 +5187,56 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             local tokens_low = math.floor(extracted_chars / 4000)
             local tokens_high = math.floor(extracted_chars / 2000)
             local size_dialog
+            local size_buttons = {}
+            size_buttons[#size_buttons + 1] = {{
+                text = _("Cancel"),
+                callback = function()
+                    UIManager:close(size_dialog)
+                    if on_complete then on_complete(nil, "size_warning_declined") end
+                end,
+            }}
+            -- Follow-up 3: one-shots offer the checkpoint escape here too
+            -- (chains don't — they ARE checkpoints; their recourse is the
+            -- confirm's spacing adjuster)
+            if xb_build and xb_build.total == 1 then
+                size_buttons[#size_buttons + 1] = {{
+                    text = _("In checkpoints instead…"),
+                    callback = function()
+                        UIManager:close(size_dialog)
+                        if on_complete then on_complete(nil, "size_switch_checkpoints") end
+                    end,
+                }}
+            end
+            size_buttons[#size_buttons + 1] = {{
+                text = _("Don't warn again"),
+                callback = function()
+                    UIManager:close(size_dialog)
+                    if plugin and plugin.settings then
+                        local features_tbl = plugin.settings:readSetting("features") or {}
+                        features_tbl.suppress_large_extraction_warning = true
+                        plugin.settings:saveSetting("features", features_tbl)
+                        plugin.settings:flush()
+                    end
+                    if config.features then
+                        config.features.suppress_large_extraction_warning = true
+                    end
+                    if xb_build then xb_build.size_ack = true end
+                    ladderSendToast()
+                    sendQuery()
+                end,
+            }}
+            size_buttons[#size_buttons + 1] = {{
+                text = _("Continue"),
+                callback = function()
+                    UIManager:close(size_dialog)
+                    if xb_build then xb_build.size_ack = true end
+                    ladderSendToast()
+                    sendQuery()
+                end,
+            }}
             size_dialog = ButtonDialog:new{
                 title = T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens) in this background request. Make sure your model's context window can accommodate this."), chars_k, tokens_low, tokens_high),
-                buttons = {
-                    {{
-                        text = _("Cancel"),
-                        callback = function()
-                            UIManager:close(size_dialog)
-                            if on_complete then on_complete(nil, "size_warning_declined") end
-                        end,
-                    }},
-                    {{
-                        text = _("Don't warn again"),
-                        callback = function()
-                            UIManager:close(size_dialog)
-                            if plugin and plugin.settings then
-                                local features_tbl = plugin.settings:readSetting("features") or {}
-                                features_tbl.suppress_large_extraction_warning = true
-                                plugin.settings:saveSetting("features", features_tbl)
-                                plugin.settings:flush()
-                            end
-                            if config.features then
-                                config.features.suppress_large_extraction_warning = true
-                            end
-                            if xb_build then xb_build.size_ack = true end
-                            ladderSendToast()
-                            sendQuery()
-                        end,
-                    }},
-                    {{
-                        text = _("Continue"),
-                        callback = function()
-                            UIManager:close(size_dialog)
-                            if xb_build then xb_build.size_ack = true end
-                            ladderSendToast()
-                            sendQuery()
-                        end,
-                    }},
-                },
+                buttons = size_buttons,
             }
             UIManager:show(size_dialog)
             return nil

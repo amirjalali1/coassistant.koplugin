@@ -12585,6 +12585,18 @@ function AskGPT:_fireXrayLadderRung()
             and _("X-Ray generation cancelled.") or _("Checkpoint build cancelled.") })
           return
         end
+        -- Follow-up 3: "In checkpoints instead" from the size warning — the
+        -- one-shot converts to a checkpoint build over the same range; the
+        -- checkpoint confirm then shows the plan + spacing adjuster
+        if err_text == "size_switch_checkpoints" then
+          XrayAuto.endLadderBuild()
+          local goal = cur.rungs and cur.rungs[#cur.rungs]
+          self_ref:_startXrayLadderBuild({
+            target = (goal and goal < 1.0 - 0.005) and goal or nil,
+            target_label = cur.labels and cur.labels[#cur.rungs] or nil,
+          })
+          return
+        end
         -- Follow-up 2: an unattended oversized step pauses the chain — a stop
         -- WITH record so the resume row explains itself; resuming starts a
         -- fresh (attended) build, which re-arms the warning with real numbers
