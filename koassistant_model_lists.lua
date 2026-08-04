@@ -98,6 +98,7 @@ local ModelLists = {
         "mistral-nemo",                 -- Apache 2.0, 12B
         -- Phi (Microsoft) - small but capable
         "phi4",
+        "gpt-oss",                      -- OpenAI open-weight (:20b default, :120b tag)
         -- Tiny models
         "tinyllama",                    -- ~637MB, good for testing
     },
@@ -166,6 +167,10 @@ local ModelLists = {
         "openai/gpt-5.5",
         "openai/gpt-5.4",
         "openai/gpt-5.4-mini",
+        -- OpenAI open-weight (Apache 2.0; ids live-verified on the catalog
+        -- 2026-08-04, a 20b ":free" variant also exists)
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
 
         -- Google
         "google/gemini-3.6-flash",

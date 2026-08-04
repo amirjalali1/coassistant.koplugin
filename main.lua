@@ -2340,6 +2340,173 @@ function AskGPT:showFetchedModelsPicker(provider_id, all_ids, filter)
   UIManager:show(self._fetched_models_dialog)
 end
 
+-- 19e: micro probe battery for a custom provider. Five cheap requests (~16 output
+-- tokens each) against the provider's own chat endpoint; positive findings land in
+-- the DERIVED capability layer (user override > curated > derived) via
+-- ModelOverrides.recordDerived — never in the user's custom_models.lua.
+function AskGPT:testCustomProvider(provider)
+  local self_ref = self
+  local provider_id = provider.id
+  local model = provider.default_model
+  if not model or model == "" then
+    model = self:getCustomModels(provider_id)[1]
+  end
+  if not model or model == "" then
+    UIManager:show(InfoMessage:new{
+      text = _("Add a model first (Fetch models from provider, or add one manually), then test."),
+    })
+    return
+  end
+
+  local BaseHandler = require("koassistant_api.base")
+  local json = require("json")
+  local url = provider.base_url
+  local auth
+  local key = BaseHandler.getApiKey(provider_id, self.settings)
+  if type(key) == "string" and key ~= "" and not BaseHandler.isPlaceholderKey(key) then
+    auth = "Bearer " .. key
+  end
+
+  local function post(extra)
+    local body = {
+      model = model,
+      messages = { { role = "user", content = "Reply with only: ok" } },
+      max_tokens = 16,
+    }
+    for k, v in pairs(extra or {}) do body[k] = v end
+    local payload = json.encode(body)
+    local hdrs = {
+      ["Content-Type"] = "application/json",
+      ["Content-Length"] = tostring(#payload),
+    }
+    if auth then hdrs["Authorization"] = auth end
+    return BaseHandler.fetchInSubprocess(url, {
+      method = "POST", headers = hdrs, body = payload, timeout = 20,
+    })
+  end
+
+  local probe_tools = { { type = "function",
+    ["function"] = { name = "ping", description = "Connectivity test.",
+      parameters = { type = "object",
+        properties = { ping = { type = "string", description = "Any value." } } } } } }
+
+  local results = {}  -- { {label, ok = true|false|nil(skipped), detail} }
+  local caps = {}     -- positive findings for the derived layer
+
+  local steps = {
+    { label = _("Reachability"), run = function()
+        local code, body = post(nil)
+        local n = tonumber(code)
+        if n == 200 then return true end
+        if n == 401 or n == 403 then
+          return false, T(_("auth failed (HTTP %1) - check the API key"), n)
+        end
+        if not n then return false, T(_("network error: %1"), tostring(body)) end
+        return false, T(_("HTTP %1 - check base URL and model id"), n)
+      end },
+    { label = _("Streaming (SSE)"), run = function()
+        local code, body = post({ stream = true })
+        if tonumber(code) ~= 200 then return false, "HTTP " .. tostring(code) end
+        if type(body) == "string" and (body:find("^data:") or body:find("\ndata:")
+            or body:find("^event:") or body:find("\nevent:")) then
+          return true
+        end
+        return false, _("200 but not SSE - streaming may be unsupported")
+      end },
+    { label = _("Tool calling"), run = function()
+        local code = post({ tools = probe_tools })
+        if tonumber(code) == 200 then
+          caps.tools = true
+          return true
+        end
+        return false, "HTTP " .. tostring(code)
+      end },
+    { label = _("Forced tool use (book-tools search)"), run = function()
+        if not caps.tools then return nil, _("skipped - tools not accepted") end
+        local code = post({ tools = probe_tools, tool_choice = "required" })
+        if tonumber(code) == 200 then return true end
+        return false, T(_("HTTP %1 - book tools' search phase may not work"), tostring(code))
+      end },
+    { label = _("Reasoning effort parameter"), run = function()
+        local code = post({ reasoning_effort = "low" })
+        if tonumber(code) == 200 then
+          caps.reasoning = true
+          return true, _("accepted (some hosts silently ignore it)")
+        end
+        return false, "HTTP " .. tostring(code)
+      end },
+  }
+
+  local step_i = 0
+  local function runNext()
+    step_i = step_i + 1
+    local step = steps[step_i]
+    if not step then
+      self_ref:showProviderTestReport(provider, model, results, caps)
+      return
+    end
+    UIManager:show(Notification:new{
+      text = T(_("Testing %1/%2: %3"), step_i, #steps, step.label),
+      timeout = 1,
+    })
+    -- Delayed so the notification paints before the synchronous request
+    UIManager:scheduleIn(0.3, function()
+      local ok, detail = step.run()
+      table.insert(results, { label = step.label, ok = ok, detail = detail })
+      if step_i == 1 and ok == false then
+        -- Baseline failed: the rest would just repeat the same error
+        self_ref:showProviderTestReport(provider, model, results, caps)
+        return
+      end
+      runNext()
+    end)
+  end
+  runNext()
+end
+
+function AskGPT:showProviderTestReport(provider, model, results, caps)
+  local self_ref = self
+  local ButtonDialog = require("ui/widget/buttondialog")
+
+  local lines = { T(_("Model tested: %1"), model), "" }
+  for _idx, r in ipairs(results) do
+    local mark = (r.ok == true and "✓") or (r.ok == nil and "-") or "✗"
+    local line = mark .. " " .. r.label
+    if r.detail then line = line .. "\n   " .. r.detail end
+    table.insert(lines, line)
+  end
+
+  local buttons = {}
+  if caps.tools or caps.reasoning then
+    table.insert(buttons, {{
+      text = _("Record capabilities for this model"),
+      callback = function()
+        UIManager:close(self_ref._provider_test_dialog)
+        local ModelOverrides = require("koassistant_model_overrides")
+        local ok = ModelOverrides.recordDerived(provider.id, model, caps)
+        UIManager:show(Notification:new{
+          text = ok and T(_("Capabilities recorded for %1"), model)
+                     or _("Could not write the capability cache"),
+          timeout = 2,
+        })
+      end,
+    }})
+  end
+  table.insert(buttons, {{
+    text = _("Close"),
+    callback = function()
+      UIManager:close(self_ref._provider_test_dialog)
+    end,
+  }})
+
+  self._provider_test_dialog = ButtonDialog:new{
+    title = T(_("Test results: %1"), provider.name or provider.id),
+    info_text = table.concat(lines, "\n"),
+    buttons = buttons,
+  }
+  UIManager:show(self._provider_test_dialog)
+end
+
 -- Helper: Check if a model is a custom model for the current provider
 function AskGPT:isCustomModel(provider, model)
   local custom_models = self:getCustomModels(provider)
@@ -2821,6 +2988,13 @@ function AskGPT:showCustomProviderOptions(provider)
             })
           end
         end)
+      end,
+    }},
+    {{
+      text = _("Test this provider..."),
+      callback = function()
+        UIManager:close(self_ref._provider_options_dialog)
+        self_ref:testCustomProvider(provider)
       end,
     }},
     {{

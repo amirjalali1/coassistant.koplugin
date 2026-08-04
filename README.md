@@ -3537,28 +3537,34 @@ The built-in **News Update** action demonstrates this. It uses `enable_web_searc
 
 KOAssistant supports **19 built-in AI providers**, plus any number of custom OpenAI-compatible providers you add yourself (OpenAI is listed twice below: once for API keys, once for ChatGPT-subscription login). Please test and give feedback -- fixes are quickly implemented
 
-| Provider | Description | Get API Key |
-|----------|-------------|-------------|
-| **Anthropic** | Claude models (primary focus) | [console.anthropic.com](https://console.anthropic.com/) |
-| **OpenAI** | GPT models | [platform.openai.com](https://platform.openai.com/) |
-| **OpenAI Subscription** | GPT models via your ChatGPT plan's Codex access (device login; no API key, no API credits; unofficial) | [Quick Setup, Option C](#2-add-your-api-key) |
-| **DeepSeek** | Cost-effective reasoning models | [platform.deepseek.com](https://platform.deepseek.com/) |
-| **Gemini** | Google's Gemini models | [aistudio.google.com](https://aistudio.google.com/) |
-| **Ollama** | Local models (no API key needed) | [ollama.ai](https://ollama.ai/) |
-| **Groq** | Extremely fast inference | [console.groq.com](https://console.groq.com/) |
-| **Fireworks** | Fast inference for open models | [fireworks.ai](https://fireworks.ai/) |
-| **SambaNova** | Fastest inference; small free tier (3 models, 20 requests/day) | [cloud.sambanova.ai](https://cloud.sambanova.ai/) |
-| **Together** | 200+ open source models | [api.together.xyz](https://api.together.xyz/) |
-| **Mistral** | European provider, coding models | [console.mistral.ai](https://console.mistral.ai/) |
-| **xAI** | Grok models, up to 1M context | [console.x.ai](https://console.x.ai/) |
-| **OpenRouter** | Meta-provider, 500+ models | [openrouter.ai](https://openrouter.ai/) |
-| **Requesty** | OpenAI-compatible model router | [requesty.ai](https://requesty.ai/) |
-| **Cohere** | Command models | [dashboard.cohere.com](https://dashboard.cohere.com/) |
-| **Qwen** | Alibaba's Qwen models | [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com/) |
-| **Kimi** | Moonshot models | [platform.moonshot.cn](https://platform.moonshot.cn/) |
-| **Doubao** | ByteDance Volcano Engine | [console.volcengine.com](https://console.volcengine.com/) |
-| **Z.AI** | GLM models, free tier available | [z.ai](https://z.ai/) |
-| **Perplexity** | Sonar models, built-in web search with citations | [perplexity.ai](https://www.perplexity.ai/settings/api) |
+| Provider | Description | Status | Get API Key |
+|----------|-------------|--------|-------------|
+| **Anthropic** | Claude models (primary focus) | Tested | [console.anthropic.com](https://console.anthropic.com/) |
+| **OpenAI** | GPT models | Tested | [platform.openai.com](https://platform.openai.com/) |
+| **OpenAI Subscription** | GPT models via your ChatGPT plan's Codex access (device login; no API key, no API credits; unofficial) | Tested | [Quick Setup, Option C](#2-add-your-api-key) |
+| **DeepSeek** | Cost-effective reasoning models | Tested | [platform.deepseek.com](https://platform.deepseek.com/) |
+| **Gemini** | Google's Gemini models | Tested | [aistudio.google.com](https://aistudio.google.com/) |
+| **Ollama** | Local models (no API key needed) | Tested | [ollama.ai](https://ollama.ai/) |
+| **Groq** | Extremely fast inference | Docs-based* | [console.groq.com](https://console.groq.com/) |
+| **Fireworks** | Fast inference for open models | Docs-based* | [fireworks.ai](https://fireworks.ai/) |
+| **SambaNova** | Fastest inference; small free tier (3 models, 20 requests/day) | Docs-based* | [cloud.sambanova.ai](https://cloud.sambanova.ai/) |
+| **Together** | 200+ open source models | Docs-based* | [api.together.xyz](https://api.together.xyz/) |
+| **Mistral** | European provider, coding models | Tested | [console.mistral.ai](https://console.mistral.ai/) |
+| **xAI** | Grok models, up to 1M context | Tested | [console.x.ai](https://console.x.ai/) |
+| **OpenRouter** | Meta-provider, 500+ models | Tested | [openrouter.ai](https://openrouter.ai/) |
+| **Requesty** | OpenAI-compatible model router | Docs-based* | [requesty.ai](https://requesty.ai/) |
+| **Cohere** | Command models | Docs-based* | [dashboard.cohere.com](https://dashboard.cohere.com/) |
+| **Qwen** | Alibaba's Qwen models | Docs-based* | [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com/) |
+| **Kimi** | Moonshot models | Docs-based* | [platform.moonshot.cn](https://platform.moonshot.cn/) |
+| **Doubao** | ByteDance Volcano Engine | Docs-based* | [console.volcengine.com](https://console.volcengine.com/) |
+| **Z.AI** | GLM models, free tier available | Tested | [z.ai](https://z.ai/) |
+| **Perplexity** | Sonar models, built-in web search with citations | Tested | [perplexity.ai](https://www.perplexity.ai/settings/api) |
+
+> **\*Tested vs docs-based:** *Tested* providers are covered by the maintainer's own API keys and automated probe/test tooling. *Docs-based* providers are implemented from their official documentation and user reports — they should work the same way, but the maintainer holds no key for them, so regressions can go unnoticed until someone reports them (fixes are quick once reported).
+>
+> **You can help promote a docs-based provider to tested:**
+> - **Test and report** — try it and open an issue with what worked and what didn't (a screenshot of any error message is gold), or
+> - **Donate a test key** — send a limited-spend, revocable API key to the contact email on the maintainer's GitHub profile. It only needs a few cents of quota to join the automated probe battery, and you can revoke it anytime.
 
 > **Free & Low-Cost Options**
 >
@@ -3624,6 +3630,17 @@ You can add your own OpenAI-compatible providers for local servers or cloud serv
 
 API key is automatically disabled for preset local providers.
 
+**Quick setup for hosted providers:**
+
+Popular OpenAI-compatible cloud hosts have one-tap presets too:
+
+1. Go to **Settings → Provider → Quick setup: Hosted provider**
+2. Pick a host — presets exist for **Cerebras**, **MiniMax**, **DeepInfra**, **Novita AI**, **Hyperbolic**, **Nebius AI Studio**, **Chutes**, **Featherless**, and **Vercel AI Gateway**. Name and endpoint URL are pre-filled.
+3. Get an API key from the host's site and add it in **Settings → API Keys**
+4. Long-press the new provider and pick **Fetch models from provider...** to pull its live model list — tap the models you want (see [Adding Custom Models](#adding-custom-models))
+
+These presets are wired from each host's documentation (*docs-based* in the table above — reports welcome). If a host supports function calling, you can grant the `tools` capability per model in `custom_models.lua` (see `custom_models.lua.sample`).
+
 **Manual setup (cloud services or unlisted endpoints):**
 
 1. Go to **Settings → Provider**
@@ -3636,12 +3653,15 @@ API key is automatically disabled for preset local providers.
 **Managing custom providers:**
 - Custom providers appear with ★ prefix in the Provider menu
 - Long-press a custom provider to **edit** or **remove** it
+- Long-press → **Fetch models from provider...** pulls the live `/models` list into a tap-to-add picker (filter row to narrow; an "Add all" row appears for short lists)
 - Long-press to toggle **API key requirement** on/off
 - Set API keys for custom providers in **Settings → API Keys**
 
 **Tips:**
-- For Ollama's OpenAI-compatible mode, use `http://localhost:11434/v1/chat/completions`
+- For Ollama's OpenAI-compatible mode, use `http://localhost:11434/v1/chat/completions` — fetch-models then lists your local models with no key
 - The first custom model you add becomes the default automatically
+
+**Regional providers (bring your own access):** some providers can't ship as presets because signup or auth is restricted: **SiliconFlow**, **Baidu Qianfan**, and **iFlytek** require mainland-China phone/business verification; **Tencent Hunyuan** has no clean international self-serve (use a rehost that carries it); **ModelScope**'s free endpoint has reliability issues; **Yandex** has no confirmed international signup, and **Sber GigaChat**'s rotating-token auth doesn't fit the custom-provider slot at all. If you *do* have working access to one of these through an OpenAI-compatible endpoint, the manual setup above works — please share a working config in an issue so others benefit.
 
 ### Adding Custom Models
 

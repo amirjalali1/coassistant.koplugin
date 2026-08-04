@@ -179,6 +179,7 @@ ModelConstraints.capabilities = {
             "deepseek/deepseek-v4", "x-ai/grok-4", "meta-llama/llama-3.3-70b-instruct",
             "mistralai/mistral-large", "mistralai/mistral-medium", "qwen/qwen3",
             "moonshotai/kimi-k2", "minimax/minimax-m2",
+            "openai/gpt-oss",   -- open-weight; groq probe grants the same family
         },
     },
     requesty = {
