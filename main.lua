@@ -7742,8 +7742,10 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     local nc_build = nc_xa.ladderBuild()
     if nc_build then
       table.insert(buttons, {{
-        text = T(_("Building checkpoints: %1 of %2… (tap to cancel)"),
-          nc_build.step or nc_build.idx, nc_build.total),
+        text = nc_build.total == 1
+            and _("Generating X-Ray in the background… (tap to cancel)")
+          or T(_("Building checkpoints: %1 of %2… (tap to cancel)"),
+            nc_build.step or nc_build.idx, nc_build.total),
         callback = function()
           UIManager:close(dialog)
           self_ref:_cancelXrayLadderBuild()
@@ -8000,8 +8002,10 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           and next_ahead - current_progress.decimal <= spacing_now + 0.005))
     if ladder_building then
       table.insert(buttons, {{
-        text = T(_("Building checkpoints: %1 of %2… (tap to cancel)"),
-          ladder_building.step or ladder_building.idx, ladder_building.total),
+        text = ladder_building.total == 1
+            and _("Generating X-Ray in the background… (tap to cancel)")
+          or T(_("Building checkpoints: %1 of %2… (tap to cancel)"),
+            ladder_building.step or ladder_building.idx, ladder_building.total),
         callback = function()
           UIManager:close(dialog)
           self_ref:_cancelXrayLadderBuild()
@@ -8927,6 +8931,11 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     if cr.delivery == "checkpoints" and stepsFor() <= 1 then
       cr.delivery = "one"
     end
+    -- one_bg needs the ladder machinery (flowing); target coverage's "one"
+    -- row IS the background request, so the pick folds into it
+    if cr.delivery == "one_bg" and (not flowing or cr.coverage == "target") then
+      cr.delivery = "one"
+    end
   end
 
   -- Round 22 (§25(f)): the checkpoint default for substantial plans
@@ -8962,6 +8971,13 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
           bo = { target = cr.target, target_label = cr.target_label }
         end
         self_ref:_startXrayLadderBuild(bo)
+      elseif cr.delivery == "one_bg" then
+        -- Item 50(a): whole-book/position single request through the silent
+        -- one-step machinery (install + notification; cancel like a build)
+        self_ref:_startXrayLadderBuild({
+          one_shot = true,
+          target = cr.coverage == "position" and decimal or nil,
+        })
       else
         if cr.coverage == "position" then
           on_update()
@@ -9155,10 +9171,15 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     addLabel(_("Build"))
     local pick_rebuild = pickIsRebuild()
     local one_label
-    if mode == "extend" and not pick_rebuild then
+    if cr.coverage == "target" then
+      -- The section-bounded single request has ALWAYS run in the background
+      -- (round 17 one_shot) — label it honestly; no streamed variant exists
+      one_label = (mode == "extend" and not pick_rebuild)
+        and _("In one request, in background (update)")
+        or _("In one request, in background")
+    elseif mode == "extend" and not pick_rebuild then
       one_label = cr.coverage == "whole" and _("In one request now (update to 100%)")
-        or cr.coverage == "position" and _("In one request now (update to your position)")
-        or _("In one request now (update)")
+        or _("In one request now (update to your position)")
     else
       one_label = (cr.coverage == "whole" and not pick_rebuild)
           and _("In one request now (analyzed as a whole)")
@@ -9169,6 +9190,13 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       { { text = one_label,
         provider = "one", checked = cr.delivery == "one" } },
     }
+    -- Item 50(a): the background single request — same request, silent ladder
+    -- machinery, one step. Flowing docs only (the machinery's gate); target
+    -- coverage's "one" row IS this already, so no second row there.
+    if flowing and cr.coverage ~= "target" then
+      del_rows[#del_rows + 1] = { { text = _("In one request, in background"),
+        provider = "one_bg", checked = cr.delivery == "one_bg" } }
+    end
     local n_steps = stepsFor()
     if n_steps > 1 then
       -- From-nothing/rebuild checkpoint builds start with the introductory
@@ -9203,8 +9231,10 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     -- Gray hint under the Build group — every pick explains itself up front
     -- (round 22, §25(f); previously only the follow pick had one)
     local hint
+    -- Item 50(c): the forward story every extendable one-request pick carries
+    local later_line = _("You can update it manually anytime, or turn on automatic updates later; both build on top of what you have.")
     if cr.delivery == "follow" then
-      hint = _("Builds checkpoints in the background as you read, always keeping the next one ready ahead of you. Missing checkpoints up to your position build right away.")
+      hint = _("Builds checkpoints in the background as you read, always keeping the next one ready ahead of you. Each checkpoint is one small request. Missing checkpoints up to your position build right away.")
       if cr.coverage == "whole" then
         hint = hint .. " " .. _("Coverage reaches 100% when you finish the book.")
       elseif cr.coverage == "target" and cr.target_label then
@@ -9212,24 +9242,34 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       end
     elseif cr.delivery == "checkpoints" then
       -- Item 33(1): checkpoints are a quality/size mechanism first, spoiler
-      -- safety second — the copy names both, in that order
+      -- safety second — the copy names both, in that order. Item 50(b): the
+      -- INDIVIDUAL-requests-stay-small fact, plainly (the total text read is
+      -- the same; only each request shrinks).
       hint = (mode == "extend" and not pick_rebuild)
-        and _("Continues from your current coverage in background steps. Each step reads a bounded slice (requests stay small even on long books) and yields a spoiler-safe version. You can keep reading, cancel anytime, and resume later.")
-        or _("Covers the range in background steps. Each step reads a bounded slice (requests stay small even on long books) and yields a spoiler-safe version up to its position. A usable X-Ray installs after the first step; you can keep reading, cancel anytime, and resume later.")
+        and _("Continues from your current coverage in background steps. The same text is read in total, but each step reads only a bounded slice, so every individual request stays small even on long books, and each step yields a spoiler-safe version. You can keep reading, cancel anytime, and resume later.")
+        or _("Covers the range in background steps. The same text is read in total, but each step reads only a bounded slice, so every individual request stays small even on long books, and each step yields a spoiler-safe version up to its position. A usable X-Ray installs after the first step; you can keep reading, cancel anytime, and resume later.")
+    elseif cr.delivery == "one_bg" then
+      hint = _("The same single request, run in the background: you can keep reading, and a notification arrives when the X-Ray is ready. The book must stay open.")
+      if cr.coverage ~= "whole" then
+        hint = hint .. " " .. later_line
+      end
     elseif mode == "extend" and not pick_rebuild then
       if cr.coverage == "whole" then
         hint = _("Updates your existing X-Ray to 100% in a single request.")
       elseif cr.coverage == "position" then
         hint = _("Updates your existing X-Ray up to your position in a single request.")
+          .. " " .. later_line
       else
-        hint = _("Updates your existing X-Ray to the end of the chosen section in a single request.")
+        hint = _("Updates your existing X-Ray to the end of the chosen section in one background request. You can keep reading; a notification arrives when it is ready.")
       end
     elseif cr.coverage == "whole" then
-      hint = _("Analyzes the whole book in a single request. Large for long books, with no spoiler-safe intermediate versions.")
+      hint = _("Analyzes the whole book in a single request, shown as it streams in. Large for long books, with no spoiler-safe intermediate versions.")
     elseif cr.coverage == "position" then
-      hint = _("Reads the book up to your position in a single request. A snapshot: it does not grow as you read on.")
+      hint = _("Reads the book up to your position in a single request, shown as it streams in.")
+        .. " " .. later_line
     else
-      hint = _("Reads the book up to the end of the chosen section in a single request.")
+      hint = _("Reads the book up to the end of the chosen section in one background request. You can keep reading; a notification arrives when it is ready.")
+        .. " " .. later_line
     end
     -- Round 24: rebuild picks carry the replacement fact in the hint too
     if pick_rebuild and mode == "extend" then
@@ -12073,11 +12113,19 @@ function AskGPT:_startXrayLadderBuild(build_opts)
   -- Round 16: build_opts.target (+ target_label) bounds the build below 100%
   -- (unified creation flow: cover one huge section in prefix steps).
   local goal = build_opts and tonumber(build_opts.target) or nil
-  if goal and (goal <= 0.005 or goal >= 1.0 - 0.005) then goal = nil end
+  -- Round 17: one_shot = a single rung at the goal (same machinery, one
+  -- background step). Item 50(a): it serves ALL coverages now — no target
+  -- means whole book (goal 1.0, a rung at 100% is a normal ladder end) and
+  -- position goals ride through; only the grid path keeps nil-ing near-1.0
+  -- goals (whole-book grids plan to 1.0 by default).
+  local one_shot = build_opts and build_opts.one_shot or nil
+  if one_shot then
+    goal = math.min(goal or 1.0, 1.0)
+    if goal <= 0.005 then return end
+  elseif goal and (goal <= 0.005 or goal >= 1.0 - 0.005) then
+    goal = nil
+  end
   local goal_label = goal and build_opts and build_opts.target_label or nil
-  -- Round 17: one_shot = the chooser's "in one request now" for a target —
-  -- a single rung at the goal (same machinery, one background step)
-  local one_shot = goal and build_opts and build_opts.one_shot or nil
   local recommended = XrayAuto.ladderSpacingFor(self.ui.document:getPageCount())
   local features = self.settings:readSetting("features") or {}
   local boundaries = features.xray_ladder_chapter_snap ~= false
@@ -12158,7 +12206,17 @@ function AskGPT:_startXrayLadderBuild(build_opts)
     -- X-Ray continues from its coverage). Full sentences, no dashes.
     local base_pct = math.floor((base_progress or 0) * 100 + 0.5)
     local state_line
-    if goal then
+    if one_shot then
+      -- Item 50(a): a one-shot is not a checkpoint plan — say what it does
+      local goal_text = goal_label
+        and T(_("%1% (end of \"%2\")"), math.floor(goal * 100 + 0.5), goal_label)
+        or T(_("%1%"), math.floor(goal * 100 + 0.5))
+      if (base_progress or 0) > 0.005 then
+        state_line = T(_("Your X-Ray covers to %1%. It will be extended to %2."), base_pct, goal_text)
+      else
+        state_line = T(_("There is no X-Ray yet. It will cover the book from the beginning to %1."), goal_text)
+      end
+    elseif goal then
       local goal_text = goal_label
         and T(_("%1% (end of \"%2\")"), math.floor(goal * 100 + 0.5), goal_label)
         or T(_("%1%"), math.floor(goal * 100 + 0.5))
@@ -12179,7 +12237,7 @@ function AskGPT:_startXrayLadderBuild(build_opts)
     local plan_line, cost_line
     if one_shot then
       plan_line = _("It will be generated in one background request.")
-      cost_line = _("The book must stay open; you can keep reading.")
+      cost_line = _("The book must stay open; you can keep reading. A notification arrives when it is ready.")
     else
       -- Session-2 device finding (item 38): a seeded plan must describe its
       -- ACTUAL grid. The tail is planned FROM the seed (half-spacing rule), so
@@ -12214,8 +12272,8 @@ function AskGPT:_startXrayLadderBuild(build_opts)
       -- Round 22 (D6): "read once" was false with an intro planned — the
       -- introduction re-reads the first checkpoint's slice
       cost_line = plan_intro
-        and _("Each is generated in the background from the next slice of the text, with no further prompts. The text is read once in total, plus the introduction re-reading the opening slice and a small per-checkpoint overhead. The book must stay open; you can keep reading, cancel anytime, and resume later.")
-        or _("Each is generated in the background from the next slice of the text, with no further prompts. The text is read once in total, plus a small per-checkpoint overhead. The book must stay open; you can keep reading, cancel anytime, and resume later.")
+        and _("Each is generated in the background from the next slice of the text, so every individual request stays small, with no further prompts. The text is read once in total, plus the introduction re-reading the opening slice and a small per-checkpoint overhead. The book must stay open; you can keep reading, cancel anytime, and resume later.")
+        or _("Each is generated in the background from the next slice of the text, so every individual request stays small, with no further prompts. The text is read once in total, plus a small per-checkpoint overhead. The book must stay open; you can keep reading, cancel anytime, and resume later.")
     end
     local confirm
     confirm = ButtonDialog:new{
@@ -12447,8 +12505,12 @@ function AskGPT:_fireXrayLadderRung()
   -- xray_auto_notify opt-in; failures below stay visible regardless
   if not build.silent or features.xray_auto_notify == true then
     UIManager:show(Notification:new{
-      text = is_intro
-        and T(_("X-Ray checkpoints: %1 of %2 (introduction)…"), step_no, build.total)
+      -- Item 50(a): a one-step build is a background one-shot, not a chain
+      text = build.total == 1
+          and T(_("Generating X-Ray in the background (to %1%)…"),
+            math.floor(target * 100 + 0.5))
+        or is_intro
+          and T(_("X-Ray checkpoints: %1 of %2 (introduction)…"), step_no, build.total)
         or T(_("X-Ray checkpoints: %1 of %2 (to %3%)…"),
           step_no, build.total, math.floor(target * 100 + 0.5)),
     })
@@ -12571,7 +12633,8 @@ function AskGPT:_fireXrayLadderRung()
         XrayAuto.endLadderBuild()
         if not cur.silent or features.xray_auto_notify == true then
           UIManager:show(Notification:new{
-            text = T(_("X-Ray checkpoints built (%1)."), cur.total),
+            text = cur.total == 1 and _("X-Ray ready.")
+              or T(_("X-Ray checkpoints built (%1)."), cur.total),
           })
         end
         self_ref._file_dialog_row_cache = { file = nil, rows = nil }
