@@ -2246,7 +2246,12 @@ function AskGPT:fetchProviderModels(provider_id)
   end
   if tonumber(code) ~= 200 then
     -- never echo the key (gemini rides it in the URL)
-    return nil, T(_("HTTP %1 from %2"), tostring(code), models_url:gsub("key=[^&]+", "key=***"))
+    local msg = T(_("HTTP %1 from %2"), tostring(code), models_url:gsub("key=[^&]+", "key=***"))
+    local n = tonumber(code)
+    if n == 401 or n == 403 then
+      msg = msg .. "\n" .. _("This provider needs an API key — add one in Settings → API Keys.")
+    end
+    return nil, msg
   end
   local ok, decoded = pcall(json.decode, body)
   if not ok or type(decoded) ~= "table" then
@@ -2459,6 +2464,17 @@ function AskGPT:testProvider(provider_id)
   if type(key) == "string" and key ~= "" and not BaseHandler.isPlaceholderKey(key) then
     auth = "Bearer " .. key
   end
+  -- Pre-flight: don't burn five requests to learn there's no key (custom
+  -- providers marked key-not-required are exempt — local servers)
+  local cp = self:getCustomProvider(provider_id)
+  local needs_key = not (cp and cp.api_key_required == false)
+  if needs_key and not auth then
+    UIManager:show(InfoMessage:new{
+      text = T(_("No API key configured for %1.\n\nAdd one in Settings → API Keys, then test again."),
+        provider.name or provider_id),
+    })
+    return
+  end
 
   local function post(extra)
     local body = {
@@ -2544,7 +2560,12 @@ function AskGPT:testProvider(provider_id)
     })
     -- Delayed so the notification paints before the synchronous request
     UIManager:scheduleIn(0.3, function()
-      local ok, detail = step.run()
+      -- A crashing step must render as a result, never a silent empty report
+      local run_ok, ok, detail = pcall(step.run)
+      if not run_ok then
+        detail = T(_("test error: %1"), tostring(ok))
+        ok = false
+      end
       table.insert(results, { label = step.label, ok = ok, detail = detail })
       if step_i == 1 and ok == false then
         -- Baseline failed: the rest would just repeat the same error
@@ -2567,6 +2588,9 @@ function AskGPT:showProviderTestReport(provider, model, results, caps)
     local line = mark .. " " .. r.label
     if r.detail then line = line .. "\n   " .. r.detail end
     table.insert(lines, line)
+  end
+  if #results == 0 then
+    table.insert(lines, _("No results — the test could not run. Check the base URL and API key."))
   end
 
   local buttons = {}
@@ -2592,9 +2616,13 @@ function AskGPT:showProviderTestReport(provider, model, results, caps)
     end,
   }})
 
+  -- Report rides the TITLE (multi-line titles render everywhere; info_text
+  -- support varies across KOReader versions — an unsupported field would show
+  -- an empty-looking popup)
   self._provider_test_dialog = ButtonDialog:new{
-    title = T(_("Test results: %1"), provider.name or provider.id),
-    info_text = table.concat(lines, "\n"),
+    title = T(_("Test results: %1"), provider.name or provider.id)
+      .. "\n\n" .. table.concat(lines, "\n"),
+    title_align = "left",
     buttons = buttons,
   }
   UIManager:show(self._provider_test_dialog)
@@ -2965,6 +2993,22 @@ function AskGPT:buildProviderMenu(simplified, show_all)
     end
   end
 
+  -- Community-set legend up top (only when a marked row can appear below it)
+  local has_community = false
+  for _i, prov in ipairs(all_providers) do
+    if not prov.is_custom and ModelLists.isCommunity(prov.id) then
+      has_community = true
+      break
+    end
+  end
+  if has_community then
+    table.insert(items, {
+      text = _("* = community set (docs-based) — see README"),
+      enabled = false,
+      callback = function() end,
+    })
+  end
+
   -- Create menu items from sorted list
   for _i, prov in ipairs(all_providers) do
     local prov_copy = prov  -- Capture for closure
@@ -3007,12 +3051,6 @@ function AskGPT:buildProviderMenu(simplified, show_all)
   if not simplified then
     table.insert(items, {
       text = "────────────────────",
-      enabled = false,
-      callback = function() end,
-    })
-
-    table.insert(items, {
-      text = _("* community set (docs-based) — see README"),
       enabled = false,
       callback = function() end,
     })
@@ -3528,11 +3566,26 @@ function AskGPT:buildModelMenu(simplified)
     end
   end
 
+  -- Reverse tier map for this provider: show at a glance which models the tier
+  -- ladder points at ("· fast/ultrafast"). Curated placements only (user
+  -- overrides ride custom_models.lua and get their own management UI later).
+  local model_tiers = {}
+  for _tidx, tier_name in ipairs({ "frontier", "flagship", "standard", "fast", "ultrafast" }) do
+    local tier_model = (ModelLists._tiers[tier_name] or {})[provider]
+    if tier_model then
+      model_tiers[tier_model] = model_tiers[tier_model] or {}
+      table.insert(model_tiers[tier_model], tier_name)
+    end
+  end
+
   -- Helper to build display name with default indicators
   local function buildDisplayName(model, is_custom)
     local display_name = model
     if is_custom then
       display_name = "★ " .. display_name
+    end
+    if model_tiers[model] then
+      display_name = display_name .. " · " .. table.concat(model_tiers[model], "/")
     end
 
     -- Add default indicators
