@@ -70,90 +70,10 @@ end
 local _active_loading_dialog = nil
 local _loading_animation_task = nil
 
--- Create bouncing dot animation for loading state
-local function createLoadingAnimation()
-    local frames = { ".", "..", "...", "..", "." }
-    local currentIndex = 1
-    return {
-        getNextFrame = function()
-            local frame = frames[currentIndex]
-            currentIndex = currentIndex + 1
-            if currentIndex > #frames then
-                currentIndex = 1
-            end
-            return frame
-        end,
-    }
-end
-
--- Show enhanced loading dialog with provider/model info and animation
--- @param config: Optional configuration for displaying provider/model info
-local function showLoadingDialog(config)
-    -- Close any existing loading dialog
-    if _active_loading_dialog then
-        UIManager:close(_active_loading_dialog)
-        _active_loading_dialog = nil
-    end
-    if _loading_animation_task then
-        UIManager:unschedule(_loading_animation_task)
-        _loading_animation_task = nil
-    end
-
-    -- Build status text
-    local status_lines = {}
-    if config then
-        local provider = config.features and config.features.provider or "AI"
-        local model = ConfigHelper:getModelInfo(config) or "default"
-        table.insert(status_lines, string.format("%s: %s", provider:gsub("^%l", string.upper), model))
-
-        -- Check for reasoning/thinking enabled using computed api_params
-        -- These are set by buildUnifiedRequestConfig based on action overrides and global settings
-        local reasoning_enabled = false
-        if config.api_params then
-            -- Anthropic: thinking, OpenAI: reasoning, Gemini: thinking_level / thinking_budget
-            if config.api_params.thinking or config.api_params.reasoning or config.api_params.thinking_level
-               or (config.api_params.thinking_budget and config.api_params.thinking_budget ~= 0) then
-                reasoning_enabled = true
-            end
-        end
-        if reasoning_enabled then
-            table.insert(status_lines, _("Reasoning enabled"))
-        end
-
-        -- Show action name if available
-        if config.features and config.features.loading_action_name then
-            table.insert(status_lines, config.features.loading_action_name)
-        end
-    end
-
-    local base_text = #status_lines > 0 and table.concat(status_lines, "\n") .. "\n\n" or ""
-    local animation = createLoadingAnimation()
-
-    -- Create initial loading dialog
-    local function createLoadingMessage()
-        return InfoMessage:new{
-            text = base_text .. _("Loading") .. animation:getNextFrame(),
-            -- No timeout - will be closed when response arrives
-        }
-    end
-
-    _active_loading_dialog = createLoadingMessage()
-    UIManager:show(_active_loading_dialog)
-
-    -- Animate the loading dots by recreating the dialog
-    local function updateAnimation()
-        if _active_loading_dialog then
-            -- Close current and show updated
-            UIManager:close(_active_loading_dialog)
-            _active_loading_dialog = createLoadingMessage()
-            UIManager:show(_active_loading_dialog)
-            _loading_animation_task = UIManager:scheduleIn(0.4, updateAnimation)
-        end
-    end
-    _loading_animation_task = UIManager:scheduleIn(0.4, updateAnimation)
-end
-
--- Close the loading dialog (called when response is ready)
+-- Close the loading dialog (called when response is ready). The showLoadingDialog
+-- that once set _active_loading_dialog is gone (dead since the gpt_query loading
+-- dialog took over — it also carried a stale bare-truthiness reasoning check);
+-- call sites remain as harmless no-ops guarding the shared slot.
 local function closeLoadingDialog()
     if _loading_animation_task then
         UIManager:unschedule(_loading_animation_task)
