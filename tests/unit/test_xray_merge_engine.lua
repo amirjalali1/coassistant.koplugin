@@ -432,5 +432,23 @@ TestRunner:test("transitive carry matches by alias and reports the carried label
         "landed on the alias-matched entity")
 end)
 
+TestRunner:test("transitive carry self-label filter is normalized (case/whitespace drift)", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local base = XrayParser.parse(BASE_JSON)
+    local source_parsed = XrayParser.parse([[{
+      "type": "fiction",
+      "characters": [
+        {"name": "John Smith", "description": "x",
+         "background": [
+           {"source": "target book ", "text": "self-label with drifted casing/space"},
+           {"source": "Vol 1", "text": "Real ancestor line."}
+         ]}
+      ]
+    }]])
+    local carried = XrayMerge.carrySourceBackground(base, nil, source_parsed, "Target Book")
+    TestRunner:assertEqual(#carried, 1, "only the real ancestor carried")
+    TestRunner:assertEqual(carried[1], "Vol 1", "drifted self-label filtered")
+end)
+
 local ok = TestRunner:summary()
 return ok

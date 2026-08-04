@@ -463,11 +463,15 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
             -- config. Switching to an action with no hint re-dispatches from it and
             -- has nothing to re-derive, so the fast model would silently persist.
             -- Record what it replaces; the dispatch seam restores it. `false` = the
-            -- field was unset (nil cannot be stored as "I stashed nothing").
+            -- field was unset (nil cannot be stored as "I stashed nothing"). The
+            -- provider is recorded too: the stash is only valid for it — restoring
+            -- provider P's model onto a config whose next action pinned provider Q
+            -- would send a foreign model id.
             features._tier_model_prev = config.model or false
             features._tier_model_prev_ps = (config.provider_settings
                 and config.provider_settings[tier_provider]
                 and config.provider_settings[tier_provider].model) or false
+            features._tier_model_prev_provider = tier_provider
         end
     end
     -- One-shot provider/model override — applied BEFORE every provider-dependent
@@ -3288,18 +3292,27 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         local tf = temp_config.features
         if tf and tf._tier_model_prev ~= nil then
             local prev, prev_ps = tf._tier_model_prev, tf._tier_model_prev_ps
+            local prev_prov = tf._tier_model_prev_provider
             tf._tier_model_prev, tf._tier_model_prev_ps = nil, nil
-            temp_config.model = (prev ~= false) and prev or nil
-            local prov = temp_config.provider
-            local ps_src = prov and temp_config.provider_settings
-                and temp_config.provider_settings[prov]
-            if ps_src then
-                -- Clone before writing: createTempConfig's copy is 2 levels deep,
-                -- so this per-provider sub-table is still SHARED with the source.
-                local ps = {}
-                for k, v in pairs(ps_src) do ps[k] = v end
-                ps.model = (prev_ps ~= false) and prev_ps or nil
-                temp_config.provider_settings[prov] = ps
+            tf._tier_model_prev_provider = nil
+            -- The stash is only valid for the provider it was made under. If THIS
+            -- action pinned a different provider (createTempConfig already applied
+            -- it), the stashed model is a foreign id — drop the stash, the pinned
+            -- provider's own defaults apply. nil prev_prov = pre-guard stash from
+            -- a live config; same-provider was the only shape then, so restore.
+            if prev_prov == nil or prev_prov == temp_config.provider then
+                temp_config.model = (prev ~= false) and prev or nil
+                local prov = temp_config.provider
+                local ps_src = prov and temp_config.provider_settings
+                    and temp_config.provider_settings[prov]
+                if ps_src then
+                    -- Clone before writing: createTempConfig's copy is 2 levels deep,
+                    -- so this per-provider sub-table is still SHARED with the source.
+                    local ps = {}
+                    for k, v in pairs(ps_src) do ps[k] = v end
+                    ps.model = (prev_ps ~= false) and prev_ps or nil
+                    temp_config.provider_settings[prov] = ps
+                end
             end
         end
     end
@@ -3454,8 +3467,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     -- the only way to terminate the request subprocess, so it cannot be
     -- suppressed outright). The fit decision ("When it fits") needs the
     -- FINISHED response, so it lives at the seam (showResponseDialog) behind
-    -- the _minimal_popup_eligible marker set here — as does the dict-window
-    -- guard, which needs the screen state at show time. Highlight-only
+    -- the _minimal_popup_eligible marker set here. Highlight-only
     -- actions; never full-page translation.
     do
         local f = config.features or {}
@@ -3464,7 +3476,20 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 and not (temp_config.features and temp_config.features.is_full_page_translate) then
             local registered = require("koassistant_constants")
                 .resolveMinimalPopupActions(f.minimal_popup_actions)
-            if registered[prompt.id] then
+            -- Dict-window guard, dispatch side: launched FROM an open dictionary
+            -- window (KOA buttons on DictQuickLookup — it stays up during the
+            -- request), the show-time guard would skip the popup anyway, so don't
+            -- burn streaming on it either — take the normal streamed route now.
+            -- The show-time guard stays for the inverse race (a dict window that
+            -- opens or closes while the request runs). Dictionary BYPASS opens no
+            -- dict window, so it correctly keeps the popup.
+            local dict_open = false
+            local ok_dql, DictQuickLookup = pcall(require, "ui/widget/dictquicklookup")
+            if ok_dql and DictQuickLookup and DictQuickLookup.window_list
+                    and #DictQuickLookup.window_list > 0 then
+                dict_open = true
+            end
+            if registered[prompt.id] and not dict_open then
                 temp_config.features = temp_config.features or {}
                 temp_config.features.enable_streaming = false
                 temp_config.features.loading_message = prompt.translate_view

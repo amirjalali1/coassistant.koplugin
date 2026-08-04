@@ -358,6 +358,16 @@ function XrayMerge.carrySourceBackground(base_parsed, delta, source_parsed, targ
     local XrayParser = require("koassistant_xray_parser")
     local carried, carried_set = {}, {}
     if type(source_parsed) ~= "table" then return carried end
+    -- Self-label filter compares normalized (trimmed, case-folded): the label in
+    -- a background line came from an earlier merge's title string, the target
+    -- title from live book metadata — casing/whitespace drift between the two
+    -- must not let a self-label slip through.
+    local function normTitle(s)
+        if type(s) ~= "string" then return nil end
+        local r = s:lower():gsub("^%s+", ""):gsub("%s+$", "")
+        return r
+    end
+    local target_norm = normTitle(target_title)
     local base_lookup = buildEntityLookup(base_parsed or {})
     -- The delta's kept carry-over entries, keyed like buildEntityLookup
     local delta_lookup = {}
@@ -416,7 +426,7 @@ function XrayMerge.carrySourceBackground(base_parsed, delta, source_parsed, targ
                             if type(b) == "table" and type(b.text) == "string" and b.text ~= ""
                                 and type(b.source) == "string" and b.source ~= ""
                                 and b.source ~= "?"
-                                and b.source ~= target_title
+                                and normTitle(b.source) ~= target_norm
                                 and not existing_sources[b.source] then
                                 additions[#additions + 1] = { source = b.source, text = b.text }
                             end
