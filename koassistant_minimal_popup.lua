@@ -221,6 +221,11 @@ function MinimalPopup.showForResponse(opts)
             text = Viewer.fixIPABidi(text)
         end
     end
+    -- Trailing whitespace becomes a visible blank bottom line in a
+    -- height-adjusted box (and counts against the fit test) — trim it whatever
+    -- path produced the text (strip pipeline or raw model output).
+    text = text:gsub("%s+$", "")
+    if text == "" then return false end
     local popup = MinimalPopup:new{
         text = text,
         selection_data = opts.selection_data,

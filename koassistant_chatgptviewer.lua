@@ -174,6 +174,12 @@ local function stripMarkdown(text, is_rtl)
         result = table.concat(fixed_lines, "\n")
     end
 
+    -- Trim the trailing newline the line-loops above append (gmatch's final
+    -- empty capture): invisible in this viewer's scroll window, but the minimal
+    -- popup height-adjusts to its lines, so it showed as a blank bottom line —
+    -- and the popup's fit test counted it against capacity.
+    result = result:gsub("%s+$", "")
+
     -- Add PTF header at start to signal TextBoxWidget to interpret PTF markers
     return PTF_HEADER .. result
 end
