@@ -33,7 +33,8 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Screen = Device.screen
 
 local MinimalPopup = InputContainer:extend{
-    text = nil,             -- the response text (plain text, never markdown)
+    text = nil,             -- the response text (markdown already stripped by the
+                            -- viewer's shared text-mode pass in showForResponse)
     selection_data = nil,   -- {sboxes, ...} captured at highlight time (read-only!)
     ui = nil,               -- ReaderUI-like (paging check only)
     para_direction_rtl = nil,  -- nil = auto-detect per paragraph
@@ -157,13 +158,17 @@ end
 --- Convenience for the response flow: pull the latest assistant message out of
 -- a MessageHistory, resolve RTL from the caller-supplied language, show.
 -- @param opts { history, selection_data, ui, rtl_language, only_if_fits,
---               on_expand, on_close }
+--               features, is_dictionary, on_expand, on_close }
 --        rtl_language: the language the response renders in (caller resolves
 --        which setting that is — translation vs dictionary language); nil =
 --        auto-detect direction per paragraph.
 --        only_if_fits: "When it fits" mode — build the popup, and if the whole
 --        response does not fit without the ellipsis, discard it and return
 --        false so the caller opens the full viewer instead.
+--        features: the request's features table — read for the SAME text-mode
+--        settings the chat viewer honors (strip_markdown_in_text_mode).
+--        is_dictionary: dict-family launch (compact/dictionary view) — gates the
+--        IPA bidi reorder exactly like the viewer's needs_rtl_fix.
 -- @return boolean shown (false = nothing to show / does not fit; caller
 --         should fall back to the full viewer)
 function MinimalPopup.showForResponse(opts)
@@ -185,6 +190,35 @@ function MinimalPopup.showForResponse(opts)
         local ok, Languages = pcall(require, "koassistant_languages")
         if ok and Languages and Languages.isRTL and Languages.isRTL(opts.rtl_language) then
             para_direction_rtl = true
+        end
+    end
+    -- The chat viewer's text-mode pipeline, reused verbatim (the viewer module is
+    -- already loaded — showResponseDialog built the full viewer before deciding on
+    -- the popup). This popup IS the text-mode rendering of that viewer, so it
+    -- follows the same settings in the same order:
+    --   1. Direction. Dict/translate launches resolve from the language setting
+    --      (rtl_language, handled above — mirrors the viewer's explicit-RTL
+    --      branches). Other registered actions get the standard-chat auto-detect:
+    --      rtl_chat_text_mode (default on) + hasDominantRTL on the response.
+    --   2. stripMarkdown (strip_markdown_in_text_mode, default on): **bold** →
+    --      PTF markers TextBoxWidget renders as real bold, LRM bidi fixes so an
+    --      Arabic headword in a Latin-script definition keeps the line LTR-based.
+    --   3. fixIPABidi under an RTL base, dict family only — the viewer's
+    --      needs_rtl_fix gate.
+    local f = opts.features
+    local ok_v, Viewer = pcall(require, "koassistant_chatgptviewer")
+    if ok_v and Viewer then
+        if para_direction_rtl == nil and not opts.rtl_language
+                and (not f or f.rtl_chat_text_mode ~= false)
+                and Viewer.hasDominantRTL and Viewer.hasDominantRTL(text) then
+            para_direction_rtl = true
+        end
+        local strip = not f or f.strip_markdown_in_text_mode ~= false
+        if strip and Viewer.stripMarkdown then
+            text = Viewer.stripMarkdown(text, para_direction_rtl)
+        end
+        if opts.is_dictionary and para_direction_rtl and Viewer.fixIPABidi then
+            text = Viewer.fixIPABidi(text)
         end
     end
     local popup = MinimalPopup:new{

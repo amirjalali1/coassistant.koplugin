@@ -2919,10 +2919,16 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
             only_if_fits = (mp_f.minimal_popup_mode or "short") == "short",
             -- RTL hint: translate renders in the translation language, the
             -- dictionary family in the dictionary language; anything else
-            -- auto-detects per paragraph.
+            -- auto-detects (dominant-RTL, same gate as the standard chat view).
             rtl_language = (use_translate_view and mp_f.translation_language)
                 or ((use_compact_view or use_dictionary_view) and mp_f.dictionary_language)
                 or nil,
+            -- Text-mode settings + the dict-family gate for the IPA bidi fix:
+            -- the popup renders through the viewer's shared text-mode pipeline
+            -- and honors the same settings (strip_markdown_in_text_mode,
+            -- rtl_chat_text_mode).
+            features = mp_f,
+            is_dictionary = (use_compact_view or use_dictionary_view) or nil,
             on_expand = function()
                 _G.ActiveChatViewer = chatgpt_viewer
                 UIManager:show(chatgpt_viewer)

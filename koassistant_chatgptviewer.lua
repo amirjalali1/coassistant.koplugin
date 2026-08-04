@@ -5571,4 +5571,13 @@ function ChatGPTViewer:refreshMarkdownDisplay()
   end)
 end
 
+-- Shared text-mode pipeline (koassistant_minimal_popup.lua): the popup renders in
+-- a bare TextBoxWidget — same widget class as this viewer's plain-text mode — so it
+-- reuses THESE passes (PTF bold + LRM bidi fixes + IPA reorder + dominant-RTL
+-- detection) rather than growing its own. Any text-mode rendering fix made here
+-- reaches the popup for free.
+ChatGPTViewer.stripMarkdown = stripMarkdown
+ChatGPTViewer.fixIPABidi = fixIPABidi
+ChatGPTViewer.hasDominantRTL = hasDominantRTL
+
 return ChatGPTViewer
