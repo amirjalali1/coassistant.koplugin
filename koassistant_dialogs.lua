@@ -458,6 +458,16 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
             .resolveTierModel(tier_provider, action.model_tier)
         if tier_model then
             model_override = { provider = tier_provider, model = tier_model }
+            -- The hint belongs to THIS action, but the bake below writes the
+            -- resolved model onto the dispatch config — which becomes the viewer's
+            -- config. Switching to an action with no hint re-dispatches from it and
+            -- has nothing to re-derive, so the fast model would silently persist.
+            -- Record what it replaces; the dispatch seam restores it. `false` = the
+            -- field was unset (nil cannot be stored as "I stashed nothing").
+            features._tier_model_prev = config.model or false
+            features._tier_model_prev_ps = (config.provider_settings
+                and config.provider_settings[tier_provider]
+                and config.provider_settings[tier_provider].model) or false
         end
     end
     -- One-shot provider/model override — applied BEFORE every provider-dependent
@@ -3237,6 +3247,60 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             tf._session_quick_answer = nil
             tf._session_reasoning = nil
             tf._session_model = nil
+        end
+    end
+    -- Minimal popup: consume its dispatch-scoped transients. The block further
+    -- down re-derives them for THIS action, but only when the action is
+    -- REGISTERED — so an inherited copy (viewer config → switchToAction /
+    -- executeDirectAction → here) would otherwise survive untouched and label the
+    -- loading window with the previous action's name, keep streaming off, and
+    -- route an unregistered action into the popup (registry bypass).
+    do
+        local tf = temp_config.features
+        if tf then
+            -- Per-request by nature: whoever wants a custom notice sets it below.
+            tf.loading_message = nil
+            if tf._minimal_popup_eligible then
+                tf._minimal_popup_eligible = nil
+                -- Streaming was forced off by the popup dispatch, not chosen by the
+                -- user. Restore the GLOBAL setting rather than nil'ing: nil reads as
+                -- "on" everywhere (`enable_streaming ~= false`), so it would switch
+                -- streaming back on for someone who keeps it off. The per-view
+                -- dictionary/translate blocks re-apply their own overrides below.
+                -- Spelled out, not `cond and false or nil`: that idiom ALWAYS
+                -- yields nil, because `false or nil` is nil.
+                local gf = plugin and plugin.settings
+                    and plugin.settings:readSetting("features")
+                if gf and gf.enable_streaming == false then
+                    tf.enable_streaming = false
+                else
+                    tf.enable_streaming = nil
+                end
+            end
+        end
+    end
+    -- Per-action model tier (item 18e): undo a previous action's baked tier model.
+    -- The hint is per-action, but buildUnifiedRequestConfig writes the RESOLVED
+    -- model onto the dispatch config; inherited, it outlives the action that asked
+    -- for it (quick_define's fast model answering a dictionary action). This
+    -- dispatch re-bakes below if its own action carries a hint.
+    do
+        local tf = temp_config.features
+        if tf and tf._tier_model_prev ~= nil then
+            local prev, prev_ps = tf._tier_model_prev, tf._tier_model_prev_ps
+            tf._tier_model_prev, tf._tier_model_prev_ps = nil, nil
+            temp_config.model = (prev ~= false) and prev or nil
+            local prov = temp_config.provider
+            local ps_src = prov and temp_config.provider_settings
+                and temp_config.provider_settings[prov]
+            if ps_src then
+                -- Clone before writing: createTempConfig's copy is 2 levels deep,
+                -- so this per-provider sub-table is still SHARED with the source.
+                local ps = {}
+                for k, v in pairs(ps_src) do ps[k] = v end
+                ps.model = (prev_ps ~= false) and prev_ps or nil
+                temp_config.provider_settings[prov] = ps
+            end
         end
     end
     -- Attach chip: consume the just-in-time dispatch flag from the SOURCE config,
