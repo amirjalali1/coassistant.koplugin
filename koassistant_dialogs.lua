@@ -5071,10 +5071,34 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             -- planning). Section-scoped runs stay excluded: a checkpoint
             -- build would silently change their scope.
             local is_incremental = message_data.incremental_book_text ~= nil
+            local section_scoped = config.features
+                and (config.features._section_scope or config.features._section_xray) or false
             local xray_checkpoint_offer = prompt and prompt.cache_as_xray
-                and not (config.features and (config.features._section_scope or config.features._section_xray))
+                and not section_scoped
                 and plugin and plugin._startXrayLadderBuild
                 and ui and ui.document and ui.document.info and not ui.document.info.has_pages
+            -- Item 50 follow-up 4: the advice line matches what is actually
+            -- being sent — section-scoped runs must not be told to "use
+            -- sections", and the checkpoint sentence appears only when the
+            -- checkpoint button actually exists (it was showing on non-X-Ray
+            -- actions too)
+            local warning_title = T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens). Make sure your model's context window can accommodate this."), chars_k, tokens_low, tokens_high)
+            local advice
+            if is_incremental then
+                advice = xray_checkpoint_offer
+                    and _("This update reads the rest of the range in one request. \"Continue in checkpoints instead\" covers it in bounded steps, so each individual request stays small.")
+                    or nil
+            elseif section_scoped then
+                advice = _("This section scope is still a large request. You can pick a smaller range, or use KOReader's Hidden Flows to exclude irrelevant content.")
+            else
+                advice = _("You can focus on a specific section or section range instead, or use KOReader's Hidden Flows to exclude irrelevant content.")
+            end
+            if xray_checkpoint_offer and not is_incremental then
+                advice = advice .. " " .. _("\"Build in checkpoints\" reads the same text in bounded steps, so each individual request stays small.")
+            end
+            if advice then
+                warning_title = warning_title .. "\n\n" .. advice
+            end
             local warning_dialog
             local warning_buttons = {}
             warning_buttons[#warning_buttons + 1] = {{
@@ -5131,9 +5155,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 end,
             }}
             warning_dialog = ButtonDialog:new{
-                title = (is_incremental and xray_checkpoint_offer)
-                    and T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens). Make sure your model's context window can accommodate this.\n\nThis update reads the rest of the range in one request. \"Continue in checkpoints instead\" covers it in bounded steps, so each individual request stays small."), chars_k, tokens_low, tokens_high)
-                    or T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens). Make sure your model's context window can accommodate this.\n\nYou can focus on a specific section or section range instead of the full document, or use KOReader's Hidden Flows to exclude irrelevant content. For X-Ray, \"Build in checkpoints\" reads the same text in bounded steps, so each individual request stays small."), chars_k, tokens_low, tokens_high),
+                title = warning_title,
                 buttons = warning_buttons,
             }
             UIManager:show(warning_dialog)
@@ -5270,8 +5292,19 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     end
 
     if truncation_msg then
+        -- Item 50 follow-up 4: same source-awareness as the size warning —
+        -- no "use sections" advice on already-section-scoped runs, and the
+        -- checkpoint sentence only on runs the escape actually applies to
+        local trunc_section_scoped = config.features
+            and (config.features._section_scope or config.features._section_xray)
         truncation_msg = truncation_msg .. "\n\n"
-            .. _("You can increase the limit in Settings → Privacy & Data → Text Extraction, use Hidden Flows to exclude irrelevant content, or focus on a specific section or section range. For X-Ray, \"Build in checkpoints\" reads the same text in bounded steps, so each individual request stays small.")
+            .. (trunc_section_scoped
+                and _("You can increase the limit in Settings → Privacy & Data → Text Extraction, pick a smaller range, or use Hidden Flows to exclude irrelevant content.")
+                or _("You can increase the limit in Settings → Privacy & Data → Text Extraction, use Hidden Flows to exclude irrelevant content, or focus on a specific section or section range."))
+        if prompt and prompt.cache_as_xray and not trunc_section_scoped
+                and not message_data.incremental_book_text then
+            truncation_msg = truncation_msg .. " " .. _("\"Build in checkpoints\" reads the same text in bounded steps, so each individual request stays small.")
+        end
         local truncation_dialog
         truncation_dialog = ButtonDialog:new{
             title = truncation_msg,
