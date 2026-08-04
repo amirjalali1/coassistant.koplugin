@@ -8,8 +8,9 @@ msgstr ""
 "Report-Msgid-Bugs-To: https://github.com/zeeyado/koassistant.koplugin/"
 "issues\n"
 "POT-Creation-Date: 2026-07-05 14:11+0200\n"
-"PO-Revision-Date: 2026-03-10 22:42+0000\n"
-"Last-Translator: zeeyado <zeeyado@pm.me>\n"
+"PO-Revision-Date: 2026-07-11 12:01+0000\n"
+"Last-Translator: Champiñon Traductor <300458929+champinondev-"
+"lab@users.noreply.github.com>\n"
 "Language-Team: Spanish <https://hosted.weblate.org/projects/koassistant/"
 "koassistant/es/>\n"
 "Language: es\n"
@@ -17,10 +18,9 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=n != 1;\n"
-"X-Generator: Weblate 5.17-dev\n"
+"X-Generator: Weblate 2026.7.1.dev0\n"
 
 #: _meta.lua:4 main.lua:3857 main.lua:8388
-#, fuzzy
 msgid "KOAssistant"
 msgstr "KOAssistant"
 
@@ -47,7 +47,6 @@ msgid "X-Ray (Simple)"
 msgstr "Rayos-X (Simple)"
 
 #: koassistant_action_cache.lua:502 prompts/actions.lua:928
-#, fuzzy
 msgid "About"
 msgstr "Acerca de"
 
@@ -57,13 +56,11 @@ msgstr "Análisis de Notas"
 
 #: koassistant_action_cache.lua:504 koassistant_action_cache.lua:749
 #: prompts/actions.lua:1406
-#, fuzzy
 msgid "Key Arguments"
 msgstr "Argumentos Clave"
 
 #: koassistant_action_cache.lua:505 koassistant_action_cache.lua:750
 #: prompts/actions.lua:1459
-#, fuzzy
 msgid "Discussion Questions"
 msgstr "Preguntas de Discusión"
 
@@ -90,9 +87,8 @@ msgid "View Section X-Rays (%d)"
 msgstr "Ver Rayos X de Sección (%d)"
 
 #: koassistant_action_cache.lua:599
-#, fuzzy
 msgid "AI Wiki Entries (%d)"
-msgstr "Entradas de Wiki IA (%d)"
+msgstr "Entradas de wiki por IA (%d)"
 
 #: koassistant_action_cache.lua:625
 #, fuzzy

@@ -2,7 +2,8 @@
 
 [![GitHub Release](https://img.shields.io/github/v/release/zeeyado/koassistant.koplugin)](https://github.com/zeeyado/koassistant.koplugin/releases/latest)
 [![License: GPL-3.0](https://img.shields.io/github/license/zeeyado/koassistant.koplugin)](LICENSE)
-[![Translation Status](https://hosted.weblate.org/widgets/koassistant/-/svg-badge.svg)](https://hosted.weblate.org/engage/koassistant/)
+[![AI-translated](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fhosted.weblate.org%2Fapi%2Fprojects%2Fkoassistant%2Fstatistics%2F&query=%24.fuzzy_percent&suffix=%25&label=AI-translated&color=8ab4f8&cacheSeconds=3600)](https://hosted.weblate.org/engage/koassistant/)
+[![Human-reviewed](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fhosted.weblate.org%2Fapi%2Fprojects%2Fkoassistant%2Fstatistics%2F&query=%24.translated_percent&suffix=%25&label=human-reviewed&color=brightgreen&cacheSeconds=3600)](https://hosted.weblate.org/engage/koassistant/)
 
 **Powerful, customizable AI assistant for KOReader.**
 
@@ -4099,7 +4100,10 @@ lua tests/inspect.lua --web      # Interactive web UI
 
 KOAssistant supports localization with translations managed via Weblate.
 
-[![Translation Status](https://hosted.weblate.org/widgets/koassistant/-/svg-badge.svg)](https://hosted.weblate.org/engage/koassistant/)
+[![AI-translated](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fhosted.weblate.org%2Fapi%2Fprojects%2Fkoassistant%2Fstatistics%2F&query=%24.fuzzy_percent&suffix=%25&label=AI-translated&color=8ab4f8&cacheSeconds=3600)](https://hosted.weblate.org/engage/koassistant/)
+[![Human-reviewed](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fhosted.weblate.org%2Fapi%2Fprojects%2Fkoassistant%2Fstatistics%2F&query=%24.translated_percent&suffix=%25&label=human-reviewed&color=brightgreen&cacheSeconds=3600)](https://hosted.weblate.org/engage/koassistant/)
+
+All languages are fully pre-translated by AI (marked "needs editing" on Weblate); human review and improvements are very welcome.
 
 **[Contribute translations on Weblate](https://hosted.weblate.org/engage/koassistant/)**
 

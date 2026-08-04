@@ -896,7 +896,11 @@ CRITICAL RULES:
 
         data = {
             "model": self.model,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
+            # Sonnet 5 runs adaptive thinking by default when this is omitted;
+            # thinking tokens count against max_tokens. Disable for mechanical
+            # translation (matches the old Sonnet 4.6 behavior).
+            "thinking": {"type": "disabled"},
             "messages": [
                 {"role": "user", "content": prompt}
             ]
@@ -1171,7 +1175,7 @@ def cmd_run(args, entries: List[POEntry], po_path: Path, script_dir: Path):
     if args.model:
         model = args.model
     elif provider == 'anthropic':
-        model = 'claude-sonnet-4-6'
+        model = 'claude-sonnet-5'
     else:
         model = 'gpt-5.2'
 
@@ -1370,7 +1374,7 @@ def cmd_all_run(args, script_dir: Path, locale_dir: Path):
     if args.model:
         model = args.model
     elif provider == 'anthropic':
-        model = 'claude-sonnet-4-6'
+        model = 'claude-sonnet-5'
     else:
         model = 'gpt-5.2'
 
@@ -1501,7 +1505,7 @@ def cmd_multi_run(args, langs: List[str], script_dir: Path, locale_dir: Path):
     if args.model:
         model = args.model
     elif provider == 'anthropic':
-        model = 'claude-sonnet-4-6'
+        model = 'claude-sonnet-5'
     else:
         model = 'gpt-5.2'
 
