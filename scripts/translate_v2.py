@@ -77,6 +77,8 @@ LANGUAGE_NAMES = {
     "id": "Indonesian",
     "th": "Thai",
     "nl_NL": "Dutch",
+    "nb_NO": "Norwegian Bokmål",
+    "sv": "Swedish",
     "cs": "Czech",
     "uk": "Ukrainian",
     "hi": "Hindi",

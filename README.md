@@ -4107,8 +4107,8 @@ All languages are fully pre-translated by AI (marked "needs editing" on Weblate)
 
 **[Contribute translations on Weblate](https://hosted.weblate.org/engage/koassistant/)**
 
-**Current languages (24):**
-- **Western & Northern European:** French, German, Italian, Spanish, Portuguese, Brazilian Portuguese, Dutch, Finnish
+**Current languages (26):**
+- **Western & Northern European:** French, German, Italian, Spanish, Portuguese, Brazilian Portuguese, Dutch, Finnish, Norwegian Bokmål, Swedish
 - **Eastern European:** Russian, Polish, Czech, Ukrainian
 - **Asian:** Chinese, Japanese, Korean, Vietnamese, Indonesian, Thai
 - **South Asian:** Hindi, Bengali, Urdu
