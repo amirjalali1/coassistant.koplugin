@@ -12466,11 +12466,12 @@ function AskGPT:_fireXrayLadderRung()
   config_copy.features._ladder_chapter_label = (not is_intro) and build.labels and build.labels[build.idx] or nil
   -- Item 50 follow-up: user-initiated builds keep the large-extraction warning
   -- on their FIRST request (it fires right after the confirm tap, so a dialog
-  -- is fine); auto/silent runs and steps 2+ never dialog. The opportunity is
-  -- consumed here regardless of outcome — later steps fire unattended.
-  if not build.silent and not build.size_ack then
+  -- is fine); later steps never dialog — an oversized one PAUSES for review
+  -- instead (dialogs seam; build.size_ack is set there on acceptance and
+  -- stands for the rest of the build).
+  if not build.silent and not build.size_checked then
     config_copy.features._ladder_size_check = true
-    build.size_ack = true
+    build.size_checked = true
   end
 
   local doc_props = self.ui.doc_props or {}
@@ -12512,16 +12513,21 @@ function AskGPT:_fireXrayLadderRung()
   -- Silent chains (round 21: the auto scheduler) toast only on the
   -- xray_auto_notify opt-in; failures below stay visible regardless
   if not build.silent or features.xray_auto_notify == true then
-    UIManager:show(Notification:new{
-      -- Item 50(a): a one-step build is a background one-shot, not a chain
-      text = build.total == 1
-          and T(_("Generating X-Ray in the background (to %1%)…"),
-            math.floor(target * 100 + 0.5))
-        or is_intro
-          and T(_("X-Ray checkpoints: %1 of %2 (introduction)…"), step_no, build.total)
-        or T(_("X-Ray checkpoints: %1 of %2 (to %3%)…"),
-          step_no, build.total, math.floor(target * 100 + 0.5)),
-    })
+    -- Item 50(a): a one-step build is a background one-shot, not a chain
+    local toast_text = build.total == 1
+        and T(_("Generating X-Ray in the background (to %1%)…"),
+          math.floor(target * 100 + 0.5))
+      or is_intro
+        and T(_("X-Ray checkpoints: %1 of %2 (introduction)…"), step_no, build.total)
+      or T(_("X-Ray checkpoints: %1 of %2 (to %3%)…"),
+        step_no, build.total, math.floor(target * 100 + 0.5))
+    if config_copy.features._ladder_size_check then
+      -- Follow-up 2: nothing may announce a build the size warning can still
+      -- cancel — the toast rides to the send seam and fires with the request
+      config_copy.features._ladder_send_toast = toast_text
+    else
+      UIManager:show(Notification:new{ text = toast_text })
+    end
   end
   Dialogs.executeActionForResult(fire_action, config_copy.features.book_context, self.ui, config_copy, self,
     config_copy.features.book_metadata,
@@ -12577,6 +12583,20 @@ function AskGPT:_fireXrayLadderRung()
           XrayAuto.endLadderBuild()
           UIManager:show(Notification:new{ text = cur.total == 1
             and _("X-Ray generation cancelled.") or _("Checkpoint build cancelled.") })
+          return
+        end
+        -- Follow-up 2: an unattended oversized step pauses the chain — a stop
+        -- WITH record so the resume row explains itself; resuming starts a
+        -- fresh (attended) build, which re-arms the warning with real numbers
+        if err_text == "size_needs_review" then
+          XrayAuto.endLadderBuild()
+          XrayAuto.recordLadderStop(file, { step = cur.step or cur.idx, total = cur.total,
+            kind = "step_too_large" })
+          UIManager:show(InfoMessage:new{
+            text = T(_("Checkpoint build paused at %1 of %2: the next step is a large request. Resume from the X-Ray popup to review it."),
+              cur.step or cur.idx, cur.total),
+            timeout = 5,
+          })
           return
         end
         local kind, transient = XrayAuto.classifyStopReason(err_text)
@@ -12671,6 +12691,7 @@ function AskGPT:_xrayStopReasonLabel(kind)
   if kind == "timeout" then return _("request timed out") end
   if kind == "network" then return _("connection problem") end
   if kind == "bad_json" then return _("unusable response") end
+  if kind == "step_too_large" then return _("large step needs review") end
   return nil
 end
 

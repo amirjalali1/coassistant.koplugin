@@ -5018,6 +5018,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     local extracted_chars = 0
     if message_data.book_text then extracted_chars = extracted_chars + #message_data.book_text end
     if message_data.full_document then extracted_chars = extracted_chars + #message_data.full_document end
+    -- Item 50 follow-up 2: deltas count everywhere — a manual "update to 100%"
+    -- of a big book is as large as a create, and book_text/full_document miss it
+    if message_data.incremental_book_text then extracted_chars = extracted_chars + #message_data.incremental_book_text end
 
     -- Step 3: Large sidecar data warning for multi-book actions (always warn, no suppress)
     local sidecar_chars = message_data._total_sidecar_chars or 0
@@ -5149,59 +5152,79 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             if on_complete then on_complete(nil, "background: extraction truncated") end
             return nil
         end
-        -- Item 50 follow-up: the FIRST request of a user-initiated background
-        -- build keeps the large-extraction warning — it fires right after the
-        -- confirm tap, so a dialog is fine there. Steps 2+ and auto/silent
-        -- runs never reach this (_ladder_size_check is set once per attended
-        -- build). Deltas count too: an update-to-100% of a big book is as
-        -- large as a create, and extracted_chars alone misses it.
-        if config.features and config.features._ladder_size_check
-                and not config.features.suppress_large_extraction_warning then
-            local eff_chars = (extracted_chars or 0) + #(message_data.incremental_book_text or "")
-            if eff_chars > Constants.LARGE_EXTRACTION_THRESHOLD then
-                local chars_k = math.floor(eff_chars / 1000)
-                local tokens_low = math.floor(eff_chars / 4000)
-                local tokens_high = math.floor(eff_chars / 2000)
-                local size_dialog
-                size_dialog = ButtonDialog:new{
-                    title = T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens) in this background request. Make sure your model's context window can accommodate this."), chars_k, tokens_low, tokens_high),
-                    buttons = {
-                        {{
-                            text = _("Cancel"),
-                            callback = function()
-                                UIManager:close(size_dialog)
-                                if on_complete then on_complete(nil, "size_warning_declined") end
-                            end,
-                        }},
-                        {{
-                            text = _("Don't warn again"),
-                            callback = function()
-                                UIManager:close(size_dialog)
-                                if plugin and plugin.settings then
-                                    local features_tbl = plugin.settings:readSetting("features") or {}
-                                    features_tbl.suppress_large_extraction_warning = true
-                                    plugin.settings:saveSetting("features", features_tbl)
-                                    plugin.settings:flush()
-                                end
-                                if config.features then
-                                    config.features.suppress_large_extraction_warning = true
-                                end
-                                sendQuery()
-                            end,
-                        }},
-                        {{
-                            text = _("Continue"),
-                            callback = function()
-                                UIManager:close(size_dialog)
-                                sendQuery()
-                            end,
-                        }},
-                    },
-                }
-                UIManager:show(size_dialog)
-                return nil
+        -- Item 50 follow-up (rounds 2): background size safeguard. The FIRST
+        -- request of a user-initiated build may dialog — it fires right after
+        -- the confirm tap, so that moment is attended; acceptance sticks on
+        -- the build state (module singleton, same channel as the retry
+        -- counter). LATER steps never dialog: an oversized one with no
+        -- standing acceptance PAUSES the chain for review (resuming re-arms
+        -- the attended warning). Non-ladder background requests (scheduled
+        -- auto updates) keep today's silent send. The announce toast rides
+        -- _ladder_send_toast and fires only when the request actually goes —
+        -- nothing may announce a build the size warning can still cancel.
+        local xb_build = config.features and config.features._ladder_build
+            and require("koassistant_xray_auto").ladderBuild() or nil
+        local function ladderSendToast()
+            local toast = config.features and config.features._ladder_send_toast
+            if toast then
+                UIManager:show(require("ui/widget/notification"):new{ text = toast })
             end
         end
+        local size_ok = extracted_chars <= Constants.LARGE_EXTRACTION_THRESHOLD
+            or (config.features and config.features.suppress_large_extraction_warning)
+            or (xb_build and xb_build.size_ack)
+        if not size_ok and config.features and config.features._ladder_size_check then
+            local chars_k = math.floor(extracted_chars / 1000)
+            local tokens_low = math.floor(extracted_chars / 4000)
+            local tokens_high = math.floor(extracted_chars / 2000)
+            local size_dialog
+            size_dialog = ButtonDialog:new{
+                title = T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens) in this background request. Make sure your model's context window can accommodate this."), chars_k, tokens_low, tokens_high),
+                buttons = {
+                    {{
+                        text = _("Cancel"),
+                        callback = function()
+                            UIManager:close(size_dialog)
+                            if on_complete then on_complete(nil, "size_warning_declined") end
+                        end,
+                    }},
+                    {{
+                        text = _("Don't warn again"),
+                        callback = function()
+                            UIManager:close(size_dialog)
+                            if plugin and plugin.settings then
+                                local features_tbl = plugin.settings:readSetting("features") or {}
+                                features_tbl.suppress_large_extraction_warning = true
+                                plugin.settings:saveSetting("features", features_tbl)
+                                plugin.settings:flush()
+                            end
+                            if config.features then
+                                config.features.suppress_large_extraction_warning = true
+                            end
+                            if xb_build then xb_build.size_ack = true end
+                            ladderSendToast()
+                            sendQuery()
+                        end,
+                    }},
+                    {{
+                        text = _("Continue"),
+                        callback = function()
+                            UIManager:close(size_dialog)
+                            if xb_build then xb_build.size_ack = true end
+                            ladderSendToast()
+                            sendQuery()
+                        end,
+                    }},
+                },
+            }
+            UIManager:show(size_dialog)
+            return nil
+        elseif not size_ok and xb_build then
+            logger.info("KOAssistant: ladder step paused - oversized request needs review")
+            if on_complete then on_complete(nil, "size_needs_review") end
+            return nil
+        end
+        ladderSendToast()
         return sendQuery()
     end
 
