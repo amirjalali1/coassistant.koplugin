@@ -12464,6 +12464,14 @@ function AskGPT:_fireXrayLadderRung()
   config_copy.features._ladder_base = base
   config_copy.features._ladder_intro = is_intro or nil
   config_copy.features._ladder_chapter_label = (not is_intro) and build.labels and build.labels[build.idx] or nil
+  -- Item 50 follow-up: user-initiated builds keep the large-extraction warning
+  -- on their FIRST request (it fires right after the confirm tap, so a dialog
+  -- is fine); auto/silent runs and steps 2+ never dialog. The opportunity is
+  -- consumed here regardless of outcome — later steps fire unattended.
+  if not build.silent and not build.size_ack then
+    config_copy.features._ladder_size_check = true
+    build.size_ack = true
+  end
 
   local doc_props = self.ui.doc_props or {}
   local title = doc_props.display_title or doc_props.title or "Unknown"
@@ -12544,7 +12552,8 @@ function AskGPT:_fireXrayLadderRung()
       end
       if was_cancelled or cur.cancel_requested then
         XrayAuto.endLadderBuild()
-        UIManager:show(Notification:new{ text = _("Checkpoint build cancelled.") })
+        UIManager:show(Notification:new{ text = cur.total == 1
+          and _("X-Ray generation cancelled.") or _("Checkpoint build cancelled.") })
         return
       end
       -- Honesty check: the rung must actually be on disk — truncated responses and
@@ -12562,6 +12571,14 @@ function AskGPT:_fireXrayLadderRung()
       end
       if not rung_written then
         local err_text = tostring(meta_or_err or "rung not saved")
+        -- Item 50 follow-up: declining the size warning is a clean user
+        -- cancel, not a failure — no stop record, no resume nudge
+        if err_text == "size_warning_declined" then
+          XrayAuto.endLadderBuild()
+          UIManager:show(Notification:new{ text = cur.total == 1
+            and _("X-Ray generation cancelled.") or _("Checkpoint build cancelled.") })
+          return
+        end
         local kind, transient = XrayAuto.classifyStopReason(err_text)
         -- Item 45: one silent retry per step for transient provider failures
         -- (503/429/5xx/network) — the field specimen healed on a resume 76s

@@ -5149,6 +5149,59 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             if on_complete then on_complete(nil, "background: extraction truncated") end
             return nil
         end
+        -- Item 50 follow-up: the FIRST request of a user-initiated background
+        -- build keeps the large-extraction warning — it fires right after the
+        -- confirm tap, so a dialog is fine there. Steps 2+ and auto/silent
+        -- runs never reach this (_ladder_size_check is set once per attended
+        -- build). Deltas count too: an update-to-100% of a big book is as
+        -- large as a create, and extracted_chars alone misses it.
+        if config.features and config.features._ladder_size_check
+                and not config.features.suppress_large_extraction_warning then
+            local eff_chars = (extracted_chars or 0) + #(message_data.incremental_book_text or "")
+            if eff_chars > Constants.LARGE_EXTRACTION_THRESHOLD then
+                local chars_k = math.floor(eff_chars / 1000)
+                local tokens_low = math.floor(eff_chars / 4000)
+                local tokens_high = math.floor(eff_chars / 2000)
+                local size_dialog
+                size_dialog = ButtonDialog:new{
+                    title = T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens) in this background request. Make sure your model's context window can accommodate this."), chars_k, tokens_low, tokens_high),
+                    buttons = {
+                        {{
+                            text = _("Cancel"),
+                            callback = function()
+                                UIManager:close(size_dialog)
+                                if on_complete then on_complete(nil, "size_warning_declined") end
+                            end,
+                        }},
+                        {{
+                            text = _("Don't warn again"),
+                            callback = function()
+                                UIManager:close(size_dialog)
+                                if plugin and plugin.settings then
+                                    local features_tbl = plugin.settings:readSetting("features") or {}
+                                    features_tbl.suppress_large_extraction_warning = true
+                                    plugin.settings:saveSetting("features", features_tbl)
+                                    plugin.settings:flush()
+                                end
+                                if config.features then
+                                    config.features.suppress_large_extraction_warning = true
+                                end
+                                sendQuery()
+                            end,
+                        }},
+                        {{
+                            text = _("Continue"),
+                            callback = function()
+                                UIManager:close(size_dialog)
+                                sendQuery()
+                            end,
+                        }},
+                    },
+                }
+                UIManager:show(size_dialog)
+                return nil
+            end
+        end
         return sendQuery()
     end
 
