@@ -2167,6 +2167,179 @@ function AskGPT:fetchDerivedModelCaps(provider, model)
   return ModelOverrides.recordDerived(provider, model, params)
 end
 
+-- Fetch the live model list from a custom provider's /models endpoint (item 18g v1:
+-- custom providers only). Synchronous like fetchDerivedModelCaps — only called behind
+-- an explicit user action. Returns a sorted array of model-id strings, or nil + error.
+function AskGPT:fetchProviderModels(provider_id)
+  local cp = self:getCustomProvider(provider_id)
+  if not cp or not cp.base_url or cp.base_url == "" then
+    return nil, _("Provider has no base URL")
+  end
+  local BaseHandler = require("koassistant_api.base")
+  local json = require("json")
+  -- Stored base URLs are full chat-completions endpoints; the models list lives
+  -- next to them ({base}/v1/chat/completions -> {base}/v1/models).
+  local models_url = cp.base_url:gsub("/+$", ""):gsub("/chat/completions$", "")
+  models_url = models_url:gsub("/+$", "") .. "/models"
+  local headers
+  local key = BaseHandler.getApiKey(provider_id, self.settings)
+  if type(key) == "string" and key ~= "" and not BaseHandler.isPlaceholderKey(key) then
+    headers = { ["Authorization"] = "Bearer " .. key }
+  end
+  local code, body = BaseHandler.fetchInSubprocess(models_url, { timeout = 15, headers = headers })
+  if not tonumber(code) then
+    return nil, T(_("Network error: %1"), tostring(body))
+  end
+  if tonumber(code) ~= 200 then
+    return nil, T(_("HTTP %1 from %2"), tostring(code), models_url)
+  end
+  local ok, decoded = pcall(json.decode, body)
+  if not ok or type(decoded) ~= "table" then
+    return nil, _("Could not parse the model list response")
+  end
+  -- OpenAI-shaped {data=[{id=...}]} or a bare array of {id=...}/strings.
+  -- Type-check every level: luajson decodes JSON null to a truthy function sentinel.
+  local rows = type(decoded.data) == "table" and decoded.data or decoded
+  local ids, seen_ids = {}, {}
+  for _idx, row in ipairs(rows) do
+    local id
+    if type(row) == "table" and type(row.id) == "string" then
+      id = row.id
+    elseif type(row) == "string" then
+      id = row
+    end
+    if id and id ~= "" and not seen_ids[id] then
+      seen_ids[id] = true
+      table.insert(ids, id)
+    end
+  end
+  if #ids == 0 then
+    return nil, _("No models found in the response")
+  end
+  table.sort(ids)
+  return ids
+end
+
+-- Tap-to-add picker over a fetched model list (18g). Tapping a model adds it to the
+-- provider's custom-models list; the picker re-opens so added rows show a check mark.
+-- Big lists are capped at 30 visible rows — the filter narrows them.
+function AskGPT:showFetchedModelsPicker(provider_id, all_ids, filter)
+  local self_ref = self
+  local ButtonDialog = require("ui/widget/buttondialog")
+  local cp = self:getCustomProvider(provider_id)
+  local provider_name = cp and cp.name or provider_id
+
+  local needle = filter and filter:lower() or nil
+  local ids = {}
+  for _idx, id in ipairs(all_ids) do
+    if not needle or id:lower():find(needle, 1, true) then
+      table.insert(ids, id)
+    end
+  end
+
+  local added = {}
+  for _idx, m in ipairs(self:getCustomModels(provider_id)) do added[m] = true end
+
+  local buttons = {}
+  table.insert(buttons, {{
+    text = filter and T(_("Filter: %1 (tap to change)"), filter) or _("Filter models..."),
+    callback = function()
+      UIManager:close(self_ref._fetched_models_dialog)
+      local InputDialog = require("ui/widget/inputdialog")
+      local input_dialog
+      input_dialog = InputDialog:new{
+        title = _("Filter models"),
+        input = filter or "",
+        buttons = {{
+          {
+            text = _("Cancel"),
+            id = "close",
+            callback = function()
+              UIManager:close(input_dialog)
+              self_ref:showFetchedModelsPicker(provider_id, all_ids, filter)
+            end,
+          },
+          {
+            text = _("Apply"),
+            is_enter_default = true,
+            callback = function()
+              local new_filter = input_dialog:getInputText()
+              UIManager:close(input_dialog)
+              if new_filter == "" then new_filter = nil end
+              self_ref:showFetchedModelsPicker(provider_id, all_ids, new_filter)
+            end,
+          },
+        }},
+      }
+      UIManager:show(input_dialog)
+      input_dialog:onShowKeyboard()
+    end,
+  }})
+
+  -- "Add all" only for short (possibly filtered) lists, so one tap can't flood the picker
+  if #ids > 0 and #ids <= 20 then
+    table.insert(buttons, {{
+      text = T(_("Add all (%1)"), #ids),
+      callback = function()
+        UIManager:close(self_ref._fetched_models_dialog)
+        local added_n = 0
+        for _idx, id in ipairs(ids) do
+          if self_ref:saveCustomModel(provider_id, id) then added_n = added_n + 1 end
+        end
+        UIManager:show(Notification:new{
+          text = T(_("Added %1 model(s)"), added_n),
+          timeout = 1.5,
+        })
+        self_ref:showFetchedModelsPicker(provider_id, all_ids, filter)
+      end,
+    }})
+  end
+
+  local shown = 0
+  for _idx, id in ipairs(ids) do
+    if shown >= 30 then break end
+    shown = shown + 1
+    local id_copy = id
+    if added[id_copy] then
+      table.insert(buttons, {{
+        text = "✓ " .. id_copy,
+        enabled = false,
+        callback = function() end,
+      }})
+    else
+      table.insert(buttons, {{
+        text = id_copy,
+        callback = function()
+          UIManager:close(self_ref._fetched_models_dialog)
+          local success, err = self_ref:saveCustomModel(provider_id, id_copy)
+          UIManager:show(Notification:new{
+            text = success and T(_("Added: %1"), id_copy) or (err or _("Failed to add model")),
+            timeout = 1.5,
+          })
+          self_ref:showFetchedModelsPicker(provider_id, all_ids, filter)
+        end,
+      }})
+    end
+  end
+
+  table.insert(buttons, {{
+    text = _("Close"),
+    callback = function()
+      UIManager:close(self_ref._fetched_models_dialog)
+    end,
+  }})
+
+  local title = T(_("%1: %2 model(s)"), provider_name, #ids)
+  if #ids > 30 then
+    title = title .. "\n" .. _("Showing the first 30 - use the filter to narrow")
+  end
+  self._fetched_models_dialog = ButtonDialog:new{
+    title = title,
+    buttons = buttons,
+  }
+  UIManager:show(self._fetched_models_dialog)
+end
+
 -- Helper: Check if a model is a custom model for the current provider
 function AskGPT:isCustomModel(provider, model)
   local custom_models = self:getCustomModels(provider)
@@ -2627,6 +2800,27 @@ function AskGPT:showCustomProviderOptions(provider)
       callback = function()
         UIManager:close(self_ref._provider_options_dialog)
         self_ref:showEditCustomProviderDialog(provider)
+      end,
+    }},
+    {{
+      text = _("Fetch models from provider..."),
+      callback = function()
+        UIManager:close(self_ref._provider_options_dialog)
+        UIManager:show(Notification:new{
+          text = _("Fetching model list..."),
+          timeout = 1,
+        })
+        -- Delayed so the notification paints before the synchronous fetch
+        UIManager:scheduleIn(0.2, function()
+          local ids, err = self_ref:fetchProviderModels(provider.id)
+          if ids then
+            self_ref:showFetchedModelsPicker(provider.id, ids)
+          else
+            UIManager:show(InfoMessage:new{
+              text = T(_("Could not fetch models: %1"), err or _("unknown error")),
+            })
+          end
+        end)
       end,
     }},
     {{
