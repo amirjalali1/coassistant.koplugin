@@ -348,5 +348,89 @@ TestRunner:test("a background_updates-only delta parses (no category key needed)
     TestRunner:assertEqual(#parsed.characters, 1, "characters untouched")
 end)
 
+print("")
+print("  [transitive background carry (item 49)]")
+
+TestRunner:test("transitive carry: ancestor labels ride a chained merge, self-label filtered", function()
+    local WriteBack = require("koassistant_artifact_writeback")
+    local XrayParser = require("koassistant_xray_parser")
+    local source_parsed = XrayParser.parse([[{
+      "type": "fiction",
+      "characters": [
+        {"name": "John Smith", "description": "The second book's John.",
+         "background": [
+           {"source": "Vol 1", "text": "A farmer's son who saved the hero."},
+           {"source": "Target Book", "text": "self-label must be skipped"}
+         ]},
+        {"name": "New Guy", "description": "Second-book newcomer.",
+         "background": [{"source": "Vol 1", "text": "Briefly seen at the fair."}]}
+      ]
+    }]])
+    local delta = [[{
+      "background_updates": [
+        {"name": "John Smith", "background": "Joined the expedition."}
+      ],
+      "characters": [
+        {"name": "New Guy", "description": "Carried over from the second book."}
+      ]
+    }]]
+    local meta = { merged_from_books = "Second Book" }
+    local parsed, err = WriteBack.parseXrayAnswer(delta, BASE_JSON,
+        XrayMerge.crossBookTransform("Second Book", source_parsed, "Target Book", meta))
+    TestRunner:assertTrue(parsed ~= nil, "merge parses: " .. tostring(err))
+    local john, new_guy
+    for _idx, c in ipairs(parsed.characters) do
+        if c.name == "John Smith" then john = c end
+        if c.name == "New Guy" then new_guy = c end
+    end
+    local labels = {}
+    for _idx, b in ipairs(john.background) do labels[b.source] = b.text end
+    TestRunner:assertEqual(labels["Second Book"], "Joined the expedition.",
+        "picked-source line lands")
+    TestRunner:assertEqual(labels["Vol 1"], "A farmer's son who saved the hero.",
+        "ancestor line carried with its original label")
+    TestRunner:assertTrue(labels["Target Book"] == nil, "self-label filtered")
+    TestRunner:assertTrue(new_guy ~= nil and type(new_guy.background) == "table",
+        "carry-over entry receives its ancestor background")
+    TestRunner:assertEqual(new_guy.background[1].source, "Vol 1",
+        "carry-over entry keeps the ancestor label")
+    TestRunner:assertTrue(has(meta.merged_from_books, "Vol 1"),
+        "carried label recorded in merged_from_books")
+end)
+
+TestRunner:test("transitive carry never overwrites a fresher direct merge of the same ancestor", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local base = XrayParser.parse(BASE_JSON)
+    base.characters[1].background = { { source = "Vol 1", text = "Fresh direct line." } }
+    local source_parsed = XrayParser.parse([[{
+      "type": "fiction",
+      "characters": [
+        {"name": "John Smith", "description": "x",
+         "background": [{"source": "Vol 1", "text": "Stale chained copy."}]}
+      ]
+    }]])
+    local carried = XrayMerge.carrySourceBackground(base, nil, source_parsed, "Target Book")
+    TestRunner:assertEqual(#carried, 0, "nothing carried when the label already exists")
+    TestRunner:assertEqual(base.characters[1].background[1].text, "Fresh direct line.",
+        "direct line intact")
+end)
+
+TestRunner:test("transitive carry matches by alias and reports the carried label", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local base = XrayParser.parse(BASE_JSON)
+    local source_parsed = XrayParser.parse([[{
+      "type": "fiction",
+      "characters": [
+        {"name": "J. Smith", "aliases": ["Johnny"], "description": "x",
+         "background": [{"source": "Vol 1", "text": "Alias-matched line."}]}
+      ]
+    }]])
+    local carried = XrayMerge.carrySourceBackground(base, nil, source_parsed, nil)
+    TestRunner:assertEqual(#carried, 1, "one label carried")
+    TestRunner:assertEqual(carried[1], "Vol 1", "label reported")
+    TestRunner:assertEqual(base.characters[1].background[1].source, "Vol 1",
+        "landed on the alias-matched entity")
+end)
+
 local ok = TestRunner:summary()
 return ok

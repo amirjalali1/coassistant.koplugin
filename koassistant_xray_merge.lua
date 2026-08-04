@@ -339,15 +339,121 @@ function XrayMerge.applyBackgroundUpdates(base_data, updates, source_title)
     return applied, unmatched
 end
 
+--- Transitive background carry (item 49, #90 chained-merge field report): a
+--- chained series merge must not lose earlier ancestors — the source's own
+--- labeled background lines (e.g. Vol 1's inside Vol 2's X-Ray) are copied
+--- MECHANICALLY onto the matching target entity (or onto the delta's kept
+--- carry-over entry) with their ORIGINAL source labels intact. Fill-gaps
+--- only: a label already present on the receiving item wins, so a fresher
+--- direct merge of that ancestor is never overwritten by a stale copy riding
+--- in through a chain. Lines labeled with the target book itself are skipped
+--- (self-background via out-of-order merges), as are unattributable "?"
+--- labels. Mutates base_parsed/delta items; pure otherwise.
+--- @param base_parsed table|nil Parsed target X-Ray
+--- @param delta table|nil Model delta AFTER the rewrite-drop pass (kept entries only)
+--- @param source_parsed table Parsed source X-Ray
+--- @param target_title string|nil The target book's title (self-label filter)
+--- @return table Distinct labels actually carried (array of strings)
+function XrayMerge.carrySourceBackground(base_parsed, delta, source_parsed, target_title)
+    local XrayParser = require("koassistant_xray_parser")
+    local carried, carried_set = {}, {}
+    if type(source_parsed) ~= "table" then return carried end
+    local base_lookup = buildEntityLookup(base_parsed or {})
+    -- The delta's kept carry-over entries, keyed like buildEntityLookup
+    local delta_lookup = {}
+    if type(delta) == "table" then
+        for key, arr in pairs(delta) do
+            if not PROTECTED_CATEGORIES[key] and type(arr) == "table" then
+                for _idx, entry in ipairs(arr) do
+                    if type(entry) == "table" then
+                        local name = entry.name or entry.term
+                        if type(name) == "string" and name ~= ""
+                            and delta_lookup[name:lower()] == nil then
+                            delta_lookup[name:lower()] = entry
+                        end
+                        if type(entry.aliases) == "table" then
+                            for _idx2, alias in ipairs(entry.aliases) do
+                                if type(alias) == "string" and alias ~= ""
+                                    and delta_lookup[alias:lower()] == nil then
+                                    delta_lookup[alias:lower()] = entry
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    local function findIn(lookup, name, item)
+        local hit = type(name) == "string" and name ~= "" and lookup[name:lower()]
+        if hit then return hit end
+        if type(item.aliases) == "table" then
+            for _idx, alias in ipairs(item.aliases) do
+                if type(alias) == "string" and alias ~= "" and lookup[alias:lower()] then
+                    return lookup[alias:lower()]
+                end
+            end
+        end
+    end
+    for _idx, cat in ipairs(XrayParser.getCategories(source_parsed)) do
+        if not PROTECTED_CATEGORIES[cat.key] and type(cat.items) == "table" then
+            for _idx2, item in ipairs(cat.items) do
+                if type(item) == "table" and type(item.background) == "table" then
+                    local name = XrayParser.getItemName(item, cat.key)
+                    local target_item = findIn(base_lookup, name, item)
+                        or findIn(delta_lookup, name, item)
+                    if target_item then
+                        local existing_sources = {}
+                        if type(target_item.background) == "table" then
+                            for _idx3, b in ipairs(target_item.background) do
+                                if type(b) == "table" and type(b.source) == "string" then
+                                    existing_sources[b.source] = true
+                                end
+                            end
+                        end
+                        local additions = {}
+                        for _idx3, b in ipairs(item.background) do
+                            if type(b) == "table" and type(b.text) == "string" and b.text ~= ""
+                                and type(b.source) == "string" and b.source ~= ""
+                                and b.source ~= "?"
+                                and b.source ~= target_title
+                                and not existing_sources[b.source] then
+                                additions[#additions + 1] = { source = b.source, text = b.text }
+                            end
+                        end
+                        if #additions > 0 then
+                            target_item.background = XrayParser.mergeBackground(
+                                target_item.background, additions)
+                            for _idx3, b in ipairs(additions) do
+                                if not carried_set[b.source] then
+                                    carried_set[b.source] = true
+                                    carried[#carried + 1] = b.source
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return carried
+end
+
 --- Pre-merge transform for cross-book deltas (rides WriteBack.applyXray's
 --- transform hook): applies background_updates to the BASE, strips the
 --- protected categories, and drops any disobedient full rewrite of an
 --- existing entity from the delta (salvaging its aliases) — so a cross-book
 --- merge can NEVER replace or shorten what the target book already knows,
---- regardless of model tier.
+--- regardless of model tier. When source_parsed is given, the source's own
+--- background lines carry over transitively (see carrySourceBackground);
+--- labels actually carried are appended to meta_out.merged_from_books (the
+--- SAME table later read by reconcileXrayMeta — the transform runs first).
 --- @param source_title string The related book's title
+--- @param source_parsed table|nil Parsed source X-Ray (transitive carry input)
+--- @param target_title string|nil The target book's title (self-label filter)
+--- @param meta_out table|nil applyXray meta table to receive carried labels
 --- @return function transform(delta, base_parsed)
-function XrayMerge.crossBookTransform(source_title)
+function XrayMerge.crossBookTransform(source_title, source_parsed, target_title, meta_out)
     return function(delta, base_parsed)
         if type(delta) ~= "table" or type(base_parsed) ~= "table" then return end
         local updates = delta.background_updates
@@ -373,8 +479,21 @@ function XrayMerge.crossBookTransform(source_title)
                 if #kept ~= #arr then delta[key] = kept end
             end
         end
+        local carried_n = 0
+        if type(source_parsed) == "table" then
+            local labels = XrayMerge.carrySourceBackground(
+                base_parsed, delta, source_parsed, target_title)
+            carried_n = #labels
+            if meta_out then
+                for _idx, label in ipairs(labels) do
+                    meta_out.merged_from_books = XrayMerge.appendBookProvenance(
+                        meta_out.merged_from_books, label)
+                end
+            end
+        end
         logger.info("KOAssistant XrayMerge: cross-book background —",
-            applied, "applied,", unmatched, "unmatched,", dropped, "rewrites dropped")
+            applied, "applied,", unmatched, "unmatched,", dropped, "rewrites dropped,",
+            carried_n, "ancestor labels carried")
     end
 end
 
@@ -1216,27 +1335,36 @@ function XrayMerge.executeCrossBook(opts)
             local used_reasoning = type(meta_or_err) == "table"
                 and meta_or_err.used_reasoning or nil
             local union = XrayMerge.unionInputMeta({ source.entry })
+            -- Item 49 transitive carry: the transform appends carried ancestor
+            -- labels to THIS table (reconcileXrayMeta reads it after the
+            -- transform has run inside parseXrayAnswer)
+            local wb_meta = {
+                model = model_name,
+                used_reasoning = used_reasoning,
+                used_book_text = union.used_book_text,
+                used_highlights = union.used_highlights,
+                producer = "book_merge",
+                merged_from_books = XrayMerge.appendBookProvenance(
+                    main_entry.merged_from_books, source.title),
+            }
+            local source_parsed = XrayParser.parse(
+                (source.entry and source.entry.result) or "")
             local ok, res_or_err = WriteBack.applyXray({
                 document_path = file,
                 answer = result,
                 base = main_entry,
                 base_entry = main_entry,
                 -- Item 44: background attaches mechanically; existing entries
-                -- can never be replaced or shortened by this merge
-                transform = XrayMerge.crossBookTransform(source.title),
+                -- can never be replaced or shortened by this merge. Item 49:
+                -- the source's own ancestor background carries over with
+                -- original labels (chained merges no longer lose Vol 1)
+                transform = XrayMerge.crossBookTransform(source.title,
+                    source_parsed, bm.title, wb_meta),
                 -- Cross-book knowledge claims NO target pages: progress stays
                 -- the base's (floor guard) and coverage_spans union base-only
                 -- (slice-1 reconcile — the new pass carries none)
                 progress_decimal = tonumber(main_entry.progress_decimal) or 0,
-                meta = {
-                    model = model_name,
-                    used_reasoning = used_reasoning,
-                    used_book_text = union.used_book_text,
-                    used_highlights = union.used_highlights,
-                    producer = "book_merge",
-                    merged_from_books = XrayMerge.appendBookProvenance(
-                        main_entry.merged_from_books, source.title),
-                },
+                meta = wb_meta,
                 features = config.features,
                 refresh_fn = function()
                     if plugin_ref then
