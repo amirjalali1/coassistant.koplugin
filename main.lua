@@ -2918,11 +2918,11 @@ end
 -- docs/provider_landscape_2026-08.md §2). All speak the plain chat-completions
 -- wire with Bearer-key auth; tools/streaming verified in provider docs, so
 -- capability grants via custom_models.lua should work. URLs verified 2026-08;
--- Parasail/Cloudflare omitted (unverified / account-specific URLs).
+-- Parasail/Cloudflare omitted (unverified / account-specific URLs); GitHub
+-- Models omitted (retirement brownouts live-confirmed 2026-08-04, HTTP 410).
 local HOSTED_PROVIDER_PRESETS = {
   { name = "Cerebras",         url = "https://api.cerebras.ai/v1/chat/completions" },
   { name = "MiniMax",          url = "https://api.minimax.io/v1/chat/completions" },
-  { name = "GitHub Models",    url = "https://models.github.ai/inference/chat/completions" },
   { name = "DeepInfra",        url = "https://api.deepinfra.com/v1/openai/chat/completions" },
   { name = "Novita AI",        url = "https://api.novita.ai/openai/chat/completions" },
   { name = "Hyperbolic",       url = "https://api.hyperbolic.xyz/v1/chat/completions" },
@@ -2960,7 +2960,7 @@ function AskGPT:showHostedProviderPresets()
 
   self._hosted_presets_dialog = ButtonDialog:new{
     title = _("Select hosted provider"),
-    info_text = _("Pre-fills name and URL. You'll need an API key from the provider's site (GitHub Models uses a GitHub token). Set the model id from the provider's docs, and grant capabilities like tools in custom_models.lua if wanted."),
+    info_text = _("Pre-fills name and URL. You'll need an API key from the provider's site. Fetch or set model ids afterwards, and grant capabilities like tools in custom_models.lua if wanted."),
     buttons = buttons,
   }
   UIManager:show(self._hosted_presets_dialog)
