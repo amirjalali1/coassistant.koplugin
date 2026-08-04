@@ -32,7 +32,7 @@ Note: This README is the main documentation for now, and is being migrated to th
 - **AI Book Tools** → let the AI search and read the open book on demand to ground its answers (gather-then-generate by default, or an interactive agentic loop)
 - **Multilingual** → chat in any of 47 languages the AI understands, and use the KOAssistant UI in over 20 languages
 
-19 built-in providers (Anthropic, OpenAI, Gemini, Ollama, and more) plus custom OpenAI-compatible providers. OpenAI can also be used without an API key by signing in with your ChatGPT plan (OpenAI Subscription). Fully configurable: custom actions, behaviors, domains, per-action model overrides. Reasoning/thinking is configured per model (stance dial + per-model overrides). **One-tap auto-update** keeps the plugin current. Personal reading data (highlights, annotations, notebooks) is opt-in, not sent to the AI unless you enable it.
+28 built-in providers (Anthropic, OpenAI, Gemini, Ollama, and more) plus custom OpenAI-compatible providers. OpenAI can also be used without an API key by signing in with your ChatGPT plan (OpenAI Subscription). Fully configurable: custom actions, behaviors, domains, per-action model overrides. Reasoning/thinking is configured per model (stance dial + per-model overrides). **One-tap auto-update** keeps the plugin current. Personal reading data (highlights, annotations, notebooks) is opt-in, not sent to the AI unless you enable it.
 
 **Status:** Active development. [issues](https://github.com/zeeyado/koassistant.koplugin/issues), [discussions](https://github.com/zeeyado/koassistant.koplugin/discussions), and [translations](https://hosted.weblate.org/engage/koassistant/) welcome. If you are somewhat technical and don't want to wait for tested releases, you can run off main branch to get the latest features. Breakage may happen. Also see [Assistant Plugin](https://github.com/omer-faruq/assistant.koplugin); both can run side by side.
 
@@ -2432,7 +2432,7 @@ These launch entries sit at the top of the menu:
 - **Browse Artifacts**: Open the Artifact Browser to view all cached artifacts
 
 ### Provider & Model
-- **Provider**: Select AI provider (19 built-in + custom providers)
+- **Provider**: Select AI provider (28 built-in + custom providers)
   - Tap to select from built-in providers. The picker lists only providers that have an API key configured, plus local/no-key providers (Ollama, custom local presets) — set a key in **API Keys** to make a provider appear
   - Custom providers appear with ★ prefix (see [Adding Custom Providers](#adding-custom-providers))
   - Long-press "Add custom provider..." to create your own
@@ -3535,7 +3535,7 @@ The built-in **News Update** action demonstrates this. It uses `enable_web_searc
 
 ## Supported Providers + Settings
 
-KOAssistant supports **19 built-in AI providers**, plus any number of custom OpenAI-compatible providers you add yourself (OpenAI is listed twice below: once for API keys, once for ChatGPT-subscription login). Please test and give feedback -- fixes are quickly implemented
+KOAssistant supports **28 built-in AI providers** — a **curated set** the maintainer tests with real keys and automated probes, and a **community set** (marked `*` in the plugin and *Docs-based* below) implemented from provider documentation — plus any number of custom OpenAI-compatible providers you add yourself (OpenAI is listed twice below: once for API keys, once for ChatGPT-subscription login). Please test and give feedback -- fixes are quickly implemented
 
 | Provider | Description | Status | Get API Key |
 |----------|-------------|--------|-------------|
@@ -3559,6 +3559,15 @@ KOAssistant supports **19 built-in AI providers**, plus any number of custom Ope
 | **Doubao** | ByteDance Volcano Engine | Docs-based* | [console.volcengine.com](https://console.volcengine.com/) |
 | **Z.AI** | GLM models, free tier available | Tested | [z.ai](https://z.ai/) |
 | **Perplexity** | Sonar models, built-in web search with citations | Tested | [perplexity.ai](https://www.perplexity.ai/settings/api) |
+| **Cerebras** | Very fast open-model inference (hosts gpt-oss) | Docs-based* | [cloud.cerebras.ai](https://cloud.cerebras.ai/) |
+| **MiniMax** | MiniMax M-series models | Docs-based* | [platform.minimax.io](https://platform.minimax.io/) |
+| **DeepInfra** | Many open models, low prices | Docs-based* | [deepinfra.com](https://deepinfra.com/) |
+| **Novita AI** | Open-model marketplace | Docs-based* | [novita.ai](https://novita.ai/) |
+| **Hyperbolic** | Open-model host | Docs-based* | [app.hyperbolic.xyz](https://app.hyperbolic.xyz/) |
+| **Nebius AI Studio** | Open-model host | Docs-based* | [studio.nebius.com](https://studio.nebius.com/) |
+| **Chutes** | Decentralized GPU marketplace | Docs-based* | [chutes.ai](https://chutes.ai/) |
+| **Featherless** | Huge open-model catalog | Docs-based* | [featherless.ai](https://featherless.ai/) |
+| **Vercel AI Gateway** | 200+ models behind one key | Docs-based* | [vercel.com](https://vercel.com/) |
 
 > **\*Tested vs docs-based:** *Tested* providers are covered by the maintainer's own API keys and automated probe/test tooling. *Docs-based* providers are implemented from their official documentation and user reports — they should work the same way, but the maintainer holds no key for them, so regressions can go unnoticed until someone reports them (fixes are quick once reported).
 >
@@ -3630,16 +3639,14 @@ You can add your own OpenAI-compatible providers for local servers or cloud serv
 
 API key is automatically disabled for preset local providers.
 
-**Quick setup for hosted providers:**
+**Community-set model lists (built-in hosted providers):**
 
-Popular OpenAI-compatible cloud hosts have one-tap presets too:
+The community-set providers above (Cerebras, MiniMax, DeepInfra, Novita AI, Hyperbolic, Nebius AI Studio, Chutes, Featherless, Vercel AI Gateway) are regular built-in providers — pick them in **Settings → Provider**, add the key in **Settings → API Keys**. They ship with a tiny *seed* model list, so the intended flow is:
 
-1. Go to **Settings → Provider → Quick setup: Hosted provider**
-2. Pick a host — presets exist for **Cerebras**, **MiniMax**, **DeepInfra**, **Novita AI**, **Hyperbolic**, **Nebius AI Studio**, **Chutes**, **Featherless**, and **Vercel AI Gateway**. Name and endpoint URL are pre-filled.
-3. Get an API key from the host's site and add it in **Settings → API Keys**
-4. Long-press the new provider and pick **Fetch models from provider...** to pull its live model list — tap the models you want (see [Adding Custom Models](#adding-custom-models))
+1. In the model menu, tap **Fetch models from provider...** to pull the live model list and tap-to-add the ones you want
+2. Tap **Test provider...** to run a quick capability check (streaming, tool calling, reasoning parameter) — recorded capabilities make features like AI Book Tools work where the model supports them
 
-These presets are wired from each host's documentation (*docs-based* in the table above — reports welcome). If a host supports function calling, you can grant the `tools` capability per model in `custom_models.lua` (see `custom_models.lua.sample`).
+Both of these work for any provider you have a key for, curated or community.
 
 **Manual setup (cloud services or unlisted endpoints):**
 

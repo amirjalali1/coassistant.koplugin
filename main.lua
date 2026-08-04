@@ -2167,46 +2167,108 @@ function AskGPT:fetchDerivedModelCaps(provider, model)
   return ModelOverrides.recordDerived(provider, model, params)
 end
 
--- Fetch the live model list from a custom provider's /models endpoint (item 18g v1:
--- custom providers only). Synchronous like fetchDerivedModelCaps — only called behind
--- an explicit user action. Returns a sorted array of model-id strings, or nil + error.
-function AskGPT:fetchProviderModels(provider_id)
+-- Resolve a provider descriptor for the universal fetch/test tooling (REVISION 2
+-- M2): custom providers AND built-ins (base_url from ProviderDefaults).
+function AskGPT:getProviderDescriptor(provider_id)
   local cp = self:getCustomProvider(provider_id)
-  if not cp or not cp.base_url or cp.base_url == "" then
+  if cp then
+    return {
+      id = provider_id, name = cp.name, base_url = cp.base_url,
+      default_model = cp.default_model, is_custom = true,
+    }
+  end
+  local Defaults = require("koassistant_api.defaults")
+  local pd = Defaults.ProviderDefaults[provider_id]
+  if not pd then return nil end
+  return {
+    id = provider_id,
+    name = self:getProviderDisplayName(provider_id),
+    base_url = pd.base_url,
+    default_model = self:getEffectiveDefaultModel(provider_id) or pd.model,
+    is_custom = false,
+  }
+end
+
+function AskGPT:providerSupportsFetch(provider_id)
+  if provider_id == "openai_codex" then return false end  -- no models endpoint
+  local d = self:getProviderDescriptor(provider_id)
+  return d ~= nil and type(d.base_url) == "string" and d.base_url ~= ""
+end
+
+-- The micro probe battery speaks the OpenAI chat wire; customs speak it by
+-- construction, built-ins qualify by base_url shape (anthropic/gemini/ollama/
+-- cohere are excluded — their curated coverage comes from the local pipeline).
+function AskGPT:providerSupportsTest(provider_id)
+  local d = self:getProviderDescriptor(provider_id)
+  if not d then return false end
+  if d.is_custom then return true end
+  return type(d.base_url) == "string" and d.base_url:find("/chat/completions$") ~= nil
+end
+
+-- Fetch the live model list from a provider's list endpoint (18g; universal
+-- since REVISION 2 M2). Synchronous like fetchDerivedModelCaps — only called
+-- behind an explicit user action. Returns a sorted array of ids, or nil + error.
+function AskGPT:fetchProviderModels(provider_id)
+  local d = self:getProviderDescriptor(provider_id)
+  if not d or not d.base_url or d.base_url == "" then
     return nil, _("Provider has no base URL")
   end
   local BaseHandler = require("koassistant_api.base")
   local json = require("json")
-  -- Stored base URLs are full chat-completions endpoints; the models list lives
-  -- next to them ({base}/v1/chat/completions -> {base}/v1/models).
-  local models_url = cp.base_url:gsub("/+$", ""):gsub("/chat/completions$", "")
-  models_url = models_url:gsub("/+$", "") .. "/models"
-  local headers
   local key = BaseHandler.getApiKey(provider_id, self.settings)
-  if type(key) == "string" and key ~= "" and not BaseHandler.isPlaceholderKey(key) then
-    headers = { ["Authorization"] = "Bearer " .. key }
+  if not (type(key) == "string" and key ~= "" and not BaseHandler.isPlaceholderKey(key)) then
+    key = nil
   end
+
+  -- Per-wire list endpoint + auth + response field. Default: OpenAI-shaped
+  -- ({base}/chat/completions -> {base}/models, Bearer auth, data[].id).
+  local models_url, headers, list_field, name_field
+  if provider_id == "anthropic" then
+    models_url = d.base_url:gsub("/messages$", "/models")
+    headers = key and { ["x-api-key"] = key, ["anthropic-version"] = "2023-06-01" } or nil
+  elseif provider_id == "ollama" then
+    models_url = d.base_url:gsub("/api/chat$", "") .. "/api/tags"
+    list_field, name_field = "models", "name"
+  elseif provider_id == "gemini" then
+    if not key then return nil, _("Gemini needs an API key to list models") end
+    local ModelLists = require("koassistant_model_lists")
+    models_url = ModelLists._docs.gemini.api_list .. "?key=" .. key
+    list_field, name_field = "models", "name"
+  else
+    models_url = d.base_url:gsub("/+$", ""):gsub("/chat/completions$", "")
+    models_url = models_url:gsub("/+$", "") .. "/models"
+    headers = key and { ["Authorization"] = "Bearer " .. key } or nil
+  end
+
   local code, body = BaseHandler.fetchInSubprocess(models_url, { timeout = 15, headers = headers })
   if not tonumber(code) then
     return nil, T(_("Network error: %1"), tostring(body))
   end
   if tonumber(code) ~= 200 then
-    return nil, T(_("HTTP %1 from %2"), tostring(code), models_url)
+    -- never echo the key (gemini rides it in the URL)
+    return nil, T(_("HTTP %1 from %2"), tostring(code), models_url:gsub("key=[^&]+", "key=***"))
   end
   local ok, decoded = pcall(json.decode, body)
   if not ok or type(decoded) ~= "table" then
     return nil, _("Could not parse the model list response")
   end
-  -- OpenAI-shaped {data=[{id=...}]} or a bare array of {id=...}/strings.
   -- Type-check every level: luajson decodes JSON null to a truthy function sentinel.
-  local rows = type(decoded.data) == "table" and decoded.data or decoded
+  local rows
+  if list_field then
+    rows = type(decoded[list_field]) == "table" and decoded[list_field] or {}
+  else
+    rows = type(decoded.data) == "table" and decoded.data or decoded
+  end
   local ids, seen_ids = {}, {}
   for _idx, row in ipairs(rows) do
     local id
-    if type(row) == "table" and type(row.id) == "string" then
-      id = row.id
+    if type(row) == "table" and type(row[name_field or "id"]) == "string" then
+      id = row[name_field or "id"]
     elseif type(row) == "string" then
       id = row
+    end
+    if id then
+      id = id:gsub("^models/", "")  -- gemini prefixes ids with "models/"
     end
     if id and id ~= "" and not seen_ids[id] then
       seen_ids[id] = true
@@ -2220,14 +2282,33 @@ function AskGPT:fetchProviderModels(provider_id)
   return ids
 end
 
+-- Shared entry for the fetch flow (notification -> fetch -> picker/error)
+function AskGPT:startFetchModels(provider_id)
+  local self_ref = self
+  UIManager:show(Notification:new{
+    text = _("Fetching model list..."),
+    timeout = 1,
+  })
+  -- Delayed so the notification paints before the synchronous fetch
+  UIManager:scheduleIn(0.2, function()
+    local ids, err = self_ref:fetchProviderModels(provider_id)
+    if ids then
+      self_ref:showFetchedModelsPicker(provider_id, ids)
+    else
+      UIManager:show(InfoMessage:new{
+        text = T(_("Could not fetch models: %1"), err or _("unknown error")),
+      })
+    end
+  end)
+end
+
 -- Tap-to-add picker over a fetched model list (18g). Tapping a model adds it to the
 -- provider's custom-models list; the picker re-opens so added rows show a check mark.
 -- Big lists are capped at 30 visible rows — the filter narrows them.
 function AskGPT:showFetchedModelsPicker(provider_id, all_ids, filter)
   local self_ref = self
   local ButtonDialog = require("ui/widget/buttondialog")
-  local cp = self:getCustomProvider(provider_id)
-  local provider_name = cp and cp.name or provider_id
+  local provider_name = self:getProviderDisplayName(provider_id)
 
   local needle = filter and filter:lower() or nil
   local ids = {}
@@ -2239,6 +2320,10 @@ function AskGPT:showFetchedModelsPicker(provider_id, all_ids, filter)
 
   local added = {}
   for _idx, m in ipairs(self:getCustomModels(provider_id)) do added[m] = true end
+  -- Built-in providers: ids already in the curated array count as present too
+  for _idx, m in ipairs(require("koassistant_model_lists")[provider_id] or {}) do
+    added[m] = true
+  end
 
   local buttons = {}
   table.insert(buttons, {{
@@ -2340,13 +2425,21 @@ function AskGPT:showFetchedModelsPicker(provider_id, all_ids, filter)
   UIManager:show(self._fetched_models_dialog)
 end
 
--- 19e: micro probe battery for a custom provider. Five cheap requests (~16 output
--- tokens each) against the provider's own chat endpoint; positive findings land in
--- the DERIVED capability layer (user override > curated > derived) via
--- ModelOverrides.recordDerived — never in the user's custom_models.lua.
-function AskGPT:testCustomProvider(provider)
+-- 19e: micro probe battery — universal since REVISION 2 M2 (any provider whose
+-- wire is OpenAI chat-shaped; see providerSupportsTest). Five cheap requests
+-- (~16 output tokens each) against the provider's own chat endpoint; positive
+-- findings land in the DERIVED capability layer (user override > curated >
+-- derived) via ModelOverrides.recordDerived — never in custom_models.lua.
+function AskGPT:testProvider(provider_id)
   local self_ref = self
-  local provider_id = provider.id
+  local provider = self:getProviderDescriptor(provider_id)
+  if not provider then return end
+  if not self:providerSupportsTest(provider_id) then
+    UIManager:show(InfoMessage:new{
+      text = _("This provider's wire format isn't covered by the built-in test."),
+    })
+    return
+  end
   local model = provider.default_model
   if not model or model == "" then
     model = self:getCustomModels(provider_id)[1]
@@ -2554,6 +2647,15 @@ function AskGPT:getProviderDisplayName(provider_id)
   if provider_id == "openai_codex" then
     return _("OpenAI Subscription")
   end
+  -- Community-set ids whose display casing isn't first-letter-capitalize
+  local special = {
+    minimax = "MiniMax",
+    deepinfra = "DeepInfra",
+    novita = "Novita AI",
+    nebius = "Nebius AI Studio",
+    vercel = "Vercel AI Gateway",
+  }
+  if special[provider_id] then return special[provider_id] end
   -- Built-in provider: capitalize first letter
   return provider_id:gsub("^%l", string.upper)
 end
@@ -2867,6 +2969,10 @@ function AskGPT:buildProviderMenu(simplified, show_all)
   for _i, prov in ipairs(all_providers) do
     local prov_copy = prov  -- Capture for closure
     local text = prov.is_custom and ("★ " .. prov.display_name) or prov.display_name
+    -- Community-set marker (REVISION 2 M3): docs-based, not maintainer-tested
+    if not prov.is_custom and ModelLists.isCommunity(prov.id) then
+      text = text .. " *"
+    end
     if prov.no_key then
       text = T(_("%1 (no key)"), text)
     end
@@ -2905,20 +3011,17 @@ function AskGPT:buildProviderMenu(simplified, show_all)
       callback = function() end,
     })
 
+    table.insert(items, {
+      text = _("* community set (docs-based) — see README"),
+      enabled = false,
+      callback = function() end,
+    })
+
     -- Add local provider preset option
     table.insert(items, {
       text = _("Quick setup: Local provider..."),
       callback = function()
         self_ref:showLocalProviderPresets()
-      end,
-      keep_menu_open = false,
-    })
-
-    -- Add hosted provider preset option
-    table.insert(items, {
-      text = _("Quick setup: Hosted provider..."),
-      callback = function()
-        self_ref:showHostedProviderPresets()
       end,
       keep_menu_open = false,
     })
@@ -2973,28 +3076,14 @@ function AskGPT:showCustomProviderOptions(provider)
       text = _("Fetch models from provider..."),
       callback = function()
         UIManager:close(self_ref._provider_options_dialog)
-        UIManager:show(Notification:new{
-          text = _("Fetching model list..."),
-          timeout = 1,
-        })
-        -- Delayed so the notification paints before the synchronous fetch
-        UIManager:scheduleIn(0.2, function()
-          local ids, err = self_ref:fetchProviderModels(provider.id)
-          if ids then
-            self_ref:showFetchedModelsPicker(provider.id, ids)
-          else
-            UIManager:show(InfoMessage:new{
-              text = T(_("Could not fetch models: %1"), err or _("unknown error")),
-            })
-          end
-        end)
+        self_ref:startFetchModels(provider.id)
       end,
     }},
     {{
       text = _("Test this provider..."),
       callback = function()
         UIManager:close(self_ref._provider_options_dialog)
-        self_ref:testCustomProvider(provider)
+        self_ref:testProvider(provider.id)
       end,
     }},
     {{
@@ -3088,57 +3177,9 @@ function AskGPT:showLocalProviderPresets()
   UIManager:show(self._local_presets_dialog)
 end
 
--- Hosted OpenAI-compatible provider presets (2026-08 landscape research:
--- docs/provider_landscape_2026-08.md §2). All speak the plain chat-completions
--- wire with Bearer-key auth; tools/streaming verified in provider docs, so
--- capability grants via custom_models.lua should work. URLs verified 2026-08;
--- Parasail/Cloudflare omitted (unverified / account-specific URLs); GitHub
--- Models omitted (retirement brownouts live-confirmed 2026-08-04, HTTP 410).
-local HOSTED_PROVIDER_PRESETS = {
-  { name = "Cerebras",         url = "https://api.cerebras.ai/v1/chat/completions" },
-  { name = "MiniMax",          url = "https://api.minimax.io/v1/chat/completions" },
-  { name = "DeepInfra",        url = "https://api.deepinfra.com/v1/openai/chat/completions" },
-  { name = "Novita AI",        url = "https://api.novita.ai/openai/chat/completions" },
-  { name = "Hyperbolic",       url = "https://api.hyperbolic.xyz/v1/chat/completions" },
-  { name = "Nebius AI Studio", url = "https://api.studio.nebius.com/v1/chat/completions" },
-  { name = "Chutes",           url = "https://llm.chutes.ai/v1/chat/completions" },
-  { name = "Featherless",      url = "https://api.featherless.ai/v1/chat/completions" },
-  { name = "Vercel AI Gateway", url = "https://ai-gateway.vercel.sh/v1/chat/completions" },
-}
-
--- Helper: Show hosted provider preset selection (mirror of the local picker)
-function AskGPT:showHostedProviderPresets()
-  local self_ref = self
-  local ButtonDialog = require("ui/widget/buttondialog")
-
-  local buttons = {}
-  for _idx, preset in ipairs(HOSTED_PROVIDER_PRESETS) do
-    table.insert(buttons, {{
-      text = preset.name,
-      callback = function()
-        UIManager:close(self_ref._hosted_presets_dialog)
-        self_ref:showAddCustomProviderDialog({
-          name = preset.name,
-          base_url = preset.url,
-          api_key_required = true,
-        })
-      end,
-    }})
-  end
-  table.insert(buttons, {{
-    text = _("Cancel"),
-    callback = function()
-      UIManager:close(self_ref._hosted_presets_dialog)
-    end,
-  }})
-
-  self._hosted_presets_dialog = ButtonDialog:new{
-    title = _("Select hosted provider"),
-    info_text = _("Pre-fills name and URL. You'll need an API key from the provider's site. Fetch or set model ids afterwards, and grant capabilities like tools in custom_models.lua if wanted."),
-    buttons = buttons,
-  }
-  UIManager:show(self._hosted_presets_dialog)
-end
+-- (The 2026-08-04 hosted provider presets were RETIRED the same day: those hosts
+-- are now community-set BUILT-INS — model_management_strategy.md "End-state
+-- REVISION 2" M1. Custom providers remain for personal endpoints only.)
 
 -- Helper: Show dialog to add a new custom provider
 -- @param preset table: Optional pre-fill values {name, base_url, api_key_required}
@@ -3671,6 +3712,31 @@ function AskGPT:buildModelMenu(simplified)
           -- Delay to let menu close first
           UIManager:scheduleIn(0.1, function()
             self_ref:showManageCustomModelsMenu(provider)
+          end)
+        end,
+      })
+    end
+
+    -- Universal provider tooling (REVISION 2 M2): live model-list fetch and the
+    -- micro probe for ANY provider with a fetchable endpoint, built-in or custom
+    if self_ref:providerSupportsFetch(provider) then
+      table.insert(items, {
+        text = _("Fetch models from provider..."),
+        keep_menu_open = false,
+        callback = function()
+          UIManager:scheduleIn(0.1, function()
+            self_ref:startFetchModels(provider)
+          end)
+        end,
+      })
+    end
+    if self_ref:providerSupportsTest(provider) then
+      table.insert(items, {
+        text = _("Test provider..."),
+        keep_menu_open = false,
+        callback = function()
+          UIManager:scheduleIn(0.1, function()
+            self_ref:testProvider(provider)
           end)
         end,
       })

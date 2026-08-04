@@ -233,6 +233,64 @@ local ProviderDefaults = {
             temperature = 0.7,
             max_tokens = 16384
         }
+    },
+
+    -- Community set (M1, model_management_strategy.md "End-state REVISION 2"):
+    -- docs-based, no maintainer key yet. Conservative max_tokens (small hosted
+    -- models often cap low; no clampMaxTokens entries exist for these).
+    cerebras = {
+        provider = "cerebras",
+        model = getDefaultModel("cerebras"),
+        base_url = "https://api.cerebras.ai/v1/chat/completions",
+        additional_parameters = { temperature = 0.7, max_tokens = 4096 }
+    },
+    minimax = {
+        provider = "minimax",
+        model = getDefaultModel("minimax"),
+        base_url = "https://api.minimax.io/v1/chat/completions",
+        additional_parameters = { temperature = 0.7, max_tokens = 4096 }
+    },
+    deepinfra = {
+        provider = "deepinfra",
+        model = getDefaultModel("deepinfra"),
+        base_url = "https://api.deepinfra.com/v1/openai/chat/completions",
+        additional_parameters = { temperature = 0.7, max_tokens = 4096 }
+    },
+    novita = {
+        provider = "novita",
+        model = getDefaultModel("novita"),
+        base_url = "https://api.novita.ai/openai/chat/completions",
+        additional_parameters = { temperature = 0.7, max_tokens = 4096 }
+    },
+    hyperbolic = {
+        provider = "hyperbolic",
+        model = getDefaultModel("hyperbolic"),
+        base_url = "https://api.hyperbolic.xyz/v1/chat/completions",
+        additional_parameters = { temperature = 0.7, max_tokens = 4096 }
+    },
+    nebius = {
+        provider = "nebius",
+        model = getDefaultModel("nebius"),
+        base_url = "https://api.studio.nebius.com/v1/chat/completions",
+        additional_parameters = { temperature = 0.7, max_tokens = 4096 }
+    },
+    chutes = {
+        provider = "chutes",
+        model = getDefaultModel("chutes"),
+        base_url = "https://llm.chutes.ai/v1/chat/completions",
+        additional_parameters = { temperature = 0.7, max_tokens = 4096 }
+    },
+    featherless = {
+        provider = "featherless",
+        model = getDefaultModel("featherless"),
+        base_url = "https://api.featherless.ai/v1/chat/completions",
+        additional_parameters = { temperature = 0.7, max_tokens = 4096 }
+    },
+    vercel = {
+        provider = "vercel",
+        model = getDefaultModel("vercel"),
+        base_url = "https://ai-gateway.vercel.sh/v1/chat/completions",
+        additional_parameters = { temperature = 0.7, max_tokens = 4096 }
     }
 }
 

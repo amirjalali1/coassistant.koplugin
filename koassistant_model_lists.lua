@@ -332,6 +332,64 @@ local ModelLists = {
     },
 
     ---------------------------------------------------------------------------
+    -- COMMUNITY SET (M1, model_management_strategy.md "End-state REVISION 2"):
+    -- docs-based providers, no maintainer key yet. SEED lists only — 1-2
+    -- documented ids so the provider is usable out of the box; the real path is
+    -- "Fetch models from provider" (per-user live list). No tier placements
+    -- (tier features no-op). Promotion to curated = keys pipeline (item 25e M4).
+    ---------------------------------------------------------------------------
+    cerebras = {
+        "gpt-oss-120b",                             -- seed (unverified)
+        "llama-3.3-70b",                            -- seed (unverified)
+    },
+    minimax = {
+        "MiniMax-M3",                               -- seed (unverified)
+        "MiniMax-M2.7",                             -- seed (unverified)
+    },
+    deepinfra = {
+        "meta-llama/Llama-3.3-70B-Instruct",        -- seed (unverified)
+        "deepseek-ai/DeepSeek-V4",                  -- seed (unverified)
+    },
+    novita = {
+        "deepseek/deepseek-v4",                     -- seed (unverified)
+        "meta-llama/llama-3.3-70b-instruct",        -- seed (unverified)
+    },
+    hyperbolic = {
+        "meta-llama/Llama-3.3-70B-Instruct",        -- seed (unverified)
+    },
+    nebius = {
+        "meta-llama/Llama-3.3-70B-Instruct",        -- seed (unverified)
+        "deepseek-ai/DeepSeek-V4",                  -- seed (unverified)
+    },
+    chutes = {
+        "deepseek-ai/DeepSeek-V4",                  -- seed (unverified)
+    },
+    featherless = {
+        "Qwen/Qwen3-32B",                           -- seed (unverified)
+    },
+    vercel = {
+        "openai/gpt-5.5",                           -- seed (unverified)
+        "anthropic/claude-sonnet-5",                -- seed (unverified)
+    },
+
+    ---------------------------------------------------------------------------
+    -- CURATED vs COMMUNITY membership (REVISION 2). Community = docs-based, no
+    -- maintainer key / local-pipeline coverage yet. This INCLUDES the long-
+    -- shipped providers the maintainer has never been able to test (honest
+    -- relabeling, item 25e M4) — remove a provider here when its key arrives
+    -- and the model_audit pipeline has run (that's the promotion).
+    ---------------------------------------------------------------------------
+    _community = {
+        -- pre-2026-08 built-ins, never maintainer-tested
+        groq = true, together = true, fireworks = true, sambanova = true,
+        cohere = true, requesty = true, qwen = true, kimi = true, doubao = true,
+        -- M1 additions (ex hosted presets)
+        cerebras = true, minimax = true, deepinfra = true, novita = true,
+        hyperbolic = true, nebius = true, chutes = true, featherless = true,
+        vercel = true,
+    },
+
+    ---------------------------------------------------------------------------
     -- TIER MAPPINGS
     -- Maps tier -> provider -> recommended model_id
     -- Tiers: frontier > flagship > standard > fast > ultrafast
@@ -573,6 +631,43 @@ local ModelLists = {
             docs = "https://github.com/ollama/ollama/blob/main/docs/api.md",
             library = "https://ollama.com/library",
         },
+        -- Community set (M1): list endpoints derived from the chat URL, unprobed
+        cerebras = {
+            api_list = "https://api.cerebras.ai/v1/models",
+            docs = "https://inference-docs.cerebras.ai/",
+        },
+        minimax = {
+            api_list = "https://api.minimax.io/v1/models",
+            docs = "https://platform.minimax.io/docs/",
+        },
+        deepinfra = {
+            api_list = "https://api.deepinfra.com/v1/openai/models",
+            docs = "https://deepinfra.com/docs/",
+        },
+        novita = {
+            api_list = "https://api.novita.ai/openai/models",
+            docs = "https://novita.ai/docs/",
+        },
+        hyperbolic = {
+            api_list = "https://api.hyperbolic.xyz/v1/models",
+            docs = "https://docs.hyperbolic.xyz/",
+        },
+        nebius = {
+            api_list = "https://api.studio.nebius.com/v1/models",
+            docs = "https://docs.studio.nebius.com/",
+        },
+        chutes = {
+            api_list = "https://llm.chutes.ai/v1/models",
+            docs = "https://chutes.ai/",
+        },
+        featherless = {
+            api_list = "https://api.featherless.ai/v1/models",
+            docs = "https://featherless.ai/docs/",
+        },
+        vercel = {
+            api_list = "https://ai-gateway.vercel.sh/v1/models",
+            docs = "https://vercel.com/docs/ai-gateway",
+        },
     },
 
     ---------------------------------------------------------------------------
@@ -655,6 +750,12 @@ function ModelLists.getAllProviders()
     end
     table.sort(providers)
     return providers
+end
+
+--- Community-set membership (docs-based, not covered by the maintainer's keys/
+--- pipeline yet — model_management_strategy.md "End-state REVISION 2").
+function ModelLists.isCommunity(provider)
+    return ModelLists._community[provider] == true
 end
 
 -- Check if a provider ID is a built-in provider

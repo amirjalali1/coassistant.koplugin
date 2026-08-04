@@ -82,4 +82,44 @@ return {
     -- Perplexity API key (Sonar models, web search built-in)
     -- Get from: https://www.perplexity.ai/settings/api
     perplexity = "YOUR_PERPLEXITY_API_KEY",
+
+    ----------------------------------------------------------------------
+    -- Community set (docs-based providers — see README "Supported Providers")
+    ----------------------------------------------------------------------
+
+    -- Cerebras (very fast open-model inference)
+    -- Get from: https://cloud.cerebras.ai/
+    cerebras = "YOUR_CEREBRAS_API_KEY",
+
+    -- MiniMax (M-series models)
+    -- Get from: https://platform.minimax.io/
+    minimax = "YOUR_MINIMAX_API_KEY",
+
+    -- DeepInfra (open-model host)
+    -- Get from: https://deepinfra.com/dash/api_keys
+    deepinfra = "YOUR_DEEPINFRA_API_KEY",
+
+    -- Novita AI (open-model host)
+    -- Get from: https://novita.ai/
+    novita = "YOUR_NOVITA_API_KEY",
+
+    -- Hyperbolic (open-model host)
+    -- Get from: https://app.hyperbolic.xyz/
+    hyperbolic = "YOUR_HYPERBOLIC_API_KEY",
+
+    -- Nebius AI Studio (open-model host)
+    -- Get from: https://studio.nebius.com/
+    nebius = "YOUR_NEBIUS_API_KEY",
+
+    -- Chutes (decentralized GPU marketplace)
+    -- Get from: https://chutes.ai/
+    chutes = "YOUR_CHUTES_API_KEY",
+
+    -- Featherless (large open-model catalog)
+    -- Get from: https://featherless.ai/
+    featherless = "YOUR_FEATHERLESS_API_KEY",
+
+    -- Vercel AI Gateway (200+ models behind one key)
+    -- Get from: https://vercel.com/
+    vercel = "YOUR_VERCEL_API_KEY",
 }

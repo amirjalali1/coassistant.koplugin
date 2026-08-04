@@ -188,6 +188,19 @@ ToolWire.adapters.mistral = ToolWire.adapters.openai
 ToolWire.adapters.groq = ToolWire.adapters.openai
 ToolWire.adapters.xai = ToolWire.adapters.openai
 
+-- Community set (M1): plain OpenAI chat wire, parser key "openai" (shared
+-- _tool_calls extraction). The capability half of the runner's gate comes from
+-- the derived layer ("Test this provider") or user grants — never curated.
+ToolWire.adapters.cerebras = ToolWire.adapters.openai
+ToolWire.adapters.minimax = ToolWire.adapters.openai
+ToolWire.adapters.deepinfra = ToolWire.adapters.openai
+ToolWire.adapters.novita = ToolWire.adapters.openai
+ToolWire.adapters.hyperbolic = ToolWire.adapters.openai
+ToolWire.adapters.nebius = ToolWire.adapters.openai
+ToolWire.adapters.chutes = ToolWire.adapters.openai
+ToolWire.adapters.featherless = ToolWire.adapters.openai
+ToolWire.adapters.vercel = ToolWire.adapters.openai
+
 -- Custom providers (ids always "custom_<slug>", generated in main.lua) speak the
 -- OpenAI chat wire by construction — same dialect as the wave-1 aliases above, and
 -- their parser key is "openai" (custom_openai.lua), which already emits the neutral

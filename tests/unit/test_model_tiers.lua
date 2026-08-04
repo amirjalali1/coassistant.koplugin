@@ -93,13 +93,29 @@ for tier_name, tier_map in pairs(ModelLists._tiers) do
     end
 end
 
--- Non-frontier ladder stays complete for every built-in provider (frontier is
--- sparse by design; everything else should resolve without fallback)
+-- Non-frontier ladder stays complete for every CURATED provider (frontier is
+-- sparse by design; everything else should resolve without fallback).
+-- COMMUNITY-set providers (ModelLists._community — docs-based, no maintainer
+-- key; REVISION 2) have NO tier placements by design: tier features no-op for
+-- them until the keys pipeline promotes them. Their ids, when someone does add
+-- a placement, are still validated by the array-membership loop above.
 for _idx, tier_name in ipairs({ "flagship", "standard", "fast", "ultrafast" }) do
     for _pidx, provider in ipairs(ModelLists.getAllProviders()) do
-        TestRunner.assert(ModelLists._tiers[tier_name][provider] ~= nil,
-            string.format("built-in provider %s missing from tier %s", provider, tier_name))
+        if not ModelLists.isCommunity(provider) then
+            TestRunner.assert(ModelLists._tiers[tier_name][provider] ~= nil,
+                string.format("curated provider %s missing from tier %s", provider, tier_name))
+        end
     end
+end
+
+-- The relabeling is honest but must not LOSE placements that already exist:
+-- pre-2026-08 community members keep their curated tier rows until promotion.
+for _idx, legacy in ipairs({ "groq", "together", "fireworks", "sambanova",
+                             "cohere", "requesty", "qwen", "kimi", "doubao" }) do
+    TestRunner.assert(ModelLists.isCommunity(legacy),
+        legacy .. " is in the community set (never maintainer-tested)")
+    TestRunner.assert(ModelLists._tiers.standard[legacy] ~= nil,
+        legacy .. " keeps its existing tier placements despite community relabel")
 end
 
 print("== normalizeTier ==")
