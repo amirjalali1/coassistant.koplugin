@@ -450,5 +450,151 @@ TestRunner:test("transitive carry self-label filter is normalized (case/whitespa
     TestRunner:assertEqual(carried[1], "Vol 1", "drifted self-label filtered")
 end)
 
+print("")
+print("  [dormant carry ledger (item 49 layers 1-2)]")
+
+TestRunner:test("populateDormant: unmatched source actives go dormant; matched do not; protected skipped", function()
+    local WriteBack = require("koassistant_artifact_writeback")
+    local XrayParser = require("koassistant_xray_parser")
+    local source_parsed = XrayParser.parse([[{
+      "type": "fiction",
+      "characters": [
+        {"name": "John Smith", "description": "Matched: carried by background, never stubbed."},
+        {"name": "Ines Vardo", "aliases": ["Vardo"], "description": "The island doctor.",
+         "background": [{"source": "Vol 0", "text": "Trained on the mainland."}]}
+      ],
+      "timeline": [ {"event": "protected, skip me", "chapter": "x"} ]
+    }]])
+    local delta = [[{"background_updates": [
+      {"name": "John Smith", "background": "Kept the light."}
+    ]}]]
+    local parsed, err = WriteBack.parseXrayAnswer(delta, BASE_JSON,
+        XrayMerge.crossBookTransform("The Lamp", source_parsed, "Target Book"))
+    TestRunner:assertTrue(parsed ~= nil, "parses: " .. tostring(err))
+    local ledger = parsed[XrayParser.DORMANT_KEY]
+    TestRunner:assertTrue(type(ledger) == "table", "ledger exists")
+    TestRunner:assertEqual(#ledger, 1, "only the unmatched active goes dormant")
+    TestRunner:assertEqual(ledger[1].name, "Ines Vardo", "stub name")
+    TestRunner:assertEqual(ledger[1].source, "The Lamp", "stub provenance")
+    TestRunner:assertEqual(ledger[1].category, "characters", "stub category")
+    TestRunner:assertEqual(ledger[1].background[1].source, "Vol 0", "carried lines ride the stub")
+end)
+
+TestRunner:test("wake-pass: an arriving entity promotes its stub (description + carried lines, alias fold)", function()
+    local WriteBack = require("koassistant_artifact_writeback")
+    local XrayParser = require("koassistant_xray_parser")
+    local json = require("json")
+    local base = XrayParser.parse(BASE_JSON)
+    base[XrayParser.DORMANT_KEY] = {
+        { name = "Ines Vardo", aliases = { "Vardo" }, category = "characters",
+          description = "The island doctor.", source = "The Lamp",
+          background = { { source = "Vol 0", text = "Trained on the mainland." } } },
+    }
+    local base_json = json.encode(base, { pretty = true, indent = true })
+    -- The new slice introduces her under the alias only
+    local delta = [[{"characters": [
+      {"name": "Vardo", "description": "A sharp-eyed newcomer to the story."}
+    ]}]]
+    local parsed, err = WriteBack.parseXrayAnswer(delta, base_json)
+    TestRunner:assertTrue(parsed ~= nil, "parses: " .. tostring(err))
+    TestRunner:assertEqual(parsed[XrayParser.DORMANT_KEY], nil, "ledger emptied after wake")
+    local vardo
+    for _idx, c in ipairs(parsed.characters) do
+        if c.name == "Vardo" then vardo = c end
+    end
+    TestRunner:assertTrue(vardo ~= nil, "entity present")
+    TestRunner:assertEqual(#vardo.background, 2, "description + carried line attached")
+    TestRunner:assertEqual(vardo.background[1].source, "The Lamp", "stub description becomes a source line")
+    TestRunner:assertEqual(vardo.background[1].text, "The island doctor.", "stub description text")
+    TestRunner:assertEqual(vardo.background[2].source, "Vol 0", "stub's own carried line attached")
+    TestRunner:assertTrue(has(table.concat(vardo.aliases or {}, "|"), "Ines Vardo"),
+        "the stub's primary name folds in as an alias")
+end)
+
+TestRunner:test("model-emitted __dormant dropped (delta AND complete); base ledger survives unrelated updates", function()
+    local WriteBack = require("koassistant_artifact_writeback")
+    local XrayParser = require("koassistant_xray_parser")
+    local json = require("json")
+    local base = XrayParser.parse(BASE_JSON)
+    base[XrayParser.DORMANT_KEY] = {
+        { name = "Sleeper", category = "characters", description = "Waits.", source = "Vol 0" },
+    }
+    local base_json = json.encode(base, { pretty = true, indent = true })
+    local delta = [[{
+      "characters": [ {"name": "Unrelated Newcomer", "description": "No stub match."} ],
+      "__dormant": [ {"name": "Forgery", "source": "Model", "description": "must be dropped"} ]
+    }]]
+    local parsed, err = WriteBack.parseXrayAnswer(delta, base_json)
+    TestRunner:assertTrue(parsed ~= nil, "parses: " .. tostring(err))
+    local ledger = parsed[XrayParser.DORMANT_KEY]
+    TestRunner:assertEqual(#ledger, 1, "base ledger intact, forgery dropped")
+    TestRunner:assertEqual(ledger[1].name, "Sleeper", "real stub survives")
+    local complete = WriteBack.parseXrayAnswer(
+        [[{"type":"fiction","characters":[{"name":"A","description":"b"}],
+           "__dormant":[{"name":"Forgery"}]}]], nil)
+    TestRunner:assertEqual(complete[XrayParser.DORMANT_KEY], nil,
+        "complete mode never keeps a model-authored ledger")
+end)
+
+TestRunner:test("transitive skip-volume: the source's own ledger rides along and wakes on match", function()
+    local WriteBack = require("koassistant_artifact_writeback")
+    local XrayParser = require("koassistant_xray_parser")
+    local source_parsed = XrayParser.parse([[{
+      "type": "fiction",
+      "characters": [
+        {"name": "Gull Keeper", "description": "Vol 2 newcomer."}
+      ]
+    }]])
+    source_parsed[XrayParser.DORMANT_KEY] = {
+        { name = "John Smith", category = "characters",
+          description = "Vol 1: a farmer's son.", source = "Vol 1" },
+        { name = "Never Seen", category = "characters",
+          description = "Still absent.", source = "Vol 1" },
+    }
+    local delta = [[{"background_updates": []}]]
+    local parsed, err = WriteBack.parseXrayAnswer(delta, BASE_JSON,
+        XrayMerge.crossBookTransform("Vol 2", source_parsed, "Target Book"))
+    TestRunner:assertTrue(parsed ~= nil, "parses: " .. tostring(err))
+    TestRunner:assertEqual(parsed.characters[1].background[1].source, "Vol 1",
+        "a source dormant matching a target active wakes in the same write")
+    local ledger = parsed[XrayParser.DORMANT_KEY]
+    TestRunner:assertEqual(#ledger, 2, "unmatched active + transitive stub stay dormant")
+end)
+
+TestRunner:test("stripDormantJSON: ledger removed for prompts; no-op without one; prose safe", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local json = require("json")
+    local base = XrayParser.parse(BASE_JSON)
+    base[XrayParser.DORMANT_KEY] = { { name = "Sleeper", source = "Vol 0" } }
+    local with_ledger = json.encode(base, { pretty = true, indent = true })
+    local stripped = XrayParser.stripDormantJSON(with_ledger)
+    TestRunner:assertTrue(not stripped:find("__dormant", 1, true), "ledger gone from the prompt copy")
+    TestRunner:assertTrue(stripped:find("John Smith", 1, true) ~= nil, "actives intact")
+    TestRunner:assertEqual(XrayParser.stripDormantJSON(BASE_JSON), BASE_JSON, "no ledger = unchanged string")
+    TestRunner:assertEqual(XrayParser.stripDormantJSON("plain prose"), "plain prose", "prose unchanged")
+end)
+
+TestRunner:test("ledger dedup: a re-merge refreshes the stub and unions carried lines", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local base = XrayParser.parse(BASE_JSON)
+    base[XrayParser.DORMANT_KEY] = {
+        { name = "Ines Vardo", category = "characters", description = "Old description.",
+          source = "Vol 1", background = { { source = "Vol 0", text = "Oldest line." } } },
+    }
+    local source_parsed = XrayParser.parse([[{
+      "type": "fiction",
+      "characters": [
+        {"name": "Ines Vardo", "description": "Newer description.",
+         "background": [{"source": "Vol 1", "text": "Watched the harbor."}]}
+      ]
+    }]])
+    local added = XrayMerge.populateDormant(base, nil, source_parsed, "Vol 2")
+    TestRunner:assertEqual(added, 0, "refresh, not a new stub")
+    local stub = base[XrayParser.DORMANT_KEY][1]
+    TestRunner:assertEqual(stub.description, "Newer description.", "newer source refreshes the stub")
+    TestRunner:assertEqual(stub.source, "Vol 2", "provenance follows the newer source")
+    TestRunner:assertEqual(#stub.background, 2, "carried lines unioned")
+end)
+
 local ok = TestRunner:summary()
 return ok

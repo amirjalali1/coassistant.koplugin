@@ -300,6 +300,10 @@ function WriteBack.parseXrayAnswer(answer, base, transform)
     if not parsed then
         return nil, "response is not a valid X-Ray JSON structure", nil
     end
+    -- Carry ledger (item 49): the model NEVER authors the dormant ledger —
+    -- drop any imitation before merging (the base's real ledger survives
+    -- XrayParser.merge untouched: fixed key list)
+    parsed[XrayParser.DORMANT_KEY] = nil
     if base ~= nil then
         local base_parsed = base
         if type(base) == "table" and base.result ~= nil then
@@ -316,6 +320,14 @@ function WriteBack.parseXrayAnswer(answer, base, transform)
         parsed = XrayParser.merge(base_parsed, parsed)
     elseif type(transform) == "function" then
         transform(parsed, nil)
+    end
+    -- Wake-pass (carry layer 2): entities present after this write promote any
+    -- matching dormant stubs — every write-back route passes through here, so
+    -- an entity entering by ANY route (merge, incremental update, deepen)
+    -- wakes its carried history
+    local woken = XrayParser.wakeDormant(parsed)
+    if #woken > 0 then
+        logger.info("KOAssistant WriteBack: woke", #woken, "dormant entit(y/ies)")
     end
     local json = require("json")
     local ok, cache_json = pcall(json.encode, parsed, { pretty = true, indent = true })

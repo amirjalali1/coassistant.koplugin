@@ -1488,7 +1488,8 @@ function ContextExtractor:extractForAction(action)
         local annotations_ok = not requires_annotations
             or (annotations_allowed and action.use_annotations)
         if text_ok and highlights_ok and annotations_ok then
-            data.xray_cache = xray.text
+            -- The dormant carry ledger never rides a prompt (item 49)
+            data.xray_cache = require("koassistant_xray_parser").stripDormantJSON(xray.text)
             data.xray_cache_progress = xray.progress_formatted
         end
     end

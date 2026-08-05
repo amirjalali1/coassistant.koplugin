@@ -201,7 +201,8 @@ function XrayMerge.buildDeltaPrompt(sections, main_entry, entity_index, never_pa
     prompt = fillLiteral(prompt, "%COVERAGE%", XrayMerge.coveragePhrase(main_entry))
     return prompt, {
         inputs = XrayMerge.buildInputsBlock(sections),
-        main = main_entry.result or "",
+        -- The dormant ledger never rides a prompt (item 49 — zero token cost)
+        main = require("koassistant_xray_parser").stripDormantJSON(main_entry.result or ""),
         index = entity_index or "",
         never = XrayMerge.neverLines(never_pairs),
     }
@@ -215,7 +216,10 @@ end
 function XrayMerge.buildCrossBookInputsBlock(source)
     local head = string.format('Related book — "%s"%s:', source.title or "?",
         (source.author and source.author ~= "" and (" by " .. source.author)) or "")
-    return head .. "\n" .. ((source.entry and source.entry.result) or "")
+    -- Ledger stripped: the model matches/composes/selects on ACTIVE entities
+    -- only — dormant carry is code's job (item 49)
+    return head .. "\n" .. require("koassistant_xray_parser").stripDormantJSON(
+        (source.entry and source.entry.result) or "")
 end
 
 --- Accumulate cross-book provenance titles ("A; B"), exact-dup safe. Pure.
@@ -243,7 +247,7 @@ function XrayMerge.buildCrossBookPrompt(main_entry, entity_index, never_pairs, s
         XrayMerge.coveragePhrase(main_entry))
     return prompt, {
         inputs = XrayMerge.buildCrossBookInputsBlock(source),
-        main = main_entry.result or "",
+        main = require("koassistant_xray_parser").stripDormantJSON(main_entry.result or ""),
         index = entity_index or "",
         never = XrayMerge.neverLines(never_pairs),
     }
@@ -259,6 +263,9 @@ local PROTECTED_CATEGORIES = {
     current_position = true,
     conclusion = true,
     reader_engagement = true,
+    -- The dormant carry ledger (item 49) is code-owned — a model-emitted
+    -- imitation is stripped from every delta (write-back drops it too)
+    __dormant = true,
 }
 
 --- name/alias (lowercased) → item, over every entity category. First bind
@@ -449,6 +456,144 @@ function XrayMerge.carrySourceBackground(base_parsed, delta, source_parsed, targ
     return carried
 end
 
+--- Carry layer 1 (item 49): source entities that did NOT arrive in this merge
+--- become dormant ledger stubs on the target — invisible, token-free carriers
+--- that the wake-pass (XrayParser.wakeDormant, run by every write-back)
+--- promotes the moment a matching entity appears by any route. The source's
+--- own ledger rides along too (transitive skip-volume carry: vol N's artifact
+--- + ledger covers 1..N — the "vol 7 needs vol 6's artifact only" invariant).
+--- A stub already in the ledger is refreshed by the newer source, its carried
+--- background lines unioned. Mutates base_parsed; pure otherwise.
+--- @param base_parsed table Parsed target X-Ray (mutated)
+--- @param delta table|nil Model delta AFTER the rewrite-drop pass (kept = arriving entities)
+--- @param source_parsed table Parsed source X-Ray
+--- @param source_title string The source book's title (stub provenance)
+--- @return number stubs newly added
+function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_title)
+    local XrayParser = require("koassistant_xray_parser")
+    if type(base_parsed) ~= "table" or type(source_parsed) ~= "table" then return 0 end
+    local DK = XrayParser.DORMANT_KEY
+    -- Everything the target can already match: its actives + the delta's
+    -- arriving entities (they become actives in the merge right after this)
+    local present = buildEntityLookup(base_parsed)
+    if type(delta) == "table" then
+        for key, arr in pairs(delta) do
+            if not PROTECTED_CATEGORIES[key] and type(arr) == "table" then
+                for _idx, entry in ipairs(arr) do
+                    if type(entry) == "table" then
+                        local name = entry.name or entry.term
+                        if type(name) == "string" and name ~= ""
+                            and present[name:lower()] == nil then
+                            present[name:lower()] = entry
+                        end
+                        if type(entry.aliases) == "table" then
+                            for _idx2, alias in ipairs(entry.aliases) do
+                                if type(alias) == "string" and alias ~= ""
+                                    and present[alias:lower()] == nil then
+                                    present[alias:lower()] = entry
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    local ledger = base_parsed[DK]
+    if type(ledger) ~= "table" then ledger = {} end
+    local by_name = {}
+    for i, stub in ipairs(ledger) do
+        if type(stub) == "table" and type(stub.name) == "string" then
+            by_name[stub.name:lower()] = i
+        end
+    end
+    local added = 0
+    local function stash(stub)
+        local key = type(stub.name) == "string" and stub.name ~= ""
+            and stub.name:lower() or nil
+        if not key then return end
+        local at = by_name[key]
+        if at then
+            -- Newer source refreshes the stub; carried lines are unioned
+            stub.background = XrayParser.mergeBackground(ledger[at].background, stub.background)
+            ledger[at] = stub
+        else
+            ledger[#ledger + 1] = stub
+            by_name[key] = #ledger
+            added = added + 1
+        end
+    end
+    local function isPresent(name, aliases)
+        if type(name) == "string" and name ~= "" and present[name:lower()] then return true end
+        if type(aliases) == "table" then
+            for _idx, a in ipairs(aliases) do
+                if type(a) == "string" and a ~= "" and present[a:lower()] then return true end
+            end
+        end
+        return false
+    end
+    -- (a) source ACTIVES that did not arrive → stubs
+    for _idx, cat in ipairs(XrayParser.getCategories(source_parsed)) do
+        if not PROTECTED_CATEGORIES[cat.key] and type(cat.items) == "table" then
+            for _idx2, item in ipairs(cat.items) do
+                if type(item) == "table" then
+                    local name = XrayParser.getItemName(item, cat.key)
+                    if type(name) == "string" and name ~= ""
+                        and not isPresent(name, item.aliases) then
+                        local aliases
+                        if type(item.aliases) == "table" and #item.aliases > 0 then
+                            aliases = {}
+                            for _idx3, a in ipairs(item.aliases) do aliases[#aliases + 1] = a end
+                        end
+                        -- Only cleanly attributable carried lines ride along
+                        local bg
+                        if type(item.background) == "table" then
+                            for _idx3, b in ipairs(item.background) do
+                                if type(b) == "table" and type(b.text) == "string" and b.text ~= ""
+                                    and type(b.source) == "string" and b.source ~= ""
+                                    and b.source ~= "?" then
+                                    bg = bg or {}
+                                    bg[#bg + 1] = { source = b.source, text = b.text }
+                                end
+                            end
+                        end
+                        stash({
+                            name = name,
+                            aliases = aliases,
+                            category = cat.key,
+                            description = type(item.description) == "string"
+                                and item.description ~= "" and item.description or nil,
+                            source = source_title,
+                            background = bg,
+                        })
+                    end
+                end
+            end
+        end
+    end
+    -- (b) the source's OWN dormant stubs (transitive skip-volume carry).
+    -- Deliberately stashed even when they match a target active: an active
+    -- source entity delivered its knowledge via the carry above, but a source
+    -- DORMANT hasn't — the wake-pass right after the merge promotes it in the
+    -- same write.
+    if type(source_parsed[DK]) == "table" then
+        for _idx, stub in ipairs(source_parsed[DK]) do
+            if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= "" then
+                stash({
+                    name = stub.name,
+                    aliases = stub.aliases,
+                    category = stub.category,
+                    description = stub.description,
+                    source = stub.source or source_title,
+                    background = stub.background,
+                })
+            end
+        end
+    end
+    if #ledger > 0 then base_parsed[DK] = ledger end
+    return added
+end
+
 --- Pre-merge transform for cross-book deltas (rides WriteBack.applyXray's
 --- transform hook): applies background_updates to the BASE, strips the
 --- protected categories, and drops any disobedient full rewrite of an
@@ -490,6 +635,7 @@ function XrayMerge.crossBookTransform(source_title, source_parsed, target_title,
             end
         end
         local carried_n = 0
+        local stubbed = 0
         if type(source_parsed) == "table" then
             local labels = XrayMerge.carrySourceBackground(
                 base_parsed, delta, source_parsed, target_title)
@@ -500,10 +646,14 @@ function XrayMerge.crossBookTransform(source_title, source_parsed, target_title,
                         meta_out.merged_from_books, label)
                 end
             end
+            -- Carry layer 1: whatever did NOT arrive goes dormant instead of
+            -- being lost — the wake-pass right after the merge promotes any
+            -- stub that already matches
+            stubbed = XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_title)
         end
         logger.info("KOAssistant XrayMerge: cross-book background —",
             applied, "applied,", unmatched, "unmatched,", dropped, "rewrites dropped,",
-            carried_n, "ancestor labels carried")
+            carried_n, "ancestor labels carried,", stubbed, "gone dormant")
     end
 end
 
@@ -1615,7 +1765,7 @@ function XrayMerge.startCrossBookFlow(opts)
     local fold_rows = {}
     if #predecessors >= 2 then
         table.insert(fold_rows, {{
-            text = T(_("Fold in all %1 earlier books…"), #predecessors),
+            text = T(_("Fold in earlier books (%1)…"), #predecessors),
             callback = function()
                 UIManager:close(picker)
                 -- Preflight disclosure (2026-08-05): the candidate list only

@@ -1660,6 +1660,143 @@ local function appendCategory(old_items, new_items)
     return old_items
 end
 
+-- ============== Dormant background ledger (item 49, layers 1-2) ==============
+-- A reserved top-level key inside the artifact JSON holding entities CARRIED
+-- from related books that have not appeared in THIS book yet — compact stubs
+-- { name, aliases, category, description, source, background }. LOCAL-ONLY:
+-- stripped from every prompt (zero token cost), invisible to display/search
+-- (getCategories never yields it), never authored by the model (write-back
+-- drops model-emitted imitations), and it survives XrayParser.merge untouched
+-- because merge iterates a fixed key list. The wake-pass below promotes a
+-- stub's knowledge into any active entity that matches it.
+XrayParser.DORMANT_KEY = "__dormant"
+
+--- Prompt-safe copy of an artifact JSON string: the dormant ledger removed.
+--- Returns the input unchanged when no ledger is present (cheap find guard) or
+--- when anything about the round-trip fails — a strip failure must never cost
+--- the caller the artifact itself. Safe on non-X-Ray strings (prose caches).
+--- @param json_str string|nil
+--- @return string|nil
+function XrayParser.stripDormantJSON(json_str)
+    if type(json_str) ~= "string"
+        or not json_str:find('"__dormant"', 1, true) then
+        return json_str
+    end
+    local data = XrayParser.parse(json_str)
+    if type(data) ~= "table" or data.error or data[XrayParser.DORMANT_KEY] == nil then
+        return json_str
+    end
+    data[XrayParser.DORMANT_KEY] = nil
+    local ok, out = pcall(json.encode, data, { pretty = true, indent = true })
+    if ok and type(out) == "string" then return out end
+    return json_str
+end
+
+--- Wake-pass (carry layer 2): any ledger stub whose name/alias matches an
+--- ACTIVE entity folds its carried knowledge into that entity's background —
+--- fill-gaps-only, an existing entry from the same source book wins (same
+--- rule as the transitive carry) — brings its names along as aliases, and
+--- leaves the ledger. Runs on EVERY write-back (merge, incremental update,
+--- deepen), so an entity entering by any route wakes its history. Mutates
+--- data in place. Pure.
+--- @param data table Parsed X-Ray
+--- @return table woken Array of { name, source } for logging/toasts
+function XrayParser.wakeDormant(data)
+    local woken = {}
+    if type(data) ~= "table" then return woken end
+    local ledger = data[XrayParser.DORMANT_KEY]
+    if type(ledger) ~= "table" or #ledger == 0 then
+        if ledger ~= nil and (type(ledger) ~= "table" or #ledger == 0) then
+            data[XrayParser.DORMANT_KEY] = nil
+        end
+        return woken
+    end
+    -- name/alias (lowercased) → active item
+    local lookup = {}
+    local function learn(key, item)
+        if type(key) == "string" and key ~= "" and lookup[key:lower()] == nil then
+            lookup[key:lower()] = item
+        end
+    end
+    for _idx, cat in ipairs(XrayParser.getCategories(data)) do
+        if type(cat.items) == "table" then
+            for _idx2, item in ipairs(cat.items) do
+                if type(item) == "table" then
+                    learn(XrayParser.getItemName(item, cat.key), item)
+                    if type(item.aliases) == "table" then
+                        for _idx3, alias in ipairs(item.aliases) do learn(alias, item) end
+                    end
+                end
+            end
+        end
+    end
+    local remaining = {}
+    for _idx, stub in ipairs(ledger) do
+        local hit
+        if type(stub) == "table" then
+            hit = type(stub.name) == "string" and stub.name ~= ""
+                and lookup[stub.name:lower()] or nil
+            if not hit and type(stub.aliases) == "table" then
+                for _idx2, alias in ipairs(stub.aliases) do
+                    if type(alias) == "string" and alias ~= "" and lookup[alias:lower()] then
+                        hit = lookup[alias:lower()]
+                        break
+                    end
+                end
+            end
+        end
+        if hit then
+            local existing_sources = {}
+            if type(hit.background) == "table" then
+                for _idx2, b in ipairs(hit.background) do
+                    if type(b) == "table" and type(b.source) == "string" then
+                        existing_sources[b.source] = true
+                    end
+                end
+            end
+            local additions = {}
+            if type(stub.description) == "string" and stub.description ~= ""
+                and type(stub.source) == "string" and stub.source ~= ""
+                and not existing_sources[stub.source] then
+                additions[#additions + 1] = { source = stub.source, text = stub.description }
+                existing_sources[stub.source] = true
+            end
+            if type(stub.background) == "table" then
+                for _idx2, b in ipairs(stub.background) do
+                    if type(b) == "table" and type(b.text) == "string" and b.text ~= ""
+                        and type(b.source) == "string" and b.source ~= ""
+                        and not existing_sources[b.source] then
+                        additions[#additions + 1] = { source = b.source, text = b.text }
+                        existing_sources[b.source] = true
+                    end
+                end
+            end
+            if #additions > 0 then
+                hit.background = XrayParser.mergeBackground(hit.background, additions)
+            end
+            -- A stub matched by alias brings the other book's names along
+            local function foldAlias(name)
+                if type(name) ~= "string" or name == "" then return end
+                local norm = name:lower()
+                if lookup[norm] ~= nil then return end -- known name (this or another entity)
+                local arr = ensure_array(hit.aliases) or {}
+                arr[#arr + 1] = name
+                hit.aliases = arr
+                lookup[norm] = hit
+            end
+            foldAlias(stub.name)
+            if type(stub.aliases) == "table" then
+                for _idx2, a in ipairs(stub.aliases) do foldAlias(a) end
+            end
+            woken[#woken + 1] = { name = stub.name, source = stub.source }
+        else
+            remaining[#remaining + 1] = stub
+        end
+    end
+    data[XrayParser.DORMANT_KEY] = #remaining > 0 and remaining or nil
+    return woken
+end
+
 --- Merge partial X-Ray update into existing data.
 --- The AI outputs only new/changed entries; this merges them into the full dataset.
 --- @param old_data table Complete existing X-Ray data (mutated in place)

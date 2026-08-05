@@ -4394,8 +4394,10 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 end
                 prompt.prompt = original_prompt.update_prompt
 
-                -- Add cache data for placeholder substitution
-                message_data.cached_result = cached_entry.result
+                -- Add cache data for placeholder substitution (the dormant
+                -- carry ledger never rides a prompt — item 49; safe no-op on
+                -- prose caches)
+                message_data.cached_result = XrayParser.stripDormantJSON(cached_entry.result)
                 message_data.cached_progress = cached_progress_display
                 message_data.cached_progress_decimal = cached_progress
                 -- Stash previous cache's metadata for sticky-true inheritance
@@ -4587,11 +4589,19 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     cache_answer = nil  -- Signal to skip caching below
                     logger.info("KOAssistant: X-Ray returned error response, skipping cache:", parsed.error)
                 elseif parsed then
+                    -- Carry ledger (item 49): the model never authors the ledger
+                    parsed[XrayParser.DORMANT_KEY] = nil
                     -- Merge partial update into existing data when available
                     if using_cache and message_data._parsed_old_xray then
                         -- To debug X-Ray merge: uncomment koassistant_debug_utils.dumpXrayMerge() below
                         parsed = XrayParser.merge(message_data._parsed_old_xray, parsed)
                         logger.info("KOAssistant: Merged incremental X-Ray update into existing data")
+                        -- Wake-pass (carry layer 2): entities arriving in this
+                        -- slice promote their carried history
+                        local woken = XrayParser.wakeDormant(parsed)
+                        if #woken > 0 then
+                            logger.info("KOAssistant: X-Ray update woke", #woken, "dormant entit(y/ies)")
+                        end
                     end
                     local book_meta = message_data.book_metadata or {}
                     local display_progress = message_data.reading_progress or ""
