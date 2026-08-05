@@ -21,7 +21,16 @@ XrayAuto.RATE_LIMIT_S = 15 * 60  -- min seconds between background attempts
 XrayAuto.JUMP_GUARD_PAGES = 5    -- quiz pattern: a TOC jump moves many pages, a turn 1-3
 XrayAuto.SCHEDULE_DELAY_S = 3    -- defer the fire off the page-turn tick
 XrayAuto.CATCHUP_DELAY_S = 30    -- session-start catch-up delay (update-checker pattern)
-XrayAuto.WATCHDOG_S = 300        -- absolute cancel; don't rely on the child's socket timeout.
+-- Absolute flight cancel — don't rely on the child's socket timeout. The kill
+-- is LOSSY: the API request already went out, the provider completes and bills
+-- it, we discard the result and stop the chain — so a false positive wastes a
+-- paid request, while a true hang merely blocks background X-Ray until expiry
+-- (and the popup's tap-to-cancel row + book close end it sooner by hand).
+-- 900s (was 300, maintainer 2026-08-05): one-shot whole-book builds ride this
+-- path since 50(a) and can legitimately exceed 5 minutes on big books/slow
+-- providers; local models exceed it routinely (#90 field report). A user
+-- setting for local setups stays on the noted list.
+XrayAuto.WATCHDOG_S = 900
                                  -- Device round 1 (T1): thinking-default models take 100s+ per
                                  -- incremental update — 120 killed legitimate runs.
 XrayAuto.RETRY_DELAY_S = 60      -- item 45: single transient-failure retry per ladder step.
