@@ -55,12 +55,22 @@ function MinimalPopup:buildAnchor()
         -- Stale-coordinates guard (rotation/page turn while the request was in
         -- flight): off-screen boxes fall back to centered.
         if box0.y < 0 or (box1.y + box1.h) > Screen:getHeight() then return nil end
-        -- Fresh table, never a live sbox: ensureAnchor writes defaults onto the
-        -- table it is given, and selection_data is shared by reference with
-        -- KOReader (SKIP_DEEP_COPY). x/w left nil = centered horizontally.
+        -- Fresh table, never a live sbox: ensureAnchor writes onto the table
+        -- it is given, and selection_data is shared by reference with KOReader
+        -- (SKIP_DEEP_COPY). All four fields must be set: ensureAnchor only
+        -- nil-defaults missing ones since KOReader v2026.07 -- older releases
+        -- crash comparing nil at paint time (#102). x/w chosen so both the
+        -- LTR (left = x) and mirrored-layout (left = x + w - content_w) paths
+        -- center the popup horizontally.
         -- Padding keeps the popup from abutting the selection.
         local pad = Size.padding.small
-        return { y = box0.y - pad, h = (box1.y + box1.h) - box0.y + 2 * pad }, true -- prefer below
+        local w = self.frame:getSize().w
+        return {
+            x = math.floor((Screen:getWidth() - w) / 2),
+            w = w,
+            y = box0.y - pad,
+            h = (box1.y + box1.h) - box0.y + 2 * pad,
+        }, true -- prefer below
     end
 end
 
