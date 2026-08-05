@@ -814,6 +814,9 @@ function BookSettings.showDomainResearch(opts)
     local function commit()
         closeDialog()
         if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
+        -- 50(g): research flips the X-Ray spoiler posture — re-evaluate promotion
+        -- now instead of waiting for a page turn (safe no-op otherwise)
+        if plugin and plugin._scheduleXrayLadderPromotion then plugin:_scheduleXrayLadderPromotion() end
         if on_close then on_close() end
     end
     local function setGlobalFeature(key, value)
@@ -1440,6 +1443,10 @@ function BookSettings.showSpoilerFree(opts)
     local function commit()
         closeDialog()
         if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
+        -- 50(f): spoiler posture may have flipped — let X-Ray promotion
+        -- re-evaluate now instead of waiting for a page turn (safe no-op when
+        -- nothing applies; rung-completion granularity while a chain runs)
+        if plugin and plugin._scheduleXrayLadderPromotion then plugin:_scheduleXrayLadderPromotion() end
         if on_close then on_close() end
     end
     local function pickBook(val)

@@ -7157,7 +7157,15 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             plugin = plugin,
                             ui = chips_book_or_highlight and ui_instance or nil,
                             document_path = chips_book_or_highlight and document_path or nil,
-                            on_close = function() refreshInputDialog() end,
+                            -- Re-seed from the (possibly changed) setting: a nil
+                            -- session value skips the refresh marshal, so the
+                            -- reopened dialog re-derives the chip from disk
+                            -- (device 2026-08-05: hold-picker changes didn't
+                            -- reach the chip until a fresh dialog)
+                            on_close = function()
+                                session_web_search = nil
+                                refreshInputDialog()
+                            end,
                         })
                     end,
                 }
@@ -7192,7 +7200,11 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 local function holdPicker()
                     BookSettings.showToolsPosture({
                         plugin = plugin, ui = ui_instance, document_path = document_path,
-                        on_close = function() refreshInputDialog() end,
+                        -- Same re-seed as the Web chip: picker changes reach the chip
+                        on_close = function()
+                            session_book_tools = nil
+                            refreshInputDialog()
+                        end,
                     })
                 end
                 if not eligible then
@@ -7303,7 +7315,11 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                     hold_callback = function()
                         BookSettings.showSpoilerFree({
                             plugin = plugin, ui = ui_instance, document_path = document_path,
-                            on_close = function() refreshInputDialog() end,
+                            -- Same re-seed as the Web chip: picker changes reach the chip
+                            on_close = function()
+                                session_spoiler_free = nil
+                                refreshInputDialog()
+                            end,
                         })
                     end,
                 }

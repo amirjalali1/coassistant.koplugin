@@ -8017,7 +8017,12 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     if current_progress then
       for _idx, r in ipairs(ladder_rungs) do
         local p = tonumber(r.progress_decimal)
-        if p and not r.full_document and p > current_progress.decimal + 0.005 then
+        -- Ahead of the reader AND of the live coverage: a rung the live X-Ray
+        -- already covers is not "waiting to install" (device 2026-08-05: under
+        -- the full posture the newest rung IS installed — the header claimed
+        -- it would install "when you reach it")
+        if p and not r.full_document and p > current_progress.decimal + 0.005
+            and p > (tonumber(cached_entry.progress_decimal) or 0) + 0.005 then
           if not next_ahead or p < next_ahead then next_ahead = p end
         end
       end
@@ -8334,8 +8339,13 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           current_progress.formatted,
           math.floor((tonumber(promotable.progress_decimal) or 0) * 100 + 0.5))
       elseif next_ahead then
-        pos_line = T(_("You're at %1. The next checkpoint (%2%) is already built and installs when you reach it."),
-          current_progress.formatted, math.floor(next_ahead * 100 + 0.5))
+        -- Full posture: an uninstalled ahead rung is a transient (promotion
+        -- installs it on the next turn) — never claim it waits for the reader
+        pos_line = xr_posture == "full"
+          and T(_("You're at %1. The next checkpoint (%2%) is built and installs on the next page turn."),
+            current_progress.formatted, math.floor(next_ahead * 100 + 0.5))
+          or T(_("You're at %1. The next checkpoint (%2%) is already built and installs when you reach it."),
+            current_progress.formatted, math.floor(next_ahead * 100 + 0.5))
       else
         pos_line = T(_("You're at %1."), current_progress.formatted)
       end
