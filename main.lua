@@ -4285,8 +4285,14 @@ local function showAddCustomLanguageDialog(self_ref, array_key, touchmenu_instan
                                         text = T(_("Added: %1"), new_lang),
                                         timeout = 2,
                                     })
-                                    -- Refresh the menu
+                                    -- Rebuild the menu in place: updateItems() alone
+                                    -- repaints the OLD item table (it never re-runs
+                                    -- sub_item_table_func), so the new row would not
+                                    -- appear until the submenu is reopened
                                     if touchmenu_instance then
+                                        touchmenu_instance.item_table = array_key == "interaction_languages"
+                                            and self_ref:buildInteractionLanguagesSubmenu()
+                                            or self_ref:buildAdditionalLanguagesSubmenu()
                                         touchmenu_instance:updateItems()
                                     end
                                 else
@@ -4420,7 +4426,15 @@ function AskGPT:buildInteractionLanguagesSubmenu()
                 text = lang_copy,
                 checked_func = function() return isSelected(lang_copy) end,
                 keep_menu_open = true,
-                callback = function() toggleLanguage(lang_copy) end,
+                callback = function(touchmenu_instance)
+                    toggleLanguage(lang_copy)
+                    -- Unchecking a custom language removes it entirely: rebuild
+                    -- so the row disappears now, not on the next menu open
+                    if touchmenu_instance then
+                        touchmenu_instance.item_table = self_ref:buildInteractionLanguagesSubmenu()
+                        touchmenu_instance:updateItems()
+                    end
+                end,
             })
         end
     end
@@ -4560,7 +4574,15 @@ function AskGPT:buildAdditionalLanguagesSubmenu()
                 text = lang_copy,
                 checked_func = function() return isSelected(lang_copy) end,
                 keep_menu_open = true,
-                callback = function() toggleLanguage(lang_copy) end,
+                callback = function(touchmenu_instance)
+                    toggleLanguage(lang_copy)
+                    -- Unchecking a custom language removes it entirely: rebuild
+                    -- so the row disappears now, not on the next menu open
+                    if touchmenu_instance then
+                        touchmenu_instance.item_table = self_ref:buildAdditionalLanguagesSubmenu()
+                        touchmenu_instance:updateItems()
+                    end
+                end,
             })
         end
     end
@@ -4838,82 +4860,8 @@ function AskGPT:buildMinimalPopupActionsMenu()
   return menu_items
 end
 
--- Build dictionary response language picker menu
-function AskGPT:buildDictionaryLanguageMenu()
-  local self_ref = self
-
-  local menu_items = {}
-
-  -- Add "Follow Translation" option at top
-  table.insert(menu_items, {
-    text = _("Follow Translation Language"),
-    checked_func = function()
-      local f = self_ref.settings:readSetting("features") or {}
-      local dict_lang = f.dictionary_language
-      return dict_lang == nil or dict_lang == "" or dict_lang == "__FOLLOW_TRANSLATION__"
-    end,
-    radio = true,
-    callback = function()
-      local f = self_ref.settings:readSetting("features") or {}
-      f.dictionary_language = "__FOLLOW_TRANSLATION__"
-      self_ref.settings:saveSetting("features", f)
-      self_ref.settings:flush()
-      UIManager:show(Notification:new{
-        text = _("Dictionary: Follow Translation"),
-        timeout = 1.5,
-      })
-    end,
-  })
-
-  -- Add "Follow Primary Language" option
-  table.insert(menu_items, {
-    text = _("Follow Primary Language"),
-    checked_func = function()
-      local f = self_ref.settings:readSetting("features") or {}
-      return f.dictionary_language == "__FOLLOW_PRIMARY__"
-    end,
-    radio = true,
-    callback = function()
-      local f = self_ref.settings:readSetting("features") or {}
-      f.dictionary_language = "__FOLLOW_PRIMARY__"
-      self_ref.settings:saveSetting("features", f)
-      self_ref.settings:flush()
-      UIManager:show(Notification:new{
-        text = _("Dictionary: Follow Primary"),
-        timeout = 1.5,
-      })
-    end,
-    separator = true,
-  })
-
-  -- Get combined languages (interaction + additional)
-  local languages = self:getCombinedLanguages()
-
-  -- Add each language as an option
-  for _i, lang in ipairs(languages) do
-    local lang_copy = lang
-    table.insert(menu_items, {
-      text = getLanguageDisplay(lang),
-      checked_func = function()
-        local f = self_ref.settings:readSetting("features") or {}
-        return f.dictionary_language == lang_copy
-      end,
-      radio = true,
-      callback = function()
-        local f = self_ref.settings:readSetting("features") or {}
-        f.dictionary_language = lang_copy
-        self_ref.settings:saveSetting("features", f)
-        self_ref.settings:flush()
-        UIManager:show(Notification:new{
-          text = T(_("Dictionary: %1"), getLanguageDisplay(lang_copy)),
-          timeout = 1.5,
-        })
-      end,
-    })
-  end
-
-  return menu_items
-end
+-- (buildDictionaryLanguageMenu lives further down, next to the gesture handler
+-- that uses it — a dead duplicate definition here was removed 2026-08-05.)
 
 -- Build dictionary context mode picker menu
 function AskGPT:buildDictionaryContextModeMenu()
@@ -13499,16 +13447,16 @@ function AskGPT:showQuickSettingsPopup(title, menu_items, close_on_select, on_cl
   local buttons = {}
   for _idx, item in ipairs(menu_items) do
     -- TouchMenu semantics: separator = true on an ACTIONABLE item means "draw a
-    -- line after this item", not "this item is a header". Only render a
-    -- non-interactive header row for items that carry no action at all —
-    -- treating any separator-flagged item as a header grayed out real options
-    -- (last language in the translate picker, dictionary "Follow Primary").
+    -- line after this item", not "this item is a header" — treating any
+    -- separator-flagged item as a header grayed out real options (last language
+    -- in the translate picker, dictionary "Follow Primary"). This popup renders
+    -- a flat list: separators are ignored entirely; only non-actionable items
+    -- with text render as disabled info rows.
     local is_actionable = item.callback or item.replace_items or item.checked_func
-    if item.separator and not is_actionable then
-      -- Non-interactive section header
+    if not is_actionable and item.text then
       table.insert(buttons, {
         {
-          text = item.text or "────────────────",
+          text = item.text,
           enabled = false,
         },
       })
@@ -13567,15 +13515,6 @@ function AskGPT:showQuickSettingsPopup(title, menu_items, close_on_select, on_cl
         end
       end
       table.insert(buttons, { btn })
-      -- Keep the section break the builder asked for: line AFTER the item
-      if item.separator then
-        table.insert(buttons, {
-          {
-            text = "────────────────",
-            enabled = false,
-          },
-        })
-      end
     end
   end
 
@@ -15392,7 +15331,8 @@ function AskGPT:buildDictionaryLanguageMenu()
     text = _("Follow Translation Language"),
     checked_func = function()
       local f = self_ref.settings:readSetting("features") or {}
-      return f.dictionary_language == nil or f.dictionary_language == "__FOLLOW_TRANSLATION__"
+      local dict_lang = f.dictionary_language
+      return dict_lang == nil or dict_lang == "" or dict_lang == "__FOLLOW_TRANSLATION__"
     end,
     radio = true,
     callback = function()
@@ -15401,6 +15341,10 @@ function AskGPT:buildDictionaryLanguageMenu()
       self_ref.settings:saveSetting("features", f)
       self_ref.settings:flush()
       self_ref:updateConfigFromSettings()
+      UIManager:show(Notification:new{
+        text = _("Dictionary: Follow Translation"),
+        timeout = 1.5,
+      })
     end,
   })
 
@@ -15418,6 +15362,10 @@ function AskGPT:buildDictionaryLanguageMenu()
       self_ref.settings:saveSetting("features", f)
       self_ref.settings:flush()
       self_ref:updateConfigFromSettings()
+      UIManager:show(Notification:new{
+        text = _("Dictionary: Follow Primary"),
+        timeout = 1.5,
+      })
     end,
     separator = true,
   })
@@ -15425,48 +15373,96 @@ function AskGPT:buildDictionaryLanguageMenu()
   -- Get combined languages (interaction + additional)
   local languages = self:getCombinedLanguages()
 
-  -- Add each language as an option
-  for _i, lang in ipairs(languages) do
-    local lang_copy = lang
+  -- Shared row builder: fixed language choice with confirmation toast
+  local function addLanguageRow(lang)
     table.insert(items, {
-      text = getLanguageDisplay(lang_copy),
+      text = getLanguageDisplay(lang),
       checked_func = function()
         local f = self_ref.settings:readSetting("features") or {}
-        return f.dictionary_language == lang_copy
+        return f.dictionary_language == lang
       end,
       radio = true,
       callback = function()
         local f = self_ref.settings:readSetting("features") or {}
-        f.dictionary_language = lang_copy
+        f.dictionary_language = lang
         self_ref.settings:saveSetting("features", f)
         self_ref.settings:flush()
         self_ref:updateConfigFromSettings()
+        UIManager:show(Notification:new{
+          text = T(_("Dictionary: %1"), getLanguageDisplay(lang)),
+          timeout = 1.5,
+        })
       end,
     })
+  end
+
+  -- Add each language as an option
+  for _i, lang in ipairs(languages) do
+    addLanguageRow(lang)
   end
 
   -- Add common fallback if no languages configured
   if #languages == 0 then
     local fallback_languages = {"English", "Spanish", "French", "German", "Chinese", "Japanese", "Korean"}
     for _idx, lang in ipairs(fallback_languages) do
-      local lang_copy = lang
-      table.insert(items, {
-        text = getLanguageDisplay(lang_copy),
-        checked_func = function()
-          local f = self_ref.settings:readSetting("features") or {}
-          return f.dictionary_language == lang_copy
-        end,
-        radio = true,
-        callback = function()
-          local f = self_ref.settings:readSetting("features") or {}
-          f.dictionary_language = lang_copy
-          self_ref.settings:saveSetting("features", f)
-          self_ref.settings:flush()
-          self_ref:updateConfigFromSettings()
-        end,
-      })
+      addLanguageRow(lang)
     end
   end
+
+  -- "Custom..." — any language by name, mirrors the translate picker. Sets
+  -- dictionary_language only; deliberately does NOT touch the user's language
+  -- lists (interaction/additional).
+  table.insert(items, {
+    text = _("Custom..."),
+    opens_dialog = true, -- quick settings: close the popup, don't reopen over the input dialog
+    callback = function()
+      local InputDialog = require("ui/widget/inputdialog")
+      local f = self_ref.settings:readSetting("features") or {}
+      -- Never prefill the internal __FOLLOW_*__ sentinels
+      local current = f.dictionary_language
+      if current == "__FOLLOW_TRANSLATION__" or current == "__FOLLOW_PRIMARY__" then
+        current = nil
+      end
+      local input_dialog
+      input_dialog = InputDialog:new{
+        title = _("Custom Dictionary Language"),
+        input = current or "",
+        input_hint = _("e.g., Spanish, Japanese, French"),
+        description = _("Enter the response language for dictionary lookups."),
+        buttons = {
+          {
+            {
+              text = _("Cancel"),
+              id = "close",
+              callback = function()
+                UIManager:close(input_dialog)
+              end,
+            },
+            {
+              text = _("Save"),
+              is_enter_default = true,
+              callback = function()
+                local new_lang = input_dialog:getInputText()
+                if new_lang and new_lang ~= "" then
+                  f.dictionary_language = new_lang
+                  self_ref.settings:saveSetting("features", f)
+                  self_ref.settings:flush()
+                  self_ref:updateConfigFromSettings()
+                  UIManager:show(Notification:new{
+                    text = T(_("Dictionary: %1"), getLanguageDisplay(new_lang)),
+                    timeout = 1.5,
+                  })
+                end
+                UIManager:close(input_dialog)
+              end,
+            },
+          },
+        },
+      }
+      UIManager:show(input_dialog)
+      input_dialog:onShowKeyboard()
+    end,
+  })
 
   return items
 end
