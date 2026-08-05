@@ -2288,7 +2288,7 @@ function AskGPT:fetchProviderModels(provider_id)
 end
 
 -- Shared entry for the fetch flow (notification -> fetch -> picker/error)
-function AskGPT:startFetchModels(provider_id)
+function AskGPT:startFetchModels(provider_id, on_change)
   local self_ref = self
   UIManager:show(Notification:new{
     text = _("Fetching model list..."),
@@ -2298,7 +2298,7 @@ function AskGPT:startFetchModels(provider_id)
   UIManager:scheduleIn(0.2, function()
     local ids, err = self_ref:fetchProviderModels(provider_id)
     if ids then
-      self_ref:showFetchedModelsPicker(provider_id, ids)
+      self_ref:showFetchedModelsPicker(provider_id, ids, nil, on_change)
     else
       UIManager:show(InfoMessage:new{
         text = T(_("Could not fetch models: %1"), err or _("unknown error")),
@@ -2310,7 +2310,9 @@ end
 -- Tap-to-add picker over a fetched model list (18g). Tapping a model adds it to the
 -- provider's custom-models list; the picker re-opens so added rows show a check mark.
 -- Big lists are capped at 30 visible rows — the filter narrows them.
-function AskGPT:showFetchedModelsPicker(provider_id, all_ids, filter)
+-- @param on_change function: optional, fired after each add so the model menu
+--        behind the picker refreshes its rows in place
+function AskGPT:showFetchedModelsPicker(provider_id, all_ids, filter, on_change)
   local self_ref = self
   local ButtonDialog = require("ui/widget/buttondialog")
   local provider_name = self:getProviderDisplayName(provider_id)
@@ -2346,7 +2348,7 @@ function AskGPT:showFetchedModelsPicker(provider_id, all_ids, filter)
             id = "close",
             callback = function()
               UIManager:close(input_dialog)
-              self_ref:showFetchedModelsPicker(provider_id, all_ids, filter)
+              self_ref:showFetchedModelsPicker(provider_id, all_ids, filter, on_change)
             end,
           },
           {
@@ -2356,7 +2358,7 @@ function AskGPT:showFetchedModelsPicker(provider_id, all_ids, filter)
               local new_filter = input_dialog:getInputText()
               UIManager:close(input_dialog)
               if new_filter == "" then new_filter = nil end
-              self_ref:showFetchedModelsPicker(provider_id, all_ids, new_filter)
+              self_ref:showFetchedModelsPicker(provider_id, all_ids, new_filter, on_change)
             end,
           },
         }},
@@ -2380,7 +2382,8 @@ function AskGPT:showFetchedModelsPicker(provider_id, all_ids, filter)
           text = T(_("Added %1 model(s)"), added_n),
           timeout = 1.5,
         })
-        self_ref:showFetchedModelsPicker(provider_id, all_ids, filter)
+        if on_change then on_change() end
+        self_ref:showFetchedModelsPicker(provider_id, all_ids, filter, on_change)
       end,
     }})
   end
@@ -2406,7 +2409,8 @@ function AskGPT:showFetchedModelsPicker(provider_id, all_ids, filter)
             text = success and T(_("Added: %1"), id_copy) or (err or _("Failed to add model")),
             timeout = 1.5,
           })
-          self_ref:showFetchedModelsPicker(provider_id, all_ids, filter)
+          if success and on_change then on_change() end
+          self_ref:showFetchedModelsPicker(provider_id, all_ids, filter, on_change)
         end,
       }})
     end
@@ -2909,6 +2913,19 @@ end
 
 -- Helper: Build provider selection sub-menu
 -- @param simplified: if true, shows only provider list without management options (for quick settings)
+-- Plugin-wide in-place TouchMenu refresh: swap freshly built rows in and
+-- repaint. updateItems() alone repaints the OLD item table — TouchMenu only
+-- re-runs sub_item_table_func when the submenu is reopened — so any callback
+-- that adds/removes/renames rows must come through here for the change to show
+-- immediately. Safe no-op without an instance (the same builders also render
+-- inside quick-settings ButtonDialogs, which rebuild on every open anyway).
+function AskGPT:refreshTouchMenu(touchmenu_instance, rebuild)
+  if touchmenu_instance and touchmenu_instance.updateItems and rebuild then
+    touchmenu_instance.item_table = rebuild()
+    touchmenu_instance:updateItems()
+  end
+end
+
 function AskGPT:buildProviderMenu(simplified, show_all)
   local self_ref = self
   local current = self:getCurrentProvider()
@@ -2916,6 +2933,16 @@ function AskGPT:buildProviderMenu(simplified, show_all)
   local builtin_providers = ModelLists.getAllProviders()
   local custom_providers = self:getCustomProviders()
   local items = {}
+
+  -- In-place refresh hook for mutations triggered from this menu (add/edit/
+  -- remove custom providers): nil-tmi (quick settings) degrades to no-op
+  local function menuRefresher(touchmenu_instance)
+    return function()
+      self_ref:refreshTouchMenu(touchmenu_instance, function()
+        return self_ref:buildProviderMenu(simplified, show_all)
+      end)
+    end
+  end
 
   -- Helper to create provider select callback
   local function createProviderCallback(prov_id, display_name)
@@ -3030,8 +3057,8 @@ function AskGPT:buildProviderMenu(simplified, show_all)
 
     -- Add hold callback for custom providers
     if prov.is_custom then
-      item.hold_callback = function()
-        self_ref:showCustomProviderOptions(prov_copy.config)
+      item.hold_callback = function(touchmenu_instance)
+        self_ref:showCustomProviderOptions(prov_copy.config, menuRefresher(touchmenu_instance))
       end
     end
 
@@ -3058,29 +3085,29 @@ function AskGPT:buildProviderMenu(simplified, show_all)
     -- Add local provider preset option
     table.insert(items, {
       text = _("Quick setup: Local provider..."),
-      callback = function()
-        self_ref:showLocalProviderPresets()
+      callback = function(touchmenu_instance)
+        self_ref:showLocalProviderPresets(menuRefresher(touchmenu_instance))
       end,
-      keep_menu_open = false,
+      keep_menu_open = true, -- dialog stacks on top; menu refreshes in place on save
     })
 
     -- Add custom provider option
     table.insert(items, {
       text = _("Add custom provider..."),
-      callback = function()
-        self_ref:showAddCustomProviderDialog()
+      callback = function(touchmenu_instance)
+        self_ref:showAddCustomProviderDialog(nil, menuRefresher(touchmenu_instance))
       end,
-      keep_menu_open = false,  -- Close menu for dialog
+      keep_menu_open = true, -- dialog stacks on top; menu refreshes in place on save
     })
 
     -- Manage custom providers (only if there are any)
     if #custom_providers > 0 then
       table.insert(items, {
         text = T(_("Manage custom providers (%1)..."), #custom_providers),
-        callback = function()
-          self_ref:showManageCustomProvidersMenu()
+        callback = function(touchmenu_instance)
+          self_ref:showManageCustomProvidersMenu(menuRefresher(touchmenu_instance))
         end,
-        keep_menu_open = false,
+        keep_menu_open = true,
       })
     end
   end
@@ -3089,7 +3116,9 @@ function AskGPT:buildProviderMenu(simplified, show_all)
 end
 
 -- Helper: Show options for a custom provider (on hold)
-function AskGPT:showCustomProviderOptions(provider)
+-- @param on_change function: optional, called after any mutation (edit/toggle/
+--        remove) so the menu behind can refresh its rows in place
+function AskGPT:showCustomProviderOptions(provider, on_change)
   local self_ref = self
   local ButtonDialog = require("ui/widget/buttondialog")
   local ConfirmBox = require("ui/widget/confirmbox")
@@ -3107,7 +3136,7 @@ function AskGPT:showCustomProviderOptions(provider)
       text = _("Edit provider..."),
       callback = function()
         UIManager:close(self_ref._provider_options_dialog)
-        self_ref:showEditCustomProviderDialog(provider)
+        self_ref:showEditCustomProviderDialog(provider, on_change)
       end,
     }},
     {{
@@ -3137,6 +3166,7 @@ function AskGPT:showCustomProviderOptions(provider)
           text = T(_("API key: %1"), status),
           timeout = 1.5,
         })
+        if on_change then on_change() end
       end,
     }},
     {{
@@ -3151,6 +3181,7 @@ function AskGPT:showCustomProviderOptions(provider)
               text = T(_("Removed: %1"), provider.name),
               timeout = 1.5,
             })
+            if on_change then on_change() end
           end,
         })
       end,
@@ -3182,7 +3213,7 @@ local LOCAL_PROVIDER_PRESETS = {
 }
 
 -- Helper: Show local provider preset selection
-function AskGPT:showLocalProviderPresets()
+function AskGPT:showLocalProviderPresets(on_change)
   local self_ref = self
   local ButtonDialog = require("ui/widget/buttondialog")
 
@@ -3196,7 +3227,7 @@ function AskGPT:showLocalProviderPresets()
           name = preset.name,
           base_url = string.format("http://localhost:%d/v1/chat/completions", preset.port),
           api_key_required = false,
-        })
+        }, on_change)
       end,
     }})
   end
@@ -3221,7 +3252,8 @@ end
 
 -- Helper: Show dialog to add a new custom provider
 -- @param preset table: Optional pre-fill values {name, base_url, api_key_required}
-function AskGPT:showAddCustomProviderDialog(preset)
+-- @param on_change function: optional, called after a successful add
+function AskGPT:showAddCustomProviderDialog(preset, on_change)
   local self_ref = self
 
   local dialog
@@ -3274,6 +3306,7 @@ function AskGPT:showAddCustomProviderDialog(preset)
                 text = T(_("Added provider: %1"), name),
                 timeout = 1.5,
               })
+              if on_change then on_change() end
             else
               UIManager:show(Notification:new{
                 text = result,
@@ -3290,7 +3323,8 @@ function AskGPT:showAddCustomProviderDialog(preset)
 end
 
 -- Helper: Show dialog to edit a custom provider
-function AskGPT:showEditCustomProviderDialog(provider)
+-- @param on_change function: optional, called after a successful save
+function AskGPT:showEditCustomProviderDialog(provider, on_change)
   local self_ref = self
 
   local dialog
@@ -3354,6 +3388,7 @@ function AskGPT:showEditCustomProviderDialog(provider)
               text = T(_("Updated: %1"), name),
               timeout = 1.5,
             })
+            if on_change then on_change() end
           end,
         },
       },
@@ -3364,7 +3399,8 @@ function AskGPT:showEditCustomProviderDialog(provider)
 end
 
 -- Helper: Show menu to manage custom providers
-function AskGPT:showManageCustomProvidersMenu()
+-- @param on_change function: optional, called after any mutation
+function AskGPT:showManageCustomProvidersMenu(on_change)
   local self_ref = self
   local custom_providers = self:getCustomProviders()
 
@@ -3387,7 +3423,7 @@ function AskGPT:showManageCustomProvidersMenu()
       text = T(_("Edit: %1"), cp_copy.name),
       callback = function()
         UIManager:close(self_ref._manage_providers_dialog)
-        self_ref:showEditCustomProviderDialog(cp_copy)
+        self_ref:showEditCustomProviderDialog(cp_copy, on_change)
       end,
     }})
   end
@@ -3435,6 +3471,7 @@ function AskGPT:showManageCustomProvidersMenu()
             text = _("All custom providers removed"),
             timeout = 1.5,
           })
+          if on_change then on_change() end
         end,
       })
     end,
@@ -3491,9 +3528,20 @@ function AskGPT:buildModelMenu(simplified)
     provider_display_name = provider:gsub("^%l", string.upper)
   end
 
+  -- In-place refresh hook for mutations triggered from this menu (add/remove
+  -- custom models, default changes — the "(default)" suffixes live in row text)
+  local function menuRefresher(touchmenu_instance)
+    return function()
+      self_ref:refreshTouchMenu(touchmenu_instance, function()
+        return self_ref:buildModelMenu(simplified)
+      end)
+    end
+  end
+
   -- Helper to create hold callback for model items
   local function createHoldCallback(model, is_custom)
-    return function()
+    return function(touchmenu_instance)
+      local refresh = menuRefresher(touchmenu_instance)
       local ButtonDialog = require("ui/widget/buttondialog")
       local current_user_default = self_ref:getUserDefaultModel(provider)
       local buttons = {}
@@ -3509,6 +3557,7 @@ function AskGPT:buildModelMenu(simplified)
               text = T(_("Default for %1: %2"), provider_display_name, model),
               timeout = 1.5,
             })
+            refresh()
           end,
         }})
       end
@@ -3524,6 +3573,7 @@ function AskGPT:buildModelMenu(simplified)
               text = T(_("Cleared custom default for %1"), provider_display_name),
               timeout = 1.5,
             })
+            refresh()
           end,
         }})
       end
@@ -3543,6 +3593,7 @@ function AskGPT:buildModelMenu(simplified)
                   text = T(_("Removed: %1"), model),
                   timeout = 1.5,
                 })
+                refresh()
               end,
             })
           end,
@@ -3681,10 +3732,10 @@ function AskGPT:buildModelMenu(simplified)
     -- Add custom model input option (now saves to list)
     table.insert(items, {
       text = _("Add custom model..."),
-      keep_menu_open = false,  -- Close menu so dialog appears on top
-      callback = function()
-        -- Delay to let menu close first
-        UIManager:scheduleIn(0.1, function()
+      keep_menu_open = true, -- dialog stacks on top; menu refreshes in place on add
+      callback = function(touchmenu_instance)
+        local refresh = menuRefresher(touchmenu_instance)
+        do
           local InputDialog = require("ui/widget/inputdialog")
           local input_dialog
           input_dialog = InputDialog:new{
@@ -3722,6 +3773,7 @@ function AskGPT:buildModelMenu(simplified)
                           text = T(_("Added: %1"), new_model),
                           timeout = 1.5,
                         })
+                        refresh()
                         -- OpenRouter: derive capabilities (tools/reasoning) from the
                         -- provider's per-model metadata so the new model works beyond
                         -- the curated lists. Delayed so the notification paints first;
@@ -3752,7 +3804,7 @@ function AskGPT:buildModelMenu(simplified)
           }
           UIManager:show(input_dialog)
           input_dialog:onShowKeyboard()
-        end)
+        end
       end,
     })
 
@@ -3760,12 +3812,9 @@ function AskGPT:buildModelMenu(simplified)
     if #custom_models > 0 then
       table.insert(items, {
         text = T(_("Manage custom models (%1)..."), #custom_models),
-        keep_menu_open = false,  -- Close menu so dialog appears on top
-        callback = function()
-          -- Delay to let menu close first
-          UIManager:scheduleIn(0.1, function()
-            self_ref:showManageCustomModelsMenu(provider)
-          end)
+        keep_menu_open = true, -- dialog stacks on top; menu refreshes in place
+        callback = function(touchmenu_instance)
+          self_ref:showManageCustomModelsMenu(provider, menuRefresher(touchmenu_instance))
         end,
       })
     end
@@ -3775,22 +3824,18 @@ function AskGPT:buildModelMenu(simplified)
     if self_ref:providerSupportsFetch(provider) then
       table.insert(items, {
         text = _("Fetch models from provider..."),
-        keep_menu_open = false,
-        callback = function()
-          UIManager:scheduleIn(0.1, function()
-            self_ref:startFetchModels(provider)
-          end)
+        keep_menu_open = true, -- picker stacks on top; menu refreshes as models are added
+        callback = function(touchmenu_instance)
+          self_ref:startFetchModels(provider, menuRefresher(touchmenu_instance))
         end,
       })
     end
     if self_ref:providerSupportsTest(provider) then
       table.insert(items, {
         text = _("Test provider..."),
-        keep_menu_open = false,
+        keep_menu_open = true, -- result dialog stacks on top; no list change
         callback = function()
-          UIManager:scheduleIn(0.1, function()
-            self_ref:testProvider(provider)
-          end)
+          self_ref:testProvider(provider)
         end,
       })
     end
@@ -3808,7 +3853,8 @@ function AskGPT:buildModelMenu(simplified)
 end
 
 -- Helper: Show manage custom models menu
-function AskGPT:showManageCustomModelsMenu(provider)
+-- @param on_change function: optional, called after any mutation
+function AskGPT:showManageCustomModelsMenu(provider, on_change)
   local self_ref = self
   local custom_models = self:getCustomModels(provider)
 
@@ -3839,6 +3885,7 @@ function AskGPT:showManageCustomModelsMenu(provider)
               text = T(_("Removed: %1"), model_copy),
               timeout = 1.5,
             })
+            if on_change then on_change() end
           end,
         })
       end,
@@ -3897,6 +3944,7 @@ function AskGPT:showManageCustomModelsMenu(provider)
             text = _("All custom models cleared"),
             timeout = 1.5,
           })
+          if on_change then on_change() end
         end,
       })
     end,
@@ -4028,6 +4076,16 @@ function AskGPT:buildApiKeysMenu()
     return a.display_name:lower() < b.display_name:lower()
   end)
 
+  -- In-place refresh: the [set]/(file)/[connected] markers live in row text,
+  -- so saving or clearing a key must rebuild the rows
+  local function menuRefresher(touchmenu_instance)
+    return function()
+      self_ref:refreshTouchMenu(touchmenu_instance, function()
+        return self_ref:buildApiKeysMenu()
+      end)
+    end
+  end
+
   -- Create menu items from sorted list
   for _i, prov in ipairs(all_providers) do
     local prov_copy = prov  -- Capture for closure
@@ -4036,11 +4094,12 @@ function AskGPT:buildApiKeysMenu()
     table.insert(items, {
       text = text,
       keep_menu_open = true,
-      callback = function()
+      callback = function(touchmenu_instance)
         if prov_copy.id == "openai_codex" then
           require("koassistant_openai_codex_oauth").showManageDialog(self_ref)
         else
-          self_ref:showApiKeyDialog(prov_copy.id, prov_copy.display_name, prov_copy.api_key_optional)
+          self_ref:showApiKeyDialog(prov_copy.id, prov_copy.display_name, prov_copy.api_key_optional,
+            menuRefresher(touchmenu_instance))
         end
       end,
     })
@@ -4053,7 +4112,8 @@ end
 -- @param provider string: Provider ID
 -- @param display_name string: Display name (optional, defaults to capitalized provider)
 -- @param key_optional boolean: If true, shows hint that key is optional (for local servers)
-function AskGPT:showApiKeyDialog(provider, display_name, key_optional)
+-- @param on_change function: optional, called after save/clear (status markers in menu rows)
+function AskGPT:showApiKeyDialog(provider, display_name, key_optional, on_change)
   local self_ref = self
   display_name = display_name or provider:gsub("^%l", string.upper)
   local features = self.settings:readSetting("features") or {}
@@ -4105,6 +4165,7 @@ function AskGPT:showApiKeyDialog(provider, display_name, key_optional)
               text = T(_("%1 API key cleared"), display_name),
               timeout = 2,
             })
+            if on_change then on_change() end
           end,
         },
         {
@@ -4137,6 +4198,7 @@ function AskGPT:showApiKeyDialog(provider, display_name, key_optional)
                 text = message,
                 timeout = 2,
               })
+              if on_change then on_change() end
             else
               UIManager:close(input_dialog)
             end
@@ -4285,16 +4347,11 @@ local function showAddCustomLanguageDialog(self_ref, array_key, touchmenu_instan
                                         text = T(_("Added: %1"), new_lang),
                                         timeout = 2,
                                     })
-                                    -- Rebuild the menu in place: updateItems() alone
-                                    -- repaints the OLD item table (it never re-runs
-                                    -- sub_item_table_func), so the new row would not
-                                    -- appear until the submenu is reopened
-                                    if touchmenu_instance then
-                                        touchmenu_instance.item_table = array_key == "interaction_languages"
+                                    self_ref:refreshTouchMenu(touchmenu_instance, function()
+                                        return array_key == "interaction_languages"
                                             and self_ref:buildInteractionLanguagesSubmenu()
                                             or self_ref:buildAdditionalLanguagesSubmenu()
-                                        touchmenu_instance:updateItems()
-                                    end
+                                    end)
                                 else
                                     UIManager:show(Notification:new{
                                         text = T(_("'%1' is already added"), new_lang),
@@ -4430,10 +4487,9 @@ function AskGPT:buildInteractionLanguagesSubmenu()
                     toggleLanguage(lang_copy)
                     -- Unchecking a custom language removes it entirely: rebuild
                     -- so the row disappears now, not on the next menu open
-                    if touchmenu_instance then
-                        touchmenu_instance.item_table = self_ref:buildInteractionLanguagesSubmenu()
-                        touchmenu_instance:updateItems()
-                    end
+                    self_ref:refreshTouchMenu(touchmenu_instance, function()
+                        return self_ref:buildInteractionLanguagesSubmenu()
+                    end)
                 end,
             })
         end
@@ -4578,10 +4634,9 @@ function AskGPT:buildAdditionalLanguagesSubmenu()
                     toggleLanguage(lang_copy)
                     -- Unchecking a custom language removes it entirely: rebuild
                     -- so the row disappears now, not on the next menu open
-                    if touchmenu_instance then
-                        touchmenu_instance.item_table = self_ref:buildAdditionalLanguagesSubmenu()
-                        touchmenu_instance:updateItems()
-                    end
+                    self_ref:refreshTouchMenu(touchmenu_instance, function()
+                        return self_ref:buildAdditionalLanguagesSubmenu()
+                    end)
                 end,
             })
         end
@@ -16909,9 +16964,9 @@ function AskGPT:getLibraryFoldersMenuItems()
             self_ref.settings:saveSetting("features", feat)
             self_ref.settings:flush()
             self_ref:updateConfigFromSettings()
-            if touchmenu_instance then
-              touchmenu_instance:updateItems()
-            end
+            self_ref:refreshTouchMenu(touchmenu_instance, function()
+              return self_ref:getLibraryFoldersMenuItems()
+            end)
           end,
         })
       end,
@@ -16953,9 +17008,9 @@ function AskGPT:getLibraryFoldersMenuItems()
           self_ref.settings:saveSetting("features", feat)
           self_ref.settings:flush()
           self_ref:updateConfigFromSettings()
-          if touchmenu_instance then
-            touchmenu_instance:updateItems()
-          end
+          self_ref:refreshTouchMenu(touchmenu_instance, function()
+            return self_ref:getLibraryFoldersMenuItems()
+          end)
         end,
       }
       UIManager:show(path_chooser)
@@ -17260,9 +17315,9 @@ function AskGPT:getIndexScanFoldersMenuItems()
             self_ref.settings:saveSetting("features", feat)
             self_ref.settings:flush()
             self_ref:updateConfigFromSettings()
-            if touchmenu_instance then
-              touchmenu_instance:updateItems()
-            end
+            self_ref:refreshTouchMenu(touchmenu_instance, function()
+              return self_ref:getIndexScanFoldersMenuItems()
+            end)
           end,
         })
       end,
@@ -17304,9 +17359,9 @@ function AskGPT:getIndexScanFoldersMenuItems()
           self_ref.settings:saveSetting("features", feat)
           self_ref.settings:flush()
           self_ref:updateConfigFromSettings()
-          if touchmenu_instance then
-            touchmenu_instance:updateItems()
-          end
+          self_ref:refreshTouchMenu(touchmenu_instance, function()
+            return self_ref:getIndexScanFoldersMenuItems()
+          end)
         end,
       }
       UIManager:show(path_chooser)
