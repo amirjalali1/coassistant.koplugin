@@ -128,6 +128,21 @@ function GroupsUI.showMoveDialog(group_id, path, opts)
                     end,
                 })
             end }},
+            -- Groups double as navigation: jump to the member you want to
+            -- work on (device request 2026-08-05)
+            {{ text = _("Open this book"), enabled = BookGroups.fileExists(path),
+                callback = function()
+                    UIManager:close(book_dialog)
+                    if GroupsUI._group_dialog then UIManager:close(GroupsUI._group_dialog) end
+                    local ReaderUI = require("apps/reader/readerui")
+                    if ReaderUI.instance and ReaderUI.instance.document
+                        and ReaderUI.instance.document.file == path then
+                        -- Already the open book — closing the dialogs reveals it;
+                        -- showReader would reload the document from scratch
+                        return
+                    end
+                    ReaderUI:showReader(path)
+                end }},
             {{ text = _("Remove from group"), callback = function()
                 UIManager:close(book_dialog)
                 BookGroups.removeBook(group_id, path)

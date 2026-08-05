@@ -10550,32 +10550,87 @@ function AskGPT:_showXrayLadderRungOptions(rung, opts)
     text = _("Delete this checkpoint"),
     callback = function()
       UIManager:close(card)
+      -- Deleting the rung that IS the installed X-Ray (same identity test as
+      -- the "Installed as your current X-Ray" row) removes only the list
+      -- entry — the live copy stays. Say so, and offer the revert the user
+      -- almost certainly wants (device finding 2026-08-05). Promote-then-
+      -- remove order is load-bearing: while the rung still exists the
+      -- outgoing live is rung-guarded out of the ring, so the deleted
+      -- version does not resurrect under All versions.
+      local live = ActionCache.getXrayCache(file)
+      local is_live = live and live.timestamp == rung.timestamp
+        and math.abs((tonumber(live.progress_decimal) or -1)
+          - (tonumber(rung.progress_decimal) or -2)) < 1e-6
+      local revert_rung
+      if is_live and not XrayAuto.isInFlight() then
+        local pos
+        local posture = "track"
+        if self_ref.ui and self_ref.ui.document and self_ref.ui.document.file == file then
+          local progress = require("koassistant_context_extractor"):new(self_ref.ui):getReadingProgress()
+          pos = progress and tonumber(progress.decimal) or nil
+          posture = self_ref:_xrayPosture()
+        end
+        local remaining = {}
+        for _idx, r in ipairs(ActionCache.getXrayLadder(file)) do
+          if not (r.timestamp == rung.timestamp
+              and math.abs((tonumber(r.progress_decimal) or -1)
+                - (tonumber(rung.progress_decimal) or -2)) < 1e-6) then
+            remaining[#remaining + 1] = r
+          end
+        end
+        revert_rung = XrayAuto.pickPromotableRung(remaining, 0, pos,
+          { ahead_ok = posture == "full" })
+      end
+      local title_text = T(_("Delete the checkpoint from %1?"), label) .. "\n"
+        .. _("If automatic building needs this grid point again, it is rebuilt.")
+      if is_live then
+        title_text = title_text .. "\n"
+          .. _("This checkpoint is currently installed as your X-Ray — deleting it from the list alone keeps it installed.")
+      end
       local confirm
+      local confirm_rows = {}
+      if revert_rung then
+        local revert_label = self_ref:_xrayCheckpointLabel(revert_rung)
+        table.insert(confirm_rows, {{
+          text = T(_("Delete and go back to %1"), revert_label),
+          callback = function()
+            UIManager:close(confirm)
+            local features = self_ref.settings:readSetting("features") or {}
+            ActionCache.promoteXrayLadderRung(file, revert_rung,
+              ActionCache.checkpointLimitFromFeatures(features), { manual = true })
+            ActionCache.removeXrayLadderRung(file, rung)
+            self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+            self_ref:_refreshXrayAutoState()
+            UIManager:show(Notification:new{
+              text = T(_("Checkpoint deleted — X-Ray back to %1"), revert_label),
+              timeout = 3,
+            })
+          end,
+        }})
+      end
+      table.insert(confirm_rows, {{
+        text = is_live and _("Delete from the list only") or _("Delete"),
+        callback = function()
+          UIManager:close(confirm)
+          ActionCache.removeXrayLadderRung(file, rung)
+          self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+          self_ref:_refreshXrayAutoState()
+          UIManager:show(Notification:new{
+            text = T(_("Checkpoint deleted (%1)"), label),
+            timeout = 2,
+          })
+        end,
+      }})
+      table.insert(confirm_rows, {{
+        text = _("Cancel"),
+        callback = function()
+          UIManager:close(confirm)
+          self_ref:_showXrayLadderRungOptions(rung, opts)
+        end,
+      }})
       confirm = ButtonDialog:new{
-        title = T(_("Delete the checkpoint from %1?"), label) .. "\n"
-          .. _("If automatic building needs this grid point again, it is rebuilt."),
-        buttons = {
-          {{
-            text = _("Delete"),
-            callback = function()
-              UIManager:close(confirm)
-              ActionCache.removeXrayLadderRung(file, rung)
-              self_ref._file_dialog_row_cache = { file = nil, rows = nil }
-              self_ref:_refreshXrayAutoState()
-              UIManager:show(Notification:new{
-                text = T(_("Checkpoint deleted (%1)"), label),
-                timeout = 2,
-              })
-            end,
-          }},
-          {{
-            text = _("Cancel"),
-            callback = function()
-              UIManager:close(confirm)
-              self_ref:_showXrayLadderRungOptions(rung, opts)
-            end,
-          }},
-        },
+        title = title_text,
+        buttons = confirm_rows,
       }
       UIManager:show(confirm)
     end,
