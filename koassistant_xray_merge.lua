@@ -596,6 +596,79 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
     return added
 end
 
+--- Carry layer 3(i): mechanical create-time seed — a fresh (or rebuilt) main
+--- X-Ray starts its dormant ledger from the nearest X-Rayed predecessor in
+--- the book's group, locally and token-free; the artifact's visible content
+--- is untouched. Skip-volume wake then works even if the reader never merges,
+--- and a complete rebuild recovers the ledger it just dropped. Walks
+--- nearest→farthest and seeds from the FIRST predecessor with a valid JSON
+--- main AND text-extraction consent (its own ledger rides along, so one
+--- eligible predecessor carries everything it knows — transitive).
+--- @param file string Target book path
+--- @param parsed table Freshly parsed X-Ray data (mutated: ledger populated)
+--- @param features table|nil Current settings features (consent resolution)
+--- @param provider string|nil Provider id (trusted-provider consent)
+--- @param ui table|nil
+--- @return number added, string|nil source_title
+function XrayMerge.seedDormant(file, parsed, features, provider, ui)
+    if type(parsed) ~= "table" or type(file) ~= "string" or file == "" then return 0, nil end
+    local BookGroups = require("koassistant_book_groups")
+    local preds = BookGroups.predecessorsOf(file)
+    if #preds == 0 then return 0, nil end
+    local ActionCache = require("koassistant_action_cache")
+    local XrayParser = require("koassistant_xray_parser")
+    for i = #preds, 1, -1 do
+        local entry = ActionCache.getXrayCache(preds[i])
+        if entry and entry.result and XrayParser.isJSON(entry.result)
+            and XrayMerge.consentOk({ entry }, features, provider, preds[i], ui) then
+            local source_parsed = XrayParser.parse(entry.result)
+            if source_parsed and not source_parsed.error then
+                local title = BookGroups.displayTitle(preds[i], ui)
+                local added = XrayMerge.populateDormant(parsed, nil, source_parsed, title)
+                return added, title
+            end
+        end
+    end
+    return 0, nil
+end
+
+--- Provenance union for cross-book merges: the target's existing list + the
+--- source title + the source's OWN provenance — a merge carries the source's
+--- ancestor-labeled background along (item 49), so transitive sources are
+--- genuinely included and must be recorded, or chained volumes read as
+--- gap-ridden (provenanceGap) and "Includes background from" understates.
+--- Pure.
+--- @param existing string|nil Target's merged_from_books
+--- @param source_title string The book being folded in
+--- @param source_provenance string|nil That book's own merged_from_books
+--- @return string Updated ";"-separated provenance
+function XrayMerge.unionProvenance(existing, source_title, source_provenance)
+    local out = XrayMerge.appendBookProvenance(existing, source_title)
+    for part in (source_provenance or ""):gmatch("([^;]+)") do
+        local t = part:match("^%s*(.-)%s*$")
+        if t ~= "" then out = XrayMerge.appendBookProvenance(out, t) end
+    end
+    return out
+end
+
+--- Carry layer 3(ii) gap check: which of these titles are missing from a
+--- book's merge provenance? Same identity rule as appendBookProvenance
+--- (exact title match within the ";"-separated list). Pure.
+--- @param titles table Ordered titles that SHOULD have been folded in
+--- @param merged_from string|nil The book's merged_from_books value
+--- @return table missing Titles not found in the provenance
+function XrayMerge.provenanceGap(titles, merged_from)
+    local have = {}
+    for part in (merged_from or ""):gmatch("([^;]+)") do
+        have[part:match("^%s*(.-)%s*$")] = true
+    end
+    local missing = {}
+    for _idx, t in ipairs(titles or {}) do
+        if not have[t] then missing[#missing + 1] = t end
+    end
+    return missing
+end
+
 --- Pre-merge transform for cross-book deltas (rides WriteBack.applyXray's
 --- transform hook): applies background_updates to the BASE, strips the
 --- protected categories, and drops any disobedient full rewrite of an
@@ -1506,8 +1579,9 @@ function XrayMerge.executeCrossBook(opts)
                 used_book_text = union.used_book_text,
                 used_highlights = union.used_highlights,
                 producer = "book_merge",
-                merged_from_books = XrayMerge.appendBookProvenance(
-                    main_entry.merged_from_books, source.title),
+                merged_from_books = XrayMerge.unionProvenance(
+                    main_entry.merged_from_books, source.title,
+                    source.entry and source.entry.merged_from_books),
             }
             local source_parsed = XrayParser.parse(
                 (source.entry and source.entry.result) or "")
@@ -1540,6 +1614,217 @@ function XrayMerge.executeCrossBook(opts)
             })
             if opts.on_done then opts.on_done(ok, not ok and res_or_err or nil) end
         end)
+end
+
+--- Run the organic series chain headlessly: chain[1]→chain[2], 2→3, …
+--- (oldest first, the receiving book last) — each hop re-reads BOTH sides
+--- fresh (the previous hop just rewrote the source), re-checks consent, and
+--- stops loudly naming the hop on failure. Shared by the merge picker's
+--- fold-all row and the post-create fold offer (carry layer 3(ii)).
+--- @param opts table { chain = ordered {file, title, author, entry} rows,
+---   features, provider, ui, plugin, configuration,
+---   close_browser (called once the preflight sweep passes), on_done(ok) }
+function XrayMerge.runSeriesChain(opts)
+    local ActionCache = require("koassistant_action_cache")
+    local XrayParser = require("koassistant_xray_parser")
+    local InfoMessage = require("ui/widget/infomessage")
+    local Notification = require("ui/widget/notification")
+    local chain = opts.chain or {}
+    local n_merges = #chain - 1
+    if n_merges < 1 then return end
+    -- Preflight consent sweep (2026-08-05): fail BEFORE the first request
+    -- names the blocking book — never stop a paid run midway on a knowable
+    -- condition. The per-step checks stay (settings can change mid-run).
+    for _cidx, member in ipairs(chain) do
+        if not XrayMerge.consentOk({ member.entry }, opts.features, opts.provider, member.file, opts.ui) then
+            UIManager:show(InfoMessage:new{
+                text = T(_("Cannot start: text-extraction consent is missing for \"%1\"."), member.title),
+                timeout = 5,
+            })
+            return
+        end
+    end
+    if opts.close_browser then opts.close_browser() end
+    local function step(idx)
+        if idx > n_merges then
+            UIManager:show(Notification:new{
+                text = T(_("Series chain complete: %1 merges."), n_merges),
+            })
+            if opts.on_done then opts.on_done(true) end
+            return
+        end
+        local src_c = chain[idx]
+        local tgt_c = chain[idx + 1]
+        -- Both re-read fresh: the previous hop rewrote src
+        local fresh_src = ActionCache.getXrayCache(src_c.file)
+        local fresh_tgt = ActionCache.getXrayCache(tgt_c.file)
+        if not (fresh_src and fresh_src.result and XrayParser.isJSON(fresh_src.result))
+            or not (fresh_tgt and fresh_tgt.result and XrayParser.isJSON(fresh_tgt.result)) then
+            UIManager:show(InfoMessage:new{
+                text = T(_("Stopped at \"%1\": its X-Ray is no longer available."),
+                    (fresh_src and fresh_src.result) and tgt_c.title or src_c.title),
+                timeout = 4,
+            })
+            return
+        end
+        if not XrayMerge.consentOk({ fresh_src }, opts.features, opts.provider, src_c.file, opts.ui)
+            or not XrayMerge.consentOk({ fresh_tgt }, opts.features, opts.provider, tgt_c.file, opts.ui) then
+            UIManager:show(InfoMessage:new{
+                text = T(_("Stopped at \"%1\": text-extraction consent is missing for it."), src_c.title),
+                timeout = 5,
+            })
+            return
+        end
+        UIManager:show(Notification:new{
+            text = T(_("Merging %1 of %2: %3 into %4"), idx, n_merges,
+                src_c.title, tgt_c.title),
+        })
+        XrayMerge.executeCrossBook({
+            file = tgt_c.file, ui = opts.ui, plugin = opts.plugin,
+            configuration = opts.configuration,
+            title = tgt_c.title, author = tgt_c.author,
+            main_entry = fresh_tgt,
+            source = { file = src_c.file, title = src_c.title,
+                author = src_c.author, entry = fresh_src },
+            on_done = function(ok, err)
+                if ok then
+                    step(idx + 1)
+                else
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("Stopped at \"%1\" into \"%2\": %3"), src_c.title,
+                            tgt_c.title, tostring(err or "unknown error")),
+                        timeout = 5,
+                    })
+                end
+            end,
+        })
+    end
+    step(1)
+end
+
+--- Carry layer 3(ii), the post-create fold offer: after an ATTENDED fresh
+--- main X-Ray of a grouped book, offer folding the PREVIOUS book's X-Ray in
+--- (1 request) — the standalone-first architecture stands, this is the merge
+--- made one tap. When the previous book never folded its own predecessors,
+--- the same dialog also offers the full chain (maintainer decision
+--- 2026-08-06: "offer both"). When the previous book has no X-Ray at all, a
+--- gap note replaces the offer. Background builds never call this — they
+--- seed silently (seedDormant) and the fold stays in the merge picker.
+--- @param opts table { file (just-created target), title, author, ui,
+---   plugin, configuration }
+function XrayMerge.maybeOfferPostCreateFold(opts)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local BookGroups = require("koassistant_book_groups")
+    local preds, group = BookGroups.predecessorsOf(opts.file)
+    if #preds == 0 then return end
+    local ActionCache = require("koassistant_action_cache")
+    local XrayParser = require("koassistant_xray_parser")
+    local InfoMessage = require("ui/widget/infomessage")
+    local Notification = require("ui/widget/notification")
+    local nearest = preds[#preds]
+    local nearest_title = BookGroups.displayTitle(nearest, opts.ui)
+    local nearest_entry = ActionCache.getXrayCache(nearest)
+    if not (nearest_entry and nearest_entry.result and XrayParser.isJSON(nearest_entry.result)) then
+        UIManager:show(InfoMessage:new{
+            text = T(_("\"%1\" (the previous book in %2) has no X-Ray yet — build one there to carry its knowledge forward."),
+                nearest_title, (group and group.name) or _("this group")),
+            timeout = 6,
+        })
+        return
+    end
+    -- The nearest predecessor's own X-Rayed predecessors vs its provenance:
+    -- anything missing means its X-Ray does not yet carry those volumes
+    local earlier_titles = {}
+    local chain = {}
+    for i = 1, #preds - 1 do
+        local e = ActionCache.getXrayCache(preds[i])
+        if e and e.result and XrayParser.isJSON(e.result) then
+            local t = BookGroups.displayTitle(preds[i], opts.ui)
+            earlier_titles[#earlier_titles + 1] = t
+            chain[#chain + 1] = { file = preds[i], title = t, entry = e }
+        end
+    end
+    local missing = XrayMerge.provenanceGap(earlier_titles, nearest_entry.merged_from_books)
+    chain[#chain + 1] = { file = nearest, title = nearest_title, entry = nearest_entry }
+    local features = (opts.configuration and opts.configuration.features) or {}
+    local provider = (opts.configuration
+        and (opts.configuration.provider or opts.configuration.default_provider))
+    local offer_text = T(_("\"%1\" (the previous book in %2) has an X-Ray. Fold its knowledge into this book's now? The two X-Rays are sent, not the books."),
+        nearest_title, (group and group.name) or _("this group"))
+    if #missing > 0 then
+        offer_text = offer_text .. "\n"
+            .. T(_("Note: it has not folded its own earlier book(s) in yet (%1), so their knowledge would not carry over."),
+                table.concat(missing, ", "))
+    end
+    local offer
+    local buttons = {
+        {{ text = _("Fold it in (1 request)"), callback = function()
+            UIManager:close(offer)
+            local main_entry = ActionCache.getXrayCache(opts.file)
+            if not (main_entry and main_entry.result and XrayParser.isJSON(main_entry.result)) then
+                return
+            end
+            if not XrayMerge.consentOk({ nearest_entry }, features, provider, nearest, opts.ui)
+                or not XrayMerge.consentOk({ main_entry }, features, provider, opts.file, opts.ui) then
+                UIManager:show(InfoMessage:new{
+                    text = _("These X-Rays were built from extracted book text. Enable \"Allow book text extraction\" (or use a trusted provider) to merge them."),
+                    timeout = 5,
+                })
+                return
+            end
+            UIManager:show(Notification:new{
+                text = T(_("Folding \"%1\" in…"), nearest_title),
+            })
+            XrayMerge.executeCrossBook({
+                file = opts.file, ui = opts.ui, plugin = opts.plugin,
+                configuration = opts.configuration,
+                title = opts.title, author = opts.author,
+                main_entry = main_entry,
+                source = { file = nearest, title = nearest_title, entry = nearest_entry },
+                on_done = function(ok, err)
+                    if ok then
+                        UIManager:show(Notification:new{
+                            text = T(_("Folded \"%1\" into this book's X-Ray."), nearest_title),
+                        })
+                    else
+                        UIManager:show(InfoMessage:new{
+                            text = T(_("Merge failed: %1"), tostring(err or "unknown error")),
+                            timeout = 5,
+                        })
+                    end
+                end,
+            })
+        end }},
+    }
+    if #missing > 0 and #chain >= 2 then
+        buttons[#buttons + 1] = {{
+            text = T(_("Bring the series up to date (%1 merges)"), #chain),
+            callback = function()
+                UIManager:close(offer)
+                local main_entry = ActionCache.getXrayCache(opts.file)
+                if not (main_entry and main_entry.result and XrayParser.isJSON(main_entry.result)) then
+                    return
+                end
+                local full = {}
+                for _idx, c in ipairs(chain) do full[#full + 1] = c end
+                full[#full + 1] = { file = opts.file, title = opts.title,
+                    author = opts.author, entry = main_entry }
+                XrayMerge.runSeriesChain({
+                    chain = full, features = features, provider = provider,
+                    ui = opts.ui, plugin = opts.plugin,
+                    configuration = opts.configuration,
+                })
+            end,
+        }}
+    end
+    buttons[#buttons + 1] = {{ text = _("Not now"), callback = function()
+        UIManager:close(offer)
+    end }}
+    offer = ButtonDialog:new{
+        title = offer_text,
+        buttons = buttons,
+    }
+    UIManager:show(offer)
 end
 
 --- Entry point: candidate books → spoiler confirm → run.
@@ -1807,75 +2092,13 @@ function XrayMerge.startCrossBookFlow(opts)
                     buttons = {
                         {{ text = _("Merge the series"), callback = function()
                             UIManager:close(confirm)
-                            -- Preflight consent sweep (2026-08-05): fail BEFORE the
-                            -- first request names the blocking book — never stop a
-                            -- paid run midway on a knowable condition. The per-step
-                            -- checks stay (settings can change mid-run).
-                            for _cidx, member in ipairs(chain) do
-                                if not XrayMerge.consentOk({ member.entry }, features, provider, member.file, opts.ui) then
-                                    UIManager:show(InfoMessage:new{
-                                        text = T(_("Cannot start: text-extraction consent is missing for \"%1\"."), member.title),
-                                        timeout = 5,
-                                    })
-                                    return
-                                end
-                            end
-                            if opts.close_browser then opts.close_browser() end
-                            local function step(idx)
-                                if idx > n_merges then
-                                    UIManager:show(Notification:new{
-                                        text = T(_("Series chain complete: %1 merges."), n_merges),
-                                    })
-                                    if opts.on_done then opts.on_done(true) end
-                                    return
-                                end
-                                local src_c = chain[idx]
-                                local tgt_c = chain[idx + 1]
-                                -- Both re-read fresh: the previous hop rewrote src
-                                local fresh_src = ActionCache.getXrayCache(src_c.file)
-                                local fresh_tgt = ActionCache.getXrayCache(tgt_c.file)
-                                if not (fresh_src and fresh_src.result and XrayParser.isJSON(fresh_src.result))
-                                    or not (fresh_tgt and fresh_tgt.result and XrayParser.isJSON(fresh_tgt.result)) then
-                                    UIManager:show(InfoMessage:new{
-                                        text = T(_("Stopped at \"%1\": its X-Ray is no longer available."),
-                                            (fresh_src and fresh_src.result) and tgt_c.title or src_c.title),
-                                        timeout = 4,
-                                    })
-                                    return
-                                end
-                                if not XrayMerge.consentOk({ fresh_src }, features, provider, src_c.file, opts.ui)
-                                    or not XrayMerge.consentOk({ fresh_tgt }, features, provider, tgt_c.file, opts.ui) then
-                                    UIManager:show(InfoMessage:new{
-                                        text = T(_("Stopped at \"%1\": text-extraction consent is missing for it."), src_c.title),
-                                        timeout = 5,
-                                    })
-                                    return
-                                end
-                                UIManager:show(Notification:new{
-                                    text = T(_("Merging %1 of %2: %3 into %4"), idx, n_merges,
-                                        src_c.title, tgt_c.title),
-                                })
-                                XrayMerge.executeCrossBook({
-                                    file = tgt_c.file, ui = opts.ui, plugin = opts.plugin,
-                                    configuration = opts.configuration,
-                                    title = tgt_c.title, author = tgt_c.author,
-                                    main_entry = fresh_tgt,
-                                    source = { file = src_c.file, title = src_c.title,
-                                        author = src_c.author, entry = fresh_src },
-                                    on_done = function(ok, err)
-                                        if ok then
-                                            step(idx + 1)
-                                        else
-                                            UIManager:show(InfoMessage:new{
-                                                text = T(_("Stopped at \"%1\" into \"%2\": %3"), src_c.title,
-                                                    tgt_c.title, tostring(err or "unknown error")),
-                                                timeout = 5,
-                                            })
-                                        end
-                                    end,
-                                })
-                            end
-                            step(1)
+                            XrayMerge.runSeriesChain({
+                                chain = chain, features = features, provider = provider,
+                                ui = opts.ui, plugin = opts.plugin,
+                                configuration = opts.configuration,
+                                close_browser = opts.close_browser,
+                                on_done = opts.on_done,
+                            })
                         end }},
                         {{ text = _("Back"), callback = function()
                             UIManager:close(confirm)

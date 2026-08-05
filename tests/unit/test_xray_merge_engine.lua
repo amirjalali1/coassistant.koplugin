@@ -644,5 +644,151 @@ TestRunner:test("ledger dedup: a re-merge refreshes the stub and unions carried 
     TestRunner:assertEqual(#stub.background, 2, "carried lines unioned")
 end)
 
+print("")
+print("  [carry layer 3: create-time seed + provenance gap]")
+
+TestRunner:test("unionProvenance: chained merges record transitive sources", function()
+    -- vol 3 folds vol 2, which itself carries vol 1: all three are included
+    local out = XrayMerge.unionProvenance(nil, "Gullstone", "The Lamp")
+    TestRunner:assertEqual(out, "Gullstone; The Lamp", "source's own provenance rides")
+    out = XrayMerge.unionProvenance(out, "What Vardo Knew", "The Lamp; Gullstone")
+    TestRunner:assertEqual(out, "Gullstone; The Lamp; What Vardo Knew",
+        "re-listed ancestors dedup by exact title")
+    TestRunner:assertEqual(#XrayMerge.provenanceGap({ "The Lamp", "Gullstone" }, out), 0,
+        "a chained volume no longer reads as gap-ridden")
+end)
+
+TestRunner:test("provenanceGap: exact-title identity within the ;-list", function()
+    local missing = XrayMerge.provenanceGap({ "The Lamp", "Gullstone" },
+        "The Lamplighter; Gullstone")
+    TestRunner:assertEqual(#missing, 1, "substring must not match")
+    TestRunner:assertEqual(missing[1], "The Lamp", "the unfolded title is named")
+    TestRunner:assertEqual(#XrayMerge.provenanceGap({ "A", "B" }, nil), 2,
+        "no provenance at all -> everything missing")
+    TestRunner:assertEqual(#XrayMerge.provenanceGap({ "A", "B" }, " A ;B"), 0,
+        "whitespace-tolerant, all present -> none missing")
+end)
+
+local function withSeedStubs(preds_by_file, caches_by_file, fn)
+    local orig_groups = package.loaded["koassistant_book_groups"]
+    package.loaded["koassistant_book_groups"] = {
+        predecessorsOf = function(file)
+            return preds_by_file[file] or {}, nil
+        end,
+        displayTitle = function(file)
+            return file:match("([^/]+)%.epub$") or file
+        end,
+    }
+    local ActionCache = require("koassistant_action_cache")
+    local orig_get = ActionCache.getXrayCache
+    ActionCache.getXrayCache = function(file) return caches_by_file[file] end
+    local ok_run, err = pcall(fn)
+    ActionCache.getXrayCache = orig_get
+    package.loaded["koassistant_book_groups"] = orig_groups
+    if not ok_run then error(err, 0) end
+end
+
+local SEED_FRESH_JSON = [[{
+  "type": "fiction",
+  "characters": [
+    {"name": "Mira Alvsund", "description": "The keeper in this volume."}
+  ]
+}]]
+
+TestRunner:test("seedDormant: nearest X-Rayed predecessor seeds, its ledger rides", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local vol2_result = [[{
+      "type": "fiction",
+      "characters": [
+        {"name": "Mira Alvsund", "description": "Vol 2 Mira."},
+        {"name": "Kell Damsgard", "description": "The harbormaster."}
+      ],
+      "__dormant": [
+        {"name": "Old Tove", "category": "characters", "description": "A netmender.",
+         "source": "vol1", "background": [{"source": "vol1", "text": "Mended the nets."}]}
+      ]
+    }]]
+    withSeedStubs(
+        { ["/b/vol3.epub"] = { "/b/vol1.epub", "/b/vol2.epub" } },
+        { ["/b/vol2.epub"] = { result = vol2_result, used_book_text = false } },
+        function()
+            local parsed = XrayParser.parse(SEED_FRESH_JSON)
+            local added, src = XrayMerge.seedDormant("/b/vol3.epub", parsed, {}, nil, nil)
+            TestRunner:assertEqual(src, "vol2", "nearest X-Rayed predecessor is the source")
+            TestRunner:assertEqual(added, 2, "unmatched active + riding ledger stub")
+            local names = {}
+            for _i, s in ipairs(parsed[XrayParser.DORMANT_KEY]) do names[s.name] = s end
+            TestRunner:assertTrue(names["Kell Damsgard"] ~= nil, "unmatched active stubbed")
+            TestRunner:assertTrue(names["Old Tove"] ~= nil, "predecessor's own ledger rides (transitive)")
+            TestRunner:assertTrue(names["Mira Alvsund"] == nil,
+                "matched active NOT stubbed - description transfer is merge (model) territory")
+        end)
+end)
+
+TestRunner:test("seedDormant: walks past X-Ray-less and consent-denied predecessors", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local vol1_result = [[{
+      "type": "fiction",
+      "characters": [{"name": "Ines Vardo", "description": "Kept the third watch."}]
+    }]]
+    withSeedStubs(
+        { ["/b/vol4.epub"] = { "/b/vol1.epub", "/b/vol2.epub", "/b/vol3.epub" } },
+        {
+            -- vol3: no X-Ray at all; vol2: text-built with NO consent (features
+            -- empty, no trusted provider) -> denied; vol1: consent-free entry
+            ["/b/vol2.epub"] = { result = vol1_result, used_book_text = true },
+            ["/b/vol1.epub"] = { result = vol1_result, used_book_text = false },
+        },
+        function()
+            local parsed = XrayParser.parse(SEED_FRESH_JSON)
+            local added, src = XrayMerge.seedDormant("/b/vol4.epub", parsed, {}, nil, nil)
+            TestRunner:assertEqual(src, "vol1", "denied/missing predecessors skipped, farther one seeds")
+            TestRunner:assertEqual(added, 1, "its actives stubbed")
+        end)
+end)
+
+TestRunner:test("seedDormant: no group -> zero, artifact untouched", function()
+    local XrayParser = require("koassistant_xray_parser")
+    withSeedStubs({}, {}, function()
+        local parsed = XrayParser.parse(SEED_FRESH_JSON)
+        local added, src = XrayMerge.seedDormant("/b/solo.epub", parsed, {}, nil, nil)
+        TestRunner:assertEqual(added, 0, "nothing seeded")
+        TestRunner:assertEqual(src, nil, "no source")
+        TestRunner:assertTrue(parsed[XrayParser.DORMANT_KEY] == nil, "no ledger key created")
+    end)
+end)
+
+TestRunner:test("seedDormant + wake: a skip-volume stub wakes on the fresh book's actives", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local vol2_result = [[{
+      "type": "fiction",
+      "characters": [{"name": "Kell Damsgard", "description": "The harbormaster."}],
+      "__dormant": [
+        {"name": "Mira Alvsund", "category": "characters",
+         "description": "Kept the Greenlight through the long dark.",
+         "source": "vol1", "background": [{"source": "vol1", "text": "Raised the boy at the light."}]}
+      ]
+    }]]
+    withSeedStubs(
+        { ["/b/vol3.epub"] = { "/b/vol1.epub", "/b/vol2.epub" } },
+        { ["/b/vol2.epub"] = { result = vol2_result, used_book_text = false } },
+        function()
+            local parsed = XrayParser.parse(SEED_FRESH_JSON)
+            XrayMerge.seedDormant("/b/vol3.epub", parsed, {}, nil, nil)
+            local woken = XrayParser.wakeDormant(parsed)
+            TestRunner:assertEqual(#woken, 1, "the skip-volume stub wakes at create time")
+            local mira = parsed.characters[1]
+            TestRunner:assertTrue(type(mira.background) == "table" and #mira.background == 1,
+                "carried history attached (per-source replace: description wins its source slot)")
+            TestRunner:assertEqual(mira.background[1].source, "vol1",
+                "background line carries the original label")
+            TestRunner:assertEqual(mira.background[1].text,
+                "Kept the Greenlight through the long dark.",
+                "the stub description is the promoted line")
+            TestRunner:assertEqual(mira.description, "The keeper in this volume.",
+                "the fresh book's own description untouched")
+        end)
+end)
+
 local ok = TestRunner:summary()
 return ok

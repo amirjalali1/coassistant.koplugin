@@ -4623,6 +4623,26 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                         if #woken > 0 then
                             logger.info("KOAssistant: X-Ray update woke", #woken, "dormant entit(y/ies)")
                         end
+                    elseif not (config.features and (config.features._section_scope
+                            or config.features._section_xray)) then
+                        -- Carry layer 3(i): a fresh (or rebuilt) main X-Ray seeds
+                        -- its dormant ledger from the nearest X-Rayed predecessor
+                        -- in the book's group — locally, zero tokens, visible
+                        -- content untouched — then the wake-pass promotes any
+                        -- skip-volume entities already present. Rebuilds recover
+                        -- the ledger they just dropped; runs for background and
+                        -- ladder creates too (the seed never interrupts)
+                        local seeded, seed_src = require("koassistant_xray_merge").seedDormant(
+                            cache_file, parsed, config.features,
+                            temp_config and temp_config.provider, ui)
+                        if seeded > 0 then
+                            logger.info("KOAssistant: X-Ray create seeded", seeded,
+                                "dormant entit(y/ies) from", seed_src)
+                        end
+                        local woken = XrayParser.wakeDormant(parsed)
+                        if #woken > 0 then
+                            logger.info("KOAssistant: X-Ray create woke", #woken, "dormant entit(y/ies)")
+                        end
                     end
                     local book_meta = message_data.book_metadata or {}
                     local display_progress = message_data.reading_progress or ""
@@ -5006,6 +5026,28 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             -- Shows when action requested data (book text, annotations, notebook) but didn't receive it
             if message_data._unavailable_data and #message_data._unavailable_data > 0 then
                 history.unavailable_data = message_data._unavailable_data
+            end
+
+            -- Carry layer 3(ii): attended fresh main X-Ray of a grouped book →
+            -- offer folding the previous book's X-Ray in (or note that it has
+            -- none). Background and ladder builds seed silently instead — no
+            -- dialog while reading (maintainer decision 2026-08-06); updates
+            -- never re-offer
+            if action.cache_as_xray and cache_answer and cache_file
+                and not is_truncated and not background_discard
+                and xray_producer == "manual" and not using_cache
+                and not (config.features and (config.features._section_scope
+                    or config.features._section_xray))
+                and require("koassistant_xray_parser").isJSON(cache_answer) then
+                local offer_meta = message_data.book_metadata or {}
+                UIManager:nextTick(function()
+                    require("koassistant_xray_merge").maybeOfferPostCreateFold({
+                        file = cache_file,
+                        title = offer_meta.title,
+                        author = offer_meta.author,
+                        ui = ui, plugin = plugin, configuration = config,
+                    })
+                end)
             end
 
             if on_complete then

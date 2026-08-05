@@ -236,9 +236,9 @@ TestRunner:test("handles done signal", function()
         message = { content = "" },
         done = true
     }
-    -- Note: extractContentFromSSE doesn't check 'done', it returns empty string
-    -- The caller checks 'done' separately
-    TestRunner:assertEqual(extractContentFromSSE(event), "", "done signal returns empty")
+    -- Note: extractContentFromSSE doesn't check 'done' (the caller does);
+    -- empty content on the done event carries no displayable signal → nil
+    TestRunner:assertNil(extractContentFromSSE(event), "done signal returns nil")
 end)
 
 TestRunner:test("handles empty message", function()
