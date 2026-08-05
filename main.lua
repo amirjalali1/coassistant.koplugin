@@ -4733,13 +4733,17 @@ function AskGPT:buildTranslationLanguageMenu()
   -- Add "Custom..." option for entering any language
   table.insert(menu_items, {
     text = _("Custom..."),
+    opens_dialog = true, -- quick settings: close the popup, don't reopen over the input dialog
     callback = function()
       local InputDialog = require("ui/widget/inputdialog")
       local f = self_ref.settings:readSetting("features") or {}
+      -- Never prefill the __PRIMARY__ sentinel — it's an internal value
+      local current = f.translation_language
+      if current == "__PRIMARY__" then current = nil end
       local input_dialog
       input_dialog = InputDialog:new{
         title = _("Custom Translation Language"),
-        input = f.translation_language or "",
+        input = current or "",
         input_hint = _("e.g., Spanish, Japanese, French"),
         description = _("Enter the target language for translations."),
         buttons = {
@@ -4757,9 +4761,17 @@ function AskGPT:buildTranslationLanguageMenu()
               callback = function()
                 local new_lang = input_dialog:getInputText()
                 if new_lang and new_lang ~= "" then
+                  -- Sync BOTH mechanisms, like the fixed-language rows: with
+                  -- translation_use_primary left true the custom language
+                  -- would be silently ignored
+                  f.translation_use_primary = false
                   f.translation_language = new_lang
                   self_ref.settings:saveSetting("features", f)
                   self_ref.settings:flush()
+                  UIManager:show(Notification:new{
+                    text = T(_("Translate: %1"), getLanguageDisplay(new_lang)),
+                    timeout = 1.5,
+                  })
                 end
                 UIManager:close(input_dialog)
               end,
@@ -13486,7 +13498,13 @@ function AskGPT:showQuickSettingsPopup(title, menu_items, close_on_select, on_cl
 
   local buttons = {}
   for _idx, item in ipairs(menu_items) do
-    if item.separator then
+    -- TouchMenu semantics: separator = true on an ACTIONABLE item means "draw a
+    -- line after this item", not "this item is a header". Only render a
+    -- non-interactive header row for items that carry no action at all —
+    -- treating any separator-flagged item as a header grayed out real options
+    -- (last language in the translate picker, dictionary "Follow Primary").
+    local is_actionable = item.callback or item.replace_items or item.checked_func
+    if item.separator and not is_actionable then
       -- Non-interactive section header
       table.insert(buttons, {
         {
@@ -13502,7 +13520,17 @@ function AskGPT:showQuickSettingsPopup(title, menu_items, close_on_select, on_cl
       end
       local btn = {
         text = text,
+        enabled = item.enabled ~= false,
         callback = function()
+          -- opens_dialog: the item's callback shows its own dialog (e.g. the
+          -- custom-language InputDialog) — close this popup first and don't
+          -- reopen the parent, or the new dialog ends up buried under it
+          if item.opens_dialog then
+            UIManager:close(self_ref._quick_settings_dialog)
+            self_ref._quick_settings_dialog = nil
+            if item.callback then item.callback() end
+            return
+          end
           -- replace_items: swap this popup's list in place (e.g. "Show all
           -- providers"), keeping the same title and close semantics
           if item.replace_items then
@@ -13539,6 +13567,15 @@ function AskGPT:showQuickSettingsPopup(title, menu_items, close_on_select, on_cl
         end
       end
       table.insert(buttons, { btn })
+      -- Keep the section break the builder asked for: line AFTER the item
+      if item.separator then
+        table.insert(buttons, {
+          {
+            text = "────────────────",
+            enabled = false,
+          },
+        })
+      end
     end
   end
 
