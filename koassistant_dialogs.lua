@@ -325,6 +325,25 @@ local function effectiveDispatchProvider(features, action, base_provider)
     return base_provider
 end
 
+-- Reasoning headroom (#98): thinking tokens bill against max_tokens on every
+-- provider, so an action's pinned max_tokens (sized for the answer alone) can be
+-- consumed entirely by reasoning — the stream then ends with zero answer text
+-- ("No response received. Raw: ..."). When the resolved decision leaves reasoning
+-- ON (including "off" requests clamped up on models that can't disable it, e.g.
+-- Gemini 3.x), drop a pinned value below the provider's own default so the
+-- handler falls back to its defaults — which are reasoning-aware where it
+-- matters (openai/gemini/xai bump to 32768). Every fallback value is already
+-- sent on unpinned requests, so this can never exceed a ceiling the defaults
+-- don't already reach.
+local function ensureReasoningHeadroom(api_params, provider, decision)
+    if not (decision and decision.mode == "on" and api_params.max_tokens) then return end
+    local pd = Defaults.ProviderDefaults[provider]
+    local floor = pd and pd.additional_parameters and pd.additional_parameters.max_tokens or 16384
+    if api_params.max_tokens < floor then
+        api_params.max_tokens = nil
+    end
+end
+
 local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
     if not config then return false end
 
@@ -630,6 +649,7 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
     })
     config.api_params._reasoning = reasoning_decision
     ModelConstraints.applyReasoningParams(provider, config.api_params, reasoning_decision)
+    ensureReasoningHeadroom(config.api_params, provider, reasoning_decision)
 
     -- (Web search baking moved above the system-prompt build — see the block before
     -- buildUnifiedSystem.)
@@ -1301,6 +1321,7 @@ local function applyQuickReplyOverrides(config, plugin)
     })
     config.api_params._reasoning = decision
     ModelConstraints.applyReasoningParams(provider, config.api_params, decision)
+    ensureReasoningHeadroom(config.api_params, provider, decision)
 end
 
 local function getAllPrompts(configuration, plugin)

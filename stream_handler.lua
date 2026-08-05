@@ -640,6 +640,22 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                         return
                     end
                 end
+            end
+            -- Reasoning-only completion (#98): the model streamed thinking but the
+            -- stream ended before any answer text. Say so instead of dumping the
+            -- raw tail — and distinguish the token-exhaustion case (the thinking
+            -- consumed the whole max_tokens budget) from an abnormal stream end.
+            if #reasoning_buffer > 0 then
+                local err
+                if was_truncated then
+                    err = _("The model spent its entire response limit on reasoning and never started the answer. Try again, or lower the reasoning effort.")
+                else
+                    err = _("The model produced only reasoning and no answer text. Try again.")
+                end
+                if on_complete then on_complete(false, nil, err) end
+                return
+            end
+            if partial_data and #partial_data > 0 then
                 if on_complete then on_complete(false, nil, _("No response received. Raw: ") .. partial_data:sub(1, 200)) end
                 return
             end
