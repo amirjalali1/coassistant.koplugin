@@ -574,6 +574,54 @@ TestRunner:test("stripDormantJSON: ledger removed for prompts; no-op without one
     TestRunner:assertEqual(XrayParser.stripDormantJSON("plain prose"), "plain prose", "prose unchanged")
 end)
 
+TestRunner:test("dormant-index bridge: entity index lists dormant IDENTITY HANDLES only", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local base = XrayParser.parse(BASE_JSON)
+    base[XrayParser.DORMANT_KEY] = {
+        { name = "Keeper of the Rock", aliases = { "the Keeper" }, category = "characters",
+          description = "SECRET-CONTENT-MUST-NOT-LEAK", source = "The Lamp",
+          background = { { source = "Vol 0", text = "ALSO-SECRET" } } },
+    }
+    local index = XrayParser.buildEntityIndex(base)
+    TestRunner:assertTrue(index:find("dormant", 1, true) ~= nil, "dormant line present")
+    TestRunner:assertTrue(index:find("Keeper of the Rock", 1, true) ~= nil, "stub name listed")
+    TestRunner:assertTrue(index:find("the Keeper", 1, true) ~= nil, "stub alias listed")
+    TestRunner:assertTrue(not index:find("SECRET", 1, true),
+        "descriptions/background NEVER ride the index")
+    local clean = XrayParser.parse(BASE_JSON)
+    TestRunner:assertTrue(not XrayParser.buildEntityIndex(clean):find("dormant", 1, true),
+        "no ledger, no dormant line")
+end)
+
+TestRunner:test("bridge end-to-end: model lists a dormant name as alias -> wake connects the drifted names", function()
+    local WriteBack = require("koassistant_artifact_writeback")
+    local XrayParser = require("koassistant_xray_parser")
+    local json = require("json")
+    local base = XrayParser.parse(BASE_JSON)
+    base[XrayParser.DORMANT_KEY] = {
+        { name = "Keeper of the Rock", category = "characters",
+          description = "Kept the light for eleven winters.", source = "The Lamp" },
+    }
+    local base_json = json.encode(base, { pretty = true, indent = true })
+    -- The update introduces her under the NEW book's name; the model, seeing
+    -- the dormant line in the index, bridges by alias
+    local delta = [[{"characters": [
+      {"name": "Mira Alvsund", "aliases": ["Keeper of the Rock"],
+       "description": "A weathered woman new to this volume."}
+    ]}]]
+    local parsed, err = WriteBack.parseXrayAnswer(delta, base_json)
+    TestRunner:assertTrue(parsed ~= nil, "parses: " .. tostring(err))
+    TestRunner:assertEqual(parsed[XrayParser.DORMANT_KEY], nil, "stub woken and gone")
+    local mira
+    for _idx, c in ipairs(parsed.characters) do
+        if c.name == "Mira Alvsund" then mira = c end
+    end
+    TestRunner:assertEqual(mira.background[1].source, "The Lamp",
+        "carried knowledge lands on the drifted-name entity")
+    TestRunner:assertEqual(mira.description, "A weathered woman new to this volume.",
+        "this book's description untouched")
+end)
+
 TestRunner:test("ledger dedup: a re-merge refreshes the stub and unions carried lines", function()
     local XrayParser = require("koassistant_xray_parser")
     local base = XrayParser.parse(BASE_JSON)

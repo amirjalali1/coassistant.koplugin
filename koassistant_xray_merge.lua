@@ -88,6 +88,7 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 - When a section reveals significant new information about an existing entity, output the COMPLETE updated entry with all fields (it will replace the old version)
 - A modified entry REPLACES the old one — carry over its existing details (identifying facts, relationships, earlier developments) and add the new; anything you leave out is lost
 - To reference an existing entity, use the EXACT name from the entity list above
+- Names listed under "dormant" are carried from related books and have NOT appeared in this book yet — they are not existing entries. If an entity you are adding or updating is the same person, place, or thing as a dormant name, include that dormant name among its aliases.
 - Include "current_state" (fiction) or "current_position" (nonfiction) ONLY if the sections extend past the previous analysis's coverage — otherwise omit it
 - Do not invent entities or events that appear in no section
 
@@ -117,6 +118,7 @@ X-Ray of the related book:
 Output ONLY a JSON object in this delta format — it will be programmatically merged with the existing data:
 - "background_updates": [{"name": "Exact Existing Name", "background": "One to three sentences of background from the related book.", "aliases": ["optional additional alias"]}] — one entry for each entity that appears in BOTH X-Rays (recurring characters, places, concepts, terms). Use the EXACT name from the entity list above. The existing entry is kept exactly as it is and your background text is attached alongside it, so cover only what the related book adds: who or what they were there, what they did, what carries over. This is the ONLY way to touch an existing entity — NEVER repeat an existing entity in the category arrays.
 - Category arrays (same JSON keys and structure as the previous analysis): ONLY for entities from the related book that do NOT appear in the previous analysis but matter for understanding "{title}" (recurring or referenced figures, shared places, carried-over concepts). Write their descriptions as background knowledge from the related book.
+- Names listed under "dormant" are carried from other related books and have NOT appeared in "{title}" yet — they are not existing entries. If an entity of the related book is the same person, place, or thing as a dormant name, treat it per the rules above (background_updates if it matches an existing entry, category arrays otherwise) and include the dormant name among its aliases.
 - OMIT categories with nothing to add — they are preserved as-is
 - timeline / argument_development and current_state / current_position belong to "{title}" alone — NEVER include them
 - Do not invent entities that appear in neither X-Ray

@@ -1574,6 +1574,33 @@ function XrayParser.buildEntityIndex(data)
             end
         end
     end
+    -- Dormant-index alias bridge (item 49 layer 2.5): the ledger's IDENTITY
+    -- HANDLES (names + up to 2 aliases — never descriptions or background)
+    -- join the index so the model can bridge naming drift wherever it already
+    -- runs (updates, merges): it lists a dormant name among an entity's
+    -- aliases, and the mechanical wake-pass connects them in the same write.
+    local ledger = data[XrayParser.DORMANT_KEY]
+    if type(ledger) == "table" and #ledger > 0 then
+        local names = {}
+        for _idx, stub in ipairs(ledger) do
+            if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= "" then
+                local name = stub.name
+                local stub_aliases = ensure_array(stub.aliases)
+                if stub_aliases and #stub_aliases > 0 then
+                    local shown = {}
+                    for i = 1, math.min(2, #stub_aliases) do
+                        shown[i] = stub_aliases[i]
+                    end
+                    name = name .. " (" .. table.concat(shown, ", ") .. ")"
+                end
+                names[#names + 1] = name
+            end
+        end
+        if #names > 0 then
+            lines[#lines + 1] = "dormant (from related books, not yet in this one): "
+                .. table.concat(names, "; ")
+        end
+    end
     return table.concat(lines, "\n")
 end
 
