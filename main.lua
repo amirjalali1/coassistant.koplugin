@@ -16091,6 +16091,12 @@ function AskGPT:_scrubContextFeatures(features)
   features.book_context = nil
   features.dictionary_context = nil
   features._group_launch = nil
+  -- Selection state is highlight-entry-scoped: every highlight entry re-captures
+  -- both AFTER this scrub (menu/quick/dict/bypass). Left stale, a previous
+  -- selection's sboxes would anchor the minimal popup to the OLD selection's
+  -- position, and an old context window could pass its fingerprint check.
+  features.selection_data = nil
+  features._selection_context_window = nil
 end
 
 function AskGPT:executeHighlightBypassAction(action, selected_text, highlight_instance)
@@ -16111,6 +16117,29 @@ function AskGPT:executeHighlightBypassAction(action, selected_text, highlight_in
   -- is_general_context from an earlier General Chat would re-context this request
   -- to "general" and skip the entire highlight branch (injection_gating_audit).
   self:_scrubContextFeatures(config_copy.features)
+
+  -- Capture selection geometry + the surrounding-context window while the
+  -- selection is still alive (the interceptor clear()s it right after we
+  -- return) — same capture as the highlight-menu entries. Without this the
+  -- minimal popup had no sboxes to anchor to (bypass launches always fell back
+  -- to centered), and the context window relied on the selection surviving
+  -- until consumption instead of the entry-point pre-extract every other
+  -- highlight entry does.
+  local st = highlight_instance and highlight_instance.selected_text
+  if st then
+    config_copy.features.selection_data = {
+      text = st.text,
+      pos0 = st.pos0,
+      pos1 = st.pos1,
+      sboxes = st.sboxes,
+      pboxes = st.pboxes,
+      ext = st.ext,
+      drawer = st.drawer,
+      color = st.color,
+    }
+  end
+  config_copy.features._selection_context_window =
+    Dialogs.fetchSelectionContextWindow(self.ui, selected_text)
 
   -- Block actions when declared requirements are unmet
   if self:_checkRequirements(action) then
