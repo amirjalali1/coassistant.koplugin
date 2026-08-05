@@ -146,6 +146,28 @@ function BookGroups.removeBook(id, path)
     return false
 end
 
+--- Move a book to an absolute 1-based position, clamped (kenken QoL, #90:
+--- "Vol 15 definitely goes to rank 15" on 30-book groups).
+--- @return boolean moved
+function BookGroups.moveBookTo(id, path, pos)
+    local n = tonumber(pos)
+    if not n then return false end
+    local data = load()
+    for _idx, group in ipairs(data.groups) do
+        if group.id == id then
+            local i = indexOf(group, path)
+            if not i then return false end
+            local j = math.max(1, math.min(#group.books, math.floor(n)))
+            if j == i then return false end
+            table.remove(group.books, i)
+            table.insert(group.books, j, path)
+            save(data)
+            return true
+        end
+    end
+    return false
+end
+
 --- Move a book by delta positions (-1 = up/earlier, 1 = down/later), clamped.
 --- @return boolean moved
 function BookGroups.moveBook(id, path, delta)

@@ -28,12 +28,13 @@ function GroupsUI.rowLabel(path)
     return label
 end
 
-local function promptName(title, initial, on_done, on_cancel)
+local function promptName(title, initial, on_done, on_cancel, popts)
     local InputDialog = require("ui/widget/inputdialog")
     local dialog
     dialog = InputDialog:new{
         title = title,
         input = initial or "",
+        description = popts and popts.description or nil,
         buttons = {{
             { text = _("Cancel"), id = "close",
                 callback = function()
@@ -46,6 +47,10 @@ local function promptName(title, initial, on_done, on_cancel)
                     UIManager:close(dialog)
                     if name and name ~= "" then
                         on_done(name)
+                    elseif popts and popts.allow_empty then
+                        -- Kenken QoL (#90): CJK typing is painful — an empty
+                        -- name is allowed and auto-filled from the first book
+                        on_done("")
                     elseif on_cancel then
                         on_cancel()
                     end
@@ -54,6 +59,87 @@ local function promptName(title, initial, on_done, on_cancel)
     }
     UIManager:show(dialog)
     dialog:onShowKeyboard()
+end
+
+-- "?" is the store's unnamed placeholder (create("") — auto-named on first add)
+local function displayName(group)
+    return (group.name ~= "" and group.name ~= "?") and group.name or _("(unnamed)")
+end
+
+--- Self-refreshing member move dialog (kenken QoL, #90: 30-book reordering).
+--- The arrow dialog PERSISTS across presses: each press moves the book,
+--- refreshes the group list underneath, and re-shows this dialog with fresh
+--- position and enabled state — press-press-press instead of
+--- reopen-relocate-press. "Move to position…" jumps directly.
+--- opts: same table showGroup received ({ plugin, ui, on_close }).
+function GroupsUI.showMoveDialog(group_id, path, opts)
+    opts = opts or {}
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local BookGroups = groups()
+    local group = BookGroups.byId(group_id)
+    local i = group and BookGroups.positionOf(group, path)
+    if not i then return end
+    local n = #group.books
+    local title = BookGroups.displayTitle(path, opts.ui)
+    local book_dialog
+    local function refreshBoth()
+        UIManager:close(book_dialog)
+        if GroupsUI._group_dialog then UIManager:close(GroupsUI._group_dialog) end
+        GroupsUI.showGroup(group_id, opts)
+        GroupsUI.showMoveDialog(group_id, path, opts)
+    end
+    book_dialog = ButtonDialog:new{
+        title = T(_("%1: position %2 of %3"), title, i, n),
+        buttons = {
+            {
+                { text = "\u{2191}", enabled = i > 1, callback = function()
+                    BookGroups.moveBook(group_id, path, -1)
+                    refreshBoth()
+                end },
+                { text = "\u{2193}", enabled = i < n, callback = function()
+                    BookGroups.moveBook(group_id, path, 1)
+                    refreshBoth()
+                end },
+            },
+            {{ text = _("Move to position…"), callback = function()
+                UIManager:close(book_dialog)
+                local InputDialog = require("ui/widget/inputdialog")
+                local pos_dialog
+                pos_dialog = InputDialog:new{
+                    title = T(_("Move \"%1\" to position (1-%2)"), title, n),
+                    input = tostring(i),
+                    input_type = "number",
+                    buttons = {{
+                        { text = _("Cancel"), id = "close", callback = function()
+                            UIManager:close(pos_dialog)
+                            GroupsUI.showMoveDialog(group_id, path, opts)
+                        end },
+                        { text = _("Move"), is_enter_default = true, callback = function()
+                            local pos = tonumber(pos_dialog:getInputText())
+                            UIManager:close(pos_dialog)
+                            if pos then BookGroups.moveBookTo(group_id, path, pos) end
+                            if GroupsUI._group_dialog then UIManager:close(GroupsUI._group_dialog) end
+                            GroupsUI.showGroup(group_id, opts)
+                            GroupsUI.showMoveDialog(group_id, path, opts)
+                        end },
+                    }},
+                }
+                UIManager:show(pos_dialog)
+                pos_dialog:onShowKeyboard()
+            end }},
+            {{ text = _("Remove from group"), callback = function()
+                UIManager:close(book_dialog)
+                BookGroups.removeBook(group_id, path)
+                if GroupsUI._group_dialog then UIManager:close(GroupsUI._group_dialog) end
+                GroupsUI.showGroup(group_id, opts)
+            end }},
+            {{ text = _("Done"), callback = function()
+                UIManager:close(book_dialog)
+            end }},
+        },
+        shrink_unneeded_width = true,
+    }
+    UIManager:show(book_dialog)
 end
 
 --- Per-group screen. opts: { plugin, ui, on_close }
@@ -71,6 +157,7 @@ function GroupsUI.showGroup(group_id, opts)
         UIManager:close(dialog)
         GroupsUI.showGroup(group_id, opts)
     end
+    GroupsUI._group_dialog = nil -- set below once constructed
     local rows = {}
     for i, path in ipairs(group.books) do
         local captured = path
@@ -82,32 +169,7 @@ function GroupsUI.showGroup(group_id, opts)
             text = i .. ". " .. title,
             align = "left",
             callback = function()
-                -- Same compact arrow dialog as the action/QS ordering managers
-                local book_dialog
-                book_dialog = ButtonDialog:new{
-                    title = title,
-                    buttons = {
-                        {
-                            { text = "\u{2191}", enabled = i > 1, callback = function()
-                                UIManager:close(book_dialog)
-                                BookGroups.moveBook(group_id, captured, -1)
-                                reopen()
-                            end },
-                            { text = "\u{2193}", enabled = i < #group.books, callback = function()
-                                UIManager:close(book_dialog)
-                                BookGroups.moveBook(group_id, captured, 1)
-                                reopen()
-                            end },
-                        },
-                        {{ text = _("Remove from group"), callback = function()
-                            UIManager:close(book_dialog)
-                            BookGroups.removeBook(group_id, captured)
-                            reopen()
-                        end }},
-                    },
-                    shrink_unneeded_width = true,
-                }
-                UIManager:show(book_dialog)
+                GroupsUI.showMoveDialog(group_id, captured, opts)
             end,
         }}
     end
@@ -134,6 +196,13 @@ function GroupsUI.showGroup(group_id, opts)
                 on_confirm = function(selected_files)
                     for path in pairs(selected_files or {}) do
                         BookGroups.addBook(group_id, path)
+                    end
+                    -- Kenken QoL (#90): an unnamed group takes its first
+                    -- book's title (CJK typing is painful in KOReader)
+                    local g = BookGroups.byId(group_id)
+                    if g and (g.name == "?" or g.name == "") and g.books[1] then
+                        BookGroups.rename(group_id,
+                            BookGroups.displayTitle(g.books[1], opts.ui))
                     end
                     GroupsUI.showGroup(group_id, opts)
                 end,
@@ -180,10 +249,12 @@ function GroupsUI.showGroup(group_id, opts)
         end,
     }}
     dialog = ButtonDialog:new{
-        title = T(_("Group: %1"), group.name)
+        title = T(_("Group: %1"), displayName(group))
             .. "\n" .. _("Order is the reading order — it drives merge suggestions and previous/next navigation."),
         buttons = rows,
     }
+    -- The move dialog closes/reopens this list under itself (kenken QoL)
+    GroupsUI._group_dialog = dialog
     UIManager:show(dialog)
 end
 
@@ -197,7 +268,7 @@ function GroupsUI.showManager(opts)
     for _idx, group in ipairs(BookGroups.all()) do
         local captured = group
         rows[#rows + 1] = {{
-            text = T(_("%1 (%2 books)"), captured.name, #captured.books),
+            text = T(_("%1 (%2 books)"), displayName(captured), #captured.books),
             align = "left",
             callback = function()
                 UIManager:close(dialog)
@@ -224,7 +295,9 @@ function GroupsUI.showManager(opts)
                     plugin = opts.plugin, ui = opts.ui,
                     on_close = function() GroupsUI.showManager(opts) end,
                 })
-            end, function() GroupsUI.showManager(opts) end)
+            end, function() GroupsUI.showManager(opts) end,
+            { allow_empty = true,
+              description = _("You can leave this empty: the group takes the name of the first book you add.") })
         end,
     }}
     rows[#rows + 1] = {{
@@ -290,7 +363,9 @@ function GroupsUI.showBookRow(path, opts)
         text = _("New group with this book…"),
         callback = function()
             UIManager:close(dialog)
-            promptName(_("New group"), nil, function(name)
+            -- Kenken QoL (#90): prefill with this book's title — deleting a
+            -- few characters beats typing CJK on an e-reader keyboard
+            promptName(_("New group"), BookGroups.displayTitle(path, opts.ui), function(name)
                 local group = groups().create(name)
                 groups().addBook(group.id, path)
                 GroupsUI.showBookRow(path, opts)

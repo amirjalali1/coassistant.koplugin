@@ -138,6 +138,18 @@ TestRunner:test("orderCandidates: nearest predecessor first, then later mates, t
     TestRunner:assertEqual(sorted[4].group_name, nil, "non-mates unannotated")
 end)
 
+TestRunner:test("moveBookTo: absolute position, clamped, garbage and same-pos rejected", function()
+    local g = BookGroups.create("Abs")
+    BookGroups.addBook(g.id, "/a"); BookGroups.addBook(g.id, "/b")
+    BookGroups.addBook(g.id, "/c"); BookGroups.addBook(g.id, "/d")
+    TestRunner:assertEqual(BookGroups.moveBookTo(g.id, "/d", 2), true, "moves to absolute position")
+    TestRunner:assertEqual(BookGroups.byId(g.id).books[2], "/d", "landed at 2")
+    TestRunner:assertEqual(BookGroups.moveBookTo(g.id, "/a", 99), true, "over-large position clamps to end")
+    TestRunner:assertEqual(BookGroups.byId(g.id).books[4], "/a", "clamped to last slot")
+    TestRunner:assertEqual(BookGroups.moveBookTo(g.id, "/d", "x"), false, "garbage position rejected")
+    TestRunner:assertEqual(BookGroups.moveBookTo(g.id, "/d", 1), false, "same position is a no-op")
+end)
+
 TestRunner:test("booksInfoFor: reading order kept, {title, authors, file} shape, missing skipped", function()
     -- Real temp files so fileExists passes; doc-settings resolution has no
     -- sidecar → the filename fallback names the rows
