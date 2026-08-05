@@ -463,6 +463,13 @@ function AskGPT:init()
           self:_xrayAutoOnPageUpdate(cur)
         end
       end)
+    elseif self._xray_auto_state and self._xray_auto_state.rung_progress then
+      -- 50(f): posture pass on open for ladder books without auto — settings
+      -- may have changed while the book was closed (spoiler protection off →
+      -- install the newest rung; back on over a posture-promoted install →
+      -- revert to the position rung). The fire re-checks everything and
+      -- no-ops when the posture and the live entry already agree.
+      self:_scheduleXrayLadderPromotion()
     end
     -- Heal KOAssistant data indexes for this book (issue #92): synced or
     -- restored sidecar data becomes visible in the global browsers through
@@ -7990,11 +7997,15 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     -- demotion, and the free-update row. promotable = a prepared version ready to
     -- install now (at-or-below reader, ahead of live); next_ahead = the nearest
     -- prepared version past the reader.
+    -- 50(f): under the FULL posture (spoiler protection off / research) the
+    -- instant-update row offers the newest built rung even ahead of the reader
+    local xr_posture = self:_xrayPosture()
     local promotable
     if not ladder_building and current_progress and not cached_entry.full_document
         and cached_entry.source_mode ~= "ai_knowledge" then
       promotable = XrayAuto.pickPromotableRung(ladder_rungs,
-        cached_entry.progress_decimal, current_progress.decimal)
+        cached_entry.progress_decimal, current_progress.decimal,
+        xr_posture == "full" and { ahead_ok = true } or nil)
     end
     local next_ahead
     if current_progress then
@@ -8136,8 +8147,10 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     -- COMPLETE version (progress 1.0 — reached or opted in), it stays the
     -- active one and earlier versions are no longer top-level promoted when
     -- leafing back; they remain reachable via All versions. Non-complete
-    -- ahead installs (slice 2) keep the row.
-    if current_progress and not cached_entry.full_document
+    -- ahead installs (slice 2) keep the row. 50(f): hidden under the FULL
+    -- posture — promotion would re-install the newest rung on the next turn,
+    -- so the honest control there is the spoiler/research setting itself.
+    if current_progress and xr_posture ~= "full" and not cached_entry.full_document
         and cached_entry.source_mode ~= "ai_knowledge"
         and (cached_entry.progress_decimal or 0) < 0.995
         and (cached_entry.progress_decimal or 0) > current_progress.decimal + 0.01 then
@@ -10353,6 +10366,16 @@ function AskGPT:_showXrayCheckpointList(opts)
 
   -- "X-Ray Versions", not "Previous": ladder rungs can sit AHEAD of the reader
   local title = _("X-Ray Versions")
+  -- 50(f): version surfaces name the posture when it changes behavior — under
+  -- FULL the newest checkpoint installs without waiting for the reader
+  if #ladder > 0 and self.ui and self.ui.document and self.ui.document.file == file then
+    local posture, p_reason = self:_xrayPosture()
+    if posture == "full" then
+      title = title .. "\n" .. (p_reason == "research"
+        and _("Research mode: the newest checkpoint installs as soon as it is built.")
+        or _("Spoiler protection is off: the newest checkpoint installs as soon as it is built."))
+    end
+  end
   if mark_idx and current_progress then
     title = title .. "\n" .. T(_("Reading position: %1"), current_progress.formatted)
   end
@@ -10420,6 +10443,21 @@ function AskGPT:_showXrayLadderRungOptions(rung, opts)
       end
       local p = tonumber(rung.progress_decimal) or 0
       local ahead = (pos and p > pos + XrayAuto.LADDER_TOLERANCE) or false
+      -- 50(f): posture of the OPEN book only — a card for another book keeps
+      -- the conservative track framing (pos is nil there anyway)
+      local posture = "track"
+      if self.ui and self.ui.document and self.ui.document.file == file then
+        posture = self:_xrayPosture()
+      end
+      -- Under FULL posture an ahead install is the posture's own behavior — no
+      -- spoiler confirm. Installing BELOW the newest rung is honest but
+      -- short-lived there: promotion re-installs the newest on the next turn.
+      local spoiler_confirm = ahead and posture ~= "full"
+      local below_newest_full = false
+      if posture == "full" then
+        below_newest_full = (ActionCache.highestXrayLadderProgress(
+          ActionCache.getXrayLadder(file)) or 0) > p + XrayAuto.LADDER_TOLERANCE
+      end
       local function doInstall()
         local features = self_ref.settings:readSetting("features") or {}
         local ok = ActionCache.promoteXrayLadderRung(file, rung,
@@ -10440,13 +10478,18 @@ function AskGPT:_showXrayLadderRungOptions(rung, opts)
         text = _("Install as current X-Ray (free)"),
         callback = function()
           UIManager:close(card)
-          if ahead or pos == nil then
+          if spoiler_confirm or pos == nil or below_newest_full then
+            local generic_title = T(_("Install the checkpoint from %1 as your current X-Ray? Your current version stays in the version list."), label)
+            if below_newest_full then
+              generic_title = generic_title .. "\n"
+                .. _("Spoiler protection is off for this book, so the newest checkpoint installs back automatically as you read on.")
+            end
             local confirm
             confirm = ButtonDialog:new{
-              title = ahead
+              title = spoiler_confirm
                 and T(_("Install the checkpoint from %1? It reaches past your reading position (%2%), so its entries may mention people and events you have not reached yet. Your current version stays in the version list."),
                   label, math.floor(pos * 100 + 0.5))
-                or T(_("Install the checkpoint from %1 as your current X-Ray? Your current version stays in the version list."), label),
+                or generic_title,
               buttons = {
                 {{
                   text = _("Install"),
@@ -11343,6 +11386,9 @@ function AskGPT:_refreshXrayAutoState()
         state.live_progress = 0
       elseif not live.full_document and live.source_mode ~= "ai_knowledge" then
         state.live_progress = tonumber(live.progress_decimal)
+        -- 50(f): FULL-posture ahead install stamp — the pre-filter's revert
+        -- trigger reads it when spoiler protection comes back on
+        state.live_posture_promoted = live.posture_promoted or nil
       end
       -- Different-lineage live entry (complete-track / AI-knowledge): live_progress
       -- stays nil → the pre-filter never schedules a promotion over it
@@ -11375,17 +11421,40 @@ function AskGPT:_xrayAutoOnPageUpdate(pageno)
   -- opt-in, no consent, no rate limit; the fire is a local file swap). Pure
   -- arithmetic: fire only when the position has crossed a rung that is ahead of
   -- the live cache. Same jump guard as the API path — a TOC peek ahead must not
-  -- promote spoilers into the live X-Ray.
+  -- promote spoilers into the live X-Ray. 50(f): under the FULL posture the
+  -- pick is position-independent (newest built rung installs), so the trigger
+  -- is simply "a built rung is ahead of the live entry" and the jump guard is
+  -- moot; under TRACK a posture-promoted live AHEAD of the reader additionally
+  -- triggers the revert (the fire demotes back to the position rung).
   if state.rung_progress and state.live_progress and not self._xray_ladder_promo_pending then
     local XrayAuto = require("koassistant_xray_auto")
-    if not XrayAuto.ladderBuild() and not XrayAuto.isInFlight()
-        and prev_page and math.abs(pageno - prev_page) <= XrayAuto.JUMP_GUARD_PAGES then
+    if not XrayAuto.ladderBuild() and not XrayAuto.isInFlight() then
       local pos = pageno / total
-      for _idx, rp in ipairs(state.rung_progress) do
-        if rp > state.live_progress + XrayAuto.LADDER_TOLERANCE
-            and rp <= pos + XrayAuto.LADDER_TOLERANCE then
-          self:_scheduleXrayLadderPromotion()
-          break
+      local posture = require("koassistant_book_settings").resolveXrayPosture(
+        self.ui.doc_settings, self.settings:readSetting("features") or {})
+      if posture == "full" then
+        for _idx, rp in ipairs(state.rung_progress) do
+          if rp > state.live_progress + XrayAuto.LADDER_TOLERANCE then
+            self:_scheduleXrayLadderPromotion()
+            break
+          end
+        end
+      elseif prev_page and math.abs(pageno - prev_page) <= XrayAuto.JUMP_GUARD_PAGES then
+        for _idx, rp in ipairs(state.rung_progress) do
+          if rp > state.live_progress + XrayAuto.LADDER_TOLERANCE
+              and rp <= pos + XrayAuto.LADDER_TOLERANCE then
+            self:_scheduleXrayLadderPromotion()
+            break
+          end
+        end
+        if not self._xray_ladder_promo_pending and state.live_posture_promoted
+            and state.live_progress > pos + XrayAuto.LADDER_TOLERANCE then
+          for _idx, rp in ipairs(state.rung_progress) do
+            if rp <= pos + XrayAuto.LADDER_TOLERANCE then
+              self:_scheduleXrayLadderPromotion()
+              break
+            end
+          end
         end
       end
     end
@@ -11810,6 +11879,18 @@ end
 -- X-Ray keeps tracking the reader throughout; PROMOTION swaps rungs in
 -- locally as the reader passes them — free, instant, no consent needed.
 
+--- Spoiler posture for the OPEN book's X-Ray version machinery (50(f)+(g)):
+--- BookSettings.resolveXrayPosture over the live doc settings. "track" =
+--- promotion follows the reading position (spoiler protection on); "full" =
+--- the newest built version installs as soon as it is ready (protection off,
+--- or research mode). No open book → "track" (the position-gated paths bail
+--- without a position anyway).
+function AskGPT:_xrayPosture()
+  if not (self.ui and self.ui.doc_settings) then return "track", "global" end
+  return require("koassistant_book_settings").resolveXrayPosture(
+    self.ui.doc_settings, self.settings:readSetting("features") or {})
+end
+
 --- Defer a promotion off the page-turn tick (same pattern as the API fire).
 --- Page-turn promotions are CAPPED (a big position swing is more likely a peek
 --- than reading — see the cap note in the fire); manual and post-build calls
@@ -11860,12 +11941,43 @@ function AskGPT:_fireXrayLadderPromotion(opts)
   if not decimal then return false end
   local features = self.settings:readSetting("features") or {}
   local live_p = live and tonumber(live.progress_decimal) or 0
-  if opts and opts.capped
+  -- 50(f)+(g): spoiler posture decides the pick rule. FULL (protection off /
+  -- research) installs the newest built rung regardless of position; the
+  -- max-gap peek cap compares reader-vs-live positions and is meaningless there.
+  local posture = self:_xrayPosture()
+  if opts and opts.capped and posture ~= "full"
       and decimal - live_p > XrayAuto.dialsFromFeatures(features).max_gap then
     logger.info("KOAssistant: ladder promotion declined - position swing above the max-gap dial")
     return false
   end
-  local rung = XrayAuto.pickPromotableRung(ladder, live_p, decimal)
+  -- 50(f) revert: a FULL-posture promotion may have installed a version ahead
+  -- of the reader (stamped posture_promoted). With spoiler protection back on,
+  -- drop back to the position rung — the ahead version stays in the ladder.
+  -- Deliberate ahead installs (manual switches/version-card installs) are
+  -- never stamped and never reverted (item 40 keeps them active).
+  if posture == "track" and live and live.result and live.posture_promoted
+      and live_p > decimal + XrayAuto.LADDER_TOLERANCE then
+    local back = XrayAuto.pickPromotableRung(ladder, 0, decimal)
+    local ok_back = false
+    if back and back.timestamp ~= live.timestamp then
+      ok_back = ActionCache.promoteXrayLadderRung(file, back,
+          ActionCache.checkpointLimitFromFeatures(features), opts)
+      if ok_back then
+        self._file_dialog_row_cache = { file = nil, rows = nil }
+        logger.info("KOAssistant: X-Ray posture revert - back to", tostring(back.progress_decimal))
+        UIManager:show(Notification:new{
+          text = T(_("Spoiler protection is on: X-Ray back to your position (%1%). Newer versions are kept."),
+            math.floor((tonumber(back.progress_decimal) or 0) * 100 + 0.5)),
+        })
+      end
+      self:_refreshXrayAutoState()
+      return ok_back
+    end
+    -- No rung at-or-below the reader: nothing safe to revert to — keep the
+    -- ahead version (the popup's paid rebuild-to-position path covers it)
+  end
+  local rung = XrayAuto.pickPromotableRung(ladder, live_p, decimal,
+      posture == "full" and { ahead_ok = true } or nil)
   if not rung and not (live and live.result) then
     -- Round 20: with no live X-Ray at all, the INTRO rung installs at any
     -- position — premise-only content is spoiler-free by construction, so the
@@ -11878,17 +11990,30 @@ function AskGPT:_fireXrayLadderPromotion(opts)
     self:_refreshXrayAutoState()
     return false
   end
+  -- Ahead-of-position install under FULL posture → stamp for the revert
+  local posture_ahead = (posture == "full" and not rung.intro
+      and (tonumber(rung.progress_decimal) or 0) > decimal + XrayAuto.LADDER_TOLERANCE)
+      or nil
+  local promote_opts = opts
+  if posture_ahead then
+    promote_opts = { manual = opts and opts.manual, posture_ahead = true }
+  end
   local ok = ActionCache.promoteXrayLadderRung(file, rung,
-      ActionCache.checkpointLimitFromFeatures(features), opts)
+      ActionCache.checkpointLimitFromFeatures(features), promote_opts)
   if ok then
     self._file_dialog_row_cache = { file = nil, rows = nil }
     logger.info("KOAssistant: X-Ray ladder rung promoted to", tostring(rung.progress_decimal),
       rung.intro and "(intro)" or ((opts and opts.manual) and "(manual)" or "(auto)"))
-    if (opts and opts.manual) or features.xray_auto_notify == true then
+    if (opts and opts.manual) or posture_ahead or features.xray_auto_notify == true then
+      -- An ahead install always notifies: it changes what the live X-Ray may
+      -- reveal, so it must never happen silently (the suffix names why)
       UIManager:show(Notification:new{
         text = rung.intro and _("Introductory X-Ray is ready (spoiler-free).")
-          or T(_("X-Ray updated to %1% (checkpoint)"),
-            math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5)),
+          or (posture_ahead
+            and T(_("X-Ray updated to %1% (newest checkpoint; spoiler protection is off)"),
+              math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5))
+            or T(_("X-Ray updated to %1% (checkpoint)"),
+              math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5))),
       })
     end
   end

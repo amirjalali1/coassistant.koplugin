@@ -88,6 +88,8 @@ local FULL_METADATA = {
     web_search_used = true,
     used_research_mode = true,
     updated_by_auto = true,
+    -- 50(f) FULL-posture ahead-install stamp (revert provenance)
+    posture_promoted = true,
     source_mode = "full_text",
     merged_from_sections = 3,
     merged_to_main = 1753600000,

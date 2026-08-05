@@ -1034,6 +1034,57 @@ TestRunner:test("privacy keys are in SIDECAR_KEYS (reset/count/registry coverage
     TestRunner:assertNil(next(want), "all four privacy keys registered")
 end)
 
+TestRunner:suite("X-Ray spoiler posture (xray_ecosystem_plan.md 50(f)+(g))")
+
+TestRunner:test("resolveXrayPosture: default (nothing set) is FULL via global", function()
+    local posture, reason = BookSettings.resolveXrayPosture(nil, nil)
+    TestRunner:assertEqual(posture, "full", "no settings anywhere -> full")
+    TestRunner:assertEqual(reason, "global", "reason is the global layer")
+    posture = BookSettings.resolveXrayPosture(fakeDocSettings({}), {})
+    TestRunner:assertEqual(posture, "full", "empty book + empty features -> full")
+end)
+
+TestRunner:test("resolveXrayPosture: global spoiler_free_chat -> track", function()
+    local posture, reason = BookSettings.resolveXrayPosture(
+        fakeDocSettings({}), { spoiler_free_chat = true })
+    TestRunner:assertEqual(posture, "track", "global spoiler protection -> track")
+    TestRunner:assertEqual(reason, "global", "global layer")
+end)
+
+TestRunner:test("resolveXrayPosture: per-book spoiler override wins both ways", function()
+    local ds_on = fakeDocSettings({ koassistant_book_spoiler_free = true })
+    local ds_off = fakeDocSettings({ koassistant_book_spoiler_free = false })
+    local posture, reason = BookSettings.resolveXrayPosture(ds_on, {})
+    TestRunner:assertEqual(posture, "track", "book true -> track over global-off")
+    TestRunner:assertEqual(reason, "book", "book layer")
+    posture = BookSettings.resolveXrayPosture(ds_off, { spoiler_free_chat = true })
+    TestRunner:assertEqual(posture, "full", "book false -> full over global-on")
+end)
+
+TestRunner:test("resolveXrayPosture: research disables spoiler gating (book > global research)", function()
+    local posture, reason = BookSettings.resolveXrayPosture(
+        fakeDocSettings({ koassistant_book_research_mode = true }), { spoiler_free_chat = true })
+    TestRunner:assertEqual(posture, "full", "book research beats global spoiler protection")
+    TestRunner:assertEqual(reason, "research", "research layer named for labels")
+    posture = BookSettings.resolveXrayPosture(
+        fakeDocSettings({}), { research_mode = true, spoiler_free_chat = true })
+    TestRunner:assertEqual(posture, "full", "global research beats global spoiler protection")
+    posture = BookSettings.resolveXrayPosture(
+        fakeDocSettings({ koassistant_book_research_mode = false }),
+        { research_mode = true, spoiler_free_chat = true })
+    TestRunner:assertEqual(posture, "track", "book research OFF re-enables the global spoiler layer")
+end)
+
+TestRunner:test("resolveXrayPosture: explicit per-book spoiler beats research (safety wins)", function()
+    local ds = fakeDocSettings({
+        koassistant_book_spoiler_free = true,
+        koassistant_book_research_mode = true,
+    })
+    local posture, reason = BookSettings.resolveXrayPosture(ds, {})
+    TestRunner:assertEqual(posture, "track", "explicit book spoiler=true wins over research")
+    TestRunner:assertEqual(reason, "book", "book layer")
+end)
+
 print("")
 print(string.rep("-", 50))
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))

@@ -520,19 +520,24 @@ end
 
 --- Pick the rung to promote into the live cache: the highest rung at-or-below
 --- the reading position (½% tolerance) that is AHEAD of the live entry. Rungs
---- ahead of the reader never qualify (spoiler by definition — same rule as
---- nearestCheckpointIndex); full-document entries never qualify.
+--- ahead of the reader never qualify under the default TRACK posture (spoiler
+--- by definition — same rule as nearestCheckpointIndex); full-document entries
+--- never qualify. 50(f): under the FULL posture (spoiler protection off for
+--- the book) pass opts.ahead_ok — the position ceiling drops and the pick is
+--- simply the highest built rung ahead of the live entry.
 --- @param ladder table Rung array (any order)
 --- @param live_progress number|nil live cache progress 0..1
---- @param position number|nil reading position 0..1
+--- @param position number|nil reading position 0..1 (may be nil with ahead_ok)
+--- @param opts table|nil { ahead_ok = true } → drop the position ceiling
 --- @return table|nil rung entry
-function XrayAuto.pickPromotableRung(ladder, live_progress, position)
-  if type(position) ~= "number" then return nil end
+function XrayAuto.pickPromotableRung(ladder, live_progress, position, opts)
+  local ahead_ok = (opts and opts.ahead_ok) or false
+  if type(position) ~= "number" and not ahead_ok then return nil end
   local best, best_p
   for _idx, rung in ipairs(ladder or {}) do
     local p = tonumber(rung.progress_decimal)
     if p and not rung.full_document
-        and p <= position + XrayAuto.LADDER_TOLERANCE
+        and (ahead_ok or p <= position + XrayAuto.LADDER_TOLERANCE)
         and p > (tonumber(live_progress) or 0) + XrayAuto.LADDER_TOLERANCE then
       if not best_p or p > best_p then
         best, best_p = rung, p

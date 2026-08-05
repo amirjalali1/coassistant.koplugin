@@ -279,6 +279,9 @@ local function saveCache(document_path, cache)
             if entry.updated_by_auto then
                 file:write(string.format("        updated_by_auto = %s,\n", tostring(entry.updated_by_auto)))
             end
+            if entry.posture_promoted then
+                file:write(string.format("        posture_promoted = %s,\n", tostring(entry.posture_promoted)))
+            end
             if entry.source_mode then
                 file:write(string.format("        source_mode = %q,\n", entry.source_mode))
             end
@@ -438,6 +441,10 @@ function ActionCache.set(document_path, action_id, result, progress_decimal, met
         used_research_mode = metadata and metadata.used_research_mode,
         -- True when the last write came from a background auto-update (scope-popup trace)
         updated_by_auto = metadata and metadata.updated_by_auto,
+        -- 50(f): the FULL spoiler posture installed this entry AHEAD of the
+        -- reading position — re-enabling spoiler protection reverts exactly
+        -- these installs (deliberate manual switches are never stamped)
+        posture_promoted = metadata and metadata.posture_promoted,
         -- Track source mode at generation time (for source indication in viewers)
         source_mode = metadata and metadata.source_mode,
         -- Merge-engine provenance: how many section X-Rays were folded in
@@ -1690,7 +1697,9 @@ end
 --- @param document_path string The document file path
 --- @param rung table A rung entry from getXrayLadder
 --- @param limit number|nil Ring depth (checkpointLimitFromFeatures; 0 = no archiving)
---- @param opts table|nil { manual = true } → not marked "auto" in the popup trace
+--- @param opts table|nil { manual = true } → not marked "auto" in the popup trace;
+---   { posture_ahead = true } → 50(f) FULL-posture ahead install (stamps
+---   posture_promoted for the spoiler-reenable revert)
 --- @return boolean success
 function ActionCache.promoteXrayLadderRung(document_path, rung, limit, opts)
     if not document_path or not rung or not rung.result then return false end
@@ -1716,6 +1725,9 @@ function ActionCache.promoteXrayLadderRung(document_path, rung, limit, opts)
         used_annotations = pickFlag(rung.used_annotations, live and live.used_annotations),
         used_book_text = pickFlag(rung.used_book_text, live and live.used_book_text),
         updated_by_auto = not (opts and opts.manual) or nil,
+        -- 50(f): stamped by the promotion fire when the FULL posture installs
+        -- a rung ahead of the reading position (revert provenance)
+        posture_promoted = (opts and opts.posture_ahead) or nil,
         intro = rung.intro,
         -- A promotion moves the pointer; the point keeps its own provenance
         coverage_spans = rung.coverage_spans,

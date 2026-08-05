@@ -835,6 +835,27 @@ TestRunner:test("pickPromotableRung: at-or-below position, ahead of live, comple
     TestRunner:assertEqual(XrayAuto.pickPromotableRung(nil, 0.2, 0.5), nil, "no ladder -> nil")
 end)
 
+TestRunner:test("pickPromotableRung ahead_ok (50(f) FULL posture): newest rung, position ignored", function()
+    local ladder = {
+        { progress_decimal = 0.2, result = "a" },
+        { progress_decimal = 0.6, result = "c" },
+        { progress_decimal = 1.0, result = "d", full_document = true },
+        { progress_decimal = 0, result = "i", intro = true },
+    }
+    local pick = XrayAuto.pickPromotableRung(ladder, 0.2, 0.25, { ahead_ok = true })
+    TestRunner:assertEqual(pick and pick.progress_decimal, 0.6,
+        "highest non-full rung wins regardless of the reading position")
+    pick = XrayAuto.pickPromotableRung(ladder, nil, nil, { ahead_ok = true })
+    TestRunner:assertEqual(pick and pick.progress_decimal, 0.6,
+        "position not required under ahead_ok (nil live treated as 0)")
+    TestRunner:assertEqual(XrayAuto.pickPromotableRung(ladder, 0.6, 0.25, { ahead_ok = true }), nil,
+        "live already at the newest rung -> nothing (full_document still excluded)")
+    -- The default (track) pick is unchanged by the opts param existing
+    pick = XrayAuto.pickPromotableRung(ladder, 0.2, 0.25, nil)
+    TestRunner:assertEqual(pick and pick.progress_decimal, nil,
+        "track posture still position-gated (0.6 is ahead of 0.25)")
+end)
+
 TestRunner:test("ladder build state: begin/advance/cancel/end", function()
     TestRunner:assertEqual(XrayAuto.ladderBuild(), nil, "idle by default")
     XrayAuto.beginLadderBuild("/x.epub", { 0.4, 0.5, 1.0 })
