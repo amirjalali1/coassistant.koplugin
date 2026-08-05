@@ -661,6 +661,12 @@ local RESPONSE_TRANSFORMERS = {
             local content = response.message.content
             -- Extract <think> tags from R1 models running locally
             local clean_content, reasoning = extractThinkTags(content)
+            -- Native think API delivers reasoning in message.thinking instead of
+            -- inline tags (#98). Type-checked: luajson null is a truthy sentinel.
+            if not reasoning and type(response.message.thinking) == "string"
+                    and response.message.thinking ~= "" then
+                reasoning = response.message.thinking
+            end
             return true, clean_content, reasoning
         end
         return false, "Unexpected response format"

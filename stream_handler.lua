@@ -1452,6 +1452,13 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                                 return
                             -- Check for Ollama done signal
                             elseif event.done == true then
+                                -- done_reason "length" = generation hit num_predict or the
+                                -- context window (#98: Gemma-class models can spend the whole
+                                -- window thinking — the truncation-aware empty-result message
+                                -- needs this flag)
+                                if event.done_reason == "length" then
+                                    was_truncated = true
+                                end
                                 partial_data = data:sub(pos)
                                 completed = true
                                 finishStream()
@@ -1803,10 +1810,19 @@ function StreamHandler:extractContentFromSSE(event)
         end
     end
 
-    -- Ollama format: message.content (NDJSON streaming)
+    -- Ollama format: message.content (NDJSON streaming). Models run with the
+    -- native think API deliver reasoning in message.thinking instead of inline
+    -- <think> tags — capture it so a thinking-only stream isn't invisible (#98).
+    -- Type-checked: luajson decodes JSON null to a truthy sentinel.
     local ollama_message = event.message
-    if ollama_message and ollama_message.content then
-        return ollama_message.content, nil
+    if ollama_message then
+        local o_content = ollama_message.content
+        if type(o_content) ~= "string" or o_content == "" then o_content = nil end
+        local o_thinking = ollama_message.thinking
+        if type(o_thinking) ~= "string" or o_thinking == "" then o_thinking = nil end
+        if o_content or o_thinking then
+            return o_content, o_thinking
+        end
     end
 
     return nil, nil
