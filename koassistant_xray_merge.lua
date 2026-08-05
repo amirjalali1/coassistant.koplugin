@@ -1609,14 +1609,46 @@ function XrayMerge.startCrossBookFlow(opts)
             text = T(_("Fold in all %1 earlier books…"), #predecessors),
             callback = function()
                 UIManager:close(picker)
+                -- Preflight disclosure (2026-08-05): the candidate list only
+                -- ever holds predecessors WITH X-Rays — name the gap instead
+                -- of silently skipping X-Ray-less earlier books
+                local missing_n = 0
+                do
+                    local BG = require("koassistant_book_groups")
+                    local group = (opts.group_id and BG.byId(opts.group_id))
+                        or BG.groupsFor(opts.file)[1]
+                    local pos = group and BG.positionOf(group, opts.file)
+                    if pos then
+                        missing_n = (pos - 1) - #predecessors
+                        if missing_n < 0 then missing_n = 0 end
+                    end
+                end
+                local confirm_title = T(_("Merge the X-Rays of %1 earlier books in %2, one at a time (oldest first)?"),
+                        #predecessors, predecessors[1].group_name)
+                    .. "\n" .. _("Each book lands as its own labeled background. Your current X-Ray is archived first.")
+                if missing_n > 0 then
+                    confirm_title = confirm_title .. "\n"
+                        .. T(_("Skipped: %1 earlier book(s) have no X-Ray yet."), missing_n)
+                end
                 local confirm
                 confirm = ButtonDialog:new{
-                    title = T(_("Merge the X-Rays of %1 earlier books in %2, one at a time (oldest first)?"),
-                            #predecessors, predecessors[1].group_name)
-                        .. "\n" .. _("Each book lands as its own labeled background. Your current X-Ray is archived first."),
+                    title = confirm_title,
                     buttons = {
                         {{ text = _("Merge all"), callback = function()
                             UIManager:close(confirm)
+                            -- Preflight consent sweep (2026-08-05): fail BEFORE the
+                            -- first request names the blocking book — never stop a
+                            -- paid run midway on a knowable condition. The per-step
+                            -- checks stay (settings can change mid-run).
+                            for _pidx, pre in ipairs(predecessors) do
+                                if not XrayMerge.consentOk({ pre.entry }, features, provider, pre.file, opts.ui) then
+                                    UIManager:show(InfoMessage:new{
+                                        text = T(_("Cannot start: text-extraction consent is missing for \"%1\"."), pre.title),
+                                        timeout = 5,
+                                    })
+                                    return
+                                end
+                            end
                             if opts.close_browser then opts.close_browser() end
                             local function step(idx)
                                 if idx > #predecessors then

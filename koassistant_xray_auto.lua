@@ -21,18 +21,11 @@ XrayAuto.RATE_LIMIT_S = 15 * 60  -- min seconds between background attempts
 XrayAuto.JUMP_GUARD_PAGES = 5    -- quiz pattern: a TOC jump moves many pages, a turn 1-3
 XrayAuto.SCHEDULE_DELAY_S = 3    -- defer the fire off the page-turn tick
 XrayAuto.CATCHUP_DELAY_S = 30    -- session-start catch-up delay (update-checker pattern)
--- Absolute flight cancel — don't rely on the child's socket timeout. The kill
--- is LOSSY: the API request already went out, the provider completes and bills
--- it, we discard the result and stop the chain — so a false positive wastes a
--- paid request, while a true hang merely blocks background X-Ray until expiry
--- (and the popup's tap-to-cancel row + book close end it sooner by hand).
--- 900s (was 300, maintainer 2026-08-05): one-shot whole-book builds ride this
--- path since 50(a) and can legitimately exceed 5 minutes on big books/slow
--- providers; local models exceed it routinely (#90 field report). A user
--- setting for local setups stays on the noted list.
-XrayAuto.WATCHDOG_S = 900
-                                 -- Device round 1 (T1): thinking-default models take 100s+ per
-                                 -- incremental update — 120 killed legitimate runs.
+-- (The flight WATCHDOG was retired 2026-08-05, maintainer: a kill is lossy —
+-- the provider bills the request anyway — and slow is not stuck (#90 local
+-- models; big one-shots). True hangs are rare and covered: the child's own
+-- socket timeouts self-resolve dead connections, every in-progress state has
+-- a tap-to-cancel row, and book close cancels the flight.)
 XrayAuto.RETRY_DELAY_S = 60      -- item 45: single transient-failure retry per ladder step.
                                  -- Field specimen (2026-08-03): a Gemini 503 healed on a
                                  -- resume 76s later — one 60s retry makes that invisible.
@@ -45,10 +38,8 @@ local cancel_fn = nil
 local last_failure = nil   -- { file = path, message = string }
 local last_ladder_stop = nil -- { file, step, total, kind } — why the chain last paused (item 45)
 local session_updates = 0
-local cancelled = false    -- set when an actual flight was cancelled (close/watchdog)
+local cancelled = false    -- set when an actual flight was cancelled (close/tap-to-cancel)
 local discarded = false    -- set by the completion guard when it rejects the write
-local watchdogged = false  -- set when the WATCHDOG killed the flight (T1: a timeout is a
-                           -- visible failure, never a silent cancel)
 
 --- Resolve the user dials (schema: Reading & Library → X-Ray) into gate values.
 --- Pure; fallbacks MUST match the schema defaults (5% / 25% / 15 min). An inverted
@@ -130,20 +121,15 @@ function XrayAuto.inFlightFile()
   return in_flight_file
 end
 
---- Mark the current flight as watchdog-killed (called by the watchdog closure
---- right before cancelInFlight, so the outcome classifies as a timeout failure).
-function XrayAuto.markWatchdog()
-  watchdogged = true
-end
-
 --- Store the cancel handle returned by the silent request path (gpt_query
 --- `config._register_cancel`). Called from inside the request machinery.
 function XrayAuto.registerCancel(fn)
   cancel_fn = fn
 end
 
---- Cancel a background request in flight (document close, watchdog). Safe no-op
---- when idle. The completion guard makes a straggler write impossible either way.
+--- Cancel a background request in flight (document close, tap-to-cancel rows).
+--- Safe no-op when idle. The completion guard makes a straggler write
+--- impossible either way.
 function XrayAuto.cancelInFlight()
   if cancel_fn or in_flight then
     -- Only a real cancellation marks the flag — an idle close must not poison the
@@ -167,9 +153,9 @@ function XrayAuto.markDiscarded()
 end
 
 function XrayAuto.consumeOutcomeFlags()
-  local c, d, w = cancelled, discarded, watchdogged
-  cancelled, discarded, watchdogged = false, false, false
-  return c, d, w
+  local c, d = cancelled, discarded
+  cancelled, discarded = false, false
+  return c, d
 end
 
 function XrayAuto.recordFailure(file, message)

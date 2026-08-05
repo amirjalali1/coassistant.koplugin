@@ -8052,7 +8052,18 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       -- A manual run while a background one is in flight is safe (completion guard),
       -- just wasteful — surface the state instead of the Update button. File-scoped
       -- (device round 1 T8): another book's flight must not gray out this book's rows.
-      table.insert(buttons, {{ text = _("Auto-update in progress…"), enabled = false }})
+      -- Tap-to-cancel (watchdog retirement 2026-08-05): with no timer killing
+      -- hung flights, the user is the judge of "too long" — parity with chains.
+      table.insert(buttons, {{
+        text = _("Auto-update in progress… (tap to cancel)"),
+        callback = function()
+          UIManager:close(dialog)
+          XrayAuto.cancelInFlight()
+          self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+          self_ref:_refreshXrayAutoState()
+          UIManager:show(Notification:new{ text = _("Background update cancelled.") })
+        end,
+      }})
     elseif update_case then
       local paid_row = {{
         text = update_text,
@@ -11825,15 +11836,12 @@ function AskGPT:_fireXrayAutoUpdate(opts)
   config_copy.features.book_context = book_context
 
   XrayAuto.beginFlight(file)
-  -- Absolute watchdog (update-checker pattern): don't rely on the child's socket timeout
+  -- No watchdog (retired 2026-08-05, maintainer): a kill is lossy — the
+  -- provider bills the request anyway — and slow is not stuck (local models
+  -- legitimately take as long as they take, #90). True hangs are covered by
+  -- the child's own socket timeouts, book-close cancel, and the popup's
+  -- tap-to-cancel row on the in-progress state.
   local self_ref = self
-  local watchdog = function()
-    self_ref._xray_auto_watchdog = nil
-    XrayAuto.markWatchdog()
-    XrayAuto.cancelInFlight()
-  end
-  self._xray_auto_watchdog = watchdog
-  UIManager:scheduleIn(XrayAuto.WATCHDOG_S, watchdog)
 
   logger.info("KOAssistant: background X-Ray update firing, delta", decimal - cached_progress)
   -- Manual runs always notify: the user just asked for this
@@ -11844,22 +11852,9 @@ function AskGPT:_fireXrayAutoUpdate(opts)
   Dialogs.executeActionForResult(action, book_context, self.ui, config_copy, self,
     config_copy.features.book_metadata,
     function(result, meta_or_err)
-      if self_ref._xray_auto_watchdog then
-        UIManager:unschedule(self_ref._xray_auto_watchdog)
-        self_ref._xray_auto_watchdog = nil
-      end
       XrayAuto.endFlight()
-      local was_cancelled, was_discarded, was_watchdog = XrayAuto.consumeOutcomeFlags()
-      if was_watchdog then
-        -- Watchdog kill = a timeout the reader should see (device round 1 T1:
-        -- the silent-cancel classification hid every timeout)
-        XrayAuto.recordFailure(file, "timed out")
-        logger.warn("KOAssistant: background X-Ray update timed out (watchdog,",
-          XrayAuto.WATCHDOG_S, "s)")
-        if manual then
-          UIManager:show(InfoMessage:new{ text = _("Background X-Ray update timed out."), timeout = 3 })
-        end
-      elseif was_cancelled or was_discarded then
+      local was_cancelled, was_discarded = XrayAuto.consumeOutcomeFlags()
+      if was_cancelled or was_discarded then
         -- Guard-discard (a manual run won the race / X-Ray deleted) or book-close
         -- cancel: a skip — neither a success (nothing written) nor a failure
         logger.info("KOAssistant: background X-Ray update skipped -",
@@ -12644,14 +12639,9 @@ function AskGPT:_fireXrayLadderRung()
   config_copy.features.book_context = bookContextString(config_copy.features.book_metadata)
 
   XrayAuto.beginFlight(file)
+  -- No watchdog (retired 2026-08-05 — see the note at the solo update fire):
+  -- chains always show a tap-to-cancel row, and slow is not stuck
   local self_ref = self
-  local watchdog = function()
-    self_ref._xray_auto_watchdog = nil
-    XrayAuto.markWatchdog()
-    XrayAuto.cancelInFlight()
-  end
-  self._xray_auto_watchdog = watchdog
-  UIManager:scheduleIn(XrayAuto.WATCHDOG_S, watchdog)
 
   -- Intro step (round 20): same slice as rung 1, but the prompt asks for a
   -- premise-only, spoiler-free introduction (action copy — never mutate the
@@ -12692,30 +12682,10 @@ function AskGPT:_fireXrayLadderRung()
   Dialogs.executeActionForResult(fire_action, config_copy.features.book_context, self.ui, config_copy, self,
     config_copy.features.book_metadata,
     function(result, meta_or_err)
-      if self_ref._xray_auto_watchdog then
-        UIManager:unschedule(self_ref._xray_auto_watchdog)
-        self_ref._xray_auto_watchdog = nil
-      end
       XrayAuto.endFlight()
-      local was_cancelled, _was_discarded, was_watchdog = XrayAuto.consumeOutcomeFlags()
+      local was_cancelled = XrayAuto.consumeOutcomeFlags()
       local cur = XrayAuto.ladderBuild()
       if not cur then return end  -- build ended (close/cancel) while in flight
-      if was_watchdog and not cur.cancel_requested then
-        -- Timeout, not a user cancel (T1): stop honestly with the resume hint.
-        -- No auto-retry here (item 45): the watchdog already waited 300s — a
-        -- silent retry would risk another 5 quiet minutes.
-        XrayAuto.endLadderBuild()
-        XrayAuto.recordLadderStop(file, { step = cur.step or cur.idx, total = cur.total,
-          kind = "timeout" })
-        logger.warn("KOAssistant: ladder step", cur.step or cur.idx, "timed out (watchdog,",
-          XrayAuto.WATCHDOG_S, "s)")
-        UIManager:show(InfoMessage:new{
-          text = T(_("Checkpoint build stopped at %1 of %2 (request timed out): resume it from the X-Ray popup."),
-            cur.step or cur.idx, cur.total),
-          timeout = 4,
-        })
-        return
-      end
       if was_cancelled or cur.cancel_requested then
         XrayAuto.endLadderBuild()
         UIManager:show(Notification:new{ text = cur.total == 1
@@ -12888,10 +12858,6 @@ function AskGPT:_cancelXrayLadderBuild()
   XrayAuto.requestLadderCancel()
   XrayAuto.cancelInFlight()
   XrayAuto.endLadderBuild()
-  if self._xray_auto_watchdog then
-    UIManager:unschedule(self._xray_auto_watchdog)
-    self._xray_auto_watchdog = nil
-  end
   -- Short toast (Notification renders ONE line — long text truncates); the
   -- popup's "Resume automatic building (paused)…" / Resume rows are the way
   -- back in, and reopening the book clears the pause
@@ -12910,10 +12876,6 @@ function AskGPT:onCloseDocument()
   if self._xray_ladder_promo_pending then
     UIManager:unschedule(self._xray_ladder_promo_pending)
     self._xray_ladder_promo_pending = nil
-  end
-  if self._xray_auto_watchdog then
-    UIManager:unschedule(self._xray_auto_watchdog)
-    self._xray_auto_watchdog = nil
   end
   local XrayAuto = require("koassistant_xray_auto")
   if XrayAuto.ladderBuild() then

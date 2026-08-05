@@ -119,24 +119,14 @@ TestRunner:test("outcome flags: idle close doesn't poison; cancel/discard consum
     TestRunner:assertEqual(d, false, "consumed once")
 end)
 
-TestRunner:test("watchdog flag rides the outcome; flight file scopes the display", function()
+TestRunner:test("flight file scopes the display (watchdog retired 2026-08-05)", function()
     XrayAuto.consumeOutcomeFlags()
-    -- Watchdog kill (T1): marked before the cancel, consumed exactly once
     XrayAuto.beginFlight("/books/a.epub")
     TestRunner:assertEqual(XrayAuto.inFlightFile(), "/books/a.epub", "flight carries its file")
-    XrayAuto.markWatchdog()
     XrayAuto.cancelInFlight()
-    local c, _d, w = XrayAuto.consumeOutcomeFlags()
-    TestRunner:assertEqual(c, true, "watchdog cancel still records the cancel")
-    TestRunner:assertEqual(w, true, "watchdog kill recorded")
+    local c = XrayAuto.consumeOutcomeFlags()
+    TestRunner:assertEqual(c, true, "in-flight cancel recorded")
     TestRunner:assertEqual(XrayAuto.inFlightFile(), nil, "flight file cleared on cancel")
-    local _c2, _d2, w2 = XrayAuto.consumeOutcomeFlags()
-    TestRunner:assertEqual(w2, false, "watchdog flag consumed once")
-    -- A plain cancel never reports a watchdog kill
-    XrayAuto.beginFlight("/books/b.epub")
-    XrayAuto.cancelInFlight()
-    local _c3, _d3, w3 = XrayAuto.consumeOutcomeFlags()
-    TestRunner:assertEqual(w3, false, "plain cancel is not a timeout")
     -- endFlight clears the file too
     XrayAuto.beginFlight("/books/c.epub")
     XrayAuto.endFlight()
