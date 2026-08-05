@@ -8643,9 +8643,12 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             if exclude_action_flags then configuration.features._exclude_action_flags = exclude_action_flags end
             if xray_context_prefix then configuration.features._xray_context_prefix = xray_context_prefix end
             if show_all_actions then configuration.features._show_all_actions = true end
-            if session_spoiler_free then configuration.features._session_spoiler_free = true end
-            -- Preserve false too (unlike spoiler): an explicit uncheck must survive the
-            -- refresh even when the global tools flag would re-default it to checked.
+            -- Preserve false too: an explicit "Spoilers OK" tap must survive the
+            -- refresh even when the book/global setting would re-seed it to on
+            -- (was true-only — the chip could never be toggled OFF under a
+            -- spoiler-on book/global setting; every tap refreshed back to on).
+            if session_spoiler_free ~= nil then configuration.features._session_spoiler_free = session_spoiler_free end
+            -- Same explicit-false preservation for tools.
             if session_book_tools ~= nil then configuration.features._session_book_tools = session_book_tools end
             -- Web: same explicit-false preservation as tools.
             if session_web_search ~= nil then configuration.features._session_web_search = session_web_search end

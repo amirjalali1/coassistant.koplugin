@@ -443,8 +443,37 @@ TestRunner:test("ladderSpacingFor: 10% baseline, min-pages floor, tiny-book clam
     TestRunner:assertEqual(XrayAuto.ladderSpacingFor(40), 0.5, "tiny book clamps at 50%")
     TestRunner:assertEqual(XrayAuto.ladderSpacingFor(220), 0.2,
         "whole-percent rounding (45/220 -> 20.45 -> 20%)")
-    TestRunner:assertEqual(#XrayAuto.planLadderRungs(0, XrayAuto.ladderSpacingFor(100)), 3,
-        "novella ladder: 45/90/100 — 3 calls, not 10")
+    local novella = XrayAuto.planLadderRungs(0, XrayAuto.ladderSpacingFor(100))
+    TestRunner:assertEqual(#novella, 2, "novella ladder normalizes 45% -> 50/100 (no 90+100 sliver)")
+    TestRunner:assertEqual(novella[1], 0.5, "even grid: first rung at 50%")
+end)
+
+TestRunner:test("normalizedSpacing + even grids (device 2026-08-05: 12%/24% grids ended 96+100)", function()
+    TestRunner:assertEqual(XrayAuto.normalizedSpacing(0.12, nil), 0.125, "12% -> 12.5% (8 even steps)")
+    TestRunner:assertEqual(XrayAuto.normalizedSpacing(0.24, nil), 0.25, "24% -> 25% (4 even steps)")
+    TestRunner:assertEqual(XrayAuto.normalizedSpacing(0.1, nil), 0.1, "even divisors unchanged")
+    TestRunner:assertEqual(XrayAuto.normalizedSpacing(0.12, 0.6), 0.12, "target builds normalize over the goal span")
+    local twelve = XrayAuto.planLadderRungs(0, 0.12)
+    TestRunner:assertEqual(#twelve, 8, "12% grid: 8 rungs, one fewer than the sliver plan")
+    TestRunner:assertEqual(twelve[7], 0.875, "last regular rung a full step below the end")
+    TestRunner:assertEqual(twelve[8], 1.0, "lands exactly on 100%")
+    local tf = XrayAuto.planLadderRungs(0, 0.24)
+    TestRunner:assertEqual(#tf, 4, "24% -> 4 even steps")
+    TestRunner:assertEqual(tf[1], 0.25, "25")
+    TestRunner:assertEqual(tf[2], 0.5, "50")
+    TestRunner:assertEqual(tf[3], 0.75, "75")
+    TestRunner:assertEqual(tf[4], 1.0, "100")
+    -- Extends keep the grid anchored at 0 with the same normalized step
+    local ext = XrayAuto.planLadderRungs(0.5, 0.24)
+    TestRunner:assertEqual(#ext, 2, "base 50% continues the 25% grid")
+    TestRunner:assertEqual(ext[1], 0.75, "next grid point above the base")
+    TestRunner:assertEqual(ext[2], 1.0, "ends at 100%")
+    -- Seed rule follows the NORMALIZED step: reader between nominal (45%) and
+    -- normalized (50%) first rung still gets a seed (D1: promotable point)
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.47, nil, 0.45), 0.47,
+        "seed granted below the normalized first rung")
+    TestRunner:assertEqual(XrayAuto.seedForBuild(0, 0.52, nil, 0.45), nil,
+        "at/past the normalized first rung: the grid point serves")
 end)
 
 TestRunner:test("planLadderRungs: target_end bounds the build", function()
@@ -497,24 +526,24 @@ TestRunner:test("seedForBuild: the round-22 CEILING (D1) — no seed at or past 
 end)
 
 TestRunner:test("planBuildRungs: seed first, tail planned FROM the seed", function()
-    -- Position exactly at the half-step floor (item 38 E7: 0.075 for 15%
-    -- spacing) — the lowest position that still seeds
+    -- 15% nominal normalizes to a 1/7 grid (0.143 steps). Position at the
+    -- half-step floor — the lowest position that still seeds
     local rungs, seed = XrayAuto.planBuildRungs(0, 0.15, nil, 0.075)
     TestRunner:assertEqual(seed, 0.075, "seed reported (at the half-step floor)")
     TestRunner:assertEqual(rungs[1], 0.075, "seed is rung 1")
-    TestRunner:assertEqual(rungs[2], 0.15, "clear of the half-step rule: spacing rung kept")
+    TestRunner:assertEqual(rungs[2], 0.286, "first grid point within half a step of the seed is dropped")
     TestRunner:assertEqual(rungs[#rungs], 1.0, "final rung unchanged")
-    -- Seed close under a spacing boundary: the half-step rule drops the
-    -- near-duplicate 15% rung — the tail continues at 30%
+    -- Seed close under a grid boundary: the half-step rule drops the
+    -- near-duplicate first grid rung — the tail continues one step later
     local near = XrayAuto.planBuildRungs(0, 0.15, nil, 0.12)
     TestRunner:assertEqual(near[1], 0.12, "seed at the position")
-    TestRunner:assertEqual(near[2], 0.3, "near-duplicate spacing rung dropped")
+    TestRunner:assertEqual(near[2], 0.286, "near-duplicate grid rung dropped")
     -- Reader past the first rung (round 22, D1): NO seed — the plan is the
     -- plain spaced grid, every step bounded
     local past, no_seed = XrayAuto.planBuildRungs(0, 0.15, nil, 0.4)
     TestRunner:assertEqual(no_seed, nil, "reader past the first grid point: no seed")
-    TestRunner:assertEqual(past[1], 0.15, "grid starts at the first spacing rung")
-    TestRunner:assertEqual(past[2], 0.3, "spaced steps, nothing swallowed")
+    TestRunner:assertEqual(past[1], 0.143, "grid starts at the first normalized rung")
+    TestRunner:assertEqual(past[2], 0.286, "spaced steps, nothing swallowed")
     -- Position-coverage build (goal == position): no seed, goal rung covers it
     local pos_cov, pos_seed = XrayAuto.planBuildRungs(0, 0.15, 0.4, 0.4)
     TestRunner:assertEqual(pos_seed, nil, "goal == position: no seed")

@@ -347,9 +347,31 @@ function XrayAuto.snapLadderRungs(rungs, boundaries, base_progress, spacing)
   return targets, labels
 end
 
+--- Even-grid normalization (device rounds 2026-08-05: a 12% grid produced
+--- 96% + 100%, a 24% grid likewise 96% — terminal slivers a quarter of a step
+--- wide). Adjust spacing to the nearest whole-number division of the goal span
+--- so the last regular multiple lands ON the goal: spacing' = goal /
+--- round(goal/spacing). Count stays within half a step of nominal (12% → 12.5%
+--- x 8 instead of 12% x 8 + a 4% sliver; 24% → 25% x 4; a 45% novella grid →
+--- 50% x 2 instead of 45/90/100). Pure.
+--- @param spacing number|nil rung spacing 0..1 (nil = LADDER_SPACING)
+--- @param goal number|nil build goal (nil/invalid = 1.0)
+--- @return number normalized spacing
+function XrayAuto.normalizedSpacing(spacing, goal)
+  local s = tonumber(spacing)
+  if not s or s <= 0 then s = XrayAuto.LADDER_SPACING end
+  local g = tonumber(goal)
+  if not g or g <= 0 or g > 1.0 then g = 1.0 end
+  local n = math.floor(g / s + 0.5)
+  if n < 1 then n = 1 end
+  return g / n
+end
+
 --- Plan the rung targets for a build: multiples of `spacing` above
 --- `base_progress`, plus a final 1.0. Pure; rounded to 3 decimals so float drift
---- never produces 0.30000000000000004-style targets.
+--- never produces 0.30000000000000004-style targets. Spacing is even-grid
+--- normalized against the goal (normalizedSpacing) so the final step is a full
+--- step, never a sliver.
 --- The first rung must sit at least HALF a step ahead of the base (maintainer
 --- 2026-07-26: an X-Ray at 48% must not get a 50% rung — a near-boundary rung
 --- spends a whole call on a near-duplicate; the base version itself covers that
@@ -360,13 +382,13 @@ end
 --- @param spacing number|nil override (default LADDER_SPACING)
 --- @return table Ascending array of target ratios (empty when base is ≥ ~99%)
 function XrayAuto.planLadderRungs(base_progress, spacing, target_end)
-  spacing = spacing or XrayAuto.LADDER_SPACING
   local base = tonumber(base_progress) or 0
   -- Round 16 (unified creation flow): optional target bounds the build — cover
   -- a huge section in prefix steps without paying for the rest of the book yet.
   -- nil/invalid = 1.0 (the pre-target behavior; resume later can extend).
   local goal = tonumber(target_end)
   if not goal or goal <= 0 or goal > 1.0 then goal = 1.0 end
+  spacing = XrayAuto.normalizedSpacing(spacing, goal)
   -- Within 1% of the goal the update path wouldn't engage — nothing to build
   if base >= goal - 0.01 then return {} end
   local rungs = {}
@@ -406,7 +428,10 @@ function XrayAuto.seedForBuild(base_progress, position, goal, spacing)
   local base = tonumber(base_progress) or 0
   if base >= 0.01 then return nil end
   local pos = tonumber(position)
-  local step = tonumber(spacing) or XrayAuto.LADDER_SPACING
+  -- The NORMALIZED step (the actual grid) — a reader between the nominal and
+  -- normalized first rung must still get a seed, or D1's "grid has a
+  -- promotable point" premise fails for them
+  local step = XrayAuto.normalizedSpacing(spacing, goal)
   if not pos or pos < math.max(XrayAuto.LADDER_SEED_MIN, step / 2) then return nil end
   if pos >= step then return nil end
   local g = tonumber(goal)

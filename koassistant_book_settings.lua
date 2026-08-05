@@ -56,9 +56,12 @@ end
 
 --- The ONE spoiler-posture rule for the X-Ray version machinery (xray_ecosystem_plan.md
 -- 50(f)+(g); Track-36-lite — the X-Ray slice of the posture unification, full Track 36
--- stays open). Layering, most specific first:
---   per-book spoiler override (explicit intent about THIS book, wins both ways)
---   > research mode (book > global; research reading wants the whole document)
+-- stays open). Layering:
+--   research mode (book > global) — ACTIVE RESEARCH DISABLES SPOILER GATING for
+--   the whole book, even over an explicit per-book spoiler override (the 50(g)
+--   rule, confirmed on device 2026-08-05; escape hatch = per-book research OFF,
+--   which re-enables the spoiler layers)
+--   > per-book spoiler override (wins both ways over the global)
 --   > global spoiler_free_chat.
 -- Session/per-chat toggles are deliberately NOT consulted (posture is a
 -- persisted-settings decision that outlives any one request), and neither is
@@ -67,14 +70,14 @@ end
 -- @param features table|nil
 -- @return string posture "track" (promotion follows the reading position) |
 --   "full" (the newest built version installs as soon as it is ready)
--- @return string reason "book" | "research" | "global"
+-- @return string reason "research" | "book" | "global"
 function BookSettings.resolveXrayPosture(doc_settings, features)
-    local book = doc_settings and doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE)
-    if book == true then return "track", "book" end
-    if book == false then return "full", "book" end
     local research = doc_settings and doc_settings:readSetting(BookSettings.KEY_RESEARCH)
     if research == nil then research = (features and features.research_mode) == true end
     if research == true then return "full", "research" end
+    local book = doc_settings and doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE)
+    if book == true then return "track", "book" end
+    if book == false then return "full", "book" end
     if (features and features.spoiler_free_chat) == true then return "track", "global" end
     return "full", "global"
 end

@@ -1075,14 +1075,20 @@ TestRunner:test("resolveXrayPosture: research disables spoiler gating (book > gl
     TestRunner:assertEqual(posture, "track", "book research OFF re-enables the global spoiler layer")
 end)
 
-TestRunner:test("resolveXrayPosture: explicit per-book spoiler beats research (safety wins)", function()
+TestRunner:test("resolveXrayPosture: research beats even an explicit per-book spoiler (50(g) rule)", function()
     local ds = fakeDocSettings({
         koassistant_book_spoiler_free = true,
         koassistant_book_research_mode = true,
     })
     local posture, reason = BookSettings.resolveXrayPosture(ds, {})
-    TestRunner:assertEqual(posture, "track", "explicit book spoiler=true wins over research")
-    TestRunner:assertEqual(reason, "book", "book layer")
+    TestRunner:assertEqual(posture, "full", "active research disables spoiler gating outright")
+    TestRunner:assertEqual(reason, "research", "research layer")
+    -- The escape hatch: book research OFF re-enables the spoiler layers
+    posture = BookSettings.resolveXrayPosture(fakeDocSettings({
+        koassistant_book_spoiler_free = true,
+        koassistant_book_research_mode = false,
+    }), { research_mode = true })
+    TestRunner:assertEqual(posture, "track", "book research=false falls through to the spoiler layers")
 end)
 
 print("")

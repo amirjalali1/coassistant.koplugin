@@ -7946,8 +7946,14 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       local near_idx = ActionCache.nearestCheckpointIndex(versions_all, current_progress.decimal)
       if near_idx then
         local near_cp = versions_all[near_idx]
+        -- Short label here (percent only) — the full "end of <chapter> · 2d ago"
+        -- form eats the row; orientation detail lives in the Versions list
+        local near_short = near_cp.intro and _("Introduction")
+          or (tonumber(near_cp.progress_decimal)
+            and (math.floor(tonumber(near_cp.progress_decimal) * 100 + 0.5) .. "%"))
+          or "…"
         table.insert(buttons, {{
-          text = T(_("View earlier version (%1)"), self:_xrayCheckpointLabel(near_cp)),
+          text = T(_("View earlier version (%1)"), near_short),
           callback = function()
             UIManager:close(dialog)
             self_ref:showCacheViewer({
@@ -10486,8 +10492,12 @@ function AskGPT:_showXrayLadderRungOptions(rung, opts)
             end
             local confirm
             confirm = ButtonDialog:new{
+              -- Device round 2026-08-05: name what happens NEXT — with the live
+              -- X-Ray ahead of the reader, free position swaps stop engaging, so
+              -- without this line the install reads as "checkpoints keep
+              -- installing as I reach them"
               title = spoiler_confirm
-                and T(_("Install the checkpoint from %1? It reaches past your reading position (%2%), so its entries may mention people and events you have not reached yet. Your current version stays in the version list."),
+                and T(_("Install the checkpoint from %1? It reaches past your reading position (%2%), so its entries may mention people and events you have not reached yet. Your current version stays in the version list. Free checkpoint swaps pause until you read past it; the X-Ray popup offers a switch back to your position."),
                   label, math.floor(pos * 100 + 0.5))
                 or generic_title,
               buttons = {

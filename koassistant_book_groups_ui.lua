@@ -103,29 +103,30 @@ function GroupsUI.showMoveDialog(group_id, path, opts)
             },
             {{ text = _("Move to position…"), callback = function()
                 UIManager:close(book_dialog)
-                local InputDialog = require("ui/widget/inputdialog")
-                local pos_dialog
-                pos_dialog = InputDialog:new{
-                    title = T(_("Move \"%1\" to position (1-%2)"), title, n),
-                    input = tostring(i),
-                    input_type = "number",
-                    buttons = {{
-                        { text = _("Cancel"), id = "close", callback = function()
-                            UIManager:close(pos_dialog)
-                            GroupsUI.showMoveDialog(group_id, path, opts)
-                        end },
-                        { text = _("Move"), is_enter_default = true, callback = function()
-                            local pos = tonumber(pos_dialog:getInputText())
-                            UIManager:close(pos_dialog)
-                            if pos then BookGroups.moveBookTo(group_id, path, pos) end
-                            if GroupsUI._group_dialog then UIManager:close(GroupsUI._group_dialog) end
-                            GroupsUI.showGroup(group_id, opts)
-                            GroupsUI.showMoveDialog(group_id, path, opts)
-                        end },
-                    }},
-                }
-                UIManager:show(pos_dialog)
-                pos_dialog:onShowKeyboard()
+                -- SpinWidget (kenken round 5): the KOReader number wheel —
+                -- scroll to the slot (hold arrows jump by 5) or tap the value
+                -- to type it; beats a bare input field on 30-book groups
+                local SpinWidget = require("ui/widget/spinwidget")
+                UIManager:show(SpinWidget:new{
+                    title_text = T(_("Move \"%1\" to position"), title),
+                    info_text = T(_("1-%1 (currently %2)"), n, i),
+                    value = i,
+                    value_min = 1,
+                    value_max = n,
+                    value_step = 1,
+                    value_hold_step = 5,
+                    ok_text = _("Move"),
+                    ok_always_enabled = true,
+                    callback = function(spin)
+                        BookGroups.moveBookTo(group_id, path, spin.value)
+                        if GroupsUI._group_dialog then UIManager:close(GroupsUI._group_dialog) end
+                        GroupsUI.showGroup(group_id, opts)
+                        GroupsUI.showMoveDialog(group_id, path, opts)
+                    end,
+                    cancel_callback = function()
+                        GroupsUI.showMoveDialog(group_id, path, opts)
+                    end,
+                })
             end }},
             {{ text = _("Remove from group"), callback = function()
                 UIManager:close(book_dialog)
@@ -300,6 +301,25 @@ function GroupsUI.showManager(opts)
               description = _("You can leave this empty: the group takes the name of the first book you add.") })
         end,
     }}
+    -- Main-menu parity with Book Settings (kenken round 5): seed a group from
+    -- the OPEN book right here — title prefilled, book added on create
+    local open_file = opts.ui and opts.ui.document and opts.ui.document.file
+    if open_file then
+        rows[#rows + 1] = {{
+            text = _("New group with this book…"),
+            callback = function()
+                UIManager:close(dialog)
+                promptName(_("New group"), BookGroups.displayTitle(open_file, opts.ui), function(name)
+                    local group = groups().create(name)
+                    groups().addBook(group.id, open_file)
+                    GroupsUI.showGroup(group.id, {
+                        plugin = opts.plugin, ui = opts.ui,
+                        on_close = function() GroupsUI.showManager(opts) end,
+                    })
+                end, function() GroupsUI.showManager(opts) end)
+            end,
+        }}
+    end
     rows[#rows + 1] = {{
         text = _("Close"),
         callback = function()
