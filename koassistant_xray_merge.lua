@@ -1512,8 +1512,16 @@ function XrayMerge.startCrossBookFlow(opts)
     local provider = (opts.configuration
         and (opts.configuration.provider or opts.configuration.default_provider))
 
-    local picker
-    local rows = {}
+    local picker, other_picker
+    local function closePickers()
+        if picker then UIManager:close(picker) end
+        if other_picker then UIManager:close(other_picker) end
+    end
+    -- Device round 2026-08-05 ("the menus here are really bad"): TIERED picker
+    -- — the group tier (fold-all + group-mates) leads, and the index-wide
+    -- list moves behind one "Other books…" row instead of burying the group
+    -- rows under every X-Rayed book in the library
+    local group_rows, other_rows = {}, {}
     for _idx, cand in ipairs(candidates) do
         local captured = cand
         local row_label = captured.title
@@ -1522,11 +1530,11 @@ function XrayMerge.startCrossBookFlow(opts)
             row_label = row_label .. " · " .. T(_("%1, book %2"),
                 captured.group_name, captured.group_pos)
         end
-        table.insert(rows, {{
+        table.insert(captured.group_name and group_rows or other_rows, {{
             text = row_label,
             align = "left",
             callback = function()
-                UIManager:close(picker)
+                closePickers()
                 -- Read-gate parity, PER BOOK: the source artifact and the
                 -- target main are both re-sent; each book's own privacy
                 -- override wins (deny beats trusted)
@@ -1604,8 +1612,9 @@ function XrayMerge.startCrossBookFlow(opts)
         end
     end
     table.sort(predecessors, function(a, b) return a.group_pos < b.group_pos end)
+    local fold_rows = {}
     if #predecessors >= 2 then
-        table.insert(rows, {{
+        table.insert(fold_rows, {{
             text = T(_("Fold in all %1 earlier books…"), #predecessors),
             callback = function()
                 UIManager:close(picker)
@@ -1707,6 +1716,46 @@ function XrayMerge.startCrossBookFlow(opts)
                 UIManager:show(confirm)
             end,
         }})
+    end
+    -- Assembly (tiered): fold-all first, then group-mates, then the rest
+    -- behind one row
+    local rows = {}
+    for _i, r in ipairs(fold_rows) do rows[#rows + 1] = r end
+    local tgt_group = (opts.group_id and BookGroups.byId(opts.group_id))
+        or BookGroups.groupsFor(opts.file)[1]
+    if tgt_group and #predecessors == 0 then
+        -- Discoverability (device 2026-08-05): the fold-in machinery is
+        -- invisible until earlier group-mates HAVE X-Rays — say why
+        rows[#rows + 1] = {{
+            text = T(_("No earlier book in %1 has an X-Ray yet"), tgt_group.name),
+            enabled = false,
+        }}
+    end
+    for _i, r in ipairs(group_rows) do rows[#rows + 1] = r end
+    if #group_rows > 0 and #other_rows > 0 then
+        rows[#rows + 1] = {{
+            text = T(_("Other books with an X-Ray (%1)…"), #other_rows),
+            align = "left",
+            callback = function()
+                UIManager:close(picker)
+                local orows = {}
+                for _i, r in ipairs(other_rows) do orows[#orows + 1] = r end
+                orows[#orows + 1] = {{
+                    text = _("Back"),
+                    callback = function()
+                        UIManager:close(other_picker)
+                        XrayMerge.startCrossBookFlow(opts)
+                    end,
+                }}
+                other_picker = ButtonDialog:new{
+                    title = T(_("Merge into \"%1\": other books with an X-Ray"), opts.title or "?"),
+                    buttons = orows,
+                }
+                UIManager:show(other_picker)
+            end,
+        }}
+    else
+        for _i, r in ipairs(other_rows) do rows[#rows + 1] = r end
     end
     table.insert(rows, {{
         text = _("Manage groups…"),

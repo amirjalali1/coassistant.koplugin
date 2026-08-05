@@ -844,7 +844,7 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
 
     -- Build update callback from plugin reference (works from all call sites)
     self.on_update = nil
-    self.on_update_full = nil
+    self.on_extend_rebuild = nil
     -- Section X-Rays: no update/redo callbacks (complete-only)
     -- Archived-version views (metadata.checkpoint): read-only, no update either
     if self.scope or metadata.checkpoint then
@@ -858,18 +858,17 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
                 plugin_ref:_executeBookLevelActionDirect(action, "xray")
             end
         end
-        self.on_update_full = function()
+        -- Device round 2026-08-05 parity: every redo/whole-book path routes
+        -- through the SAME dual-mode form as the popup (extend /
+        -- rebuild-from-scratch / checkpoints / background delivery) instead of
+        -- firing a raw foreground update
+        self.on_extend_rebuild = function()
             local action = plugin_ref.action_service:getAction("book", "xray")
             if action then
                 if plugin_ref:_checkRequirements(action) then return end
-                plugin_ref:_executeBookLevelActionDirect(action, "xray", { full_document = true })
-            end
-        end
-        self.on_update_to_100 = function()
-            local action = plugin_ref.action_service:getAction("book", "xray")
-            if action then
-                if plugin_ref:_checkRequirements(action) then return end
-                plugin_ref:_executeBookLevelActionDirect(action, "xray", { update_to_full = true })
+                plugin_ref:_showXrayCreationChooser(action, "xray", function()
+                    plugin_ref:_executeBookLevelActionDirect(action, "xray")
+                end, nil)
             end
         end
     end
@@ -3936,153 +3935,136 @@ function XrayBrowser:showOptions()
         end
     end
 
-    -- Update/Redo options (adapted per cache type)
+    -- Update/authoring options — device round 2026-08-05 parity: ONE form row
+    -- ("Extend or rebuild…" → the popup's dual-mode creation chooser) replaces
+    -- the old bespoke redo/update-to-100 fire-rows; the quick paid
+    -- update-to-current keeps a direct row (with the mid-ladder confirm), and
+    -- the free complete-rung switch stays
     if self.on_update then
         local cached_dec = self.metadata.progress_decimal or 0
-        if self.metadata.full_document then
-            -- Full-document cache: redo maintains full-document semantics
-            local redo_callback = self.on_update_full or self.on_update
-            table.insert(buttons, {{
-                text = _("Redo X-Ray (entire document)"), align = "left",
-                callback = function()
-                    closeOptions()
-                    if self_ref.menu then UIManager:close(self_ref.menu) end
-                    redo_callback()
-                end,
-            }})
-        elseif cached_dec >= 0.995 then
-            -- Partial at 100%: redo to 100% (maintains progress semantics)
-            table.insert(buttons, {{
-                text = _("Redo X-Ray (to 100%)"), align = "left",
-                callback = function()
-                    closeOptions()
-                    if self_ref.menu then UIManager:close(self_ref.menu) end
-                    if self_ref.on_update_to_100 then
-                        self_ref.on_update_to_100()
-                    else
-                        self_ref.on_update()
-                    end
-                end,
-            }})
-        else
-            -- Partial < 100%: Update/Redo to current + Update to 100%
-            local update_text
-            local current_dec
-            if self.ui then
-                local ContextExtractor = require("koassistant_context_extractor")
-                local extractor = ContextExtractor:new(self.ui)
-                local current = extractor:getReadingProgress()
-                current_dec = current.decimal
-                if current.decimal > cached_dec + 0.01 then
-                    update_text = T(_("Update X-Ray (to %1)"), current.formatted)
-                else
-                    update_text = T(_("Redo X-Ray (to %1)"), current.formatted)
-                end
-            end
-            if not update_text then
-                update_text = _("Redo X-Ray")
-            end
+        local current
+        if self.ui and not self.metadata.full_document and cached_dec < 0.995 then
+            local ContextExtractor = require("koassistant_context_extractor")
+            current = ContextExtractor:new(self.ui):getReadingProgress()
+        end
+        local current_dec = current and current.decimal
 
-            -- Ladder context for the round-6/7 parity gates (main live view only)
-            local uladder_highest = 0
-            local ulive_other_lineage = false
-            if not self.scope and not self.metadata.checkpoint and self.metadata.book_file then
-                local UpdCache = require("koassistant_action_cache")
-                uladder_highest = UpdCache.highestXrayLadderProgress(
-                    UpdCache.getXrayLadder(self.metadata.book_file)) or 0
-                local ulive = UpdCache.getXrayCache(self.metadata.book_file)
-                ulive_other_lineage = (ulive and ulive.result
-                    and (ulive.full_document or ulive.source_mode == "ai_knowledge")) or false
-            end
+        -- Ladder context for the round-6/7 parity gates (main live view only)
+        local uladder_highest = 0
+        local ulive_other_lineage = false
+        if not self.scope and not self.metadata.checkpoint and self.metadata.book_file then
+            local UpdCache = require("koassistant_action_cache")
+            uladder_highest = UpdCache.highestXrayLadderProgress(
+                UpdCache.getXrayLadder(self.metadata.book_file)) or 0
+            local ulive = UpdCache.getXrayCache(self.metadata.book_file)
+            ulive_other_lineage = (ulive and ulive.result
+                and (ulive.full_document or ulive.source_mode == "ai_knowledge")) or false
+        end
 
+        -- Quick paid update to the reading position. Round 14 (popup parity):
+        -- always confirms — mid-ladder honesty lines when checkpoints are
+        -- around, plus the background choice (open-book only)
+        if current_dec and current_dec > cached_dec + 0.01 then
             table.insert(buttons, {{
-                text = update_text, align = "left",
+                text = T(_("Update X-Ray (to %1)"), current.formatted), align = "left",
                 callback = function()
                     closeOptions()
                     local fire = function()
                         if self_ref.menu then UIManager:close(self_ref.menu) end
                         self_ref.on_update()
                     end
-                    -- Round 14 (popup parity): every paid to-position update
-                    -- confirms — mid-ladder honesty lines when checkpoints are
-                    -- around, plus the background choice (open-book only)
-                    if current_dec and current_dec > cached_dec + 0.01 then
-                        local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?"),
-                            math.floor(current_dec * 100 + 0.5) .. "%")
-                        if uladder_highest > cached_dec + 0.005 then
-                            -- Decision support (round 9, popup parity): name the
-                            -- concrete free alternative
-                            confirm_text = confirm_text .. "\n"
-                                .. _("Checkpoints are not touched: they still swap in for free as you read past them.")
-                            local CbCache = require("koassistant_action_cache")
-                            local next_ahead, avail_now
-                            for _idx, r in ipairs(CbCache.getXrayLadder(self_ref.metadata.book_file)) do
-                                local p = tonumber(r.progress_decimal)
-                                if p and not r.full_document then
-                                    if p > current_dec + 0.005 then
-                                        if not next_ahead or p < next_ahead then next_ahead = p end
-                                    elseif p > cached_dec + 0.005 then
-                                        if not avail_now or p > avail_now then avail_now = p end
-                                    end
+                    local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?"),
+                        math.floor(current_dec * 100 + 0.5) .. "%")
+                    if uladder_highest > cached_dec + 0.005 then
+                        -- Decision support (round 9, popup parity): name the
+                        -- concrete free alternative
+                        confirm_text = confirm_text .. "\n"
+                            .. _("Checkpoints are not touched: they still swap in for free as you read past them.")
+                        local CbCache = require("koassistant_action_cache")
+                        local next_ahead, avail_now
+                        for _idx, r in ipairs(CbCache.getXrayLadder(self_ref.metadata.book_file)) do
+                            local p = tonumber(r.progress_decimal)
+                            if p and not r.full_document then
+                                if p > current_dec + 0.005 then
+                                    if not next_ahead or p < next_ahead then next_ahead = p end
+                                elseif p > cached_dec + 0.005 then
+                                    if not avail_now or p > avail_now then avail_now = p end
                                 end
                             end
-                            if avail_now then
-                                confirm_text = confirm_text .. "\n" .. T(_("A free checkpoint at %1% is available right now (\"Update to %1%, instant\" in the X-Ray popup)."),
-                                    math.floor(avail_now * 100 + 0.5))
-                            elseif next_ahead then
-                                confirm_text = confirm_text .. "\n" .. T(_("The next free checkpoint arrives at %1%."),
-                                    math.floor(next_ahead * 100 + 0.5))
-                            end
                         end
-                        local plugin = self_ref.metadata.plugin
-                        local bg_ok = plugin and plugin.ui and plugin.ui.document
-                            and plugin.ui.document.file == self_ref.metadata.book_file
-                        local ConfirmBox = require("ui/widget/confirmbox")
-                        UIManager:show(ConfirmBox:new{
-                            text = confirm_text,
-                            ok_text = _("Update"),
-                            ok_callback = fire,
-                            other_buttons = bg_ok and {{{
-                                text = _("Update in background (keep reading)"),
-                                callback = function()
-                                    if self_ref.menu then UIManager:close(self_ref.menu) end
-                                    plugin:_fireXrayAutoUpdate({ manual = true })
-                                end,
-                            }}} or nil,
-                        })
-                    else
-                        fire()
+                        if avail_now then
+                            confirm_text = confirm_text .. "\n" .. T(_("A free checkpoint at %1% is available right now (\"Update to %1%, instant\" in the X-Ray popup)."),
+                                math.floor(avail_now * 100 + 0.5))
+                        elseif next_ahead then
+                            confirm_text = confirm_text .. "\n" .. T(_("The next free checkpoint arrives at %1%."),
+                                math.floor(next_ahead * 100 + 0.5))
+                        end
                     end
+                    local plugin = self_ref.metadata.plugin
+                    local bg_ok = plugin and plugin.ui and plugin.ui.document
+                        and plugin.ui.document.file == self_ref.metadata.book_file
+                    local ConfirmBox = require("ui/widget/confirmbox")
+                    UIManager:show(ConfirmBox:new{
+                        text = confirm_text,
+                        ok_text = _("Update"),
+                        ok_callback = fire,
+                        other_buttons = bg_ok and {{{
+                            text = _("Update in background (keep reading)"),
+                            callback = function()
+                                if self_ref.menu then UIManager:close(self_ref.menu) end
+                                plugin:_fireXrayAutoUpdate({ manual = true })
+                            end,
+                        }}} or nil,
+                    })
                 end,
             }})
+        end
 
-            -- "Update to 100%": replaced by the free switch when a finished 1.0
-            -- rung exists (popup parity — device round 2); never on other lineages
-            if uladder_highest >= 0.995 and not ulive_other_lineage
-                and self.metadata.plugin then
-                table.insert(buttons, {{
-                    text = _("Switch to complete version (100%), instant"), align = "left",
-                    callback = function()
-                        closeOptions()
-                        -- The switch replaces the data this browser renders
-                        if self_ref.menu then UIManager:close(self_ref.menu) end
-                        self_ref.metadata.plugin:_switchToCompleteXrayRung({
-                            file = self_ref.metadata.book_file,
-                            book_title = self_ref.metadata.title,
-                            book_author = self_ref.metadata.book_author,
-                        })
-                    end,
-                }})
-            elseif self_ref.on_update_to_100 and (not current_dec or current_dec < 0.995) then
-                table.insert(buttons, {{
-                    text = _("Update X-Ray (to 100%)"), align = "left",
-                    callback = function()
-                        closeOptions()
-                        if self_ref.menu then UIManager:close(self_ref.menu) end
-                        self_ref.on_update_to_100()
-                    end,
-                }})
+        -- Free switch to the finished complete rung (popup parity — replaces
+        -- any paid whole-book path whenever a 1.0 rung exists); never on
+        -- other lineages
+        if uladder_highest >= 0.995 and not ulive_other_lineage
+            and not self.metadata.full_document and cached_dec < 0.995
+            and self.metadata.plugin then
+            table.insert(buttons, {{
+                text = _("Switch to complete version (100%), instant"), align = "left",
+                callback = function()
+                    closeOptions()
+                    -- The switch replaces the data this browser renders
+                    if self_ref.menu then UIManager:close(self_ref.menu) end
+                    self_ref.metadata.plugin:_switchToCompleteXrayRung({
+                        file = self_ref.metadata.book_file,
+                        book_title = self_ref.metadata.title,
+                        book_author = self_ref.metadata.book_author,
+                    })
+                end,
+            }})
+        end
+
+        -- The authoring form (extend / rebuild-from-scratch / checkpoints /
+        -- background delivery) — label mirrors the popup's row for this state
+        if self.on_extend_rebuild then
+            local a_mode, a_base
+            local am_plugin = self.metadata.plugin
+            if am_plugin and am_plugin._xrayAuthoringMode and self.metadata.book_file then
+                a_mode, a_base = am_plugin:_xrayAuthoringMode(self.metadata.book_file)
             end
+            local er_label
+            if a_mode == "rebuild" or (a_mode == "extend" and (a_base or 0) >= 0.995) then
+                er_label = _("Rebuild X-Ray…")
+            elseif a_mode == "create" then
+                er_label = _("Create X-Ray…")
+            else
+                er_label = _("Extend or rebuild…")
+            end
+            table.insert(buttons, {{
+                text = er_label, align = "left",
+                callback = function()
+                    closeOptions()
+                    if self_ref.menu then UIManager:close(self_ref.menu) end
+                    self_ref.on_extend_rebuild()
+                end,
+            }})
         end
     end
 

@@ -101,6 +101,19 @@ BookSettings.KEY_XRAY_COVERAGE_ASKED = "koassistant_book_xray_coverage_asked"
 -- by the Create form's "as I read" pick under section-end coverage and by the
 -- Extend-coverage chooser; the auto scheduler idles once the goal is reached.
 BookSettings.KEY_XRAY_GOAL = "koassistant_book_xray_goal"
+-- Device round 2026-08-05 (item 50 round 5): mechanical promotion hold —
+-- "position" pins checkpoint promotion to position-following while the
+-- spoiler posture is FULL, for readers who want X-Rays by position without
+-- spoiler protection (prompts and build cadence untouched). Set by deliberate
+-- below-newest installs/switches, cleared by deliberate newest/complete
+-- installs and by X-Ray deletion.
+BookSettings.KEY_XRAY_PROMOTION = "koassistant_book_xray_promotion"
+
+--- X-Ray promotion hold. Pure.
+--- @return boolean true = promotion follows the reading position for this book
+function BookSettings.xrayPromotionHold(doc_settings)
+    return (doc_settings and doc_settings:readSetting(BookSettings.KEY_XRAY_PROMOTION)) == "position"
+end
 
 --- Per-book Automatic X-Ray override. Pure.
 --- @return string|nil "on" | "off" | nil (= follow global)
@@ -501,6 +514,7 @@ BookSettings.SIDECAR_KEYS = {
     BookSettings.KEY_DICTIONARY_CONTEXT,
     BookSettings.KEY_XRAY_AUTO,
     BookSettings.KEY_XRAY_GOAL,
+    BookSettings.KEY_XRAY_PROMOTION,
     -- (KEY_XRAY_COVERAGE_ASKED is deliberately NOT here: a stamp, not an
     -- override — it must not count as "customized" nor block on reset;
     -- registered as its own storage-registry entry like the last-opened stamp)

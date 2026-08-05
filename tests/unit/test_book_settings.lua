@@ -800,7 +800,7 @@ TestRunner:test("KEY_WEB_SEARCH and KEY_DOMAIN/KEY_RESEARCH are in SIDECAR_KEYS"
         "koassistant_book_xray_goal missing from SIDECAR_KEYS (round 21)")
     TestRunner:assertEqual(found[BookSettings.KEY_BACKGROUND] == true, true,
         "koassistant_book_background missing from SIDECAR_KEYS (book_background_plan.md)")
-    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 24, "24 per-book keys expected (incl. 4 privacy overrides)")
+    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 25, "25 per-book keys expected (incl. 4 privacy overrides + xray promotion hold)")
 end)
 
 TestRunner:suite("Quick Answer default (controls_parity_plan.md §8c.7)")
@@ -1049,6 +1049,15 @@ TestRunner:test("resolveXrayPosture: global spoiler_free_chat -> track", functio
         fakeDocSettings({}), { spoiler_free_chat = true })
     TestRunner:assertEqual(posture, "track", "global spoiler protection -> track")
     TestRunner:assertEqual(reason, "global", "global layer")
+end)
+
+TestRunner:test("xrayPromotionHold: only the \"position\" sentinel pins (device round 5)", function()
+    TestRunner:assertEqual(BookSettings.xrayPromotionHold(nil), false, "no ds -> no hold")
+    TestRunner:assertEqual(BookSettings.xrayPromotionHold(fakeDocSettings({})), false, "unset -> no hold")
+    TestRunner:assertEqual(BookSettings.xrayPromotionHold(
+        fakeDocSettings({ koassistant_book_xray_promotion = "position" })), true, "position -> hold")
+    TestRunner:assertEqual(BookSettings.xrayPromotionHold(
+        fakeDocSettings({ koassistant_book_xray_promotion = true })), false, "other values -> no hold")
 end)
 
 TestRunner:test("resolveXrayPosture: per-book spoiler override wins both ways", function()
