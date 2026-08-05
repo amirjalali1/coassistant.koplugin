@@ -817,9 +817,9 @@ Guidance for non-fiction:
 
 __CLOSING__
 
-If you don't recognize this work or lack sufficient detail to provide accurate information, respond with ONLY this JSON:
-{"error": "I don't recognize this work. Please provide more context."}
-Do NOT attempt to construct an X-Ray with fabricated or uncertain details.]]
+Base the X-Ray on the provided text. You do not need to recognize this work — analyze the text on its own terms whether or not you know it. Do NOT add characters, events, or details that are not in the provided text or clearly implied by it.
+If no text is provided, or the text is unreadable or too fragmentary to analyze, respond with ONLY this JSON:
+{"error": "The extracted text is empty or unusable, so no X-Ray can be built from it."}]]
 
 local XRAY_PARTIAL_REPLACEMENTS = {
     __SCOPE_LINE__ = [[I'm at {reading_progress}.]],
