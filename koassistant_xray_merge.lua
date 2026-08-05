@@ -1753,10 +1753,14 @@ function XrayMerge.startCrossBookFlow(opts)
             end,
         }})
     end
-    -- Item 46: fold in ALL earlier group-mates as sequential DIRECT merges
-    -- (book 1 first) — each predecessor lands its own labeled background with
-    -- exact provenance (never a chained relay); the live main is re-read
-    -- between steps because each merge rewrites it
+    -- Item 46/49 — THE ORGANIC SERIES CHAIN (maintainer decision 2026-08-06,
+    -- replacing the v1 direct-into-target fold-all): each volume's X-Ray folds
+    -- into the NEXT volume's (1→2, 2→3, … N-1→N, oldest first), so EVERY
+    -- volume ends up carrying its predecessors — the carry stack (verbatim
+    -- labeled background + transitive ledger + alias bridge) makes each hop
+    -- lossless, and archives land one-per-volume instead of piling on the
+    -- last book. Both sides of every hop are re-read fresh: the previous hop
+    -- just rewrote the source.
     local predecessors = {}
     for _idx, cand in ipairs(candidates) do
         if cand.group_direction == "before" then
@@ -1784,9 +1788,15 @@ function XrayMerge.startCrossBookFlow(opts)
                         if missing_n < 0 then missing_n = 0 end
                     end
                 end
-                local confirm_title = T(_("Merge the X-Rays of %1 earlier books in %2, one at a time (oldest first)?"),
-                        #predecessors, predecessors[1].group_name)
-                    .. "\n" .. _("Each book lands as its own labeled background. Your current X-Ray is archived first.")
+                -- The chain: predecessors in reading order, this book last
+                local chain = {}
+                for _pidx, pre in ipairs(predecessors) do chain[#chain + 1] = pre end
+                chain[#chain + 1] = { file = opts.file, title = opts.title,
+                    author = opts.author, entry = main_entry }
+                local n_merges = #chain - 1
+                local confirm_title = T(_("Bring %1 up to date: %2 merges, oldest first — each book's X-Ray folds into the next book's (1 into 2, 2 into 3, …)?"),
+                        predecessors[1].group_name, n_merges)
+                    .. "\n" .. _("Every volume ends up carrying its predecessors' knowledge as labeled background. Each receiving X-Ray is archived first, so every step can be undone from that book's version list.")
                 if missing_n > 0 then
                     confirm_title = confirm_title .. "\n"
                         .. T(_("Skipped: %1 earlier book(s) have no X-Ray yet."), missing_n)
@@ -1795,16 +1805,16 @@ function XrayMerge.startCrossBookFlow(opts)
                 confirm = ButtonDialog:new{
                     title = confirm_title,
                     buttons = {
-                        {{ text = _("Merge all"), callback = function()
+                        {{ text = _("Merge the series"), callback = function()
                             UIManager:close(confirm)
                             -- Preflight consent sweep (2026-08-05): fail BEFORE the
                             -- first request names the blocking book — never stop a
                             -- paid run midway on a knowable condition. The per-step
                             -- checks stay (settings can change mid-run).
-                            for _pidx, pre in ipairs(predecessors) do
-                                if not XrayMerge.consentOk({ pre.entry }, features, provider, pre.file, opts.ui) then
+                            for _cidx, member in ipairs(chain) do
+                                if not XrayMerge.consentOk({ member.entry }, features, provider, member.file, opts.ui) then
                                     UIManager:show(InfoMessage:new{
-                                        text = T(_("Cannot start: text-extraction consent is missing for \"%1\"."), pre.title),
+                                        text = T(_("Cannot start: text-extraction consent is missing for \"%1\"."), member.title),
                                         timeout = 5,
                                     })
                                     return
@@ -1812,45 +1822,53 @@ function XrayMerge.startCrossBookFlow(opts)
                             end
                             if opts.close_browser then opts.close_browser() end
                             local function step(idx)
-                                if idx > #predecessors then
+                                if idx > n_merges then
                                     UIManager:show(Notification:new{
-                                        text = T(_("Folded in %1 books."), #predecessors),
+                                        text = T(_("Series chain complete: %1 merges."), n_merges),
                                     })
                                     if opts.on_done then opts.on_done(true) end
                                     return
                                 end
-                                local src = predecessors[idx]
-                                local fresh_main = ActionCache.getXrayCache(opts.file)
-                                if not (fresh_main and fresh_main.result and XrayParser.isJSON(fresh_main.result)) then
+                                local src_c = chain[idx]
+                                local tgt_c = chain[idx + 1]
+                                -- Both re-read fresh: the previous hop rewrote src
+                                local fresh_src = ActionCache.getXrayCache(src_c.file)
+                                local fresh_tgt = ActionCache.getXrayCache(tgt_c.file)
+                                if not (fresh_src and fresh_src.result and XrayParser.isJSON(fresh_src.result))
+                                    or not (fresh_tgt and fresh_tgt.result and XrayParser.isJSON(fresh_tgt.result)) then
                                     UIManager:show(InfoMessage:new{
-                                        text = _("Stopped: this book's X-Ray is no longer available."),
+                                        text = T(_("Stopped at \"%1\": its X-Ray is no longer available."),
+                                            (fresh_src and fresh_src.result) and tgt_c.title or src_c.title),
                                         timeout = 4,
                                     })
                                     return
                                 end
-                                if not XrayMerge.consentOk({ src.entry }, features, provider, src.file, opts.ui)
-                                    or not XrayMerge.consentOk({ fresh_main }, features, provider, opts.file, opts.ui) then
+                                if not XrayMerge.consentOk({ fresh_src }, features, provider, src_c.file, opts.ui)
+                                    or not XrayMerge.consentOk({ fresh_tgt }, features, provider, tgt_c.file, opts.ui) then
                                     UIManager:show(InfoMessage:new{
-                                        text = T(_("Stopped at \"%1\": text-extraction consent is missing for it."), src.title),
+                                        text = T(_("Stopped at \"%1\": text-extraction consent is missing for it."), src_c.title),
                                         timeout = 5,
                                     })
                                     return
                                 end
                                 UIManager:show(Notification:new{
-                                    text = T(_("Merging %1 of %2: %3"), idx, #predecessors, src.title),
+                                    text = T(_("Merging %1 of %2: %3 into %4"), idx, n_merges,
+                                        src_c.title, tgt_c.title),
                                 })
                                 XrayMerge.executeCrossBook({
-                                    file = opts.file, ui = opts.ui, plugin = opts.plugin,
+                                    file = tgt_c.file, ui = opts.ui, plugin = opts.plugin,
                                     configuration = opts.configuration,
-                                    title = opts.title, author = opts.author,
-                                    main_entry = fresh_main, source = src,
+                                    title = tgt_c.title, author = tgt_c.author,
+                                    main_entry = fresh_tgt,
+                                    source = { file = src_c.file, title = src_c.title,
+                                        author = src_c.author, entry = fresh_src },
                                     on_done = function(ok, err)
                                         if ok then
                                             step(idx + 1)
                                         else
                                             UIManager:show(InfoMessage:new{
-                                                text = T(_("Stopped at \"%1\": %2"), src.title,
-                                                    tostring(err or "unknown error")),
+                                                text = T(_("Stopped at \"%1\" into \"%2\": %3"), src_c.title,
+                                                    tgt_c.title, tostring(err or "unknown error")),
                                                 timeout = 5,
                                             })
                                         end
