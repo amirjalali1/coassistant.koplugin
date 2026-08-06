@@ -382,8 +382,22 @@ function ArtifactBrowser:showArtifactSelector(doc_path, doc_title, opts)
                     self_ref:_showPinnedGroupPopup(captured.data, doc_path, doc_title,
                         function() UIManager:close(selector) end, opts)
                 elseif captured.is_xray_versions_group then
+                    -- Round 26 (device report: "the View/Install/Delete popup
+                    -- stays open"): this was the ONE versions entry with no
+                    -- close_browser hook, so after installing a version the
+                    -- full-screen browser behind it stayed up showing pre-
+                    -- install state. Deferred close, like the X-Ray browser's
+                    -- row: browsing versions keeps the browser, an actual
+                    -- View/Install/Switch retires it.
+                    local ab_menu = self_ref.current_menu
                     UIManager:close(self_ref._cache_selector)
-                    AskGPT:_showXrayCheckpointList({ file = doc_path, book_title = doc_title })
+                    AskGPT:_showXrayCheckpointList({ file = doc_path, book_title = doc_title,
+                        close_browser = function()
+                            if ab_menu then
+                                UIManager:close(ab_menu)
+                                self_ref.current_menu = nil
+                            end
+                        end })
                 elseif select_mode then
                     local entry, err = require("koassistant_attachments").makeArtifact(
                         captured.name, captured.key, captured.data, doc_title)

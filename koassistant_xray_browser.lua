@@ -764,6 +764,20 @@ local function handleTextSelection(text, hold_duration, opts)
 end
 
 -- Emoji mappings for category keys (used when enable_emoji_icons is on)
+-- Short category labels for chapter analysis display
+local CHAPTER_CATEGORY_SHORT = {
+    characters = _("Cast"),
+    key_figures = _("Figures"),
+    locations = _("World"),
+    themes = _("Ideas"),
+    core_concepts = _("Concepts"),
+    arguments = _("Args"),
+    lexicon = _("Lexicon"),
+    terminology = _("Terms"),
+    timeline = _("Arc"),
+    argument_development = _("Dev"),
+}
+
 local CATEGORY_EMOJIS = {
     characters = "👥", key_figures = "👥",
     locations = "🌍", core_concepts = "💡",
@@ -806,6 +820,16 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
     self.on_delete = on_delete
     self.nav_stack = {}
     self._mentions_spoiler_warned = nil
+    -- Singleton hygiene (round 26): self IS the module table, so every per-view
+    -- field must die with the previous view or it leaks into the NEXT book —
+    -- a stale location sent group jumps to the wrong book's entity, and a stale
+    -- _dormant_archived skipped the next book's first pre-op ring archive.
+    self.location = nil
+    self._detail_viewer = nil
+    self._dist_cache = nil
+    self._text_cache = nil
+    self._scope_reveal_warned = nil
+    self._dormant_archived = nil
     -- Widgets to close when launching book text search (e.g., dictionary popup, cross-section results)
     self._cleanup_widgets = metadata._cleanup_widgets
 
@@ -1163,95 +1187,175 @@ function XrayBrowser:buildCategoryItems()
     return items
 end
 
---- Carried-entities list (series-identity round, 2026-08-06): every dormant
---- ledger stub — name and source book — one tap from the main category menu.
---- Reading is the primary use ("who might return?"); the per-stub detail
---- offers the manual actions.
-function XrayBrowser:showDormantList()
+--- Menu items for the carried-entity list. Round 26 (device report: "the popup
+--- is very bad design"): the ledger renders as an ordinary paginated browser
+--- page like every other entity list, not as a stack of full-width buttons.
+--- @return table items
+function XrayBrowser:_buildDormantItems()
     local self_ref = self
     local ledger = self.xray_data and self.xray_data[XrayParser.DORMANT_KEY]
-    if type(ledger) ~= "table" or #ledger == 0 then return end
-    local dialog
-    local rows = {}
+    local items = {}
+    if type(ledger) ~= "table" then return items end
     for i, stub in ipairs(ledger) do
-        if type(stub) == "table" and type(stub.name) == "string" then
+        if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= "" then
             local captured_i, captured = i, stub
-            local label = captured.name
-            if type(captured.source) == "string" and captured.source ~= "" then
-                label = T(_("%1 — from %2"), captured.name, captured.source)
-            end
-            rows[#rows + 1] = {{
-                text = label, align = "left",
+            local short_cat = CHAPTER_CATEGORY_SHORT[stub.category]
+            local src = (type(stub.source) == "string" and stub.source) or ""
+            table.insert(items, {
+                text = captured.name,
+                mandatory = short_cat and (short_cat .. " · " .. src) or src,
+                mandatory_dim = true,
                 callback = function()
-                    UIManager:close(dialog)
-                    self_ref:showDormantDetail(captured_i, captured)
+                    self_ref:showDormantDetail(captured_i, captured,
+                        { stubs = ledger, index = captured_i })
                 end,
-            }}
+            })
         end
     end
-    rows[#rows + 1] = {{ text = _("Close"), callback = function() UIManager:close(dialog) end }}
-    dialog = ButtonDialog:new{
-        title = T(_("Carried from earlier books — %1 entit(y/ies) that have not appeared in this book yet. Each wakes automatically when an update meets it; tap one to read its history or handle it manually."), #ledger),
-        buttons = rows,
-    }
-    UIManager:show(dialog)
+    return items
+end
+
+--- Carried-entities list (series-identity round; Menu page since round 26):
+--- every dormant ledger stub — name, category and source book — one tap from
+--- the main category menu. Reading is the primary use ("who might return?");
+--- the per-stub detail offers the manual actions.
+function XrayBrowser:showDormantList()
+    local ledger = self.xray_data and self.xray_data[XrayParser.DORMANT_KEY]
+    if type(ledger) ~= "table" or #ledger == 0 then return end
+    -- A carried stub is not a live entity in THIS book, so there is no honest
+    -- "→ Group" target from these pages
+    self.location = nil
+    self:navigateForward(T(_("Carried from earlier books (%1)"), #ledger),
+        self:_buildDormantItems())
+end
+
+--- Repaint the carried list in place after an edit (the root-only refresh in
+--- _commitDormantOp cannot see this page). Pops back out when the last stub
+--- leaves, so the reader never stares at an empty list.
+function XrayBrowser:_refreshDormantPage()
+    if not self.menu then return end
+    local ledger = self.xray_data and self.xray_data[XrayParser.DORMANT_KEY]
+    if type(ledger) ~= "table" or #ledger == 0 then
+        self:navigateBack()
+        return
+    end
+    self.current_title = T(_("Carried from earlier books (%1)"), #ledger)
+    self.menu:switchItemTable(self.current_title, self:_buildDormantItems(), -1)
 end
 
 --- One carried entity: its full history, and the manual actions — link to an
 --- existing entry (reader-asserted identity, the zero-token fix for naming
 --- drift the model missed), promote to a visible entry, or remove.
-function XrayBrowser:showDormantDetail(stub_idx, stub)
+--- Round 26 (device report: "the character info is very long and you have to
+--- scroll a small thing at the bottom"): a scrollable TextViewer with a real
+--- button row, exactly like showItemDetail — the body is text, the actions
+--- are buttons, and neither fights the other for space.
+--- @param nav_context table|nil { stubs, index } for ◀/▶ within the list
+function XrayBrowser:showDormantDetail(stub_idx, stub, nav_context)
     local self_ref = self
-    local head = stub.name
+    local parts = { stub.name, "" }
     if type(stub.aliases) == "table" and #stub.aliases > 0 then
-        head = head .. " (" .. table.concat(stub.aliases, ", ") .. ")"
+        parts[#parts + 1] = _("Also known as:") .. " " .. table.concat(stub.aliases, ", ")
     end
-    local parts = { head }
     if type(stub.source) == "string" and stub.source ~= "" then
         parts[#parts + 1] = T(_("Carried from: %1"), stub.source)
     end
+    parts[#parts + 1] = ""
+    parts[#parts + 1] = _("Not seen in this book yet. It wakes on its own when an update or merge meets it.")
     if type(stub.description) == "string" and stub.description ~= "" then
+        parts[#parts + 1] = ""
         parts[#parts + 1] = stub.description
     end
-    if type(stub.background) == "table" then
+    if type(stub.background) == "table" and #stub.background > 0 then
+        parts[#parts + 1] = ""
+        parts[#parts + 1] = _("From earlier books:")
         for _idx, b in ipairs(stub.background) do
             if type(b) == "table" and type(b.text) == "string" and b.source then
-                parts[#parts + 1] = T(_("From %1: %2"), b.source, b.text)
+                parts[#parts + 1] = T(_("%1: %2"), b.source, b.text)
             end
         end
     end
-    local dialog
-    dialog = ButtonDialog:new{
-        title = table.concat(parts, "\n\n"),
-        buttons = {
-            {{ text = _("This is an existing entry…"), align = "left", callback = function()
-                UIManager:close(dialog)
-                self_ref:showDormantLinkPicker(stub_idx, stub)
-            end }},
-            {{ text = _("Add as its own entry"), align = "left", callback = function()
-                UIManager:close(dialog)
-                self_ref:_commitDormantOp(
-                    function(data) return XrayParser.promoteStub(data, stub_idx, stub.name) end,
-                    T(_("\"%1\" added to the X-Ray."), stub.name))
-            end }},
-            {{ text = _("Remove"), align = "left", callback = function()
-                UIManager:close(dialog)
-                self_ref:_commitDormantOp(
-                    function(data) return XrayParser.removeStub(data, stub_idx, stub.name) ~= nil end,
-                    T(_("\"%1\" removed from the carried list."), stub.name))
-            end }},
-            {{ text = _("Back"), callback = function()
-                UIManager:close(dialog)
-                self_ref:showDormantList()
-            end }},
+
+    local viewer
+    local function afterClose(fn)
+        return function()
+            if viewer then viewer:onClose() end
+            fn()
+        end
+    end
+    local buttons_rows = {
+        {
+            {
+                text = _("This is an existing entry…"),
+                callback = afterClose(function()
+                    self_ref:showDormantLinkPicker(stub_idx, stub)
+                end),
+            },
+        },
+        {
+            {
+                text = _("Add as its own entry"),
+                callback = afterClose(function()
+                    if self_ref:_commitDormantOp(
+                        function(data) return XrayParser.promoteStub(data, stub_idx, stub.name) end,
+                        T(_("\"%1\" added to the X-Ray."), stub.name)) then
+                        self_ref:_refreshDormantPage()
+                    end
+                end),
+            },
+            {
+                text = _("Remove"),
+                callback = afterClose(function()
+                    if self_ref:_commitDormantOp(
+                        function(data) return XrayParser.removeStub(data, stub_idx, stub.name) ~= nil end,
+                        T(_("\"%1\" removed from the carried list."), stub.name)) then
+                        self_ref:_refreshDormantPage()
+                    end
+                end),
+            },
         },
     }
-    UIManager:show(dialog)
+    -- Prev/next within the carried list, mirroring showItemDetail's nav row
+    local stubs = nav_context and nav_context.stubs
+    if stubs and #stubs > 1 then
+        local idx = nav_context.index
+        table.insert(buttons_rows, {
+            {
+                text = "◀",
+                callback = afterClose(function()
+                    local prev = idx > 1 and idx - 1 or #stubs
+                    self_ref:showDormantDetail(prev, stubs[prev], { stubs = stubs, index = prev })
+                end),
+            },
+            {
+                text = "▶",
+                callback = afterClose(function()
+                    local nxt = idx < #stubs and idx + 1 or 1
+                    self_ref:showDormantDetail(nxt, stubs[nxt], { stubs = stubs, index = nxt })
+                end),
+            },
+        })
+    end
+
+    local display_title = stub.name
+    if stubs and #stubs > 1 then
+        display_title = T("(%1/%2) %3", nav_context.index, #stubs, display_title)
+    end
+    viewer = TextViewer:new{
+        title = display_title,
+        text = table.concat(parts, "\n"),
+        width = Screen:getWidth(),
+        height = Screen:getHeight(),
+        buttons_table = buttons_rows,
+    }
+    UIManager:show(viewer)
 end
 
 --- Same-category picker for the manual link: "this carried entity IS that
---- existing entry".
-function XrayBrowser:showDormantLinkPicker(stub_idx, stub)
+--- existing entry". Round 26: a browser Menu page (a real Cast list runs well
+--- past what a button stack can show), with a name filter above 20 entries.
+--- @param filter string|nil Case-insensitive substring filter
+function XrayBrowser:showDormantLinkPicker(stub_idx, stub, filter)
     local self_ref = self
     local cat_key = stub.category
     local cat_label, cat_items
@@ -1268,34 +1372,65 @@ function XrayBrowser:showDormantLinkPicker(stub_idx, stub)
         })
         return
     end
-    local dialog
-    local rows = {}
+    local items = {}
+    if #cat_items >= 20 then
+        table.insert(items, {
+            text = filter and T(_("Filter: \"%1\" (tap to change)"), filter) or _("Find by name…"),
+            bold = true,
+            separator = true,
+            callback = function()
+                local input
+                input = InputDialog:new{
+                    title = _("Find by name"),
+                    input = filter or "",
+                    buttons = {{
+                        { text = _("Cancel"), callback = function() UIManager:close(input) end },
+                        {
+                            text = _("Filter"),
+                            is_enter_default = true,
+                            callback = function()
+                                local q = input:getInputText()
+                                UIManager:close(input)
+                                self_ref:navigateBack()
+                                self_ref:showDormantLinkPicker(stub_idx, stub,
+                                    (q ~= "" and q) or nil)
+                            end,
+                        },
+                    }},
+                }
+                UIManager:show(input)
+                input:onShowKeyboard()
+            end,
+        })
+    end
+    local needle = filter and filter:lower() or nil
     for _idx, item in ipairs(cat_items) do
         local name = XrayParser.getItemName(item, cat_key)
-        if type(name) == "string" and name ~= "" then
+        if type(name) == "string" and name ~= ""
+            and (not needle or name:lower():find(needle, 1, true)) then
             local captured = name
-            rows[#rows + 1] = {{
-                text = captured, align = "left",
+            table.insert(items, {
+                text = captured,
+                mandatory = (type(item.aliases) == "table" and item.aliases[1]) or nil,
+                mandatory_dim = true,
                 callback = function()
-                    UIManager:close(dialog)
-                    self_ref:_commitDormantOp(
+                    if self_ref:_commitDormantOp(
                         function(data)
                             return XrayParser.wakeStubInto(data, stub_idx, stub.name, cat_key, captured)
                         end,
-                        T(_("Folded \"%1\" into \"%2\" — its carried history now shows there."), stub.name, captured))
+                        T(_("Folded \"%1\" into \"%2\" — its carried history now shows there."),
+                            stub.name, captured)) then
+                        -- Pop the picker; the list underneath re-reads the ledger
+                        self_ref:navigateBack()
+                        self_ref:_refreshDormantPage()
+                    end
                 end,
-            }}
+            })
         end
     end
-    rows[#rows + 1] = {{ text = _("Back"), callback = function()
-        UIManager:close(dialog)
-        self_ref:showDormantDetail(stub_idx, stub)
-    end }}
-    dialog = ButtonDialog:new{
-        title = T(_("\"%1\" is the same as which %2 entry? Its carried history and names fold into the one you pick."), stub.name, cat_label or _("existing")),
-        buttons = rows,
-    }
-    UIManager:show(dialog)
+    self.location = nil
+    self:navigateForward(T(_("%1 is which %2 entry?"), stub.name,
+        cat_label or _("existing")), items)
 end
 
 --- Land a group jump as close to the reader's previous position as this book
@@ -1305,7 +1440,8 @@ end
 ---      rename and re-classify recurring figures) → its detail, with the
 ---      owning category pushed underneath so Back lands there;
 ---   2. the entity carried but not yet appeared here → its carried-entity
----      detail (the ledger IS this book's honest answer, and it says so);
+---      detail, with the carried list pushed underneath (the ledger IS this
+---      book's honest answer, and it says so);
 ---   3. the same category → its item list;
 ---   4. neither → the root, untouched.
 --- @param navigate_to table { category_key, item_name, item_aliases }
@@ -1338,7 +1474,11 @@ function XrayBrowser:_applyPendingLocation(navigate_to)
         end
         local stub, stub_idx = XrayParser.findDormantByIdentity(self.xray_data, names)
         if stub then
-            self:showDormantDetail(stub_idx, stub)
+            -- Push the carried list underneath so Back lands there, exactly as
+            -- the live-entity branch above pushes its category (round 26)
+            self:showDormantList()
+            self:showDormantDetail(stub_idx, stub,
+                { stubs = self.xray_data[XrayParser.DORMANT_KEY], index = stub_idx })
             return
         end
     end
@@ -1385,6 +1525,7 @@ function XrayBrowser:reloadLiveMain(file)
 end
 
 --- One dormant-ledger edit against DISK truth (dedup's commit pattern):
+--- Returns true only when the write landed (callers repaint on that).
 --- fresh parse → apply → re-encode → commitXray (pre-op version ring-archived
 --- once per browser session) → refresh the open root menu.
 function XrayBrowser:_commitDormantOp(apply_fn, success_text)
@@ -1394,25 +1535,25 @@ function XrayBrowser:_commitDormantOp(apply_fn, success_text)
     local entry = ActionCache.getXrayCache(file)
     if not (entry and entry.result) then
         UIManager:show(InfoMessage:new{ text = _("No main X-Ray found on disk."), timeout = 4 })
-        return
+        return false
     end
     local data = XrayParser.parse(entry.result)
     if not data or data.error then
         UIManager:show(InfoMessage:new{ text = _("The stored X-Ray could not be parsed."), timeout = 4 })
-        return
+        return false
     end
     if not apply_fn(data) then
         UIManager:show(InfoMessage:new{
             text = _("The carried list changed on disk. Reopen it and try again."),
             timeout = 4,
         })
-        return
+        return false
     end
     local json = require("json")
     local okj, cache_json = pcall(json.encode, data, { pretty = true, indent = true })
     if not okj or type(cache_json) ~= "string" then
         UIManager:show(InfoMessage:new{ text = _("Failed to serialize the updated X-Ray."), timeout = 4 })
-        return
+        return false
     end
     local meta = {}
     for k, v in pairs(entry) do meta[k] = v end
@@ -1432,15 +1573,18 @@ function XrayBrowser:_commitDormantOp(apply_fn, success_text)
     })
     if not ok then
         UIManager:show(InfoMessage:new{ text = _("Cache write failed."), timeout = 4 })
-        return
+        return false
     end
     self._dormant_archived = true
     self.xray_data = data
     UIManager:show(Notification:new{ text = success_text })
-    -- Root repaint: the carried count changed, possibly a category count too
+    -- Root repaint: the carried count changed, possibly a category count too.
+    -- Deeper pages (the carried list) repaint via _refreshDormantPage — the
+    -- caller does it, since only it knows which page is on screen.
     if self.menu and #self.nav_stack == 0 then
         self.menu:switchItemTable(self:buildMainTitle(), self:buildCategoryItems(), -1)
     end
+    return true
 end
 
 --- Navigate forward: push current state and switch to new items
@@ -1615,7 +1759,14 @@ end
 --- @param nav_context table|nil Category navigation {items, index, category_key, category_label}
 function XrayBrowser:showItemDetail(item, category_key, title, source, nav_context)
     -- Location for the group jump (round 25): the entity's own identity
-    -- handles travel, so the next book resolves it even under another name
+    -- handles travel, so the next book resolves it even under another name.
+    -- Round 26: the detail view is an OVERLAY, not a nav_stack level, so
+    -- nothing pops this back when it closes — without the close_callback
+    -- below, backing out to the category list left the location naming a
+    -- character, and the next group jump opened that character in the other
+    -- book ("strange behavior with character windows popping up").
+    local restore_location = self.location
+    local owner_file = self.metadata and self.metadata.book_file
     self.location = {
         category_key = category_key,
         category_label = nav_context and nav_context.category_label,
@@ -1831,6 +1982,31 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         end
     end
 
+    -- "→ Group" (round 26, device report): the row that carries this jump
+    -- lives on the category Menu's hamburger, which this full-screen detail
+    -- covers — and an entity page is exactly where "show me this character in
+    -- the other volume" is worth having. Same gate as the hamburger row.
+    if not self.scope and not self.metadata.checkpoint
+        and self.metadata.plugin and self.metadata.book_file
+        and self.metadata.plugin._inBookGroup
+        and self.metadata.plugin:_inBookGroup(self.metadata.book_file) then
+        local plugin_ref = self.metadata.plugin
+        local group_file = self.metadata.book_file
+        table.insert(buttons_rows, {{
+            text = "\u{2192} " .. _("Group"),
+            callback = function()
+                local jump_location = self_ref.location
+                plugin_ref:_showGroupMembersPopup(group_file, "xray", {
+                    location = jump_location,
+                    before_open = function()
+                        if viewer then viewer:onClose() end
+                        if self_ref.menu then UIManager:close(self_ref.menu) end
+                    end,
+                })
+            end,
+        }})
+    end
+
     -- Resolve references into tappable cross-category navigation buttons
     if self.xray_data then
         -- Characters/key_figures: resolve connections (other characters/items)
@@ -1922,6 +2098,15 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         -- page-turn keys; nil when no nav context (fields then unused)
         page_turn_callback_prev = navigatePrev,
         page_turn_callback_next = navigateNext,
+        -- Pop the entity location when this overlay closes (round 26). The
+        -- book guard keeps a late close from rewriting another book's
+        -- location; the ◀/▶ and connection paths close THEN re-open, so the
+        -- restore always lands before the next assignment.
+        close_callback = function()
+            if self_ref.metadata and self_ref.metadata.book_file == owner_file then
+                self_ref.location = restore_location
+            end
+        end,
         text_selection_callback = function(text, hold_duration)
             handleTextSelection(text, hold_duration, {
                 ui = captured_ui,
@@ -2432,19 +2617,6 @@ function XrayBrowser:showWikiViewer(item, category_key, cached, title, source, n
     UIManager:show(wiki_viewer)
 end
 
--- Short category labels for chapter analysis display
-local CHAPTER_CATEGORY_SHORT = {
-    characters = _("Cast"),
-    key_figures = _("Figures"),
-    locations = _("World"),
-    themes = _("Ideas"),
-    core_concepts = _("Concepts"),
-    arguments = _("Args"),
-    lexicon = _("Lexicon"),
-    terminology = _("Terms"),
-    timeline = _("Arc"),
-    argument_development = _("Dev"),
-}
 
 --- Build an inline bar string for chapter distribution display
 --- @param count number Mention count for this chapter

@@ -4655,6 +4655,19 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                                 logger.info("KOAssistant: X-Ray rebuild carried",
                                     #prev_ledger, "dormant entit(y/ies) from the outgoing version")
                             end
+                            -- Round 26: the ledger alone was half the promise —
+                            -- background already folded onto LIVE entities died
+                            -- with the replaced artifact. Re-stub those carriers
+                            -- so the wake-pass below restores them onto the
+                            -- fresh read (device-confirmed loss).
+                            if prev_parsed and not prev_parsed.error then
+                                local carried = require("koassistant_xray_merge")
+                                    .carryActiveBackground(prev_parsed, parsed)
+                                if carried > 0 then
+                                    logger.info("KOAssistant: X-Ray rebuild carried background of",
+                                        carried, "entit(y/ies) from the outgoing version")
+                                end
+                            end
                         end
                         local seeded, seed_src = require("koassistant_xray_merge").seedDormant(
                             cache_file, parsed, config.features,
@@ -9234,7 +9247,7 @@ local function openXrayBrowserFromCache(ui, data, cached, config, plugin, book_m
         and _("Based on AI training data knowledge")
         or _("Based on extracted document text")
     local formatted_date = cached.timestamp
-        and os.date("%Y-%m-%d", cached.timestamp)
+        and os.date("%Y-%m-%d %H:%M", cached.timestamp)
 
     local browser_metadata = {
         title = book_title,
@@ -9785,7 +9798,7 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
                             and _("Based on AI training data knowledge")
                             or _("Based on extracted document text")
                         local formatted_date = section_cache.timestamp
-                            and (os.date("%Y-%m-%d", section_cache.timestamp) .. " (" .. _("today") .. ")")
+                            and (os.date("%Y-%m-%d %H:%M", section_cache.timestamp) .. " (" .. _("today") .. ")")
                         XrayBrowser:show(parsed, {
                             title = book_title,
                             progress = "Complete",
@@ -9864,7 +9877,7 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
                             and _("Based on AI training data knowledge")
                             or _("Based on extracted document text")
                         local formatted_date = xray_cache.timestamp
-                            and (os.date("%Y-%m-%d", xray_cache.timestamp) .. " (" .. _("today") .. ")")
+                            and (os.date("%Y-%m-%d %H:%M", xray_cache.timestamp) .. " (" .. _("today") .. ")")
                         XrayBrowser:show(parsed, {
                             title = book_title,
                             progress = xray_cache.progress_decimal and

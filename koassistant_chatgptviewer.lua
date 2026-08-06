@@ -2362,12 +2362,16 @@ function ChatGPTViewer:init()
                   ImageBrowser.show({ book_file = self._artifact_file,
                     book_title = self._artifact_book_title })
                 elseif captured.is_xray_versions_group then
-                  -- Version list opens on top; the artifact viewer stays open beneath
+                  -- Version list opens on top; the artifact viewer stays open
+                  -- beneath while BROWSING — but an install replaces the very
+                  -- artifact this viewer renders, so that retires it (round 26)
                   if self._plugin then
+                    local viewer_self = self
                     self._plugin:_showXrayCheckpointList({
                       file = self._artifact_file,
                       book_title = self._artifact_book_title,
-                      book_author = self._artifact_book_author })
+                      book_author = self._artifact_book_author,
+                      close_browser = function() viewer_self:onClose() end })
                   end
                 elseif self._plugin then
                   self:onClose()

@@ -443,6 +443,18 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
     local was_truncated = false  -- Track if response was truncated (max tokens)
     -- Hidden streaming: accumulate data but show placeholder (for quiz etc.)
     local hidden_streaming = settings and settings.hidden_streaming
+    -- The placeholder was hardcoded quiz wording, so every other hidden-output
+    -- action (X-Ray merges since round 25) announced itself as "Generating
+    -- quiz" (device report). Callers name their own work; quiz stays default.
+    local hidden_label = (settings and settings.hidden_streaming_label)
+        or _("Generating quiz")
+    local hidden_note = settings and settings.hidden_streaming_note
+    if hidden_note == nil then hidden_note = _("Output hidden to avoid spoilers.") end
+    local function hiddenPlaceholder(frame)
+        local text = hidden_label .. (frame or "...")
+        if hidden_note ~= "" then text = text .. "\n\n" .. hidden_note end
+        return text
+    end
     local hidden_output_visible = false  -- Toggle: user pressed "Show" to reveal
     local has_streamed_content = false  -- Track if real content (not error text) was extracted
     local usage_data = nil  -- Track token usage from SSE events
@@ -835,9 +847,16 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                 end
                 local display
                 if hidden_streaming and not hidden_output_visible then
-                    -- Show placeholder instead of actual content
-                    display = _("Generating quiz") .. (hidden_animation and hidden_animation:getNextFrame() or "...")
-                        .. "\n\n" .. _("Output hidden to avoid spoilers.")
+                    -- Show placeholder instead of actual content. Round 26: the
+                    -- REASONING phase is let through — it is not the output the
+                    -- hiding protects (quiz answers, raw merge JSON), and an
+                    -- opaque animated wait was the complaint. Once real content
+                    -- starts, the placeholder takes over again.
+                    if in_reasoning_phase and #reasoning_buffer > 0 then
+                        display = table.concat(reasoning_buffer)
+                    else
+                        display = hiddenPlaceholder(hidden_animation and hidden_animation:getNextFrame())
+                    end
                 else
                     -- During a web search, base the display on the answer so far rather
                     -- than the reasoning transcript — a search right after thinking shows
@@ -978,8 +997,7 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                     if hidden_output_visible then
                         display = in_reasoning_phase and table.concat(reasoning_buffer) or table.concat(result_buffer)
                     else
-                        display = _("Generating quiz") .. (hidden_animation and hidden_animation:getNextFrame() or "...")
-                            .. "\n\n" .. _("Output hidden to avoid spoilers.")
+                        display = hiddenPlaceholder(hidden_animation and hidden_animation:getNextFrame())
                     end
                     iw:setText(display, true)
                     if hidden_output_visible and auto_scroll_active then
@@ -1082,8 +1100,7 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
     local animation = self:createWaitingAnimation()
     local function getWaitingText()
         if hidden_streaming and not hidden_output_visible then
-            return _("Generating quiz") .. hidden_animation:getNextFrame()
-                .. "\n\n" .. _("Output hidden to avoid spoilers.")
+            return hiddenPlaceholder(hidden_animation:getNextFrame())
         end
         return animation:getNextFrame()
     end
@@ -1095,8 +1112,7 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
         elseif hidden_streaming and not hidden_output_visible and not completed then
             -- Keep animating the placeholder even after content arrives
             streamDialog._input_widget:setText(
-                _("Generating quiz") .. hidden_animation:getNextFrame()
-                    .. "\n\n" .. _("Output hidden to avoid spoilers."), true)
+                hiddenPlaceholder(hidden_animation:getNextFrame()), true)
             animation_task = UIManager:scheduleIn(0.4, updateAnimation)
         end
     end
@@ -1237,6 +1253,9 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                                 if event_usage.input_tokens then usage_data.input_tokens = event_usage.input_tokens end
                                 if event_usage.output_tokens then usage_data.output_tokens = event_usage.output_tokens end
                                 if event_usage.total_tokens then usage_data.total_tokens = event_usage.total_tokens end
+                                -- Round 26: reasoning_tokens was dropped here, so the
+                                -- debug line never showed thinking on a streamed request
+                                if event_usage.reasoning_tokens then usage_data.reasoning_tokens = event_usage.reasoning_tokens end
                                 if event_usage.cache_read then usage_data.cache_read = event_usage.cache_read end
                                 if event_usage.cache_creation then usage_data.cache_creation = event_usage.cache_creation end
                             end
@@ -1431,6 +1450,9 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                                 if event_usage.input_tokens then usage_data.input_tokens = event_usage.input_tokens end
                                 if event_usage.output_tokens then usage_data.output_tokens = event_usage.output_tokens end
                                 if event_usage.total_tokens then usage_data.total_tokens = event_usage.total_tokens end
+                                -- Round 26: reasoning_tokens was dropped here, so the
+                                -- debug line never showed thinking on a streamed request
+                                if event_usage.reasoning_tokens then usage_data.reasoning_tokens = event_usage.reasoning_tokens end
                                 if event_usage.cache_read then usage_data.cache_read = event_usage.cache_read end
                                 if event_usage.cache_creation then usage_data.cache_creation = event_usage.cache_creation end
                             end

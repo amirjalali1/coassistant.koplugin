@@ -5515,7 +5515,10 @@ end
 --- @return string Formatted date string (e.g., "2026-02-10 (3d ago)")
 local function formatDateWithRelative(timestamp)
   if not timestamp then return "" end
-  local date_str = os.date("%Y-%m-%d", timestamp)
+  -- Time of day included (round 26, maintainer request): this string is
+  -- Info-only — the artifact rows elsewhere show the relative form — and
+  -- several artifacts a day is normal once merges and rebuilds are in play
+  local date_str = os.date("%Y-%m-%d %H:%M", timestamp)
   local relative = formatRelativeTime(timestamp)
   if relative ~= "" then
     date_str = date_str .. " (" .. relative .. ")"
@@ -7868,13 +7871,17 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           end,
         }})
       end
-    elseif self.ui and self.ui.document and self.ui.document.file then
-      -- Paged documents (PDF): no ladder rows here, but archived versions must
-      -- still be reachable with no live X-Ray (round 25 — archives are never
-      -- strandable, whatever the document type)
+    else
+      -- Paged documents (PDF) AND closed-book entries: no ladder rows here,
+      -- but archived versions must still be reachable with no live X-Ray
+      -- (round 25 — archives are never strandable, whatever the document type;
+      -- round 26 — nor whether the book happens to be open: the ladder rows
+      -- above are open-book-only, this one has no such reason)
+      local pg_file = (self.ui and self.ui.document and self.ui.document.file)
+        or (opts and opts.file)
       local pg_ac = require("koassistant_action_cache")
-      local pg_arch = pg_ac.getXrayCheckpointCount(self.ui.document.file)
-        + pg_ac.getXrayLadderCount(self.ui.document.file)
+      local pg_arch = pg_file and (pg_ac.getXrayCheckpointCount(pg_file)
+        + pg_ac.getXrayLadderCount(pg_file)) or 0
       if pg_arch > 0 then
         table.insert(nc_ver_rows, {{
           text = T(_("All versions (%1)…"), pg_arch),

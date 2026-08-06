@@ -272,6 +272,21 @@ local PROTECTED_CATEGORIES = {
     __dormant = true,
 }
 
+-- NAMED-ENTITY categories: things with an IDENTITY that can recur in another
+-- book. Everything else a category list holds — themes, arguments, findings,
+-- methodology — is this book's own ANALYSIS of its own text, which neither
+-- travels nor means the same thing next door. Governs both the naming canon
+-- (what steers another book's naming) and the dormant carry ledger (what a
+-- fold may stub for later).
+-- Round 26 (device audit): the carry ledger used every non-protected category,
+-- so themes dominated it — 5 of 6 entries in one book, ~8 of 17 in the next,
+-- pure noise the reader then had to read past in "Carried from earlier books".
+local ENTITY_CATEGORIES = {
+    characters = true, key_figures = true, locations = true,
+    lexicon = true, terminology = true, technical_terms = true,
+    core_concepts = true, key_concepts = true,
+}
+
 --- name/alias (lowercased) → item, over every entity category. First bind
 --- wins (duplicate names are the dedup engine's problem, not ours). Pure.
 local function buildEntityLookup(base_data)
@@ -505,6 +520,19 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
     end
     local ledger = base_parsed[DK]
     if type(ledger) ~= "table" then ledger = {} end
+    -- Self-heal ledgers written before round 26: drop stubs from categories
+    -- that are analysis, not identity. Stubs with no category recorded are
+    -- KEPT (older writes; never destroy what we cannot classify).
+    do
+        local kept = {}
+        for _idx, stub in ipairs(ledger) do
+            local cat = type(stub) == "table" and stub.category or nil
+            if type(cat) ~= "string" or cat == "" or ENTITY_CATEGORIES[cat] then
+                kept[#kept + 1] = stub
+            end
+        end
+        ledger = kept
+    end
     local by_name = {}
     for i, stub in ipairs(ledger) do
         if type(stub) == "table" and type(stub.name) == "string" then
@@ -536,9 +564,11 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
         end
         return false
     end
-    -- (a) source ACTIVES that did not arrive → stubs
+    -- (a) source ACTIVES that did not arrive → stubs. Named entities only:
+    -- a theme from the previous book is that book's reading of that book
+    -- (round 26 audit — themes were most of the ledger).
     for _idx, cat in ipairs(XrayParser.getCategories(source_parsed)) do
-        if not PROTECTED_CATEGORIES[cat.key] and type(cat.items) == "table" then
+        if ENTITY_CATEGORIES[cat.key] and type(cat.items) == "table" then
             for _idx2, item in ipairs(cat.items) do
                 if type(item) == "table" then
                     local name = XrayParser.getItemName(item, cat.key)
@@ -582,7 +612,11 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
     -- same write.
     if type(source_parsed[DK]) == "table" then
         for _idx, stub in ipairs(source_parsed[DK]) do
-            if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= "" then
+            -- Same identity-only filter, so a pre-round-26 ledger's theme
+            -- stubs stop propagating down the chain
+            if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= ""
+                and (type(stub.category) ~= "string" or stub.category == ""
+                    or ENTITY_CATEGORIES[stub.category]) then
                 stash({
                     name = stub.name,
                     aliases = stub.aliases,
@@ -595,6 +629,68 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
         end
     end
     if #ledger > 0 then base_parsed[DK] = ledger end
+    return added
+end
+
+--- Round 26 (device audit — the round-25 rebuild carry was half a fix): a
+--- rebuild replaces the artifact wholesale, so cross-book background already
+--- folded onto ACTIVE entities died with it, even though the intent was "a
+--- rebuild must never cost knowledge the book already held". Re-stub every
+--- outgoing entity that carries background into the ledger (identity + the
+--- background verbatim, never the old description — the new read owns that);
+--- the wake-pass right after promotes them back onto whatever the fresh X-Ray
+--- named, and anything the new read dropped stays honestly carried.
+--- @param prev_parsed table The outgoing X-Ray
+--- @param parsed table The fresh X-Ray (mutated: ledger populated)
+--- @return number added
+function XrayMerge.carryActiveBackground(prev_parsed, parsed)
+    local XrayParser = require("koassistant_xray_parser")
+    if type(prev_parsed) ~= "table" or type(parsed) ~= "table" then return 0 end
+    local DK = XrayParser.DORMANT_KEY
+    local ledger = type(parsed[DK]) == "table" and parsed[DK] or {}
+    local by_name = {}
+    for i, stub in ipairs(ledger) do
+        if type(stub) == "table" and type(stub.name) == "string" then
+            by_name[stub.name:lower()] = i
+        end
+    end
+    local added = 0
+    for _idx, cat in ipairs(XrayParser.getCategories(prev_parsed)) do
+        if ENTITY_CATEGORIES[cat.key] and type(cat.items) == "table" then
+            for _idx2, item in ipairs(cat.items) do
+                if type(item) == "table" and type(item.background) == "table"
+                    and #item.background > 0 then
+                    local name = XrayParser.getItemName(item, cat.key)
+                    if type(name) == "string" and name ~= "" then
+                        local aliases
+                        if type(item.aliases) == "table" and #item.aliases > 0 then
+                            aliases = {}
+                            for _idx3, a in ipairs(item.aliases) do aliases[#aliases + 1] = a end
+                        end
+                        local stub = {
+                            name = name,
+                            aliases = aliases,
+                            category = cat.key,
+                            background = item.background,
+                        }
+                        local at = by_name[name:lower()]
+                        if at then
+                            stub.background = XrayParser.mergeBackground(
+                                ledger[at].background, item.background)
+                            stub.source = ledger[at].source
+                            stub.description = ledger[at].description
+                            ledger[at] = stub
+                        else
+                            ledger[#ledger + 1] = stub
+                            by_name[name:lower()] = #ledger
+                            added = added + 1
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if #ledger > 0 then parsed[DK] = ledger end
     return added
 end
 
@@ -649,15 +745,6 @@ function XrayMerge.seedDormant(file, parsed, features, provider, ui)
     return added, src.title
 end
 
--- Naming-canon categories: named entities only — analytical labels (themes)
--- and the book-own narrative lists (timeline / argument_development) must
--- never steer another book's naming or analysis.
-local CANON_CATEGORIES = {
-    characters = true, key_figures = true, locations = true,
-    lexicon = true, terminology = true, technical_terms = true,
-    core_concepts = true, key_concepts = true,
-}
-
 --- Series naming canon (carry layer 3(iii), 2026-08-06): IDENTITY HANDLES —
 --- names + up to two aliases, never content — of the predecessor's named
 --- entities, plus its dormant ledger's (transitive), framed for the CREATE
@@ -688,7 +775,7 @@ function XrayMerge.namingCanonBlock(source_parsed, source_title)
         bucket[cat_key][#bucket[cat_key] + 1] = shown
     end
     for _idx, cat in ipairs(XrayParser.getCategories(source_parsed)) do
-        if CANON_CATEGORIES[cat.key] and type(cat.items) == "table" then
+        if ENTITY_CATEGORIES[cat.key] and type(cat.items) == "table" then
             for _idx2, item in ipairs(cat.items) do
                 if type(item) == "table" then
                     put(cat.key, XrayParser.getItemName(item, cat.key), item.aliases)
@@ -699,7 +786,7 @@ function XrayMerge.namingCanonBlock(source_parsed, source_title)
     local ledger = source_parsed[XrayParser.DORMANT_KEY]
     if type(ledger) == "table" then
         for _idx, stub in ipairs(ledger) do
-            if type(stub) == "table" and CANON_CATEGORIES[stub.category or ""] then
+            if type(stub) == "table" and ENTITY_CATEGORIES[stub.category or ""] then
                 put(stub.category, stub.name, stub.aliases)
             end
         end
@@ -968,11 +1055,14 @@ function XrayMerge.buildHeadlessConfig(opts, payload)
     config.features.is_book_context = true
     config.features.is_general_context = nil
     config.features.is_library_context = nil
-    -- Round 25 (device report): merges stream raw delta JSON, and the
-    -- post-create fold runs OVER the X-Ray the reader just opened — a
-    -- full-screen JSON firehose there reads as "it opened the wrong X-Ray".
-    -- Hidden streaming keeps the waiting animation and the cancel affordance.
+    -- Round 25 (device report): merges emit raw delta JSON, and the post-create
+    -- fold runs OVER the X-Ray the reader just opened — a full-screen JSON dump
+    -- there reads as "it opened the wrong X-Ray". Hidden streaming keeps the
+    -- waiting animation, the Show toggle and the cancel affordance. Round 26:
+    -- name the work — the placeholder used to be hardcoded quiz wording.
     config.features.hidden_streaming = true
+    config.features.hidden_streaming_label = _("Merging X-Ray data")
+    config.features.hidden_streaming_note = _("Tap Show to watch it arrive.")
     local bm = {}
     for k, v in pairs(config.features.book_metadata or {}) do bm[k] = v end
     bm.file = opts.file
@@ -1076,6 +1166,11 @@ function XrayMerge.execute(opts)
         opts.plugin, bm,
         function(result, meta_or_err)
             if not result then
+                -- Round 26: a fold that never came back logged NOTHING between
+                -- its request body and the next UI event, so a silent failure
+                -- was indistinguishable from "the fold ran and changed nothing"
+                logger.info("KOAssistant XrayMerge: fold into", file, "FAILED:",
+                    tostring(meta_or_err or "no response"))
                 if opts.on_done then opts.on_done(false, tostring(meta_or_err or "no response")) end
                 return
             end
@@ -1653,10 +1748,19 @@ function XrayMerge.executeCrossBook(opts)
     local plugin_ref = opts.plugin
     local file = opts.file
     local source = opts.source
+    -- One line per fold at DISPATCH (round 26): a fold could previously only be
+    -- traced by reconstructing it from picker and extraction lines
+    logger.info("KOAssistant XrayMerge: folding", (source and source.title) or "?",
+        "into", opts.title or file)
     Dialogs.executeActionForResult(action, config.features.book_context or "", opts.ui, config,
         opts.plugin, bm,
         function(result, meta_or_err)
             if not result then
+                -- Round 26: a fold that never came back logged NOTHING between
+                -- its request body and the next UI event, so a silent failure
+                -- was indistinguishable from "the fold ran and changed nothing"
+                logger.info("KOAssistant XrayMerge: fold into", file, "FAILED:",
+                    tostring(meta_or_err or "no response"))
                 if opts.on_done then opts.on_done(false, tostring(meta_or_err or "no response")) end
                 return
             end

@@ -149,6 +149,16 @@ function GeminiHandler:buildRequestBody(message_history, config)
                 includeThoughts = true,
             }
         end
+    elseif ModelConstraints.supportsCapability("gemini", model, "thinking") then
+        -- No reasoning decision to send (send_nothing: the model runs at its
+        -- API default) — but STILL ask for thought summaries. includeThoughts
+        -- is display-only: it cannot change whether or how much the model
+        -- thinks, so it sits inside the send_nothing carve-out, exactly like
+        -- anthropic_request.lua's display="summarized". Without it a Gemini
+        -- 3.x request that thinks hard (device round: ~2800 thinking tokens on
+        -- a merge) streamed as pure silence, while the same model via
+        -- OpenRouter streamed its reasoning — OpenRouter needs no opt-in.
+        request_body.generationConfig.thinkingConfig = { includeThoughts = true }
     elseif api_params.thinking_level then
         -- thinking_level set but model doesn't support it
         adjustments.thinking_skipped = {

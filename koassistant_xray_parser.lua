@@ -1698,6 +1698,22 @@ end
 -- stub's knowledge into any active entity that matches it.
 XrayParser.DORMANT_KEY = "__dormant"
 
+-- What KIND of thing a category holds. Carried knowledge may bridge category
+-- drift inside a family (the same figure is `characters` in a novel and
+-- `key_figures` in a companion volume) but never across one: a person and a
+-- glossary term that share a name are not the same thing (round 26 — a
+-- dormant "Keeper" character woke into a "Keeper" lexicon entry on device).
+XrayParser.CATEGORY_FAMILY = {
+    characters = "people",
+    key_figures = "people",
+    locations = "places",
+    lexicon = "terms",
+    terminology = "terms",
+    technical_terms = "terms",
+    core_concepts = "concepts",
+    key_concepts = "concepts",
+}
+
 --- Prompt-safe copy of an artifact JSON string: the dormant ledger removed.
 --- Returns the input unchanged when no ledger is present (cheap find guard) or
 --- when anything about the round-trip fails — a strip failure must never cost
@@ -1772,19 +1788,30 @@ function XrayParser.wakeDormant(data)
         return woken
     end
     -- name/alias (lowercased) → active item
-    local lookup = {}
-    local function learn(key, item)
-        if type(key) == "string" and key ~= "" and lookup[key:lower()] == nil then
-            lookup[key:lower()] = item
+    -- Round 26: matching is FAMILY-SCOPED. It used to be a single flat
+    -- name→item map over every category, so a dormant CHARACTER woke into a
+    -- LEXICON entry that merely shared its name ("Keeper", device corpus) —
+    -- the term absorbed a person's history and the real person got nothing.
+    -- Within a family the drift is real and must still bridge (a figure is
+    -- `characters` in a novel and `key_figures` in a companion volume).
+    local lookup, family_lookup = {}, {}
+    local function learn(key, item, family)
+        if type(key) ~= "string" or key == "" then return end
+        local norm = key:lower()
+        if lookup[norm] == nil then lookup[norm] = item end
+        if family then
+            family_lookup[family] = family_lookup[family] or {}
+            if family_lookup[family][norm] == nil then family_lookup[family][norm] = item end
         end
     end
     for _idx, cat in ipairs(XrayParser.getCategories(data)) do
         if type(cat.items) == "table" then
+            local family = XrayParser.CATEGORY_FAMILY[cat.key]
             for _idx2, item in ipairs(cat.items) do
                 if type(item) == "table" then
-                    learn(XrayParser.getItemName(item, cat.key), item)
+                    learn(XrayParser.getItemName(item, cat.key), item, family)
                     if type(item.aliases) == "table" then
-                        for _idx3, alias in ipairs(item.aliases) do learn(alias, item) end
+                        for _idx3, alias in ipairs(item.aliases) do learn(alias, item, family) end
                     end
                 end
             end
@@ -1794,12 +1821,16 @@ function XrayParser.wakeDormant(data)
     for _idx, stub in ipairs(ledger) do
         local hit
         if type(stub) == "table" then
+            -- A stub that knows its family may only wake inside it; one with
+            -- no category recorded (pre-ledger writes) keeps the flat match
+            local stub_family = XrayParser.CATEGORY_FAMILY[stub.category or ""]
+            local scope = stub_family and (family_lookup[stub_family] or {}) or lookup
             hit = type(stub.name) == "string" and stub.name ~= ""
-                and lookup[stub.name:lower()] or nil
+                and scope[stub.name:lower()] or nil
             if not hit and type(stub.aliases) == "table" then
                 for _idx2, alias in ipairs(stub.aliases) do
-                    if type(alias) == "string" and alias ~= "" and lookup[alias:lower()] then
-                        hit = lookup[alias:lower()]
+                    if type(alias) == "string" and alias ~= "" and scope[alias:lower()] then
+                        hit = scope[alias:lower()]
                         break
                     end
                 end
