@@ -513,6 +513,11 @@ local function queryChatGPT(message_history, temp_config, on_complete, settings)
             enable_emoji_icons = config.features and config.features.enable_emoji_icons == true,
             debug = config.features and config.features.debug,
             hidden_streaming = config.features and config.features.hidden_streaming,
+            -- Round 27: the label/note round 26 added rode config.features but
+            -- were never copied into stream_settings, so every hidden stream
+            -- still announced itself as quiz generation on the device
+            hidden_streaming_label = config.features and config.features.hidden_streaming_label,
+            hidden_streaming_note = config.features and config.features.hidden_streaming_note,
             -- Quick-answer retry (input safety net S3): a ⚡ button in the stream window
             -- that aborts + resends with quick posture. Shown only for quick-ELIGIBLE runs
             -- (freeform sends + actions that opted into quick via accept_quick_answer; NOT

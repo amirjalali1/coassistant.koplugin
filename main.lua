@@ -7687,6 +7687,13 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
   -- sub-dialog makes their UIManager:close(dialog) close the right widget.
   local function addGroupRow(group_rows, label, group_title)
     if #group_rows == 0 then return end
+    -- Round 27 (device: "why does the version menu go into another popup with
+    -- just All versions (5)?"): a group holding ONE row is a pure detour — its
+    -- own label already says what the row says. Promote it to top level.
+    if #group_rows == 1 then
+      table.insert(buttons, group_rows[1])
+      return
+    end
     table.insert(buttons, {{
       text = label,
       callback = function()
@@ -10247,14 +10254,42 @@ function AskGPT:_xrayCheckpointLabel(cp)
     -- P3: chapter-snapped rungs name the chapter whose end they cover
     table.insert(parts, T(_("end of %1"), cp.chapter_label))
   end
+  -- Round 27 (device: "at this point hallvard has 5 versions, they all just
+  -- look the same"): the relative form collapses every version built today
+  -- into the word "today" — which is exactly the day you have five of them.
+  -- Same day → clock time; older → the relative form, which is what a reader
+  -- actually wants at that distance.
   local rel = formatRelativeTime(cp.timestamp)
-  if rel ~= "" then
+  if cp.timestamp and os.date("%Y-%m-%d", cp.timestamp) == os.date("%Y-%m-%d") then
+    table.insert(parts, os.date("%H:%M", cp.timestamp))
+  elseif rel ~= "" then
     table.insert(parts, rel)
   end
   if #parts == 0 then
     return _("Unknown")
   end
   return table.concat(parts, " · ")
+end
+
+--- Reopen the live X-Ray after an install that closed the browser it was
+--- launched from (device round 27: "the installed version doesn't auto open
+--- when installed from an open X-Ray's hamburger menu"). Opt-in via
+--- opts.reopen_live so the artifact-browser and file-browser routes — where
+--- the reader was never looking at an X-Ray — keep landing where they did.
+function AskGPT:_reopenLiveXrayAfterInstall(file, opts)
+  if not (opts and opts.reopen_live) then return end
+  local ActionCache = require("koassistant_action_cache")
+  local fresh = ActionCache.getXrayCache(file)
+  if not (fresh and fresh.result) then return end
+  self:showCacheViewer({
+    name = _("X-Ray"),
+    key = "_xray_cache",
+    data = fresh,
+    file = file,
+    book_title = opts.book_title,
+    book_author = opts.book_author,
+    skip_stale_popup = true,
+  })
 end
 
 --- Locate a checkpoint by identity (archived_at + original timestamp) — ring
@@ -10592,6 +10627,7 @@ function AskGPT:_showXrayLadderRungOptions(rung, opts)
             text = T(_("Checkpoint installed (%1)"), label),
             timeout = 2,
           })
+          self_ref:_reopenLiveXrayAfterInstall(file, opts)
         else
           UIManager:show(InfoMessage:new{ text = _("Install failed. This checkpoint is no longer on disk."), timeout = 3 })
         end
@@ -10825,6 +10861,7 @@ function AskGPT:_showXrayCheckpointOptions(cp, opts)
                     text = T(_("Version installed (%1)"), label),
                     timeout = 2,
                   })
+                  self_ref:_reopenLiveXrayAfterInstall(file, opts)
                 else
                   UIManager:show(InfoMessage:new{ text = _("Install failed. This version is no longer archived."), timeout = 3 })
                 end

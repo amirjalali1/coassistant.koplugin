@@ -286,6 +286,12 @@ local ENTITY_CATEGORIES = {
     lexicon = true, terminology = true, technical_terms = true,
     core_concepts = true, key_concepts = true,
 }
+-- Exported for the browser's carried-entities list: the prune happens on the
+-- next WRITE, so a RESTORED pre-round-26 version still holds theme stubs
+-- (device: "I restored one of the hallvard x rays and that has 17 carried
+-- over"). The list filters by the same set, so what the reader sees is
+-- consistent regardless of when the ledger was last rewritten.
+XrayMerge.ENTITY_CATEGORIES = ENTITY_CATEGORIES
 
 --- name/alias (lowercased) → item, over every entity category. First bind
 --- wins (duplicate names are the dedup engine's problem, not ours). Pure.
@@ -2174,8 +2180,10 @@ function XrayMerge.startCrossBookFlow(opts)
             for _idx, g in ipairs(memberships) do
                 local captured = g
                 grows[#grows + 1] = {{
-                    text = T(_("%1 (book %2 of %3)"), captured.name,
-                        BookGroups.positionOf(captured, opts.file) or 0, #captured.books),
+                    text = BookGroups.isOrdered(captured)
+                        and T(_("%1 (book %2 of %3)"), captured.name,
+                            BookGroups.positionOf(captured, opts.file) or 0, #captured.books)
+                        or T(_("%1 (%2 books)"), captured.name, #captured.books),
                     align = "left",
                     callback = function()
                         UIManager:close(gdialog)
@@ -2260,8 +2268,10 @@ function XrayMerge.startCrossBookFlow(opts)
         local row_label = captured.title
             .. (captured.author ~= "" and (" (" .. captured.author .. ")") or "")
         if captured.group_name then
-            row_label = row_label .. " · " .. T(_("%1, book %2"),
-                captured.group_name, captured.group_pos)
+            -- An unordered group has no book numbers (round 27) — name it only
+            row_label = row_label .. " · " .. (captured.group_pos
+                and T(_("%1, book %2"), captured.group_name, captured.group_pos)
+                or captured.group_name)
         end
         table.insert(captured.group_name and group_rows or other_rows, {{
             text = row_label,
@@ -2413,9 +2423,11 @@ function XrayMerge.startCrossBookFlow(opts)
     for _i, r in ipairs(fold_rows) do rows[#rows + 1] = r end
     local tgt_group = (opts.group_id and BookGroups.byId(opts.group_id))
         or BookGroups.groupsFor(opts.file)[1]
-    if tgt_group and #predecessors == 0 then
+    if tgt_group and #predecessors == 0 and BookGroups.isOrdered(tgt_group) then
         -- Discoverability (device 2026-08-05): the fold-in machinery is
-        -- invisible until earlier group-mates HAVE X-Rays — say why
+        -- invisible until earlier group-mates HAVE X-Rays — say why.
+        -- Unordered groups (round 27) have no "earlier" at all: the absence is
+        -- the design, not a gap to explain.
         rows[#rows + 1] = {{
             text = T(_("No earlier book in %1 has an X-Ray yet"), tgt_group.name),
             enabled = false,

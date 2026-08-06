@@ -226,6 +226,19 @@ function GroupsUI.showGroup(group_id, opts)
             })
         end,
     }}
+    -- Round 27 (maintainer): a group is not necessarily a series. Unchecking
+    -- this drops every sequence-contingent behavior (carry seed at create, the
+    -- pre-create fold ask, the series chain, direction warnings) while keeping
+    -- the group itself — navigation, per-member merges, library chat.
+    local is_ordered = BookGroups.isOrdered(group)
+    rows[#rows + 1] = {{
+        text = (is_ordered and "☑ " or "☐ ") .. _("Ordered series"),
+        align = "left",
+        callback = function()
+            BookGroups.setOrdered(group_id, not is_ordered)
+            reopen()
+        end,
+    }}
     rows[#rows + 1] = {{
         text = _("Rename group…"),
         callback = function()
@@ -266,7 +279,9 @@ function GroupsUI.showGroup(group_id, opts)
     }}
     dialog = ButtonDialog:new{
         title = T(_("Group: %1"), displayName(group))
-            .. "\n" .. _("Order is the reading order — it drives merge suggestions and previous/next navigation."),
+            .. "\n" .. (is_ordered
+                and _("Order is the reading order — it drives merge suggestions, carried-over knowledge and previous/next navigation.")
+                or _("Not a series: the books share navigation and merges, but nothing is carried forward automatically and the order is just list order.")),
         buttons = rows,
     }
     -- The move dialog closes/reopens this list under itself (kenken QoL)

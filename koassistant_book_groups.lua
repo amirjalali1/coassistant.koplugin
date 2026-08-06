@@ -1,14 +1,23 @@
 --[[--
 Book groups (xray_ecosystem_plan.md item 46, ref #90).
 
-A group is a named, manually ORDERED list of documents — the order is the
-reading/spoiler order and is the single ordering truth for every consumer:
+A group is a named list of documents. By default it is ORDERED — the order is
+the reading/spoiler order and the single ordering truth for every consumer:
 merge suggestions (earlier feeds later), prev/next artifact navigation, and
-the future series X-Ray ("build through volume N"). Nothing here is
-series-specific: series, projects, and paper sets are the same object.
+the future series X-Ray ("build through volume N").
+
+An UNORDERED group (`ordered = false`, round 27 — maintainer: "a group that
+isn't forced to be a series") is the same object with the sequence semantics
+switched off: no predecessors, so no carry seed, no pre-create fold ask, no
+series chain, no "comes LATER" direction warning. Everything else — shared
+navigation, per-member merges, the group as a library-chat launch surface —
+is identical. `predecessorsOf` is the ONE chokepoint the sequence features
+read, so the gate lives there rather than in each caller.
 
 Storage: settings_dir/koassistant_book_groups.lua via LuaSettings —
-{ version = 1, next_id = N, groups = { { id, name, books = {path,...} } } }.
+{ version = 1, next_id = N, groups = { { id, name, ordered, books = {…} } } }.
+`ordered` is absent on every pre-round-27 group and nil means TRUE — existing
+groups keep series behavior untouched.
 A settings-dir FILE (not a G_reader_settings key) because groups are
 user-authored data the backup manager must cover; global keys are
 rebuildable-index territory. Registered in koassistant_storage_registry.lua.
@@ -90,6 +99,34 @@ function BookGroups.rename(id, name)
     for _idx, group in ipairs(data.groups) do
         if group.id == id then
             group.name = name
+            save(data)
+            return true
+        end
+    end
+    return false
+end
+
+--- Is this group a sequence? nil = yes (every pre-round-27 group).
+--- @param group table|nil
+--- @return boolean
+function BookGroups.isOrdered(group)
+    return not group or group.ordered ~= false
+end
+
+--- Turn the sequence semantics on/off for a group (round 27).
+--- @return boolean changed
+function BookGroups.setOrdered(id, ordered)
+    local data = load()
+    for _idx, group in ipairs(data.groups) do
+        if group.id == id then
+            -- Stored only when false: nil is the default, so an ordered group
+            -- serializes exactly as it did before this field existed.
+            -- (Spelled out — `cond and false or nil` always yields nil.)
+            if ordered == false then
+                group.ordered = false
+            else
+                group.ordered = nil
+            end
             save(data)
             return true
         end
@@ -212,10 +249,16 @@ end
 
 --- Paths BEFORE the book in its first containing group, in group order
 --- (book 1 first) — the "fold in all earlier books" input.
+--- THE sequence chokepoint (round 27): an unordered group has no "earlier",
+--- so this returns nothing and every sequence feature downstream — the carry
+--- seed, the pre-create fold ask, the series chain, the predecessor-gap note
+--- — stands down without needing its own gate. The group is still returned
+--- so callers can name it.
 --- @return table paths, table|nil group
 function BookGroups.predecessorsOf(path)
     local group = BookGroups.groupsFor(path)[1]
     if not group then return {}, nil end
+    if not BookGroups.isOrdered(group) then return {}, group end
     local out = {}
     for _idx, p in ipairs(group.books) do
         if p == path then break end
@@ -314,6 +357,10 @@ end
 --- then everything else in the order given (caller pre-sorts alphabetically).
 --- Annotates group-mates in place: group_name, group_pos, group_direction
 --- ("before"/"after") — the confirm dialog's directional warning reads these.
+--- UNORDERED group (round 27): mates still lead the list, in group order, but
+--- carry NO group_pos and NO group_direction — there is no "book 3 of 5" and
+--- no "comes LATER" to warn about, and the empty direction is what keeps the
+--- series-chain row out of the picker.
 --- Pure when `groups` is passed (tests); defaults to the stored groups.
 --- @param candidates table Array of { file, ... } (mutated: annotations only)
 --- @param current_path string The target book
@@ -328,21 +375,30 @@ function BookGroups.orderCandidates(candidates, current_path, groups, group_id)
         local i = indexOf(g, current_path)
         if i and (not group_id or g.id == group_id) then group, cur_pos = g, i break end
     end
+    local ordered = BookGroups.isOrdered(group)
     local before, after, rest = {}, {}, {}
     for _idx, cand in ipairs(candidates or {}) do
         local pos = group and indexOf(group, cand.file)
         if pos then
             cand.group_name = group.name
-            cand.group_pos = pos
-            cand.group_direction = pos < cur_pos and "before" or "after"
-            if pos < cur_pos then before[#before + 1] = cand
+            if ordered then
+                cand.group_pos = pos
+                cand.group_direction = pos < cur_pos and "before" or "after"
+            else
+                cand.group_pos = nil
+                cand.group_direction = nil
+                cand.group_order = pos  -- list order only, never shown
+            end
+            if ordered and pos < cur_pos then before[#before + 1] = cand
             else after[#after + 1] = cand end
         else
             rest[#rest + 1] = cand
         end
     end
     table.sort(before, function(a, b) return a.group_pos > b.group_pos end)
-    table.sort(after, function(a, b) return a.group_pos < b.group_pos end)
+    table.sort(after, function(a, b)
+        return (a.group_pos or a.group_order or 0) < (b.group_pos or b.group_order or 0)
+    end)
     local out = {}
     for _idx, list in ipairs({ before, after, rest }) do
         for _idx2, cand in ipairs(list) do out[#out + 1] = cand end

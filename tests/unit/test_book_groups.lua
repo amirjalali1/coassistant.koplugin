@@ -206,5 +206,58 @@ TestRunner:test("orderCandidates: current book in no group returns given order",
     TestRunner:assertEqual(sorted[1].group_name, nil, "no annotations without a shared group")
 end)
 
+print("")
+print("  [unordered groups (round 27: a group need not be a series)]")
+
+TestRunner:test("isOrdered: nil means ordered; setOrdered stores only the false", function()
+    local g = BookGroups.create("Project")
+    TestRunner:assertTrue(BookGroups.isOrdered(BookGroups.byId(g.id)), "new group is ordered")
+    TestRunner:assertTrue(BookGroups.isOrdered(nil), "nil group reads as ordered (no gate)")
+    TestRunner:assertTrue(BookGroups.setOrdered(g.id, false), "unset ok")
+    TestRunner:assertEqual(BookGroups.byId(g.id).ordered, false, "false persisted")
+    TestRunner:assertEqual(BookGroups.isOrdered(BookGroups.byId(g.id)), false, "reads back unordered")
+    TestRunner:assertTrue(BookGroups.setOrdered(g.id, true), "re-set ok")
+    TestRunner:assertEqual(BookGroups.byId(g.id).ordered, nil,
+        "ordered serializes as absent, exactly as before the field existed")
+    TestRunner:assertEqual(BookGroups.setOrdered("nope", false), false, "unknown id fails")
+    BookGroups.remove(g.id)
+end)
+
+TestRunner:test("predecessorsOf: the ONE chokepoint — unordered yields none, group still named", function()
+    local g = BookGroups.create("Papers")
+    BookGroups.addBook(g.id, "/p1"); BookGroups.addBook(g.id, "/p2"); BookGroups.addBook(g.id, "/p3")
+    local preds, group = BookGroups.predecessorsOf("/p3")
+    TestRunner:assertEqual(#preds, 2, "ordered: predecessors as before")
+    BookGroups.setOrdered(g.id, false)
+    preds, group = BookGroups.predecessorsOf("/p3")
+    TestRunner:assertEqual(#preds, 0, "unordered: no earlier books at all")
+    TestRunner:assertTrue(group ~= nil, "group still returned so callers can name it")
+    TestRunner:assertEqual(group.id, g.id, "and it is the right one")
+    -- Navigation is NOT sequence-contingent: neighbors keep working
+    local prev, next_p = BookGroups.neighbors("/p2")
+    TestRunner:assertEqual(prev, "/p1", "prev still navigable")
+    TestRunner:assertEqual(next_p, "/p3", "next still navigable")
+    BookGroups.remove(g.id)
+end)
+
+TestRunner:test("orderCandidates: unordered mates lead, with no position and no direction", function()
+    local groups = { { id = "g1", name = "Reading list", ordered = false,
+        books = { "/a", "/b", "/c", "/d" } } }
+    local candidates = {
+        { file = "/zzz", title = "Outsider" },
+        { file = "/d", title = "D" },
+        { file = "/a", title = "A" },
+    }
+    local sorted = BookGroups.orderCandidates(candidates, "/b", groups)
+    TestRunner:assertEqual(sorted[1].file, "/a", "mates first, in group order")
+    TestRunner:assertEqual(sorted[2].file, "/d", "including the ones listed later")
+    TestRunner:assertEqual(sorted[3].file, "/zzz", "non-members last")
+    TestRunner:assertEqual(sorted[1].group_name, "Reading list", "still named as a group-mate")
+    TestRunner:assertEqual(sorted[1].group_pos, nil, "no book number to show")
+    TestRunner:assertEqual(sorted[1].group_direction, nil,
+        "no direction: this is what keeps the series chain and the LATER warning away")
+    TestRunner:assertEqual(sorted[2].group_direction, nil, "neither side has one")
+end)
+
 local ok = TestRunner:summary()
 return ok

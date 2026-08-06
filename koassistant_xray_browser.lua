@@ -1106,13 +1106,15 @@ function XrayBrowser:buildCategoryItems()
     -- dormant ledger made visible — entities carried from the group's earlier
     -- volumes that have not appeared in this book yet. Main live views only,
     -- same rationale as the dedup row: the manual actions write the live main.
-    local ledger = self.xray_data and self.xray_data[XrayParser.DORMANT_KEY]
-    if type(ledger) == "table" and #ledger > 0 and not self.scope
-        and not self.metadata.checkpoint and self.metadata.plugin
-        and self.metadata.book_file then
+    -- Count what the list will actually SHOW (round 27) — a restored older
+    -- version's theme stubs are filtered out of both
+    local dormant_n = (not self.scope and not self.metadata.checkpoint
+        and self.metadata.plugin and self.metadata.book_file)
+        and #self:_dormantRows() or 0
+    if dormant_n > 0 then
         table.insert(items, {
             text = Constants.getEmojiText("📚", _("Carried from earlier books"), enable_emoji),
-            mandatory = tostring(#ledger),
+            mandatory = tostring(dormant_n),
             callback = function()
                 self_ref:showDormantList()
             end,
@@ -1187,30 +1189,72 @@ function XrayBrowser:buildCategoryItems()
     return items
 end
 
+--- Display order for the carried list: the same reading order the category
+--- menu uses (people, places, vocabulary, ideas), then name. Insertion order
+--- is write order — seeds, folds and rebuilds each append — which is why a
+--- late-linked character surfaced as "a sudden extra cast" at the bottom
+--- (device round 27).
+local DORMANT_CATEGORY_RANK = {
+    characters = 1, key_figures = 1,
+    locations = 2,
+    lexicon = 3, terminology = 3, technical_terms = 3,
+    core_concepts = 4, key_concepts = 4,
+}
+
+--- The carried ledger as DISPLAY rows: named entities only, in category then
+--- name order, each keeping its raw ledger index for the edit ops.
+--- Round 27: the write-side prune only runs on the next write, so a RESTORED
+--- pre-round-26 version still holds theme stubs — filtering here keeps what
+--- the reader sees consistent with what the ledger is for.
+--- @return table rows Array of { idx, stub, rank }
+function XrayBrowser:_dormantRows()
+    local ledger = self.xray_data and self.xray_data[XrayParser.DORMANT_KEY]
+    local rows = {}
+    if type(ledger) ~= "table" then return rows end
+    local entity_cats = require("koassistant_xray_merge").ENTITY_CATEGORIES or {}
+    for i, stub in ipairs(ledger) do
+        if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= ""
+            -- A stub with no category recorded predates the field: keep it
+            -- (the write-side prune makes the same call — never drop what we
+            -- cannot classify)
+            and (type(stub.category) ~= "string" or stub.category == ""
+                 or entity_cats[stub.category]) then
+            rows[#rows + 1] = { idx = i, stub = stub,
+                rank = DORMANT_CATEGORY_RANK[stub.category or ""] or 9 }
+        end
+    end
+    table.sort(rows, function(a, b)
+        if a.rank ~= b.rank then return a.rank < b.rank end
+        if a.stub.name ~= b.stub.name then return a.stub.name < b.stub.name end
+        return a.idx < b.idx
+    end)
+    return rows
+end
+
 --- Menu items for the carried-entity list. Round 26 (device report: "the popup
 --- is very bad design"): the ledger renders as an ordinary paginated browser
 --- page like every other entity list, not as a stack of full-width buttons.
 --- @return table items
 function XrayBrowser:_buildDormantItems()
     local self_ref = self
-    local ledger = self.xray_data and self.xray_data[XrayParser.DORMANT_KEY]
     local items = {}
-    if type(ledger) ~= "table" then return items end
-    for i, stub in ipairs(ledger) do
-        if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= "" then
-            local captured_i, captured = i, stub
-            local short_cat = CHAPTER_CATEGORY_SHORT[stub.category]
-            local src = (type(stub.source) == "string" and stub.source) or ""
-            table.insert(items, {
-                text = captured.name,
-                mandatory = short_cat and (short_cat .. " · " .. src) or src,
-                mandatory_dim = true,
-                callback = function()
-                    self_ref:showDormantDetail(captured_i, captured,
-                        { stubs = ledger, index = captured_i })
-                end,
-            })
-        end
+    local rows = self:_dormantRows()
+    for i, r in ipairs(rows) do
+        local captured_i, captured, display_i = r.idx, r.stub, i
+        local short_cat = CHAPTER_CATEGORY_SHORT[captured.category]
+        local src = (type(captured.source) == "string" and captured.source) or ""
+        table.insert(items, {
+            text = captured.name,
+            mandatory = short_cat and (short_cat .. " · " .. src) or src,
+            mandatory_dim = true,
+            callback = function()
+                -- ◀/▶ walk the DISPLAYED rows (filtered + sorted); the ledger
+                -- index rides along for the edit ops, which address the raw
+                -- ledger
+                self_ref:showDormantDetail(captured_i, captured,
+                    { rows = rows, index = display_i })
+            end,
+        })
     end
     return items
 end
@@ -1220,13 +1264,12 @@ end
 --- the main category menu. Reading is the primary use ("who might return?");
 --- the per-stub detail offers the manual actions.
 function XrayBrowser:showDormantList()
-    local ledger = self.xray_data and self.xray_data[XrayParser.DORMANT_KEY]
-    if type(ledger) ~= "table" or #ledger == 0 then return end
+    local items = self:_buildDormantItems()
+    if #items == 0 then return end
     -- A carried stub is not a live entity in THIS book, so there is no honest
     -- "→ Group" target from these pages
     self.location = nil
-    self:navigateForward(T(_("Carried from earlier books (%1)"), #ledger),
-        self:_buildDormantItems())
+    self:navigateForward(T(_("Carried from earlier books (%1)"), #items), items)
 end
 
 --- Repaint the carried list in place after an edit (the root-only refresh in
@@ -1234,13 +1277,13 @@ end
 --- leaves, so the reader never stares at an empty list.
 function XrayBrowser:_refreshDormantPage()
     if not self.menu then return end
-    local ledger = self.xray_data and self.xray_data[XrayParser.DORMANT_KEY]
-    if type(ledger) ~= "table" or #ledger == 0 then
+    local items = self:_buildDormantItems()
+    if #items == 0 then
         self:navigateBack()
         return
     end
-    self.current_title = T(_("Carried from earlier books (%1)"), #ledger)
-    self.menu:switchItemTable(self.current_title, self:_buildDormantItems(), -1)
+    self.current_title = T(_("Carried from earlier books (%1)"), #items)
+    self.menu:switchItemTable(self.current_title, items, -1)
 end
 
 --- One carried entity: its full history, and the manual actions — link to an
@@ -1316,30 +1359,31 @@ function XrayBrowser:showDormantDetail(stub_idx, stub, nav_context)
         },
     }
     -- Prev/next within the carried list, mirroring showItemDetail's nav row
-    local stubs = nav_context and nav_context.stubs
-    if stubs and #stubs > 1 then
+    local rows = nav_context and nav_context.rows
+    if rows and #rows > 1 then
         local idx = nav_context.index
+        local function jump(i)
+            self_ref:showDormantDetail(rows[i].idx, rows[i].stub, { rows = rows, index = i })
+        end
         table.insert(buttons_rows, {
             {
                 text = "◀",
                 callback = afterClose(function()
-                    local prev = idx > 1 and idx - 1 or #stubs
-                    self_ref:showDormantDetail(prev, stubs[prev], { stubs = stubs, index = prev })
+                    jump(idx > 1 and idx - 1 or #rows)
                 end),
             },
             {
                 text = "▶",
                 callback = afterClose(function()
-                    local nxt = idx < #stubs and idx + 1 or 1
-                    self_ref:showDormantDetail(nxt, stubs[nxt], { stubs = stubs, index = nxt })
+                    jump(idx < #rows and idx + 1 or 1)
                 end),
             },
         })
     end
 
     local display_title = stub.name
-    if stubs and #stubs > 1 then
-        display_title = T("(%1/%2) %3", nav_context.index, #stubs, display_title)
+    if rows and #rows > 1 then
+        display_title = T("(%1/%2) %3", nav_context.index, #rows, display_title)
     end
     viewer = TextViewer:new{
         title = display_title,
@@ -1475,10 +1519,16 @@ function XrayBrowser:_applyPendingLocation(navigate_to)
         local stub, stub_idx = XrayParser.findDormantByIdentity(self.xray_data, names)
         if stub then
             -- Push the carried list underneath so Back lands there, exactly as
-            -- the live-entity branch above pushes its category (round 26)
+            -- the live-entity branch above pushes its category (round 26).
+            -- The ◀/▶ context is the DISPLAY order, so locate this stub in it.
             self:showDormantList()
+            local rows = self:_dormantRows()
+            local display_i
+            for i, r in ipairs(rows) do
+                if r.idx == stub_idx then display_i = i break end
+            end
             self:showDormantDetail(stub_idx, stub,
-                { stubs = self.xray_data[XrayParser.DORMANT_KEY], index = stub_idx })
+                display_i and { rows = rows, index = display_i } or nil)
             return
         end
     end
@@ -1930,6 +1980,34 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
 
     local buttons_rows = {}
 
+    -- "→ Group" (round 26 device report): the row that carries this jump lives
+    -- on the category Menu's hamburger, which this full-screen detail covers —
+    -- and an entity page is exactly where "show me this character in the other
+    -- volume" is worth having. Round 27 placement (maintainer: "maybe
+    -- additional slot far right top row?"): it JOINS the top row rather than
+    -- taking a line of its own between the top row and the connections.
+    local group_button
+    if not self.scope and not self.metadata.checkpoint
+        and self.metadata.plugin and self.metadata.book_file
+        and self.metadata.plugin._inBookGroup
+        and self.metadata.plugin:_inBookGroup(self.metadata.book_file) then
+        local plugin_ref = self.metadata.plugin
+        local group_file = self.metadata.book_file
+        group_button = {
+            text = "\u{2192} " .. _("Group"),
+            callback = function()
+                local jump_location = self_ref.location
+                plugin_ref:_showGroupMembersPopup(group_file, "xray", {
+                    location = jump_location,
+                    before_open = function()
+                        if viewer then viewer:onClose() end
+                        if self_ref.menu then UIManager:close(self_ref.menu) end
+                    end,
+                })
+            end,
+        }
+    end
+
     -- "Chapter Appearances" + "Add Search Term" row (searchable categories)
     if not DISTRIBUTION_EXCLUDED[category_key] then
         local search_row = {}
@@ -1977,34 +2055,18 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
                 end,
             })
         end
+        if group_button then
+            table.insert(search_row, group_button)
+            group_button = nil
+        end
         if #search_row > 0 then
             table.insert(buttons_rows, search_row)
         end
     end
-
-    -- "→ Group" (round 26, device report): the row that carries this jump
-    -- lives on the category Menu's hamburger, which this full-screen detail
-    -- covers — and an entity page is exactly where "show me this character in
-    -- the other volume" is worth having. Same gate as the hamburger row.
-    if not self.scope and not self.metadata.checkpoint
-        and self.metadata.plugin and self.metadata.book_file
-        and self.metadata.plugin._inBookGroup
-        and self.metadata.plugin:_inBookGroup(self.metadata.book_file) then
-        local plugin_ref = self.metadata.plugin
-        local group_file = self.metadata.book_file
-        table.insert(buttons_rows, {{
-            text = "\u{2192} " .. _("Group"),
-            callback = function()
-                local jump_location = self_ref.location
-                plugin_ref:_showGroupMembersPopup(group_file, "xray", {
-                    location = jump_location,
-                    before_open = function()
-                        if viewer then viewer:onClose() end
-                        if self_ref.menu then UIManager:close(self_ref.menu) end
-                    end,
-                })
-            end,
-        }})
+    if group_button then
+        -- Categories with no top row (distribution-excluded singletons): the
+        -- jump keeps its own row rather than disappearing
+        table.insert(buttons_rows, { group_button })
     end
 
     -- Resolve references into tappable cross-category navigation buttons
@@ -4665,6 +4727,10 @@ function XrayBrowser:showOptions()
                         file = self_ref.metadata.book_file,
                         book_title = self_ref.metadata.title,
                         book_author = self_ref.metadata.book_author,
+                        -- Round 27 (device): installing from the LIVE X-Ray's
+                        -- own hamburger closed this browser and left the reader
+                        -- nowhere — reopen on the freshly installed data
+                        reopen_live = true,
                         close_browser = function()
                             if not browser_closed and self_ref.menu then
                                 browser_closed = true
