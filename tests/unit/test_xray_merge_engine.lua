@@ -790,5 +790,121 @@ TestRunner:test("seedDormant + wake: a skip-volume stub wakes on the fresh book'
         end)
 end)
 
+print("")
+print("  [series-identity round: prompt hardening + naming canon + manual wake]")
+
+TestRunner:test("cross-book prompt carries the identity-matching instruction", function()
+    TestRunner:assertTrue(
+        XrayMerge.CROSS_BOOK_DELTA_PROMPT:find("Entity matching is the core", 1, true) ~= nil,
+        "the resolution task is stated, not just the delta format")
+    TestRunner:assertTrue(
+        XrayMerge.CROSS_BOOK_DELTA_PROMPT:find("prefer the alias bridge", 1, true) ~= nil,
+        "ambiguity guidance present")
+end)
+
+TestRunner:test("namingCanonBlock: identity handles only, canon categories only", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local source = XrayParser.parse([[{
+      "type": "fiction",
+      "characters": [
+        {"name": "Mira Alvsund", "aliases": ["the Keeper", "Alvsund", "Mira"],
+         "description": "SECRET-DESCRIPTION"},
+        {"name": "The boy", "description": "A curious child."}
+      ],
+      "themes": [{"name": "Isolation and Duty", "description": "Excluded label."}],
+      "lexicon": [{"term": "Greenlight", "definition": "A flare."}],
+      "__dormant": [
+        {"name": "Old Tove", "category": "characters", "source": "vol0"},
+        {"name": "Story Arc Thing", "category": "timeline", "source": "vol0"}
+      ]
+    }]])
+    local block = XrayMerge.namingCanonBlock(source, "The Lamp")
+    TestRunner:assertTrue(block:find("The Lamp", 1, true) ~= nil, "source book named")
+    TestRunner:assertTrue(block:find("NAMING CONSISTENCY ONLY", 1, true) ~= nil, "framing present")
+    TestRunner:assertTrue(block:find("Mira Alvsund (the Keeper, Alvsund)", 1, true) ~= nil,
+        "name + first two aliases, third dropped")
+    TestRunner:assertTrue(block:find("The boy", 1, true) ~= nil, "unnamed-handle entity listed")
+    TestRunner:assertTrue(block:find("Greenlight", 1, true) ~= nil, "lexicon terms listed")
+    TestRunner:assertTrue(block:find("Old Tove", 1, true) ~= nil,
+        "the predecessor's own dormant handles ride (transitive)")
+    TestRunner:assertTrue(block:find("Isolation and Duty", 1, true) == nil,
+        "themes never steer another book's naming")
+    TestRunner:assertTrue(block:find("Story Arc Thing", 1, true) == nil,
+        "non-canon dormant categories excluded")
+    TestRunner:assertTrue(block:find("SECRET%-DESCRIPTION") == nil,
+        "identity handles only — never content")
+    TestRunner:assertTrue(XrayMerge.namingCanonBlock({ type = "fiction" }, "X") == nil,
+        "nothing to list -> nil, no empty frame")
+end)
+
+local MANUAL_WAKE_JSON = [[{
+  "type": "fiction",
+  "characters": [
+    {"name": "Tobias Renn", "aliases": ["Toby"], "description": "Found the gullstone."},
+    {"name": "Kell Damsgard", "description": "The harbormaster."}
+  ],
+  "lexicon": [{"term": "Turning", "definition": "The sea deciding something."}],
+  "__dormant": [
+    {"name": "The boy", "category": "characters",
+     "description": "A curious child at the light.", "source": "The Lamp",
+     "background": [{"source": "The Lamp", "text": "Asked about everything."}]},
+    {"name": "Greenlight", "category": "lexicon",
+     "description": "A green flare, neither warning nor invitation.", "source": "The Lamp"}
+  ]
+}]]
+
+TestRunner:test("removeStub: positional identity, name-verified, ambiguity refused", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local data = XrayParser.parse(MANUAL_WAKE_JSON)
+    local stub = XrayParser.removeStub(data, 1, "The boy")
+    TestRunner:assertEqual(stub and stub.name, "The boy", "index+name match removes")
+    TestRunner:assertEqual(#data[XrayParser.DORMANT_KEY], 1, "one stub left")
+    TestRunner:assertTrue(XrayParser.removeStub(data, 5, "Nobody") == nil, "unknown name refused")
+    local stub2 = XrayParser.removeStub(data, 9, "Greenlight")
+    TestRunner:assertEqual(stub2 and stub2.name, "Greenlight",
+        "stale index falls back to the unambiguous name scan")
+    TestRunner:assertTrue(data[XrayParser.DORMANT_KEY] == nil, "empty ledger key dropped")
+end)
+
+TestRunner:test("wakeStubInto: reader-asserted identity — background + aliases fold in", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local data = XrayParser.parse(MANUAL_WAKE_JSON)
+    local ok2 = XrayParser.wakeStubInto(data, 1, "The boy", "characters", "Tobias Renn")
+    TestRunner:assertTrue(ok2, "wake into existing entry succeeds")
+    local toby = data.characters[1]
+    TestRunner:assertEqual(toby.description, "Found the gullstone.", "native description untouched")
+    TestRunner:assertTrue(type(toby.background) == "table" and #toby.background == 1,
+        "carried history attached (per-source, description wins the slot)")
+    TestRunner:assertEqual(toby.background[1].source, "The Lamp", "source label kept")
+    local has_alias = false
+    for _i, a in ipairs(toby.aliases) do
+        if a == "The boy" then has_alias = true end
+    end
+    TestRunner:assertTrue(has_alias, "the stub name becomes an alias — mentions now match")
+    TestRunner:assertEqual(#data[XrayParser.DORMANT_KEY], 1, "stub left the ledger")
+    TestRunner:assertTrue(
+        not XrayParser.wakeStubInto(data, 1, "Greenlight", "characters", "Nobody Here"),
+        "unknown target refused, stub kept")
+    TestRunner:assertEqual(#data[XrayParser.DORMANT_KEY], 1, "refusal keeps the ledger intact")
+end)
+
+TestRunner:test("promoteStub: stub becomes a visible entry in its own category", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local data = XrayParser.parse(MANUAL_WAKE_JSON)
+    TestRunner:assertTrue(XrayParser.promoteStub(data, 1, "The boy"), "character promotes")
+    TestRunner:assertEqual(#data.characters, 3, "new visible entry")
+    local boy = data.characters[3]
+    TestRunner:assertEqual(boy.name, "The boy", "name kept")
+    TestRunner:assertEqual(boy.description, "A curious child at the light.", "description verbatim")
+    TestRunner:assertTrue(type(boy.background) == "table" and boy.background[1].source == "The Lamp",
+        "ancestor lines keep their labels")
+    TestRunner:assertTrue(XrayParser.promoteStub(data, 1, "Greenlight"), "lexicon stub promotes")
+    local term = data.lexicon[2]
+    TestRunner:assertEqual(term.term, "Greenlight", "lexicon shape: term, not name")
+    TestRunner:assertEqual(term.definition, "A green flare, neither warning nor invitation.",
+        "lexicon shape: definition")
+    TestRunner:assertTrue(data[XrayParser.DORMANT_KEY] == nil, "ledger emptied and dropped")
+end)
+
 local ok = TestRunner:summary()
 return ok

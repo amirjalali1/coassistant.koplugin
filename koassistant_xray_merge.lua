@@ -115,6 +115,8 @@ X-Ray of the related book:
 
 @@KOA_MERGE_INPUTS@@
 
+Entity matching is the core of this task: the same person, place, or thing may appear under DIFFERENT names in the two X-Rays — a proper name in one; an epithet, role, or descriptive handle (like "the boy" or "the Keeper") in the other; spelling or translation drift. Before treating any related-book entity as new, check it against every existing entry's name, aliases, AND description. When two entries clearly describe the same person, place, or thing, treat them as the SAME entity and bridge the names through "aliases". When the evidence points that way but is not explicit, still prefer the alias bridge over creating a near-duplicate entry.
+
 Output ONLY a JSON object in this delta format — it will be programmatically merged with the existing data:
 - "background_updates": [{"name": "Exact Existing Name", "background": "One to three sentences of background from the related book.", "aliases": ["optional additional alias"]}] — one entry for each entity that appears in BOTH X-Rays (recurring characters, places, concepts, terms). Use the EXACT name from the entity list above. The existing entry is kept exactly as it is and your background text is attached alongside it, so cover only what the related book adds: who or what they were there, what they did, what carries over. This is the ONLY way to touch an existing entity — NEVER repeat an existing entity in the category arrays.
 - Category arrays (same JSON keys and structure as the previous analysis): ONLY for entities from the related book that do NOT appear in the previous analysis but matter for understanding "{title}" (recurring or referenced figures, shared places, carried-over concepts). Write their descriptions as background knowledge from the related book.
@@ -596,25 +598,21 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
     return added
 end
 
---- Carry layer 3(i): mechanical create-time seed — a fresh (or rebuilt) main
---- X-Ray starts its dormant ledger from the nearest X-Rayed predecessor in
---- the book's group, locally and token-free; the artifact's visible content
---- is untouched. Skip-volume wake then works even if the reader never merges,
---- and a complete rebuild recovers the ledger it just dropped. Walks
---- nearest→farthest and seeds from the FIRST predecessor with a valid JSON
---- main AND text-extraction consent (its own ledger rides along, so one
---- eligible predecessor carries everything it knows — transitive).
+--- Nearest eligible carry source: walks the group's predecessors nearest→
+--- farthest and returns the FIRST with a valid JSON main X-Ray AND
+--- text-extraction consent (its own ledger rides along, so one eligible
+--- predecessor carries everything it knows — transitive). Shared by the
+--- create-time seed and the naming canon (carry layer 3(iii)).
 --- @param file string Target book path
---- @param parsed table Freshly parsed X-Ray data (mutated: ledger populated)
 --- @param features table|nil Current settings features (consent resolution)
 --- @param provider string|nil Provider id (trusted-provider consent)
 --- @param ui table|nil
---- @return number added, string|nil source_title
-function XrayMerge.seedDormant(file, parsed, features, provider, ui)
-    if type(parsed) ~= "table" or type(file) ~= "string" or file == "" then return 0, nil end
+--- @return table|nil src { file, title, entry, parsed }
+function XrayMerge.seedSource(file, features, provider, ui)
+    if type(file) ~= "string" or file == "" then return nil end
     local BookGroups = require("koassistant_book_groups")
     local preds = BookGroups.predecessorsOf(file)
-    if #preds == 0 then return 0, nil end
+    if #preds == 0 then return nil end
     local ActionCache = require("koassistant_action_cache")
     local XrayParser = require("koassistant_xray_parser")
     for i = #preds, 1, -1 do
@@ -623,13 +621,102 @@ function XrayMerge.seedDormant(file, parsed, features, provider, ui)
             and XrayMerge.consentOk({ entry }, features, provider, preds[i], ui) then
             local source_parsed = XrayParser.parse(entry.result)
             if source_parsed and not source_parsed.error then
-                local title = BookGroups.displayTitle(preds[i], ui)
-                local added = XrayMerge.populateDormant(parsed, nil, source_parsed, title)
-                return added, title
+                return { file = preds[i], title = BookGroups.displayTitle(preds[i], ui),
+                    entry = entry, parsed = source_parsed }
             end
         end
     end
-    return 0, nil
+    return nil
+end
+
+--- Carry layer 3(i): mechanical create-time seed — a fresh (or rebuilt) main
+--- X-Ray starts its dormant ledger from the nearest X-Rayed predecessor in
+--- the book's group (seedSource), locally and token-free; the artifact's
+--- visible content is untouched. Skip-volume wake then works even if the
+--- reader never merges, and a complete rebuild recovers the ledger it just
+--- dropped.
+--- @param file string Target book path
+--- @param parsed table Freshly parsed X-Ray data (mutated: ledger populated)
+--- @param features table|nil Current settings features (consent resolution)
+--- @param provider string|nil Provider id (trusted-provider consent)
+--- @param ui table|nil
+--- @return number added, string|nil source_title
+function XrayMerge.seedDormant(file, parsed, features, provider, ui)
+    if type(parsed) ~= "table" then return 0, nil end
+    local src = XrayMerge.seedSource(file, features, provider, ui)
+    if not src then return 0, nil end
+    local added = XrayMerge.populateDormant(parsed, nil, src.parsed, src.title)
+    return added, src.title
+end
+
+-- Naming-canon categories: named entities only — analytical labels (themes)
+-- and the book-own narrative lists (timeline / argument_development) must
+-- never steer another book's naming or analysis.
+local CANON_CATEGORIES = {
+    characters = true, key_figures = true, locations = true,
+    lexicon = true, terminology = true, technical_terms = true,
+    core_concepts = true, key_concepts = true,
+}
+
+--- Series naming canon (carry layer 3(iii), 2026-08-06): IDENTITY HANDLES —
+--- names + up to two aliases, never content — of the predecessor's named
+--- entities, plus its dormant ledger's (transitive), framed for the CREATE
+--- request. Recurring entities then keep one name from birth and the
+--- follow-up fold matches on exact names instead of repairing drift
+--- artifact-to-artifact. Injected ONLY when the reader accepted the
+--- pre-create fold ask — a declined fold means a fully standalone read.
+--- Pure.
+--- @param source_parsed table Predecessor's parsed X-Ray
+--- @param source_title string|nil
+--- @return string|nil block Framed prompt block (nil when nothing to list)
+function XrayMerge.namingCanonBlock(source_parsed, source_title)
+    if type(source_parsed) ~= "table" then return nil end
+    local XrayParser = require("koassistant_xray_parser")
+    local order, bucket = {}, {}
+    local function put(cat_key, name, aliases)
+        if type(name) ~= "string" or name == "" then return end
+        if not bucket[cat_key] then
+            bucket[cat_key] = {}
+            order[#order + 1] = cat_key
+        end
+        local shown = name
+        if type(aliases) == "table" and #aliases > 0 then
+            local a = {}
+            for i = 1, math.min(2, #aliases) do a[i] = tostring(aliases[i]) end
+            shown = shown .. " (" .. table.concat(a, ", ") .. ")"
+        end
+        bucket[cat_key][#bucket[cat_key] + 1] = shown
+    end
+    for _idx, cat in ipairs(XrayParser.getCategories(source_parsed)) do
+        if CANON_CATEGORIES[cat.key] and type(cat.items) == "table" then
+            for _idx2, item in ipairs(cat.items) do
+                if type(item) == "table" then
+                    put(cat.key, XrayParser.getItemName(item, cat.key), item.aliases)
+                end
+            end
+        end
+    end
+    local ledger = source_parsed[XrayParser.DORMANT_KEY]
+    if type(ledger) == "table" then
+        for _idx, stub in ipairs(ledger) do
+            if type(stub) == "table" and CANON_CATEGORIES[stub.category or ""] then
+                put(stub.category, stub.name, stub.aliases)
+            end
+        end
+    end
+    if #order == 0 then return nil end
+    local lines = {}
+    for _idx, key in ipairs(order) do
+        lines[#lines + 1] = key .. ": " .. table.concat(bucket[key], "; ")
+    end
+    return "[Series naming reference]\nThis book is part of the same series as \""
+        .. (source_title or "?")
+        .. "\", whose X-Ray already exists. The names below are for NAMING CONSISTENCY ONLY: "
+        .. "if any of these people, places, or terms appear in this book's text — possibly "
+        .. "unnamed, renamed, or under an epithet — use the SAME name for your entry, or "
+        .. "include the known name in that entry's \"aliases\". Do NOT add entries for names "
+        .. "that do not appear in this book's text.\n"
+        .. table.concat(lines, "\n")
 end
 
 --- Provenance union for cross-book merges: the target's existing list + the
@@ -1547,7 +1634,10 @@ function XrayMerge.executeCrossBook(opts)
         prompt = prompt_text,
         storage_key = "__SKIP__",
         enable_web_search = false,
-        reasoning_config = "off",  -- xray-family parity (T2)
+        -- No reasoning pin (series-identity round, 2026-08-06): cross-book
+        -- entity resolution is a judgment task — the extraction action's
+        -- latency "off" would run it at the floor (Gemini 3.x can't disable,
+        -- "off" resolves to minimal). nil = stance/model default.
         api_params = XrayMerge.API_PARAMS,
         builtin = true,
     }
@@ -1616,6 +1706,48 @@ function XrayMerge.executeCrossBook(opts)
         end)
 end
 
+--- Post-merge duplicate check (series-identity round, 2026-08-06): run the
+--- mechanical duplicate scan on a freshly merged artifact and offer the
+--- dedup flow when it finds pairs — a fold that imported a differently-named
+--- recurring entity leaves exactly the near-duplicates the scan catches
+--- (same name / shared alias / contained name). Description-level twins with
+--- no name overlap stay the reader's call. Silent when clean; attended merge
+--- paths only.
+--- @param opts table { file, ui, plugin, configuration, title, author }
+function XrayMerge.maybeOfferDedupScan(opts)
+    local ActionCache = require("koassistant_action_cache")
+    local XrayParser = require("koassistant_xray_parser")
+    local XrayDedup = require("koassistant_xray_dedup")
+    local entry = ActionCache.getXrayCache(opts.file)
+    if not (entry and entry.result and XrayParser.isJSON(entry.result)) then return end
+    local data = XrayParser.parse(entry.result)
+    if not data or data.error then return end
+    local user_aliases = ActionCache.getUserAliases(opts.file)
+    if next(user_aliases) then
+        XrayParser.mergeUserAliases(data, user_aliases)
+    end
+    local found = XrayDedup.findDuplicates(data,
+        ActionCache.neverMergePairsFrom(user_aliases))
+    if #found == 0 then return end
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local dialog
+    dialog = ButtonDialog:new{
+        title = T(_("The merge may have left %1 duplicate entit(y/ies) — the same figure under two names. Review them?"), #found),
+        buttons = {
+            {{ text = _("Review duplicates…"), callback = function()
+                UIManager:close(dialog)
+                require("koassistant_xray_dedup").startFlow({
+                    file = opts.file, ui = opts.ui, plugin = opts.plugin,
+                    configuration = opts.configuration,
+                    title = opts.title, author = opts.author,
+                })
+            end }},
+            {{ text = _("Not now"), callback = function() UIManager:close(dialog) end }},
+        },
+    }
+    UIManager:show(dialog)
+end
+
 --- Run the organic series chain headlessly: chain[1]→chain[2], 2→3, …
 --- (oldest first, the receiving book last) — each hop re-reads BOTH sides
 --- fresh (the previous hop just rewrote the source), re-checks consent, and
@@ -1649,6 +1781,14 @@ function XrayMerge.runSeriesChain(opts)
         if idx > n_merges then
             UIManager:show(Notification:new{
                 text = T(_("Series chain complete: %1 merges."), n_merges),
+            })
+            -- Post-merge duplicate check on the final receiving book (the
+            -- chain is always attended); earlier hops go unchecked — one
+            -- dialog per chain, and the reader can scan any volume manually
+            local last = chain[#chain]
+            XrayMerge.maybeOfferDedupScan({
+                file = last.file, title = last.title, author = last.author,
+                ui = opts.ui, plugin = opts.plugin, configuration = opts.configuration,
             })
             if opts.on_done then opts.on_done(true) end
             return
@@ -1702,129 +1842,170 @@ function XrayMerge.runSeriesChain(opts)
     step(1)
 end
 
---- Carry layer 3(ii), the post-create fold offer: after an ATTENDED fresh
---- main X-Ray of a grouped book, offer folding the PREVIOUS book's X-Ray in
---- (1 request) — the standalone-first architecture stands, this is the merge
---- made one tap. When the previous book never folded its own predecessors,
---- the same dialog also offers the full chain (maintainer decision
---- 2026-08-06: "offer both"). When the previous book has no X-Ray at all, a
---- gap note replaces the offer. Background builds never call this — they
---- seed silently (seedDormant) and the fold stays in the merge picker.
---- @param opts table { file (just-created target), title, author, ui,
----   plugin, configuration }
-function XrayMerge.maybeOfferPostCreateFold(opts)
+--- Carry layer 3(iii), the PRE-create fold ask (maintainer decision
+--- 2026-08-06, replacing the post-create offer): BEFORE an attended fresh
+--- main X-Ray of a grouped book whose previous book has an X-Ray, ask once —
+--- fold when done / bring the chain up to date / just this book. Accepting
+--- injects the naming canon into the create request (recurring entities keep
+--- one name from birth) and auto-runs the fold when the create lands
+--- (runPostCreateFold). Declining means a fully standalone create — no
+--- canon, no fold, no re-ask (the silent seed still runs: declining a merge
+--- is not declining carry). When the previous book has no X-Ray, no dialog —
+--- the post-create gap note covers that case. Dismissing the dialog aborts
+--- the create, like dismissing the source popup.
+--- @param opts table { file, ui, configuration }
+--- @param proceed function(mode) mode = "single"|"chain"|nil (declined)
+--- @return boolean asked False when no dialog applies (proceed NOT called —
+---   the caller continues synchronously)
+function XrayMerge.preCreateFoldAsk(opts, proceed)
+    local BookGroups = require("koassistant_book_groups")
+    local preds, group = BookGroups.predecessorsOf(opts.file)
+    if #preds == 0 then return false end
+    local ActionCache = require("koassistant_action_cache")
+    local XrayParser = require("koassistant_xray_parser")
+    local nearest = preds[#preds]
+    local nearest_entry = ActionCache.getXrayCache(nearest)
+    if not (nearest_entry and nearest_entry.result and XrayParser.isJSON(nearest_entry.result)) then
+        return false
+    end
     local ButtonDialog = require("ui/widget/buttondialog")
+    local nearest_title = BookGroups.displayTitle(nearest, opts.ui)
+    -- The previous book's own X-Rayed predecessors vs its provenance:
+    -- anything missing means its X-Ray does not yet carry those volumes
+    local earlier_titles = {}
+    for i = 1, #preds - 1 do
+        local e = ActionCache.getXrayCache(preds[i])
+        if e and e.result and XrayParser.isJSON(e.result) then
+            earlier_titles[#earlier_titles + 1] = BookGroups.displayTitle(preds[i], opts.ui)
+        end
+    end
+    local missing = XrayMerge.provenanceGap(earlier_titles, nearest_entry.merged_from_books)
+    local ask_text = T(_("\"%1\" (the previous book in %2) has an X-Ray. Fold its knowledge into this book's X-Ray once it is built? Recurring names then stay consistent across the series. The two X-Rays are sent, not the books."),
+        nearest_title, (group and group.name) or _("this group"))
+    if #missing > 0 then
+        ask_text = ask_text .. "\n"
+            .. T(_("Note: it has not folded its own earlier book(s) in yet (%1), so their knowledge would not carry over."),
+                table.concat(missing, ", "))
+    end
+    local ask
+    local buttons = {
+        {{ text = _("Fold it in when done (1 extra request)"), callback = function()
+            UIManager:close(ask)
+            proceed("single")
+        end }},
+    }
+    if #missing > 0 and #earlier_titles >= 1 then
+        buttons[#buttons + 1] = {{
+            text = T(_("Bring the series up to date (%1 merges)"), #earlier_titles + 1),
+            callback = function()
+                UIManager:close(ask)
+                proceed("chain")
+            end,
+        }}
+    end
+    buttons[#buttons + 1] = {{ text = _("Just this book"), callback = function()
+        UIManager:close(ask)
+        proceed(nil)
+    end }}
+    ask = ButtonDialog:new{ title = ask_text, buttons = buttons }
+    UIManager:show(ask)
+    return true
+end
+
+--- Execute the accepted pre-create fold once the create landed (carry layer
+--- 3(iii), second half): "single" folds the previous book in, "chain" runs
+--- the organic chain ending at this book. Everything is re-read fresh from
+--- disk — the create just wrote the target, and the ask ran one request ago.
+--- Ends with the post-merge duplicate check (single here; the chain nudges
+--- from runSeriesChain itself).
+--- @param opts table { file, title, author, ui, plugin, configuration,
+---   mode = "single"|"chain" }
+function XrayMerge.runPostCreateFold(opts)
+    local BookGroups = require("koassistant_book_groups")
+    local ActionCache = require("koassistant_action_cache")
+    local XrayParser = require("koassistant_xray_parser")
+    local InfoMessage = require("ui/widget/infomessage")
+    local Notification = require("ui/widget/notification")
+    local preds = BookGroups.predecessorsOf(opts.file)
+    if #preds == 0 then return end
+    local main_entry = ActionCache.getXrayCache(opts.file)
+    if not (main_entry and main_entry.result and XrayParser.isJSON(main_entry.result)) then return end
+    local nearest = preds[#preds]
+    local nearest_entry = ActionCache.getXrayCache(nearest)
+    if not (nearest_entry and nearest_entry.result and XrayParser.isJSON(nearest_entry.result)) then return end
+    local nearest_title = BookGroups.displayTitle(nearest, opts.ui)
+    local features = (opts.configuration and opts.configuration.features) or {}
+    local provider = (opts.configuration
+        and (opts.configuration.provider or opts.configuration.default_provider))
+    if opts.mode == "chain" then
+        local chain = {}
+        for i = 1, #preds - 1 do
+            local e = ActionCache.getXrayCache(preds[i])
+            if e and e.result and XrayParser.isJSON(e.result) then
+                chain[#chain + 1] = { file = preds[i],
+                    title = BookGroups.displayTitle(preds[i], opts.ui), entry = e }
+            end
+        end
+        chain[#chain + 1] = { file = nearest, title = nearest_title, entry = nearest_entry }
+        chain[#chain + 1] = { file = opts.file, title = opts.title,
+            author = opts.author, entry = main_entry }
+        XrayMerge.runSeriesChain({
+            chain = chain, features = features, provider = provider,
+            ui = opts.ui, plugin = opts.plugin, configuration = opts.configuration,
+        })
+        return
+    end
+    if not XrayMerge.consentOk({ nearest_entry }, features, provider, nearest, opts.ui)
+        or not XrayMerge.consentOk({ main_entry }, features, provider, opts.file, opts.ui) then
+        UIManager:show(InfoMessage:new{
+            text = _("These X-Rays were built from extracted book text. Enable \"Allow book text extraction\" (or use a trusted provider) to merge them."),
+            timeout = 5,
+        })
+        return
+    end
+    UIManager:show(Notification:new{ text = T(_("Folding \"%1\" in…"), nearest_title) })
+    XrayMerge.executeCrossBook({
+        file = opts.file, ui = opts.ui, plugin = opts.plugin,
+        configuration = opts.configuration,
+        title = opts.title, author = opts.author,
+        main_entry = main_entry,
+        source = { file = nearest, title = nearest_title, entry = nearest_entry },
+        on_done = function(ok, err)
+            if ok then
+                UIManager:show(Notification:new{
+                    text = T(_("Folded \"%1\" into this book's X-Ray."), nearest_title),
+                })
+                XrayMerge.maybeOfferDedupScan(opts)
+            else
+                UIManager:show(InfoMessage:new{
+                    text = T(_("Merge failed: %1"), tostring(err or "unknown error")),
+                    timeout = 5,
+                })
+            end
+        end,
+    })
+end
+
+--- The one grouped-create case the pre-create ask cannot cover: the previous
+--- book has no X-Ray at all. A post-create note names the gap (informational,
+--- never a question — there is nothing to run).
+--- @param opts table { file, ui }
+function XrayMerge.maybeNotePredecessorGap(opts)
     local BookGroups = require("koassistant_book_groups")
     local preds, group = BookGroups.predecessorsOf(opts.file)
     if #preds == 0 then return end
     local ActionCache = require("koassistant_action_cache")
     local XrayParser = require("koassistant_xray_parser")
-    local InfoMessage = require("ui/widget/infomessage")
-    local Notification = require("ui/widget/notification")
     local nearest = preds[#preds]
-    local nearest_title = BookGroups.displayTitle(nearest, opts.ui)
     local nearest_entry = ActionCache.getXrayCache(nearest)
-    if not (nearest_entry and nearest_entry.result and XrayParser.isJSON(nearest_entry.result)) then
-        UIManager:show(InfoMessage:new{
-            text = T(_("\"%1\" (the previous book in %2) has no X-Ray yet — build one there to carry its knowledge forward."),
-                nearest_title, (group and group.name) or _("this group")),
-            timeout = 6,
-        })
+    if nearest_entry and nearest_entry.result and XrayParser.isJSON(nearest_entry.result) then
         return
     end
-    -- The nearest predecessor's own X-Rayed predecessors vs its provenance:
-    -- anything missing means its X-Ray does not yet carry those volumes
-    local earlier_titles = {}
-    local chain = {}
-    for i = 1, #preds - 1 do
-        local e = ActionCache.getXrayCache(preds[i])
-        if e and e.result and XrayParser.isJSON(e.result) then
-            local t = BookGroups.displayTitle(preds[i], opts.ui)
-            earlier_titles[#earlier_titles + 1] = t
-            chain[#chain + 1] = { file = preds[i], title = t, entry = e }
-        end
-    end
-    local missing = XrayMerge.provenanceGap(earlier_titles, nearest_entry.merged_from_books)
-    chain[#chain + 1] = { file = nearest, title = nearest_title, entry = nearest_entry }
-    local features = (opts.configuration and opts.configuration.features) or {}
-    local provider = (opts.configuration
-        and (opts.configuration.provider or opts.configuration.default_provider))
-    local offer_text = T(_("\"%1\" (the previous book in %2) has an X-Ray. Fold its knowledge into this book's now? The two X-Rays are sent, not the books."),
-        nearest_title, (group and group.name) or _("this group"))
-    if #missing > 0 then
-        offer_text = offer_text .. "\n"
-            .. T(_("Note: it has not folded its own earlier book(s) in yet (%1), so their knowledge would not carry over."),
-                table.concat(missing, ", "))
-    end
-    local offer
-    local buttons = {
-        {{ text = _("Fold it in (1 request)"), callback = function()
-            UIManager:close(offer)
-            local main_entry = ActionCache.getXrayCache(opts.file)
-            if not (main_entry and main_entry.result and XrayParser.isJSON(main_entry.result)) then
-                return
-            end
-            if not XrayMerge.consentOk({ nearest_entry }, features, provider, nearest, opts.ui)
-                or not XrayMerge.consentOk({ main_entry }, features, provider, opts.file, opts.ui) then
-                UIManager:show(InfoMessage:new{
-                    text = _("These X-Rays were built from extracted book text. Enable \"Allow book text extraction\" (or use a trusted provider) to merge them."),
-                    timeout = 5,
-                })
-                return
-            end
-            UIManager:show(Notification:new{
-                text = T(_("Folding \"%1\" in…"), nearest_title),
-            })
-            XrayMerge.executeCrossBook({
-                file = opts.file, ui = opts.ui, plugin = opts.plugin,
-                configuration = opts.configuration,
-                title = opts.title, author = opts.author,
-                main_entry = main_entry,
-                source = { file = nearest, title = nearest_title, entry = nearest_entry },
-                on_done = function(ok, err)
-                    if ok then
-                        UIManager:show(Notification:new{
-                            text = T(_("Folded \"%1\" into this book's X-Ray."), nearest_title),
-                        })
-                    else
-                        UIManager:show(InfoMessage:new{
-                            text = T(_("Merge failed: %1"), tostring(err or "unknown error")),
-                            timeout = 5,
-                        })
-                    end
-                end,
-            })
-        end }},
-    }
-    if #missing > 0 and #chain >= 2 then
-        buttons[#buttons + 1] = {{
-            text = T(_("Bring the series up to date (%1 merges)"), #chain),
-            callback = function()
-                UIManager:close(offer)
-                local main_entry = ActionCache.getXrayCache(opts.file)
-                if not (main_entry and main_entry.result and XrayParser.isJSON(main_entry.result)) then
-                    return
-                end
-                local full = {}
-                for _idx, c in ipairs(chain) do full[#full + 1] = c end
-                full[#full + 1] = { file = opts.file, title = opts.title,
-                    author = opts.author, entry = main_entry }
-                XrayMerge.runSeriesChain({
-                    chain = full, features = features, provider = provider,
-                    ui = opts.ui, plugin = opts.plugin,
-                    configuration = opts.configuration,
-                })
-            end,
-        }}
-    end
-    buttons[#buttons + 1] = {{ text = _("Not now"), callback = function()
-        UIManager:close(offer)
-    end }}
-    offer = ButtonDialog:new{
-        title = offer_text,
-        buttons = buttons,
-    }
-    UIManager:show(offer)
+    UIManager:show(require("ui/widget/infomessage"):new{
+        text = T(_("\"%1\" (the previous book in %2) has no X-Ray yet — build one there to carry its knowledge forward."),
+            BookGroups.displayTitle(nearest, opts.ui), (group and group.name) or _("this group")),
+        timeout = 6,
+    })
 end
 
 --- Entry point: candidate books → spoiler confirm → run.
@@ -2014,6 +2195,7 @@ function XrayMerge.startCrossBookFlow(opts)
                                             UIManager:show(Notification:new{
                                                 text = T(_("Merged the X-Ray of \"%1\" into this book."), captured.title),
                                             })
+                                            XrayMerge.maybeOfferDedupScan(opts)
                                         else
                                             UIManager:show(InfoMessage:new{
                                                 text = T(_("X-Ray merge failed: %1"), tostring(err or "unknown error")),

@@ -5030,11 +5030,13 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 history.unavailable_data = message_data._unavailable_data
             end
 
-            -- Carry layer 3(ii): attended fresh main X-Ray of a grouped book →
-            -- offer folding the previous book's X-Ray in (or note that it has
-            -- none). Background and ladder builds seed silently instead — no
-            -- dialog while reading (maintainer decision 2026-08-06); updates
-            -- never re-offer
+            -- Carry layer 3(iii): the pre-create fold ask already ran (Step 0)
+            -- — an accepted fold now executes against the freshly written
+            -- cache; when no ask applied, the one uncovered case (previous
+            -- book without an X-Ray) gets its informational gap note.
+            -- Background and ladder builds seed silently instead — no dialog
+            -- while reading (maintainer decision 2026-08-06); updates never
+            -- re-offer
             if action.cache_as_xray and cache_answer and cache_file
                 and not is_truncated and not background_discard
                 and xray_producer == "manual" and not using_cache
@@ -5042,13 +5044,21 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     or config.features._section_xray))
                 and require("koassistant_xray_parser").isJSON(cache_answer) then
                 local offer_meta = message_data.book_metadata or {}
+                local fold_mode = message_data._fold_after_create
+                local was_asked = message_data._precreate_fold_asked
                 UIManager:nextTick(function()
-                    require("koassistant_xray_merge").maybeOfferPostCreateFold({
-                        file = cache_file,
-                        title = offer_meta.title,
-                        author = offer_meta.author,
-                        ui = ui, plugin = plugin, configuration = config,
-                    })
+                    local XrayMerge = require("koassistant_xray_merge")
+                    if fold_mode then
+                        XrayMerge.runPostCreateFold({
+                            file = cache_file,
+                            title = offer_meta.title,
+                            author = offer_meta.author,
+                            ui = ui, plugin = plugin, configuration = config,
+                            mode = fold_mode,
+                        })
+                    elseif not was_asked then
+                        XrayMerge.maybeNotePredecessorGap({ file = cache_file, ui = ui })
+                    end
                 end)
             end
 
@@ -5346,6 +5356,10 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         return sendQuery()
     end
 
+    -- Steps 1-3 bundled (the fold ask below must be able to defer them): the
+    -- attended warning chain exactly as it always ran.
+    local function runPreSendWarnings()
+
     -- Step 1: Truncation warning (fires before large extraction check)
     -- Book text and full document truncation are mutually exclusive in practice;
     -- incremental truncation is a separate case that could theoretically co-occur.
@@ -5421,6 +5435,46 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     end
 
     return checkLargeExtractionAndSend()
+
+    end -- runPreSendWarnings
+
+    -- Step 0 (carry layer 3(iii), 2026-08-06): pre-create fold ask — an
+    -- attended FRESH main X-Ray of a grouped book whose previous book has an
+    -- X-Ray asks about folding BEFORE the create runs. Accepting stashes the
+    -- choice for handleResponse (auto-fold when the create lands) and injects
+    -- the naming canon into the already-built context message — post-build,
+    -- so the canon never meets the placeholder pass (merge-module
+    -- wire-safety rule). Declining sends the create untouched. Background
+    -- and ladder paths returned above and never reach this.
+    if prompt and prompt.cache_as_xray and not using_cache and cache_file
+        and not (config.features and (config.features._section_scope
+            or config.features._section_xray)) then
+        local XrayMerge = require("koassistant_xray_merge")
+        local asked = XrayMerge.preCreateFoldAsk(
+            { file = cache_file, ui = ui, configuration = config },
+            function(mode)
+                message_data._precreate_fold_asked = true
+                if mode then
+                    message_data._fold_after_create = mode
+                    local src = XrayMerge.seedSource(cache_file, config.features,
+                        temp_config and temp_config.provider, ui)
+                    local canon = src and XrayMerge.namingCanonBlock(src.parsed, src.title)
+                    if canon then
+                        local msgs = history:getMessages()
+                        for i = 1, #msgs do
+                            if msgs[i].role == "user" and msgs[i].is_context then
+                                msgs[i].content = msgs[i].content .. "\n\n" .. canon
+                                break
+                            end
+                        end
+                    end
+                end
+                runPreSendWarnings()
+            end)
+        if asked then return nil end -- continuation via the ask's callback
+    end
+
+    return runPreSendWarnings()
 end
 
 --- Format artifact metadata for popup display (e.g., "X-Ray (100%, today)")

@@ -1065,6 +1065,23 @@ function XrayBrowser:buildCategoryItems()
         end
     end
 
+    -- Carried from earlier books (series-identity round, 2026-08-06): the
+    -- dormant ledger made visible — entities carried from the group's earlier
+    -- volumes that have not appeared in this book yet. Main live views only,
+    -- same rationale as the dedup row: the manual actions write the live main.
+    local ledger = self.xray_data and self.xray_data[XrayParser.DORMANT_KEY]
+    if type(ledger) == "table" and #ledger > 0 and not self.scope
+        and not self.metadata.checkpoint and self.metadata.plugin
+        and self.metadata.book_file then
+        table.insert(items, {
+            text = Constants.getEmojiText("📚", _("Carried from earlier books"), enable_emoji),
+            mandatory = tostring(#ledger),
+            callback = function()
+                self_ref:showDormantList()
+            end,
+        })
+    end
+
     -- Separator before utility items
     if #items > 0 then
         items[#items].separator = true
@@ -1131,6 +1148,200 @@ function XrayBrowser:buildCategoryItems()
     end
 
     return items
+end
+
+--- Carried-entities list (series-identity round, 2026-08-06): every dormant
+--- ledger stub — name and source book — one tap from the main category menu.
+--- Reading is the primary use ("who might return?"); the per-stub detail
+--- offers the manual actions.
+function XrayBrowser:showDormantList()
+    local self_ref = self
+    local ledger = self.xray_data and self.xray_data[XrayParser.DORMANT_KEY]
+    if type(ledger) ~= "table" or #ledger == 0 then return end
+    local dialog
+    local rows = {}
+    for i, stub in ipairs(ledger) do
+        if type(stub) == "table" and type(stub.name) == "string" then
+            local captured_i, captured = i, stub
+            local label = captured.name
+            if type(captured.source) == "string" and captured.source ~= "" then
+                label = T(_("%1 — from %2"), captured.name, captured.source)
+            end
+            rows[#rows + 1] = {{
+                text = label, align = "left",
+                callback = function()
+                    UIManager:close(dialog)
+                    self_ref:showDormantDetail(captured_i, captured)
+                end,
+            }}
+        end
+    end
+    rows[#rows + 1] = {{ text = _("Close"), callback = function() UIManager:close(dialog) end }}
+    dialog = ButtonDialog:new{
+        title = T(_("Carried from earlier books — %1 entit(y/ies) that have not appeared in this book yet. Each wakes automatically when an update meets it; tap one to read its history or handle it manually."), #ledger),
+        buttons = rows,
+    }
+    UIManager:show(dialog)
+end
+
+--- One carried entity: its full history, and the manual actions — link to an
+--- existing entry (reader-asserted identity, the zero-token fix for naming
+--- drift the model missed), promote to a visible entry, or remove.
+function XrayBrowser:showDormantDetail(stub_idx, stub)
+    local self_ref = self
+    local head = stub.name
+    if type(stub.aliases) == "table" and #stub.aliases > 0 then
+        head = head .. " (" .. table.concat(stub.aliases, ", ") .. ")"
+    end
+    local parts = { head }
+    if type(stub.source) == "string" and stub.source ~= "" then
+        parts[#parts + 1] = T(_("Carried from: %1"), stub.source)
+    end
+    if type(stub.description) == "string" and stub.description ~= "" then
+        parts[#parts + 1] = stub.description
+    end
+    if type(stub.background) == "table" then
+        for _idx, b in ipairs(stub.background) do
+            if type(b) == "table" and type(b.text) == "string" and b.source then
+                parts[#parts + 1] = T(_("From %1: %2"), b.source, b.text)
+            end
+        end
+    end
+    local dialog
+    dialog = ButtonDialog:new{
+        title = table.concat(parts, "\n\n"),
+        buttons = {
+            {{ text = _("This is an existing entry…"), align = "left", callback = function()
+                UIManager:close(dialog)
+                self_ref:showDormantLinkPicker(stub_idx, stub)
+            end }},
+            {{ text = _("Add as its own entry"), align = "left", callback = function()
+                UIManager:close(dialog)
+                self_ref:_commitDormantOp(
+                    function(data) return XrayParser.promoteStub(data, stub_idx, stub.name) end,
+                    T(_("\"%1\" added to the X-Ray."), stub.name))
+            end }},
+            {{ text = _("Remove"), align = "left", callback = function()
+                UIManager:close(dialog)
+                self_ref:_commitDormantOp(
+                    function(data) return XrayParser.removeStub(data, stub_idx, stub.name) ~= nil end,
+                    T(_("\"%1\" removed from the carried list."), stub.name))
+            end }},
+            {{ text = _("Back"), callback = function()
+                UIManager:close(dialog)
+                self_ref:showDormantList()
+            end }},
+        },
+    }
+    UIManager:show(dialog)
+end
+
+--- Same-category picker for the manual link: "this carried entity IS that
+--- existing entry".
+function XrayBrowser:showDormantLinkPicker(stub_idx, stub)
+    local self_ref = self
+    local cat_key = stub.category
+    local cat_label, cat_items
+    for _idx, cat in ipairs(XrayParser.getCategories(self.xray_data)) do
+        if cat.key == cat_key then
+            cat_label, cat_items = cat.label, cat.items
+            break
+        end
+    end
+    if type(cat_items) ~= "table" or #cat_items == 0 then
+        UIManager:show(InfoMessage:new{
+            text = _("This book's X-Ray has no entries in that category yet."),
+            timeout = 4,
+        })
+        return
+    end
+    local dialog
+    local rows = {}
+    for _idx, item in ipairs(cat_items) do
+        local name = XrayParser.getItemName(item, cat_key)
+        if type(name) == "string" and name ~= "" then
+            local captured = name
+            rows[#rows + 1] = {{
+                text = captured, align = "left",
+                callback = function()
+                    UIManager:close(dialog)
+                    self_ref:_commitDormantOp(
+                        function(data)
+                            return XrayParser.wakeStubInto(data, stub_idx, stub.name, cat_key, captured)
+                        end,
+                        T(_("Folded \"%1\" into \"%2\" — its carried history now shows there."), stub.name, captured))
+                end,
+            }}
+        end
+    end
+    rows[#rows + 1] = {{ text = _("Back"), callback = function()
+        UIManager:close(dialog)
+        self_ref:showDormantDetail(stub_idx, stub)
+    end }}
+    dialog = ButtonDialog:new{
+        title = T(_("\"%1\" is the same as which %2 entry? Its carried history and names fold into the one you pick."), stub.name, cat_label or _("existing")),
+        buttons = rows,
+    }
+    UIManager:show(dialog)
+end
+
+--- One dormant-ledger edit against DISK truth (dedup's commit pattern):
+--- fresh parse → apply → re-encode → commitXray (pre-op version ring-archived
+--- once per browser session) → refresh the open root menu.
+function XrayBrowser:_commitDormantOp(apply_fn, success_text)
+    local ActionCache = require("koassistant_action_cache")
+    local WriteBack = require("koassistant_artifact_writeback")
+    local file = self.metadata.book_file
+    local entry = ActionCache.getXrayCache(file)
+    if not (entry and entry.result) then
+        UIManager:show(InfoMessage:new{ text = _("No main X-Ray found on disk."), timeout = 4 })
+        return
+    end
+    local data = XrayParser.parse(entry.result)
+    if not data or data.error then
+        UIManager:show(InfoMessage:new{ text = _("The stored X-Ray could not be parsed."), timeout = 4 })
+        return
+    end
+    if not apply_fn(data) then
+        UIManager:show(InfoMessage:new{
+            text = _("The carried list changed on disk. Reopen it and try again."),
+            timeout = 4,
+        })
+        return
+    end
+    local json = require("json")
+    local okj, cache_json = pcall(json.encode, data, { pretty = true, indent = true })
+    if not okj or type(cache_json) ~= "string" then
+        UIManager:show(InfoMessage:new{ text = _("Failed to serialize the updated X-Ray."), timeout = 4 })
+        return
+    end
+    local meta = {}
+    for k, v in pairs(entry) do meta[k] = v end
+    meta.result = nil
+    meta.timestamp = nil
+    meta.progress_decimal = nil
+    local plugin_ref = self.metadata.plugin
+    local ok = WriteBack.commitXray(file, cache_json, entry.progress_decimal or 0, meta, {
+        prev = entry,
+        limit = self._dormant_archived and 0 or nil,
+        features = (self.metadata.configuration and self.metadata.configuration.features) or {},
+        refresh_fn = function()
+            if plugin_ref then
+                plugin_ref._file_dialog_row_cache = { file = nil, rows = nil }
+            end
+        end,
+    })
+    if not ok then
+        UIManager:show(InfoMessage:new{ text = _("Cache write failed."), timeout = 4 })
+        return
+    end
+    self._dormant_archived = true
+    self.xray_data = data
+    UIManager:show(Notification:new{ text = success_text })
+    -- Root repaint: the carried count changed, possibly a category count too
+    if self.menu and #self.nav_stack == 0 then
+        self.menu:switchItemTable(self:buildMainTitle(), self:buildCategoryItems(), -1)
+    end
 end
 
 --- Navigate forward: push current state and switch to new items

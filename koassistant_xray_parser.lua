@@ -1719,6 +1719,39 @@ function XrayParser.stripDormantJSON(json_str)
     return json_str
 end
 
+--- Background lines a stub contributes to an entity that doesn't already
+--- carry lines from those source books (fill-gaps-only — an existing entry
+--- from the same source book wins, same rule as the transitive carry).
+--- Shared by the automatic wake-pass and the manual wake (browser). Pure.
+local function stubBackgroundAdditions(stub, existing_background)
+    local existing_sources = {}
+    if type(existing_background) == "table" then
+        for _idx, b in ipairs(existing_background) do
+            if type(b) == "table" and type(b.source) == "string" then
+                existing_sources[b.source] = true
+            end
+        end
+    end
+    local additions = {}
+    if type(stub.description) == "string" and stub.description ~= ""
+        and type(stub.source) == "string" and stub.source ~= ""
+        and not existing_sources[stub.source] then
+        additions[#additions + 1] = { source = stub.source, text = stub.description }
+        existing_sources[stub.source] = true
+    end
+    if type(stub.background) == "table" then
+        for _idx, b in ipairs(stub.background) do
+            if type(b) == "table" and type(b.text) == "string" and b.text ~= ""
+                and type(b.source) == "string" and b.source ~= ""
+                and not existing_sources[b.source] then
+                additions[#additions + 1] = { source = b.source, text = b.text }
+                existing_sources[b.source] = true
+            end
+        end
+    end
+    return additions
+end
+
 --- Wake-pass (carry layer 2): any ledger stub whose name/alias matches an
 --- ACTIVE entity folds its carried knowledge into that entity's background —
 --- fill-gaps-only, an existing entry from the same source book wins (same
@@ -1773,31 +1806,7 @@ function XrayParser.wakeDormant(data)
             end
         end
         if hit then
-            local existing_sources = {}
-            if type(hit.background) == "table" then
-                for _idx2, b in ipairs(hit.background) do
-                    if type(b) == "table" and type(b.source) == "string" then
-                        existing_sources[b.source] = true
-                    end
-                end
-            end
-            local additions = {}
-            if type(stub.description) == "string" and stub.description ~= ""
-                and type(stub.source) == "string" and stub.source ~= ""
-                and not existing_sources[stub.source] then
-                additions[#additions + 1] = { source = stub.source, text = stub.description }
-                existing_sources[stub.source] = true
-            end
-            if type(stub.background) == "table" then
-                for _idx2, b in ipairs(stub.background) do
-                    if type(b) == "table" and type(b.text) == "string" and b.text ~= ""
-                        and type(b.source) == "string" and b.source ~= ""
-                        and not existing_sources[b.source] then
-                        additions[#additions + 1] = { source = b.source, text = b.text }
-                        existing_sources[b.source] = true
-                    end
-                end
-            end
+            local additions = stubBackgroundAdditions(stub, hit.background)
             if #additions > 0 then
                 hit.background = XrayParser.mergeBackground(hit.background, additions)
             end
@@ -1822,6 +1831,133 @@ function XrayParser.wakeDormant(data)
     end
     data[XrayParser.DORMANT_KEY] = #remaining > 0 and remaining or nil
     return woken
+end
+
+--- Remove one ledger stub, positional identity verified by name (the dedup
+--- rule: never act on an entry the reader did not see). Falls back to a
+--- name scan ONLY when the name is unambiguous in the ledger. Mutates data.
+--- @param data table Parsed X-Ray
+--- @param stub_idx number Ledger index at scan time
+--- @param stub_name string Expected stub name
+--- @return table|nil stub The removed stub (nil = not found / ambiguous)
+function XrayParser.removeStub(data, stub_idx, stub_name)
+    if type(data) ~= "table" or type(stub_name) ~= "string" then return nil end
+    local ledger = data[XrayParser.DORMANT_KEY]
+    if type(ledger) ~= "table" then return nil end
+    local stub = ledger[stub_idx]
+    if not (type(stub) == "table" and stub.name == stub_name) then
+        stub = nil
+        for i, s in ipairs(ledger) do
+            if type(s) == "table" and s.name == stub_name then
+                if stub then return nil end -- ambiguous — refuse
+                stub, stub_idx = s, i
+            end
+        end
+        if not stub then return nil end
+    end
+    table.remove(ledger, stub_idx)
+    if #ledger == 0 then data[XrayParser.DORMANT_KEY] = nil end
+    return stub
+end
+
+--- Manual wake INTO an existing entity (series-identity round, 2026-08-06):
+--- reader-asserted identity — the chosen ACTIVE item gains the stub's carried
+--- background (fill-gaps-only per source) and its names as aliases; the stub
+--- leaves the ledger. The manual counterpart of the wake-pass hit branch,
+--- and the zero-token fix for cross-volume naming drift the model missed
+--- ("the boy" IS Tobias Renn). Target resolved by category + name, ambiguity
+--- refused. Mutates data.
+--- @param data table Parsed X-Ray
+--- @param stub_idx number Ledger index at scan time
+--- @param stub_name string Expected stub name
+--- @param cat_key string Target item's category key
+--- @param item_name string Target item's name (getItemName form)
+--- @return boolean ok
+function XrayParser.wakeStubInto(data, stub_idx, stub_name, cat_key, item_name)
+    if type(data) ~= "table" then return false end
+    local target
+    for _idx, cat in ipairs(XrayParser.getCategories(data)) do
+        if cat.key == cat_key and type(cat.items) == "table" then
+            for _idx2, item in ipairs(cat.items) do
+                if type(item) == "table"
+                    and XrayParser.getItemName(item, cat_key) == item_name then
+                    if target then return false end -- ambiguous name — refuse
+                    target = item
+                end
+            end
+        end
+    end
+    if not target then return false end
+    local stub = XrayParser.removeStub(data, stub_idx, stub_name)
+    if not stub then return false end
+    local additions = stubBackgroundAdditions(stub, target.background)
+    if #additions > 0 then
+        target.background = XrayParser.mergeBackground(target.background, additions)
+    end
+    local aliases = ensure_array(target.aliases) or {}
+    local seen = {}
+    if type(target.name) == "string" then seen[target.name:lower()] = true end
+    if type(target.term) == "string" then seen[target.term:lower()] = true end
+    for _idx, a in ipairs(aliases) do
+        if type(a) == "string" then seen[a:lower()] = true end
+    end
+    local function foldAlias(name)
+        if type(name) == "string" and name ~= "" and not seen[name:lower()] then
+            aliases[#aliases + 1] = name
+            seen[name:lower()] = true
+        end
+    end
+    foldAlias(stub.name)
+    if type(stub.aliases) == "table" then
+        for _idx, a in ipairs(stub.aliases) do foldAlias(a) end
+    end
+    if #aliases > 0 then target.aliases = aliases end
+    return true
+end
+
+--- Manual wake as a NEW visible entry: the stub becomes a full item in its
+--- own category — description verbatim, ancestor background lines kept with
+--- their labels. Refused when the artifact's type has no such category
+--- (cross-type series). Mutates data.
+--- @param data table Parsed X-Ray
+--- @param stub_idx number Ledger index at scan time
+--- @param stub_name string Expected stub name
+--- @return boolean ok
+function XrayParser.promoteStub(data, stub_idx, stub_name)
+    if type(data) ~= "table" then return false end
+    local ledger = data[XrayParser.DORMANT_KEY]
+    local probe = type(ledger) == "table" and ledger[stub_idx] or nil
+    local cat_key
+    if type(probe) == "table" and probe.name == stub_name then
+        cat_key = probe.category
+    else
+        for _idx, s in ipairs(type(ledger) == "table" and ledger or {}) do
+            if type(s) == "table" and s.name == stub_name then cat_key = s.category end
+        end
+    end
+    if type(cat_key) ~= "string" then return false end
+    local valid = false
+    for _idx, cat in ipairs(XrayParser.getCategories(data)) do
+        if cat.key == cat_key then valid = true break end
+    end
+    if not valid then return false end
+    local stub = XrayParser.removeStub(data, stub_idx, stub_name)
+    if not stub then return false end
+    local item
+    if cat_key == "lexicon" or cat_key == "terminology" or cat_key == "technical_terms" then
+        item = { term = stub.name, definition = stub.description or "" }
+    else
+        item = { name = stub.name, description = stub.description or "" }
+    end
+    if type(stub.aliases) == "table" and #stub.aliases > 0 then item.aliases = stub.aliases end
+    if type(stub.background) == "table" and #stub.background > 0 then item.background = stub.background end
+    local arr = data[cat_key]
+    if type(arr) ~= "table" then
+        arr = {}
+        data[cat_key] = arr
+    end
+    arr[#arr + 1] = item
+    return true
 end
 
 --- Merge partial X-Ray update into existing data.
