@@ -330,6 +330,59 @@ TestRunner:test("null delta sentinel returns nil", function()
     TestRunner:assertNil(extractContentFromSSE(event), "sentinel delta ignored")
 end)
 
+TestRunner:suite("Trailing API error detection (provider-shape-agnostic)")
+
+-- An answer streamed, then the provider appended an error object and hung up.
+local ANSWER = 'The first Kubrick film I saw was Spartacus.\n'
+
+local SHAPES = {
+    -- Gemini: `code` first — the ONLY shape the old '"error":{"code"' gate matched.
+    { name = "Gemini 503",
+      body = '{\n  "error": {\n    "code": 503,\n    "message": "This model is currently experiencing high demand.",\n    "status": "UNAVAILABLE"\n  }\n}' },
+    -- OpenAI / OpenRouter: `message` first.
+    { name = "OpenAI",
+      body = '{"error":{"message":"The server had an error","type":"server_error","code":null}}' },
+    { name = "OpenRouter",
+      body = '{"error":{"message":"Upstream provider error","code":502}}' },
+    -- Anthropic: sibling key BEFORE the error object.
+    { name = "Anthropic overloaded",
+      body = '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}' },
+}
+
+for _idx, shape in ipairs(SHAPES) do
+    TestRunner:test("detects " .. shape.name, function()
+        local buf = ANSWER .. shape.body
+        local pos = StreamHandler._findTrailingApiError(buf)
+        if not pos then error("no trailing error found in " .. shape.name) end
+        -- The split must keep the whole answer and drop the whole error body.
+        local before = buf:sub(1, pos - 1):match("^(.-)%s*$")
+        TestRunner:assertEqual(before:sub(1, #ANSWER - 1), ANSWER:sub(1, #ANSWER - 1), "answer preserved")
+        if before:find('"message"', 1, true) then error("error body leaked into the answer") end
+        TestRunner:assertEqual(type(StreamHandler.extractApiError(buf)), "string", "message extractable")
+    end)
+end
+
+TestRunner:test("clean answer has no trailing error", function()
+    TestRunner:assertNil(StreamHandler._findTrailingApiError(ANSWER), "plain prose")
+    TestRunner:assertNil(StreamHandler._findTrailingApiError(""), "empty")
+    TestRunner:assertNil(StreamHandler._findTrailingApiError(nil), "nil")
+end)
+
+TestRunner:test("an answer DISCUSSING an error body is not truncated", function()
+    -- The widened pattern's false-positive case: prose continues after the quoted
+    -- object, so the rewrapped tail does not decode and the answer is left whole.
+    local prose = 'A 503 looks like {"error": {"code": 503}} and you should retry it.'
+    TestRunner:assertNil(StreamHandler._findTrailingApiError(prose), "quoted mid-sentence")
+end)
+
+TestRunner:test("skips a quoted object and finds the real trailing one", function()
+    local buf = 'Errors look like {"error": {"code": 429}} in general.\n'
+        .. '{"error":{"message":"Overloaded","code":503}}'
+    local pos = StreamHandler._findTrailingApiError(buf)
+    if not pos then error("real trailing error missed") end
+    TestRunner:assertEqual(buf:sub(1, pos - 1):find("in general%.") ~= nil, true, "split after the prose")
+end)
+
 -- Summary
 local success = TestRunner:summary()
 return success

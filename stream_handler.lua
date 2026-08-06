@@ -221,6 +221,61 @@ local StreamHandler = {
     user_interrupted = false,    -- flag to indicate if the stream was interrupted
 }
 
+--- Index of the "}" matching the "{" at `open`, honoring strings and escapes
+--- (a brace inside an error message must not close the object).
+--- @return number|nil
+local function matchBrace(text, open)
+    local depth, i, n = 0, open, #text
+    local in_string, escaped = false, false
+    while i <= n do
+        local c = text:sub(i, i)
+        if in_string then
+            if escaped then escaped = false
+            elseif c == "\\" then escaped = true
+            elseif c == '"' then in_string = false end
+        elseif c == '"' then in_string = true
+        elseif c == "{" then depth = depth + 1
+        elseif c == "}" then
+            depth = depth - 1
+            if depth == 0 then return i end
+        end
+        i = i + 1
+    end
+    return nil
+end
+
+--- Locate a provider error object appended to the END of a stream buffer.
+---
+--- The old gate was '"error"%s*:%s*{%s*"code"' — `code` first inside the object,
+--- which is Gemini's shape and only Gemini's. OpenAI and OpenRouter put `message`
+--- first, Anthropic wraps as {"type":"error","error":{"type":...}}, so a mid-stream
+--- error from any of those was never detected: the raw error JSON just stayed glued
+--- to the end of the answer, unlabelled.
+---
+--- Matching any '"error": {' would instead truncate answers that merely DISCUSS
+--- JSON, so the discriminator is POSITION, not key order: the object must be the
+--- last thing in the buffer. A provider error appended mid-stream ends the stream;
+--- an error body quoted inside model prose has more prose after it.
+--- ("Does the rewrapped tail decode?" was tried first and is NOT a discriminator —
+--- KOReader's json decodes a valid prefix and ignores trailing garbage.)
+--- @param text string Accumulated stream buffer
+--- @return number|nil Byte offset of the `"error"` key, nil if no trailing error
+function StreamHandler._findTrailingApiError(text)
+    if type(text) ~= "string" or text == "" then return nil end
+    local from = 1
+    while true do
+        local key_pos, brace_pos = text:find('"error"%s*:%s*{', from)
+        if not key_pos then return nil end
+        local close = matchBrace(text, brace_pos)
+        -- Nothing but the enclosing wrapper's own punctuation may follow.
+        if close and text:sub(close + 1):match("^[%s%]}]*$")
+            and pcall(json.decode, "{" .. text:sub(key_pos, close) .. "}") then
+            return key_pos
+        end
+        from = key_pos + 1
+    end
+end
+
 -- Exposed for unit testing (the locals above are the canonical implementations).
 StreamHandler.extractApiError = extractApiError
 StreamHandler.harvestWebSources = harvestWebSources
@@ -680,7 +735,6 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
         -- Error text from unrecognized lines may be appended to result_buffer.
         -- Case 1: No real content was streamed — report as failure
         -- Case 2: Real content was streamed then error appended — strip error, mark truncated
-        local error_pattern = '"error"%s*:%s*{%s*"code"'
         if not has_streamed_content then
             -- Whole response is an API error (e.g. 429 quota, 400) — surface the
             -- real message instead of dumping the raw JSON body ("Error: {").
@@ -689,8 +743,11 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                 if on_complete then on_complete(false, nil, apierr) end
                 return
             end
-        elseif result:find(error_pattern) then
-            local error_pos = result:find('"error"%s*:')
+        else
+            -- Provider-shape-agnostic (see _findTrailingApiError): the gate and the
+            -- split position are now the SAME match, so an earlier '"error":' that
+            -- is not an object can no longer send the split to the wrong offset.
+            local error_pos = StreamHandler._findTrailingApiError(result)
             if error_pos then
                 -- Content before the error key, minus any dangling brace/bracket
                 -- that actually belongs to the error JSON (avoids leaving "{").
