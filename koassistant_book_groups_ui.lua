@@ -192,18 +192,22 @@ function GroupsUI.showGroup(group_id, opts)
     if #group.books == 0 then
         rows[#rows + 1] = {{ text = _("No books yet — add some below."), enabled = false }}
     end
-    -- Item 48(a): the group as launch surface — library chat/actions with the
-    -- members pre-selected (reading order kept; saved chats stamped with the group)
-    if #group.books > 0 and opts.plugin and opts.plugin.openLibraryDialogForGroup then
-        rows[#rows + 1] = {{
-            text = _("Library chat with this group…"),
-            callback = function()
-                UIManager:close(dialog)
-                opts.plugin:openLibraryDialogForGroup(group_id)
-            end,
-        }}
-    end
+    -- Round 27 (device: "that whole group management window is a hot mess,
+    -- such a long window, and why is the ordered series button randomly in the
+    -- middle"): the book list is one row per book (it has to be — each row is
+    -- a tap target), so the ACTIONS are what makes the window long. The
+    -- ordered-series switch leads them, then the rest pair up two to a row.
+    local is_ordered = BookGroups.isOrdered(group)
     rows[#rows + 1] = {{
+        text = (is_ordered and "☑ " or "☐ ") .. _("Ordered series"),
+        align = "left",
+        callback = function()
+            BookGroups.setOrdered(group_id, not is_ordered)
+            reopen()
+        end,
+    }}
+    local actions = {}
+    actions[#actions + 1] = {
         text = _("Add books…"),
         callback = function()
             UIManager:close(dialog)
@@ -225,22 +229,20 @@ function GroupsUI.showGroup(group_id, opts)
                 on_close = function() GroupsUI.showGroup(group_id, opts) end,
             })
         end,
-    }}
-    -- Round 27 (maintainer): a group is not necessarily a series. Unchecking
-    -- this drops every sequence-contingent behavior (carry seed at create, the
-    -- pre-create fold ask, the series chain, direction warnings) while keeping
-    -- the group itself — navigation, per-member merges, library chat.
-    local is_ordered = BookGroups.isOrdered(group)
-    rows[#rows + 1] = {{
-        text = (is_ordered and "☑ " or "☐ ") .. _("Ordered series"),
-        align = "left",
-        callback = function()
-            BookGroups.setOrdered(group_id, not is_ordered)
-            reopen()
-        end,
-    }}
-    rows[#rows + 1] = {{
-        text = _("Rename group…"),
+    }
+    -- Item 48(a): the group as launch surface — library chat/actions with the
+    -- members pre-selected (reading order kept; saved chats stamped with the group)
+    if #group.books > 0 and opts.plugin and opts.plugin.openLibraryDialogForGroup then
+        actions[#actions + 1] = {
+            text = _("Library chat…"),
+            callback = function()
+                UIManager:close(dialog)
+                opts.plugin:openLibraryDialogForGroup(group_id)
+            end,
+        }
+    end
+    actions[#actions + 1] = {
+        text = _("Rename…"),
         callback = function()
             UIManager:close(dialog)
             promptName(_("Rename group"), group.name, function(name)
@@ -248,8 +250,8 @@ function GroupsUI.showGroup(group_id, opts)
                 GroupsUI.showGroup(group_id, opts)
             end, function() GroupsUI.showGroup(group_id, opts) end)
         end,
-    }}
-    rows[#rows + 1] = {{
+    }
+    actions[#actions + 1] = {
         text = _("Delete group…"),
         callback = function()
             local confirm
@@ -269,7 +271,12 @@ function GroupsUI.showGroup(group_id, opts)
             }
             UIManager:show(confirm)
         end,
-    }}
+    }
+    for i = 1, #actions, 2 do
+        local pair = { actions[i] }
+        if actions[i + 1] then pair[2] = actions[i + 1] end
+        rows[#rows + 1] = pair
+    end
     rows[#rows + 1] = {{
         text = _("Back"),
         callback = function()

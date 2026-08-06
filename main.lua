@@ -10278,6 +10278,15 @@ end
 --- the reader was never looking at an X-Ray — keep landing where they did.
 function AskGPT:_reopenLiveXrayAfterInstall(file, opts)
   if not (opts and opts.reopen_live) then return end
+  self:_showLiveXray(file, opts)
+end
+
+--- Open the book's CURRENT X-Ray, re-read from disk. The landing surface for
+--- any flow that retired the browser it ran from (install, cross-book merge) —
+--- round 27: "after folding in, the x ray closes; it should probably just
+--- refresh". A refresh-in-place is impossible there because the merge is what
+--- closed the view; reopening on fresh data is the same result.
+function AskGPT:_showLiveXray(file, opts)
   local ActionCache = require("koassistant_action_cache")
   local fresh = ActionCache.getXrayCache(file)
   if not (fresh and fresh.result) then return end
@@ -10286,8 +10295,8 @@ function AskGPT:_reopenLiveXrayAfterInstall(file, opts)
     key = "_xray_cache",
     data = fresh,
     file = file,
-    book_title = opts.book_title,
-    book_author = opts.book_author,
+    book_title = opts and opts.book_title,
+    book_author = opts and opts.book_author,
     skip_stale_popup = true,
   })
 end
@@ -10375,7 +10384,17 @@ function AskGPT:_showXrayCheckpointList(opts)
       end,
     }})
   end
+  -- Round 27 (device: "we need better sorting and info"): the list is two
+  -- different things in sequence — archived snapshots (newest first) and
+  -- prepared checkpoints (most complete first) — which is unreadable as one
+  -- undifferentiated stack. Dim, disabled section rows say which is which.
+  local ring_n = #ring
   for idx, e in ipairs(entries) do
+    if idx == 1 and ring_n > 0 then
+      table.insert(buttons, {{ text = _("— Archived versions —"), enabled = false }})
+    elseif idx == ring_n + 1 then
+      table.insert(buttons, {{ text = _("— Prepared checkpoints —"), enabled = false }})
+    end
     local row_text = self:_xrayCheckpointLabel(e.cp)
     if e.is_rung then
       row_text = row_text .. " · " .. _("checkpoint")

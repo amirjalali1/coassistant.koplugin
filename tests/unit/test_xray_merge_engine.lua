@@ -967,9 +967,9 @@ TestRunner:test("findDormantByIdentity: carried entity is the honest landing", f
 end)
 
 print("")
-print("  [round 26: the carry ledger holds identities, not analysis]")
+print("  [round 27: the carry ledger holds everything that can carry]")
 
-TestRunner:test("populateDormant: themes never enter the ledger; entities do", function()
+TestRunner:test("populateDormant: analysis carries too, only append/singleton stays out", function()
     local XrayParser = require("koassistant_xray_parser")
     local base = XrayParser.parse([[{
       "type": "fiction",
@@ -984,21 +984,25 @@ TestRunner:test("populateDormant: themes never enter the ledger; entities do", f
       "themes": [
         {"name": "Myth versus Reality", "description": "That book's reading of itself."},
         {"name": "Uncovering Concealed Truths", "description": "Also that book's."}
-      ]
+      ],
+      "timeline": [{"event": "The lamp fails", "description": "An append entry."}],
+      "current_state": {"description": "Where that book's reader stands."}
     }]])
     local added = XrayMerge.populateDormant(base, nil, source, "Gullstone")
     local names = {}
     for _i, s in ipairs(base[XrayParser.DORMANT_KEY] or {}) do names[s.name] = s.category end
-    TestRunner:assertEqual(added, 3, "the three named entities carry")
+    TestRunner:assertEqual(added, 5, "entities AND analysis carry (round 27 full inclusion)")
     TestRunner:assertEqual(names["Kell Damsgard"], "characters", "character carried")
     TestRunner:assertEqual(names["Blue Kettle"], "locations", "location carried")
     TestRunner:assertEqual(names["Gullstone"], "lexicon", "lexicon term carried")
-    TestRunner:assertTrue(names["Myth versus Reality"] == nil,
-        "a theme is that book's analysis of that book — it never travels")
-    TestRunner:assertTrue(names["Uncovering Concealed Truths"] == nil, "nor this one")
+    TestRunner:assertEqual(names["Myth versus Reality"], "themes",
+        "a theme carries as reading material — the reader asked to see it")
+    TestRunner:assertEqual(names["Uncovering Concealed Truths"], "themes", "and this one")
+    TestRunner:assertTrue(names["The lamp fails"] == nil,
+        "timeline is an APPEND list of events: carrying every book's would pile up forever")
 end)
 
-TestRunner:test("populateDormant: pre-round-26 theme stubs are pruned, transitively too", function()
+TestRunner:test("populateDormant: existing and transitive analysis stubs are kept, not pruned", function()
     local XrayParser = require("koassistant_xray_parser")
     -- A ledger written before the filter existed, plus a source whose OWN
     -- ledger carries theme stubs down the chain
@@ -1022,9 +1026,9 @@ TestRunner:test("populateDormant: pre-round-26 theme stubs are pruned, transitiv
     XrayMerge.populateDormant(base, nil, source, "What Vardo Knew")
     local names = {}
     for _i, s in ipairs(base[XrayParser.DORMANT_KEY] or {}) do names[s.name] = true end
-    TestRunner:assertTrue(names["Isolation and Duty"] == nil, "existing theme stub pruned")
-    TestRunner:assertTrue(names["Observation versus Interpretation"] == nil,
-        "the source's theme stub does not propagate down the chain")
+    TestRunner:assertTrue(names["Isolation and Duty"], "existing theme stub survives")
+    TestRunner:assertTrue(names["Observation versus Interpretation"],
+        "the source's theme stub propagates down the chain like any other")
     TestRunner:assertTrue(names["Old Tove"], "existing entity stub kept")
     TestRunner:assertTrue(names["Tobias Renn"], "transitive entity stub carried")
     TestRunner:assertTrue(names["Ines Vardo"], "source active carried")
@@ -1052,6 +1056,31 @@ TestRunner:test("wakeDormant: a carried character never wakes a same-named term"
         "the glossary term did NOT absorb a person's history")
     TestRunner:assertEqual(#data[XrayParser.DORMANT_KEY], 1,
         "the stub stays carried, honestly, until a real person matches it")
+end)
+
+TestRunner:test("wakeDormant: an unmapped category is its own family (round 27)", function()
+    local XrayParser = require("koassistant_xray_parser")
+    -- Full inclusion puts themes in the ledger, and themes have no family
+    -- entry — without the fallback they would drop to the FLAT lookup and wake
+    -- onto anything sharing the name, which is the "Keeper" bug all over again
+    local data = XrayParser.parse([[{
+      "type": "fiction",
+      "characters": [{"name": "Mercy", "description": "A ship's cook."}],
+      "themes": [{"name": "Exile", "description": "This book's reading."}],
+      "__dormant": [
+        {"name": "Mercy", "category": "themes", "source": "Book One",
+         "description": "What the first book kept asking about."},
+        {"name": "Exile", "category": "themes", "source": "Book One",
+         "background": [{"source": "Book One", "text": "Ran through the whole voyage."}]}
+      ]
+    }]])
+    local woken = XrayParser.wakeDormant(data)
+    TestRunner:assertEqual(#woken, 1, "only the same-category match wakes")
+    TestRunner:assertTrue(data.characters[1].background == nil,
+        "a carried THEME never wakes onto a character that happens to share its name")
+    TestRunner:assertTrue(data.themes[1].background ~= nil,
+        "the theme that recurs by name does wake, onto the theme")
+    TestRunner:assertEqual(#data[XrayParser.DORMANT_KEY], 1, "the unmatched stub stays carried")
 end)
 
 TestRunner:test("wakeDormant: drift WITHIN a family still bridges", function()
@@ -1093,7 +1122,9 @@ TestRunner:test("carryActiveBackground: a rebuild keeps folded background", func
       "characters": [{"name": "Ines", "description": "FRESH read of this book."}]
     }]])
     local added = XrayMerge.carryActiveBackground(prev, fresh)
-    TestRunner:assertEqual(added, 1, "only entities WITH background carry; themes excluded")
+    TestRunner:assertEqual(added, 2,
+        "everything WITH background carries — round 27: a theme that gained cross-book "
+        .. "background must survive a rebuild too")
     local woken = XrayParser.wakeDormant(fresh)
     TestRunner:assertEqual(#woken, 1, "the wake-pass restores it onto the fresh read")
     local ines = fresh.characters[1]
@@ -1106,7 +1137,9 @@ TestRunner:test("carryActiveBackground: a rebuild keeps folded background", func
         if a == "Dr. Ines Vardo" then has_alias = true end
     end
     TestRunner:assertTrue(has_alias, "the outgoing aliases came back with it")
-    TestRunner:assertTrue(fresh[XrayParser.DORMANT_KEY] == nil, "ledger emptied by the wake")
+    local left = fresh[XrayParser.DORMANT_KEY] or {}
+    TestRunner:assertEqual(#left, 1, "the theme the fresh read dropped stays carried")
+    TestRunner:assertEqual(left[1].name, "Duty", "and it is that theme")
 end)
 
 TestRunner:test("carryActiveBackground: a renamed entity stays carried, not lost", function()

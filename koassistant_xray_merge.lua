@@ -273,25 +273,20 @@ local PROTECTED_CATEGORIES = {
 }
 
 -- NAMED-ENTITY categories: things with an IDENTITY that can recur in another
--- book. Everything else a category list holds — themes, arguments, findings,
--- methodology — is this book's own ANALYSIS of its own text, which neither
--- travels nor means the same thing next door. Governs both the naming canon
--- (what steers another book's naming) and the dormant carry ledger (what a
--- fold may stub for later).
--- Round 26 (device audit): the carry ledger used every non-protected category,
--- so themes dominated it — 5 of 6 entries in one book, ~8 of 17 in the next,
--- pure noise the reader then had to read past in "Carried from earlier books".
+-- book. This governs the NAMING CANON only — the block that tells a fresh
+-- X-Ray "call these people/places/terms what the previous book called them".
+-- Steering names is right for identities and WRONG for analysis: telling the
+-- model to reuse the previous book's theme wording would bias this book's own
+-- reading of its own text, which is the one thing a fresh extraction must own.
+-- Round 27 (maintainer): the CARRY LEDGER deliberately does NOT use this set —
+-- it carries everything that is not append/singleton (see populateDormant).
+-- Carrying is not steering: a carried theme is reading material for the reader
+-- and, at most, wakes onto a same-category entry.
 local ENTITY_CATEGORIES = {
     characters = true, key_figures = true, locations = true,
     lexicon = true, terminology = true, technical_terms = true,
     core_concepts = true, key_concepts = true,
 }
--- Exported for the browser's carried-entities list: the prune happens on the
--- next WRITE, so a RESTORED pre-round-26 version still holds theme stubs
--- (device: "I restored one of the hallvard x rays and that has 17 carried
--- over"). The list filters by the same set, so what the reader sees is
--- consistent regardless of when the ledger was last rewritten.
-XrayMerge.ENTITY_CATEGORIES = ENTITY_CATEGORIES
 
 --- name/alias (lowercased) → item, over every entity category. First bind
 --- wins (duplicate names are the dedup engine's problem, not ours). Pure.
@@ -526,19 +521,6 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
     end
     local ledger = base_parsed[DK]
     if type(ledger) ~= "table" then ledger = {} end
-    -- Self-heal ledgers written before round 26: drop stubs from categories
-    -- that are analysis, not identity. Stubs with no category recorded are
-    -- KEPT (older writes; never destroy what we cannot classify).
-    do
-        local kept = {}
-        for _idx, stub in ipairs(ledger) do
-            local cat = type(stub) == "table" and stub.category or nil
-            if type(cat) ~= "string" or cat == "" or ENTITY_CATEGORIES[cat] then
-                kept[#kept + 1] = stub
-            end
-        end
-        ledger = kept
-    end
     local by_name = {}
     for i, stub in ipairs(ledger) do
         if type(stub) == "table" and type(stub.name) == "string" then
@@ -570,11 +552,18 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
         end
         return false
     end
-    -- (a) source ACTIVES that did not arrive → stubs. Named entities only:
-    -- a theme from the previous book is that book's reading of that book
-    -- (round 26 audit — themes were most of the ledger).
+    -- (a) source ACTIVES that did not arrive → stubs. Round 27 (maintainer:
+    -- "leaning hard towards full inclusion"): EVERY category the merge engine
+    -- is allowed to touch carries, not just named entities — themes, findings
+    -- and arguments are exactly what a non-series project group wants to see
+    -- from its other books, and even in a series "what the last book was
+    -- about" is worth a row. Only PROTECTED_CATEGORIES stay out, and they are
+    -- structurally unable to carry: timeline/argument_development are APPEND
+    -- lists of events (every book's events would pile up forever) and the
+    -- singletons (current_state, reader_engagement, conclusion) are this
+    -- book's own reading state, not an entry with a name.
     for _idx, cat in ipairs(XrayParser.getCategories(source_parsed)) do
-        if ENTITY_CATEGORIES[cat.key] and type(cat.items) == "table" then
+        if not PROTECTED_CATEGORIES[cat.key] and type(cat.items) == "table" then
             for _idx2, item in ipairs(cat.items) do
                 if type(item) == "table" then
                     local name = XrayParser.getItemName(item, cat.key)
@@ -618,11 +607,9 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
     -- same write.
     if type(source_parsed[DK]) == "table" then
         for _idx, stub in ipairs(source_parsed[DK]) do
-            -- Same identity-only filter, so a pre-round-26 ledger's theme
-            -- stubs stop propagating down the chain
+            -- Everything the source carries rides on (round 27 full inclusion)
             if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= ""
-                and (type(stub.category) ~= "string" or stub.category == ""
-                    or ENTITY_CATEGORIES[stub.category]) then
+                and not PROTECTED_CATEGORIES[stub.category or ""] then
                 stash({
                     name = stub.name,
                     aliases = stub.aliases,
@@ -662,7 +649,7 @@ function XrayMerge.carryActiveBackground(prev_parsed, parsed)
     end
     local added = 0
     for _idx, cat in ipairs(XrayParser.getCategories(prev_parsed)) do
-        if ENTITY_CATEGORIES[cat.key] and type(cat.items) == "table" then
+        if not PROTECTED_CATEGORIES[cat.key] and type(cat.items) == "table" then
             for _idx2, item in ipairs(cat.items) do
                 if type(item) == "table" and type(item.background) == "table"
                     and #item.background > 0 then
@@ -1649,6 +1636,10 @@ function XrayMerge.startFlow(opts)
                             })
                             return
                         end
+                        -- Same landing rule as the cross-book fold (round 27):
+                        -- this merge closed the X-Ray it ran from, so come back
+                        -- to it carrying the merged sections
+                        XrayMerge.reopenLive(opts)
                         -- Into-main merges keep their inputs by design (merge is
                         -- additive) — but ask, so the section list doesn't read
                         -- as "the merge didn't take" (device rounds 1+2, T5)
@@ -1904,6 +1895,12 @@ function XrayMerge.runSeriesChain(opts)
             -- chain is always attended); earlier hops go unchecked — one
             -- dialog per chain, and the reader can scan any volume manually
             local last = chain[#chain]
+            -- The chain closed the browser at step 1 (round 27): land on the
+            -- final receiving book's X-Ray, which is the one it was run from
+            XrayMerge.reopenLive({
+                file = last.file, title = last.title, author = last.author,
+                plugin = opts.plugin, reopen_live = opts.reopen_live,
+            })
             XrayMerge.maybeOfferDedupScan({
                 file = last.file, title = last.title, author = last.author,
                 ui = opts.ui, plugin = opts.plugin, configuration = opts.configuration,
@@ -2104,6 +2101,21 @@ function XrayMerge.runPostCreateFold(opts)
                 })
             end
         end,
+    })
+end
+
+--- Land back on the live X-Ray after a fold that closed the browser it ran
+--- from (round 27 device report: "after folding in, the x ray closes -- it
+--- should probably just refresh"). Opt-in via opts.reopen_live, set by the
+--- X-Ray browser's own entries; the artifact-browser and popup routes, where
+--- no X-Ray view was open, are unaffected. No-ops without a plugin handle.
+--- @param opts table { file, plugin, reopen_live, title, author }
+function XrayMerge.reopenLive(opts)
+    if not (opts and opts.reopen_live and opts.plugin and opts.plugin._showLiveXray) then
+        return
+    end
+    opts.plugin:_showLiveXray(opts.file, {
+        book_title = opts.title, book_author = opts.author,
     })
 end
 
@@ -2320,6 +2332,10 @@ function XrayMerge.startCrossBookFlow(opts)
                                             UIManager:show(Notification:new{
                                                 text = T(_("Merged the X-Ray of \"%1\" into this book."), captured.title),
                                             })
+                                            -- Round 27: the fold retired the
+                                            -- X-Ray it was launched from — land
+                                            -- back on it, now carrying the fold
+                                            XrayMerge.reopenLive(opts)
                                             XrayMerge.maybeOfferDedupScan(opts)
                                         else
                                             UIManager:show(InfoMessage:new{
@@ -2404,6 +2420,7 @@ function XrayMerge.startCrossBookFlow(opts)
                                 ui = opts.ui, plugin = opts.plugin,
                                 configuration = opts.configuration,
                                 close_browser = opts.close_browser,
+                                reopen_live = opts.reopen_live,
                                 on_done = opts.on_done,
                             })
                         end }},

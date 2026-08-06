@@ -1806,7 +1806,13 @@ function XrayParser.wakeDormant(data)
     end
     for _idx, cat in ipairs(XrayParser.getCategories(data)) do
         if type(cat.items) == "table" then
-            local family = XrayParser.CATEGORY_FAMILY[cat.key]
+            -- Round 27: an unmapped category is its OWN family, so the ledger's
+            -- new non-entity stubs (themes, findings, arguments — full
+            -- inclusion) can only wake inside their own category instead of
+            -- falling through to the flat map, which is the same cross-category
+            -- bug round 26 fixed for "Keeper". Mapped families still bridge
+            -- their synonyms (characters ↔ key_figures).
+            local family = XrayParser.CATEGORY_FAMILY[cat.key] or cat.key
             for _idx2, item in ipairs(cat.items) do
                 if type(item) == "table" then
                     learn(XrayParser.getItemName(item, cat.key), item, family)
@@ -1821,9 +1827,13 @@ function XrayParser.wakeDormant(data)
     for _idx, stub in ipairs(ledger) do
         local hit
         if type(stub) == "table" then
-            -- A stub that knows its family may only wake inside it; one with
-            -- no category recorded (pre-ledger writes) keeps the flat match
-            local stub_family = XrayParser.CATEGORY_FAMILY[stub.category or ""]
+            -- A stub that knows its category may only wake inside its family
+            -- (or, unmapped, inside that category); one with no category
+            -- recorded (pre-ledger writes) keeps the flat match
+            local stub_cat = type(stub.category) == "string" and stub.category ~= ""
+                and stub.category or nil
+            local stub_family = stub_cat
+                and (XrayParser.CATEGORY_FAMILY[stub_cat] or stub_cat) or nil
             local scope = stub_family and (family_lookup[stub_family] or {}) or lookup
             hit = type(stub.name) == "string" and stub.name ~= ""
                 and scope[stub.name:lower()] or nil

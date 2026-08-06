@@ -776,6 +776,16 @@ local CHAPTER_CATEGORY_SHORT = {
     terminology = _("Terms"),
     timeline = _("Arc"),
     argument_development = _("Dev"),
+    -- Round 27: the carried list labels every stub's category, and full
+    -- inclusion means these keys reach it too (they were already missing here
+    -- for chapter analysis)
+    key_concepts = _("Concepts"),
+    technical_terms = _("Terms"),
+    foundations = _("Basis"),
+    methodology = _("Method"),
+    findings = _("Findings"),
+    referenced_works = _("Works"),
+    figures_data = _("Data"),
 }
 
 local CATEGORY_EMOJIS = {
@@ -1199,26 +1209,26 @@ local DORMANT_CATEGORY_RANK = {
     locations = 2,
     lexicon = 3, terminology = 3, technical_terms = 3,
     core_concepts = 4, key_concepts = 4,
+    referenced_works = 5,
+    -- The analysis categories carry too (round 27 full inclusion) and sit
+    -- after the identities: they are reading material, not entries waiting to
+    -- wake, so they must not push the cast down the page
+    themes = 6, arguments = 6, foundations = 6,
+    methodology = 7, findings = 7, figures_data = 7,
 }
 
---- The carried ledger as DISPLAY rows: named entities only, in category then
---- name order, each keeping its raw ledger index for the edit ops.
---- Round 27: the write-side prune only runs on the next write, so a RESTORED
---- pre-round-26 version still holds theme stubs — filtering here keeps what
---- the reader sees consistent with what the ledger is for.
+--- The carried ledger as DISPLAY rows: everything it holds, in category then
+--- name order, each keeping its raw ledger index for the edit ops. Nothing is
+--- hidden (round 27 full inclusion) — insertion order is WRITE order, which is
+--- the only reason this exists: a stub added by a later fold or a rebuild
+--- carry landed at the bottom regardless of category ("a sudden extra cast").
 --- @return table rows Array of { idx, stub, rank }
 function XrayBrowser:_dormantRows()
     local ledger = self.xray_data and self.xray_data[XrayParser.DORMANT_KEY]
     local rows = {}
     if type(ledger) ~= "table" then return rows end
-    local entity_cats = require("koassistant_xray_merge").ENTITY_CATEGORIES or {}
     for i, stub in ipairs(ledger) do
-        if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= ""
-            -- A stub with no category recorded predates the field: keep it
-            -- (the write-side prune makes the same call — never drop what we
-            -- cannot classify)
-            and (type(stub.category) ~= "string" or stub.category == ""
-                 or entity_cats[stub.category]) then
+        if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= "" then
             rows[#rows + 1] = { idx = i, stub = stub,
                 rank = DORMANT_CATEGORY_RANK[stub.category or ""] or 9 }
         end
@@ -4767,6 +4777,7 @@ function XrayBrowser:showOptions()
                         configuration = self_ref.metadata.configuration,
                         title = self_ref.metadata.title,
                         author = self_ref.metadata.book_author,
+                        reopen_live = true,
                         close_browser = function()
                             if not browser_closed and self_ref.menu then
                                 browser_closed = true
@@ -4793,6 +4804,9 @@ function XrayBrowser:showOptions()
                     configuration = self_ref.metadata.configuration,
                     title = self_ref.metadata.title,
                     author = self_ref.metadata.book_author,
+                    -- The fold closes this browser; reopen the X-Ray on the
+                    -- merged data when it lands (round 27)
+                    reopen_live = true,
                     close_browser = function()
                         if not xb_browser_closed and self_ref.menu then
                             xb_browser_closed = true
@@ -4840,6 +4854,11 @@ function XrayBrowser:showOptions()
             file = self.metadata.book_file,
             book_title = self.metadata.title,
             book_author = self.metadata.book_author,
+            -- Round 27 device follow-up: installing from an OPEN version view
+            -- ("View" then the hamburger's Install) left the reader on nothing
+            -- — this view is retired by the install, so land on the live X-Ray
+            -- exactly as the direct install from the list does
+            reopen_live = true,
         }
         -- Rung cards install (slice 2, 35 E3(ii)) or delete; intro rungs have
         -- no install (premise-only) so their row keeps the narrower promise
@@ -4868,6 +4887,7 @@ function XrayBrowser:showOptions()
                     file = self_ref.metadata.book_file,
                     book_title = self_ref.metadata.title,
                     book_author = self_ref.metadata.book_author,
+                    reopen_live = true,
                     close_browser = function()
                         if not browser_closed and self_ref.menu then
                             browser_closed = true
