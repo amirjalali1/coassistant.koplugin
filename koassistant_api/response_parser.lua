@@ -6,6 +6,43 @@ local ResponseParser = {}
 -- This marker is checked by caching logic to avoid caching incomplete responses
 ResponseParser.TRUNCATION_NOTICE = "\n\n---\n⚠ *Response truncated: output token limit reached*"
 
+-- Companion marker for a stream the PROVIDER ended early — a mid-stream 5xx, a
+-- dropped connection. Distinct from TRUNCATION_NOTICE because the causes are
+-- unrelated and so are the remedies: a token limit means ask for less, a provider
+-- error means retry. Sharing one notice sent a device report chasing model size and
+-- JSON parsing over a Gemini 503 ("experiencing high demand") on a request that had
+-- used 2310 of its 32768 tokens. The PREFIX is the stable part — interruptedNotice
+-- appends the provider's own message when we have it, so isIncomplete matches on the
+-- prefix rather than the whole string.
+ResponseParser.INTERRUPTED_PREFIX = "\n\n---\n⚠ *Response interrupted"
+ResponseParser.INTERRUPTED_NOTICE = ResponseParser.INTERRUPTED_PREFIX .. ": the provider ended the stream early*"
+
+--- Build the interrupted notice, naming the provider's own error when available.
+--- @param detail string|nil Provider error message
+--- @return string
+function ResponseParser.interruptedNotice(detail)
+    if type(detail) == "string" and detail ~= "" then
+        -- Flattened: the notice renders as one italic run, and extractApiError can
+        -- return a multi-line body (quota details).
+        local flat = detail:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+        if flat ~= "" then
+            return ResponseParser.INTERRUPTED_PREFIX .. ": " .. flat .. "*"
+        end
+    end
+    return ResponseParser.INTERRUPTED_NOTICE
+end
+
+--- True when a response carries EITHER incomplete-response marker. Cache guards
+--- must use this rather than a bare TRUNCATION_NOTICE find, or an interrupted
+--- response gets stored as if it were whole.
+--- @param text string|nil
+--- @return boolean
+function ResponseParser.isIncomplete(text)
+    if type(text) ~= "string" then return false end
+    return text:find(ResponseParser.TRUNCATION_NOTICE, 1, true) ~= nil
+        or text:find(ResponseParser.INTERRUPTED_PREFIX, 1, true) ~= nil
+end
+
 -- Inline marker inserted where a web search ran mid-answer (report 3(b) decision,
 -- 2026-07-12): prose the model wrote BEFORE searching is kept — it is a completed
 -- text block the model composed knowing it stays visible (there is no overwrite

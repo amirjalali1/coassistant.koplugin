@@ -441,6 +441,7 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
     local perplexity_citations = nil  -- Capture Perplexity citations from SSE events
     local web_prov = { sources = {}, queries = {}, seen = {} }  -- Web-search provenance ("Show Sources")
     local was_truncated = false  -- Track if response was truncated (max tokens)
+    local interrupted_detail    -- Provider error that ended the stream early (not a token limit)
     -- Hidden streaming: accumulate data but show placeholder (for quiz etc.)
     local hidden_streaming = settings and settings.hidden_streaming
     -- The placeholder was hardcoded quiz wording, so every other hidden-output
@@ -700,15 +701,23 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                     if on_complete then on_complete(false, nil, apierr or _("API error")) end
                     return
                 end
-                -- Real content streamed then error appended — strip + mark truncated
+                -- Real content streamed then error appended — strip the error and
+                -- mark the answer as PROVIDER-interrupted, not token-truncated.
+                -- Extract before overwriting `result`: the error body lives in the
+                -- tail we are about to discard.
+                interrupted_detail = extractApiError(result) or extractApiError(partial_data) or true
                 result = before
-                was_truncated = true
-                logger.warn("Mid-stream API error detected after content, treating as truncated")
+                logger.warn("Mid-stream API error detected after content, treating as interrupted:",
+                    type(interrupted_detail) == "string" and interrupted_detail or "no detail")
             end
         end
 
-        -- Append truncation notice if response was cut short
-        if was_truncated then
+        -- Append the incomplete-response notice, naming the actual cause
+        if interrupted_detail then
+            local ResponseParser = require("koassistant_api.response_parser")
+            result = result .. ResponseParser.interruptedNotice(
+                type(interrupted_detail) == "string" and interrupted_detail or nil)
+        elseif was_truncated then
             local ResponseParser = require("koassistant_api.response_parser")
             result = result .. ResponseParser.TRUNCATION_NOTICE
         end

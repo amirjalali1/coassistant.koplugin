@@ -4709,7 +4709,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             -- Determine if book text was provided (for cache metadata tracking)
             -- Includes incremental text for update scenarios
             local ResponseParser = require("koassistant_api.response_parser")
-            local is_truncated = answer:find(ResponseParser.TRUNCATION_NOTICE, 1, true) ~= nil
+            -- Both markers count: a provider-interrupted answer is as incomplete
+            -- as a token-truncated one and must not be cached as whole.
+            local is_truncated = ResponseParser.isIncomplete(answer)
             local book_text_was_provided = (message_data.book_text and message_data.book_text ~= "")
                 or (message_data.full_document and message_data.full_document ~= "")
                 or (message_data.incremental_book_text and message_data.incremental_book_text ~= "")

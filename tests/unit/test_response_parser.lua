@@ -676,6 +676,44 @@ TestRunner:test("handles nil content in Anthropic", function()
     TestRunner:assertFalse(success, "success")
 end)
 
+TestRunner:suite("Incomplete-response notices — token limit vs provider interrupt")
+
+TestRunner:test("interruptedNotice names the provider's own error", function()
+    -- The real Gemini 503 from the 2026-08-06 device round.
+    local n = ResponseParser.interruptedNotice(
+        "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.")
+    TestRunner:assertContains(n, "experiencing high demand", "carries the provider message")
+    TestRunner:assertFalse(n:find("token limit", 1, true) ~= nil, "does not claim a token limit")
+end)
+
+TestRunner:test("interruptedNotice falls back when no detail is available", function()
+    TestRunner:assertEqual(ResponseParser.interruptedNotice(nil), ResponseParser.INTERRUPTED_NOTICE)
+    TestRunner:assertEqual(ResponseParser.interruptedNotice(""), ResponseParser.INTERRUPTED_NOTICE)
+end)
+
+TestRunner:test("multi-line provider detail is flattened to one italic run", function()
+    local n = ResponseParser.interruptedNotice("Quota exceeded.\n\nLimit: 50/day\nRetry in 30s")
+    TestRunner:assertFalse(n:sub(#ResponseParser.INTERRUPTED_PREFIX + 1):find("\n") ~= nil,
+        "no newlines inside the notice body")
+    TestRunner:assertContains(n, "Retry in 30s", "detail preserved")
+end)
+
+TestRunner:test("isIncomplete matches BOTH markers", function()
+    TestRunner:assertTrue(ResponseParser.isIncomplete("answer" .. ResponseParser.TRUNCATION_NOTICE),
+        "token-truncated")
+    TestRunner:assertTrue(ResponseParser.isIncomplete("answer" .. ResponseParser.INTERRUPTED_NOTICE),
+        "interrupted, no detail")
+    TestRunner:assertTrue(
+        ResponseParser.isIncomplete("answer" .. ResponseParser.interruptedNotice("503 high demand")),
+        "interrupted, with detail — prefix match, not whole-string")
+end)
+
+TestRunner:test("isIncomplete is false for whole responses and non-strings", function()
+    TestRunner:assertFalse(ResponseParser.isIncomplete("a perfectly complete answer"), "complete")
+    TestRunner:assertFalse(ResponseParser.isIncomplete(nil), "nil")
+    TestRunner:assertFalse(ResponseParser.isIncomplete({}), "table")
+end)
+
 -- Summary
 local success = TestRunner:summary()
 return success
