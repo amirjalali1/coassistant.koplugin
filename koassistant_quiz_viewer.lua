@@ -61,6 +61,15 @@ function QuizViewer:init()
     self.correct = self.correct or {}
     self.opts = self.opts or {}
 
+    -- Which letter holds the correct option is ours to decide, not the model's
+    -- (issue #99). Every quiz path — fresh generation, cached reopen, artifact
+    -- browser — constructs this viewer, so it is the one seam that cannot be
+    -- missed. Deterministic, so a reopened quiz keeps the layout its saved
+    -- answers were recorded against.
+    if self.quiz_data then
+        require("koassistant_quiz_parser").balanceAnswers(self.quiz_data)
+    end
+
     self.align = "center"
     self.region = Geom:new{
         w = Screen:getWidth(),

@@ -65,6 +65,149 @@ TestRunner:test("repair does not corrupt already-valid clean JSON", function()
     TestRunner:ok(d); TestRunner:eq(#d.questions[1].key_points, 3)
 end)
 
+TestRunner:suite("QuizParser.parse — correct-letter normalization")
+
+local function correctOf(raw)
+    local d = QP.parse('{"questions":[{"type":"multiple_choice","question":"Q?",'
+        .. '"options":{"A":"a","B":"b","C":"c","D":"d"},"correct":"' .. raw .. '"}]}')
+    return d and d.questions[1].correct
+end
+
+TestRunner:test("lowercase letter", function()
+    TestRunner:eq(correctOf("b"), "B")
+end)
+TestRunner:test("letter carrying its option text", function()
+    local d = QP.parse('{"questions":[{"type":"multiple_choice","question":"Q?",'
+        .. '"options":{"A":"a","B":"Rome","C":"c","D":"d"},"correct":"B) Rome"}]}')
+    TestRunner:eq(d.questions[1].correct, "B")
+end)
+TestRunner:test("prose forms: Option C / (D) / Answer: A / B.", function()
+    TestRunner:eq(correctOf("Option C"), "C")
+    TestRunner:eq(correctOf("(D)"), "D")
+    TestRunner:eq(correctOf("Answer: A"), "A")
+    TestRunner:eq(correctOf("B."), "B")
+end)
+TestRunner:test("unresolvable value left untouched", function()
+    TestRunner:eq(correctOf("none of these"), "none of these")
+end)
+
+TestRunner:suite("QuizParser.balanceAnswers — issue #99 answer placement")
+
+local function mcQuiz(n, correct_letter)
+    local qs = {}
+    for i = 1, n do
+        table.insert(qs, {
+            type = "multiple_choice",
+            question = "Question number " .. i .. "?",
+            options = { A = "a" .. i, B = "b" .. i, C = "c" .. i, D = "d" .. i },
+            correct = correct_letter,
+        })
+    end
+    return { questions = qs }
+end
+
+TestRunner:test("the correct option's TEXT follows the reassigned letter", function()
+    local q = mcQuiz(6, "B")
+    local before = {}
+    for i, question in ipairs(q.questions) do before[i] = question.options.B end
+    QP.balanceAnswers(q)
+    for i, question in ipairs(q.questions) do
+        TestRunner:eq(question.options[question.correct], before[i], "q" .. i)
+    end
+end)
+
+TestRunner:test("options are permuted, never lost or duplicated", function()
+    local q = mcQuiz(6, "C")
+    QP.balanceAnswers(q)
+    for i, question in ipairs(q.questions) do
+        local seen = {}
+        for _li, letter in ipairs({ "A", "B", "C", "D" }) do
+            local t = question.options[letter]
+            TestRunner:ok(t, "letter " .. letter .. " present on q" .. i)
+            TestRunner:ok(not seen[t], "no duplicate option text on q" .. i)
+            seen[t] = true
+        end
+        for _li, prefix in ipairs({ "a", "b", "c", "d" }) do
+            TestRunner:ok(seen[prefix .. i], prefix .. i .. " survived on q" .. i)
+        end
+    end
+end)
+
+TestRunner:test("a model that always answers B gets spread across letters", function()
+    local q = mcQuiz(12, "B")
+    QP.balanceAnswers(q)
+    local distinct, n = {}, 0
+    for _i, question in ipairs(q.questions) do
+        if not distinct[question.correct] then distinct[question.correct] = true; n = n + 1 end
+    end
+    TestRunner:ok(n >= 3, "expected at least 3 distinct correct letters, got " .. n)
+end)
+
+TestRunner:test("re-parsing the same response yields an identical layout", function()
+    local parts = {}
+    for i = 1, 8 do
+        table.insert(parts, string.format(
+            '{"type":"multiple_choice","question":"Q%d?",'
+            .. '"options":{"A":"a%d","B":"b%d","C":"c%d","D":"d%d"},"correct":"B"}',
+            i, i, i, i, i))
+    end
+    local raw = '{"questions":[' .. table.concat(parts, ",") .. ']}'
+    local first = QP.balanceAnswers(QP.parse(raw))
+    local second = QP.balanceAnswers(QP.parse(raw))
+    for i, question in ipairs(first.questions) do
+        TestRunner:eq(second.questions[i].correct, question.correct, "correct letter q" .. i)
+        for _li, letter in ipairs({ "A", "B", "C", "D" }) do
+            TestRunner:eq(second.questions[i].options[letter], question.options[letter],
+                "option " .. letter .. " q" .. i)
+        end
+    end
+end)
+
+TestRunner:test("calling twice is a no-op", function()
+    local q = mcQuiz(6, "A")
+    QP.balanceAnswers(q)
+    local snapshot = {}
+    for i, question in ipairs(q.questions) do snapshot[i] = question.correct end
+    QP.balanceAnswers(q)
+    for i, question in ipairs(q.questions) do
+        TestRunner:eq(question.correct, snapshot[i], "q" .. i)
+    end
+end)
+
+TestRunner:test("short answer and essay are untouched", function()
+    local q = { questions = {
+        { type = "short_answer", question = "Explain.", model_answer = "m", key_points = { "k" } },
+        { type = "essay", question = "Discuss.", key_points = { "a", "b" } },
+    } }
+    QP.balanceAnswers(q)
+    TestRunner:eq(q.questions[1].model_answer, "m")
+    TestRunner:nilv(q.questions[1].correct)
+    TestRunner:eq(#q.questions[2].key_points, 2)
+end)
+
+TestRunner:test("partial option sets stay within the letters present", function()
+    local q = { questions = { {
+        type = "multiple_choice", question = "Only two options?",
+        options = { A = "first", C = "second" }, correct = "A",
+    } } }
+    QP.balanceAnswers(q)
+    local c = q.questions[1].correct
+    TestRunner:ok(c == "A" or c == "C", "correct stayed within present letters, got " .. tostring(c))
+    TestRunner:nilv(q.questions[1].options.B)
+    TestRunner:nilv(q.questions[1].options.D)
+    TestRunner:eq(q.questions[1].options[c], "first")
+end)
+
+TestRunner:test("an unresolvable correct letter is skipped, not corrupted", function()
+    local q = { questions = { {
+        type = "multiple_choice", question = "Localized letters?",
+        options = { ["\216\163"] = "one", ["\216\168"] = "two" }, correct = "\216\163",
+    } } }
+    QP.balanceAnswers(q)
+    TestRunner:eq(q.questions[1].correct, "\216\163")
+    TestRunner:eq(q.questions[1].options["\216\163"], "one")
+end)
+
 TestRunner:suite("QuizParser.parse — failure")
 TestRunner:test("empty input → nil", function()
     local d, e = QP.parse("")

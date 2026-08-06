@@ -49,7 +49,11 @@ function QuizPrompt.build(quiz)
       "explanation": "Brief explanation of why the correct option is correct."
     }]])
         table.insert(rules, '- Multiple choice: always 4 options (A-D), "correct" is the letter, include "explanation"')
-        table.insert(rules, '- Vary which letter is correct across questions (roughly even A/B/C/D, no pattern); the letter in the example above is formatting only')
+        -- No "vary the letters" rule: the plugin reassigns which letter holds the
+        -- correct option after parsing (QuizParser.balanceAnswers, issue #99), so
+        -- the model's own placement bias is irrelevant. The explanation must not
+        -- name a letter, though -- it would contradict the reassigned layout.
+        table.insert(rules, '- In "explanation", identify the correct option by its content, never by its letter')
     end
     if sa then
         table.insert(type_list, "short_answer")

@@ -14,6 +14,11 @@ local VALID_TYPES = {
     essay = true,
 }
 
+--- Option letters, in display order. The viewer renders exactly these.
+local LETTERS = { "A", "B", "C", "D" }
+local IS_LETTER = {}
+for _idx, letter in ipairs(LETTERS) do IS_LETTER[letter] = true end
+
 --- Validate a single parsed question
 --- @param q table
 --- @return boolean
@@ -49,13 +54,40 @@ local function isValidQuizData(data)
     return true
 end
 
+--- Normalize a multiple-choice "correct" field down to a bare option letter.
+--- Models return "b", "B)", "(B)", "B) Rome", "Option B", "Answer: B" — the
+--- viewer compares it letter-for-letter, so anything but "B" scores every answer
+--- wrong. Only rewrites when the extracted letter is a real option key; values
+--- that resolve to nothing (e.g. localized letters) are left untouched.
+--- @param q table A multiple_choice question
+local function normalizeCorrect(q)
+    if type(q.options) ~= "table" or type(q.correct) ~= "string" then return end
+    local s = q.correct:match("^%s*(.-)%s*$"):upper()
+    local letter = s:match("^%(?([A-Z])%)?[%.%):%s]*$")   -- "B", "b", "(B)", "B."
+        or s:match("^%(?([A-Z])[%.%):]")                   -- "B) Rome"
+        or s:match("[^%a]([A-Z])[%.%):%s]*$")              -- "Option B", "Answer: B"
+    if letter and q.options[letter] ~= nil then
+        q.correct = letter
+    end
+end
+
+--- Repair pass applied to every successfully parsed quiz.
+--- @param data table
+--- @return table The same table
+local function normalizeQuiz(data)
+    for _idx, q in ipairs(data.questions or {}) do
+        if q.type == "multiple_choice" then normalizeCorrect(q) end
+    end
+    return data
+end
+
 --- Try to decode JSON from text, return parsed data if valid quiz
 --- @param text string
 --- @return table|nil
 local function tryDecode(text)
     local ok, data = pcall(json.decode, text)
     if ok and isValidQuizData(data) then
-        return data
+        return normalizeQuiz(data)
     end
     return nil
 end
@@ -276,10 +308,118 @@ function QuizParser.parse(text)
     data = parseMarkdown(text)
     if data then
         logger.dbg("QuizParser: parsed via markdown fallback, found", #data.questions, "questions")
-        return data, nil
+        return normalizeQuiz(data), nil
     end
 
     return nil, "failed to parse quiz from response"
+end
+
+-- Answer placement (issue #99) ----------------------------------------------
+--
+-- Models put the correct option in the middle far above chance, and cannot be
+-- prompted out of it: "distribute the letters evenly" asks for a running count
+-- they do not keep, and the JSON example has to name some letter, which just
+-- becomes the next anchor (moving the example from B to C produced quizzes
+-- clustered on B and C). So the model no longer gets a vote — it marks whichever
+-- option it likes and we move that option to a letter of our choosing before the
+-- reader sees the question.
+--
+-- The draw must be REPEATABLE, not merely random. The artifact cache stores the
+-- raw response text and re-parses it on every open, while quiz_state persists the
+-- reader's answer as a LETTER — so a fresh roll on reopen would silently re-point
+-- saved answers at different option text. Seeding from the quiz's own content
+-- gives a layout that is unpredictable to the reader but identical on every
+-- parse, device and restart.
+
+--- djb2-style string hash, kept under 2^31 so LuaJIT doubles stay exact.
+local function hashInto(h, s)
+    for i = 1, #s do
+        h = (h * 33 + s:byte(i)) % 2147483648
+    end
+    return h
+end
+
+--- Park-Miller PRNG. Its own stream, never math.random — a global generator that
+--- other code also draws from would break repeatability.
+--- @param seed number
+--- @return function rng(n) -> integer in [1, n]
+local function makeRng(seed)
+    local s = seed % 2147483646
+    if s < 1 then s = 1 end   -- 0 is a fixed point for this generator
+    return function(n)
+        s = (s * 16807) % 2147483647
+        return math.floor(s / 2147483647 * n) + 1
+    end
+end
+
+--- Option letters actually present on a question, in display order.
+local function presentLetters(options)
+    local present = {}
+    for _idx, letter in ipairs(LETTERS) do
+        if options[letter] ~= nil then table.insert(present, letter) end
+    end
+    return present
+end
+
+--- Reassign which letter holds the correct option, deterministically.
+--- Multiple choice only — short answer and essay have no letters to move.
+--- Mutates quiz_data in place; safe to call twice (the second call is a no-op,
+--- since reseeding from already-moved text would yield a different layout).
+--- @param quiz_data table Parsed quiz data
+--- @return table The same table
+function QuizParser.balanceAnswers(quiz_data)
+    if type(quiz_data) ~= "table" or type(quiz_data.questions) ~= "table" then
+        return quiz_data
+    end
+    if quiz_data._answers_balanced then return quiz_data end
+    quiz_data._answers_balanced = true
+
+    -- Seed from the whole quiz, walking a FIXED letter order: pairs() over the
+    -- options table is not order-stable, which would hand the same quiz a
+    -- different layout on a later run.
+    local seed = 5381
+    for _idx, q in ipairs(quiz_data.questions) do
+        seed = hashInto(seed, tostring(q.question or ""))
+        if type(q.options) == "table" then
+            for _li, letter in ipairs(LETTERS) do
+                local text = q.options[letter]
+                if type(text) == "string" then seed = hashInto(seed, letter .. text) end
+            end
+        end
+    end
+
+    local rng = makeRng(seed)
+    for _idx, q in ipairs(quiz_data.questions) do
+        -- IS_LETTER guard: a "correct" that survived normalization unresolved
+        -- (localized letter, option text) has no slot to move, so leave it be.
+        if q.type == "multiple_choice" and type(q.options) == "table"
+            and type(q.correct) == "string" and IS_LETTER[q.correct]
+            and q.options[q.correct] ~= nil then
+            local present = presentLetters(q.options)
+            if #present >= 2 then
+                local target = present[rng(#present)]
+                -- Captured before mutating: the correct option moves to `target`
+                -- and the rest close ranks in their original order.
+                local correct_text = q.options[q.correct]
+                local others = {}
+                for _li, letter in ipairs(present) do
+                    if letter ~= q.correct then table.insert(others, q.options[letter]) end
+                end
+                local oi = 1
+                for _li, letter in ipairs(present) do
+                    if letter == target then
+                        q.options[letter] = correct_text
+                    else
+                        q.options[letter] = others[oi]
+                        oi = oi + 1
+                    end
+                end
+                q.correct = target
+            end
+        end
+    end
+
+    return quiz_data
 end
 
 --- Get counts of each question type
