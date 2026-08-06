@@ -90,7 +90,7 @@ function OpenAIHandler:buildResponsesRequest(message_history, config, model)
     -- gpt-5.x resolves to 32768 so reasoning can't starve the answer.
     local max_tokens = api_params.max_tokens
         or ModelConstraints.resolveMaxTokens("openai", model, default_params.max_tokens or 16384)
-    request_body.max_output_tokens = max_tokens
+    request_body.max_output_tokens = ModelConstraints.clampMaxTokens("openai", model, max_tokens)
 
     -- Temperature is deliberately OMITTED: every model in responses_web_search
     -- is a gpt-5.x that accepts only its default (the chat path forces 1.0);
@@ -228,6 +228,9 @@ function OpenAIHandler:buildRequestBody(message_history, config)
     -- content, so the headroom matters); unknown/fetched models keep 16384.
     request_body.max_tokens = api_params.max_tokens
         or ModelConstraints.resolveMaxTokens("openai", model, default_params.max_tokens or 16384)
+    -- Clamp explicit pins too: an action's deliberate raise (X-Ray/merge 65536)
+    -- exceeds the ceiling on older models (gpt-4o 16384, gpt-4.1 32768) -> 400.
+    request_body.max_tokens = ModelConstraints.clampMaxTokens("openai", model, request_body.max_tokens)
 
     -- OpenAI's newer models (GPT-5.x, o-series, GPT-4.1) require max_completion_tokens instead of max_tokens
     local needs_new_param = model:match("^gpt%-5") or model:match("^o%d") or model:match("^gpt%-4%.1")

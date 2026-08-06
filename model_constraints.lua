@@ -1018,13 +1018,24 @@ local function lookupMaxOutput(provider, model)
     local provider_caps = ModelConstraints._max_output_tokens[provider]
     if not provider_caps or not model then return nil end
 
+    -- LONGEST prefix wins. pairs() order is undefined, so a first-match return
+    -- would pick nondeterministically whenever two keys both match one id
+    -- (e.g. "gpt-5" and a future "gpt-5.4-mini" row) — and this table now sets
+    -- DEFAULTS as well as clamps, so a wrong pick is a wrong request, not a
+    -- harmless no-op. Mirrors the user-override layer's own tie-break.
+    local best, best_len
     for cap_model, max_val in pairs(provider_caps) do
-        -- Prefix match (e.g., "deepseek-chat" matches "deepseek-chat-v2")
-        if model == cap_model or model:match("^" .. cap_model:gsub("%-", "%%-")) then
-            return max_val
+        -- Prefix match (e.g., "deepseek-chat" matches "deepseek-chat-v2").
+        -- Escape every Lua pattern magic char, not just "-": an unescaped "."
+        -- in a key like "gpt-4.1" or "gemini-2.5" matches ANY character there.
+        if model == cap_model
+                or model:match("^" .. cap_model:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")) then
+            if not best_len or #cap_model > best_len then
+                best, best_len = max_val, #cap_model
+            end
         end
     end
-    return nil
+    return best
 end
 
 --- Clamp max_tokens to model-specific ceiling (if any)

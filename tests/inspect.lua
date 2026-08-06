@@ -434,8 +434,10 @@ end
 
 -- Build config with options and presets
 local function buildConfigWithOptions(provider, api_key, options)
-    -- Start with preset if specified
-    local config_opts = {}
+    -- Start with preset if specified. Pin nothing by default so the exported
+    -- body shows the max_tokens PRODUCTION would send (ModelConstraints
+    -- .resolveMaxTokens); an explicit --max-tokens still overrides.
+    local config_opts = { max_tokens = false }
 
     if options.preset and presets[options.preset] then
         for k, v in pairs(presets[options.preset]) do

@@ -114,6 +114,16 @@ function OpenAICompatibleHandler:getResponseParserKey()
     return self:getProviderKey()
 end
 
+--- Provider id used for ModelConstraints lookups (ceilings, capabilities).
+--- Separate from getProviderKey() because custom providers share ONE handler
+--- whose static key ("custom") is not their runtime id — and the ceiling table
+--- plus the custom_models.lua user layer are keyed by the runtime `custom_<slug>`.
+--- @param config table|nil Unified request config
+--- @return string key
+function OpenAICompatibleHandler:getConstraintsKey(config)
+    return self:getProviderKey()
+end
+
 ---------------------------------------------------------------------------
 -- Shared implementation
 ---------------------------------------------------------------------------
@@ -171,9 +181,10 @@ function OpenAICompatibleHandler:buildRequestBody(message_history, config)
     local default_params = defaults.additional_parameters or {}
 
     request_body.temperature = api_params.temperature or default_params.temperature or 0.7
+    local constraints_key = self:getConstraintsKey(config)
     request_body.max_tokens = api_params.max_tokens
-        or ModelConstraints.resolveMaxTokens(self:getProviderKey(), model, default_params.max_tokens or 16384)
-    request_body.max_tokens = ModelConstraints.clampMaxTokens(self:getProviderKey(), model, request_body.max_tokens)
+        or ModelConstraints.resolveMaxTokens(constraints_key, model, default_params.max_tokens or 16384)
+    request_body.max_tokens = ModelConstraints.clampMaxTokens(constraints_key, model, request_body.max_tokens)
 
     -- Book-tool declarations from the neutral config.tools (set by the tool runner).
     -- Only reachable for providers with a `tools` capability in model_constraints.lua —

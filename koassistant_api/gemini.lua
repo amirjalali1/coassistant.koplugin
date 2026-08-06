@@ -105,10 +105,14 @@ function GeminiHandler:buildRequestBody(message_history, config)
         or ModelConstraints.resolveMaxTokens("gemini", model, default_params.max_tokens or 16384)
 
     -- Gemini 2.5: thinking tokens share the maxOutputTokens budget.
-    -- Double maxOutputTokens to compensate, capped at model ceiling (65536).
+    -- Double maxOutputTokens to compensate; the clamp below caps the result.
     if has_budget_support and thinking_enabled then
-        max_tokens = math.min(max_tokens * 2, 65536)
+        max_tokens = max_tokens * 2
     end
+    -- Clamp last, against the real ceiling: covers explicit action pins (X-Ray's
+    -- 65536) AND the doubling above, instead of the old hardcoded 65536 literal
+    -- which ignored both the ceiling table and any custom_models.lua override.
+    max_tokens = ModelConstraints.clampMaxTokens("gemini", model, max_tokens)
 
     request_body.generationConfig = {
         temperature = api_params.temperature or default_params.temperature or 0.7,

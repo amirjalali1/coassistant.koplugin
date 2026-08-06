@@ -79,6 +79,18 @@ function TestConfig.isValidApiKey(key)
     return true
 end
 
+-- Test max_tokens policy. `false` means "pin nothing" — the handler then runs
+-- ModelConstraints.resolveMaxTokens exactly as production does, which is what
+-- the request inspector wants (a pinned value makes the item-27 default path
+-- dead code under inspection: it showed 512 where production sends 32768).
+-- Live integration tests pass a number, or take the cheap 512 default.
+-- NOTE: written as a function, not `cond and nil or x` — that idiom silently
+-- yields x, because nil is falsy.
+local function resolveTestMaxTokens(value)
+    if value == false then return nil end
+    return value or 512
+end
+
 -- Build unified config for a provider (matches dialogs.lua:buildUnifiedRequestConfig)
 function TestConfig.buildConfig(provider, api_key, options)
     options = options or {}
@@ -99,7 +111,7 @@ function TestConfig.buildConfig(provider, api_key, options)
             temperature = options.temperature or
                          (ConstraintUtils and ConstraintUtils.getDefaultTemperature(provider) or 0.7),
             -- Use 512 tokens to accommodate thinking models (Gemini 3 uses ~60 tokens for thinking)
-            max_tokens = options.max_tokens or 512,
+            max_tokens = resolveTestMaxTokens(options.max_tokens),
         },
 
         -- Feature flags
@@ -146,7 +158,7 @@ function TestConfig.buildFullConfig(provider, api_key, options)
             temperature = options.temperature or
                          (ConstraintUtils and ConstraintUtils.getDefaultTemperature(provider) or 0.7),
             -- Default to 512 for unit tests (saves API costs), web UI overrides to 4096
-            max_tokens = options.max_tokens or 512,
+            max_tokens = resolveTestMaxTokens(options.max_tokens),
         },
 
         -- Feature flags

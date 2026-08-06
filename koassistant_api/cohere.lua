@@ -5,6 +5,7 @@ local json = require("json")
 local Defaults = require("koassistant_api.defaults")
 local ResponseParser = require("koassistant_api.response_parser")
 local DebugUtils = require("koassistant_debug_utils")
+local ModelConstraints = require("model_constraints")
 
 local CohereHandler = BaseHandler:new()
 
@@ -50,7 +51,9 @@ function CohereHandler:buildRequestBody(message_history, config)
     local default_params = defaults.additional_parameters or {}
 
     request_body.temperature = api_params.temperature or default_params.temperature or 0.7
-    request_body.max_tokens = api_params.max_tokens or default_params.max_tokens or 16384
+    request_body.max_tokens = api_params.max_tokens
+        or ModelConstraints.resolveMaxTokens("cohere", model, default_params.max_tokens or 16384)
+    request_body.max_tokens = ModelConstraints.clampMaxTokens("cohere", model, request_body.max_tokens)
 
     local headers = {
         ["Content-Type"] = "application/json",
@@ -104,7 +107,9 @@ function CohereHandler:query(message_history, config)
     local default_params = defaults.additional_parameters or {}
 
     request_body.temperature = api_params.temperature or default_params.temperature or 0.7
-    request_body.max_tokens = api_params.max_tokens or default_params.max_tokens or 16384
+    request_body.max_tokens = api_params.max_tokens
+        or ModelConstraints.resolveMaxTokens("cohere", model, default_params.max_tokens or 16384)
+    request_body.max_tokens = ModelConstraints.clampMaxTokens("cohere", model, request_body.max_tokens)
 
     -- Check if streaming is enabled
     local use_streaming = config.features and config.features.enable_streaming ~= false

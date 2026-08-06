@@ -109,8 +109,17 @@ function AnthropicRequest:build(config)
     end
 
     -- Apply parameters to request
-    request_body.max_tokens = params.max_tokens
-        or ModelConstraints.resolveMaxTokens("anthropic", request_body.model, AnthropicRequest.DEFAULT_PARAMS.max_tokens)
+    -- A PIN is a value the ACTION or the USER chose (config.api_params /
+    -- config.additional_parameters). The provider default merged into `params`
+    -- above is NOT a pin — it is the fallback the item-27 resolver replaces when
+    -- the model's ceiling is known. Reading `params.max_tokens` as the pin made
+    -- the resolver unreachable here (params always carries defaults.lua's 16384),
+    -- so Anthropic — the plugin's default provider — silently never got the raise.
+    local pinned = (config.api_params and config.api_params.max_tokens)
+        or (config.additional_parameters and config.additional_parameters.max_tokens)
+    request_body.max_tokens = pinned
+        or ModelConstraints.resolveMaxTokens("anthropic", request_body.model,
+            params.max_tokens or AnthropicRequest.DEFAULT_PARAMS.max_tokens)
     request_body.max_tokens = ModelConstraints.clampMaxTokens("anthropic", request_body.model, request_body.max_tokens)
     request_body.temperature = params.temperature or AnthropicRequest.DEFAULT_PARAMS.temperature
 

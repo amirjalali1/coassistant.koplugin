@@ -20,6 +20,18 @@ function CustomOpenAIHandler:getProviderKey()
     return "custom"
 end
 
+--- Every custom provider shares this handler, so the static key above cannot
+--- identify one. Capability data (ceilings in _max_output_tokens, user layers in
+--- custom_models.lua) is keyed by the RUNTIME id `custom_<slug>` — which arrives
+--- on config.provider (koassistant_gpt_query.lua matches it against
+--- features.custom_providers[].id). Without this, no ceiling and no user
+--- override could ever resolve for a custom provider.
+function CustomOpenAIHandler:getConstraintsKey(config)
+    local id = config and config.provider
+    if type(id) == "string" and id ~= "" then return id end
+    return self:getProviderKey()
+end
+
 -- Custom providers require base_url, not api_key
 function CustomOpenAIHandler:validateConfig(config)
     if not config or not config.base_url or config.base_url == "" then
