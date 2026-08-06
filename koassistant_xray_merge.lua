@@ -738,14 +738,20 @@ function XrayMerge.seedDormant(file, parsed, features, provider, ui)
     return added, src.title
 end
 
---- Series naming canon (carry layer 3(iii), 2026-08-06): IDENTITY HANDLES —
---- names + up to two aliases, never content — of the predecessor's named
---- entities, plus its dormant ledger's (transitive), framed for the CREATE
---- request. Recurring entities then keep one name from birth and the
---- follow-up fold matches on exact names instead of repairing drift
---- artifact-to-artifact. Injected ONLY when the reader accepted the
---- pre-create fold ask — a declined fold means a fully standalone read.
---- Pure.
+--- Alias bridge for the CREATE request (carry layer 3(iii), 2026-08-06;
+--- REFRAMED 2026-08-07): IDENTITY HANDLES — names + up to two aliases, never
+--- content — of the predecessor's named entities, plus its dormant ledger's
+--- (transitive).
+--- The first cut told the model to reuse the earlier book's NAME for a
+--- recurring entity. Wrong (maintainer): an X-Ray is a companion to THIS book,
+--- so an entry must be called what this book calls it — titling book 5's "the
+--- Magister" as book 1's "Tobias Renn" names someone the reader has not met
+--- under that name, and leaks a reveal the book may be withholding. It also
+--- bought nothing: the wake-pass and merges match on name OR alias, so an
+--- alias is a complete link. Now the block asks for exactly that — this book's
+--- name on the entry, the earlier name in "aliases" when the text supports the
+--- identification. Injected ONLY when the reader accepted the pre-create fold
+--- ask. Pure.
 --- @param source_parsed table Predecessor's parsed X-Ray
 --- @param source_title string|nil
 --- @return string|nil block Framed prompt block (nil when nothing to list)
@@ -789,13 +795,15 @@ function XrayMerge.namingCanonBlock(source_parsed, source_title)
     for _idx, key in ipairs(order) do
         lines[#lines + 1] = key .. ": " .. table.concat(bucket[key], "; ")
     end
-    return "[Series naming reference]\nThis book is part of the same series as \""
+    return "[Earlier book reference]\nThis book is part of the same series as \""
         .. (source_title or "?")
-        .. "\", whose X-Ray already exists. The names below are for NAMING CONSISTENCY ONLY: "
-        .. "if any of these people, places, or terms appear in this book's text — possibly "
-        .. "unnamed, renamed, or under an epithet — use the SAME name for your entry, or "
-        .. "include the known name in that entry's \"aliases\". Do NOT add entries for names "
-        .. "that do not appear in this book's text.\n"
+        .. "\", whose X-Ray already exists. The names below are an ALIAS BRIDGE, not naming "
+        .. "instructions. Name every entry the way THIS book names it — an entry's \"name\" "
+        .. "must be a name this book's text actually uses. If one of your entries is clearly "
+        .. "the same person, place or term as one below, add that earlier name to that "
+        .. "entry's \"aliases\" so the two books can be linked. Never rename an entry to "
+        .. "match the list, never add entries for names that do not appear in this book's "
+        .. "text, and do not guess an identity the text does not support.\n"
         .. table.concat(lines, "\n")
 end
 

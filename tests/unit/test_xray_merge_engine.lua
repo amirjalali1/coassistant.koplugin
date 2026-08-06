@@ -820,7 +820,15 @@ TestRunner:test("namingCanonBlock: identity handles only, canon categories only"
     }]])
     local block = XrayMerge.namingCanonBlock(source, "The Lamp")
     TestRunner:assertTrue(block:find("The Lamp", 1, true) ~= nil, "source book named")
-    TestRunner:assertTrue(block:find("NAMING CONSISTENCY ONLY", 1, true) ~= nil, "framing present")
+    TestRunner:assertTrue(block:find("ALIAS BRIDGE", 1, true) ~= nil, "framing present")
+    -- The entry's NAME comes from this book; the earlier name is a link, not a
+    -- title (2026-08-07 maintainer: an X-Ray is a companion to THIS book)
+    TestRunner:assertTrue(block:find("way THIS book names it", 1, true) ~= nil,
+        "names come from the book being read")
+    TestRunner:assertTrue(block:find("Never rename an entry", 1, true) ~= nil,
+        "renaming to match the earlier book is forbidden outright")
+    TestRunner:assertTrue(block:find("aliases", 1, true) ~= nil,
+        "the earlier name lands in aliases, which is what wake/merge match on")
     TestRunner:assertTrue(block:find("Mira Alvsund (the Keeper, Alvsund)", 1, true) ~= nil,
         "name + first two aliases, third dropped")
     TestRunner:assertTrue(block:find("The boy", 1, true) ~= nil, "unnamed-handle entity listed")
