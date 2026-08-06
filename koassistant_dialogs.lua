@@ -620,8 +620,10 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
     end
 
     -- Note: max_tokens is NOT set here. If the action doesn't specify it,
-    -- handlers fall back to their provider defaults (defaults.lua), then to 16384.
-    -- Model-specific ceilings are enforced by ModelConstraints.clampMaxTokens().
+    -- handlers resolve the default via ModelConstraints.resolveMaxTokens
+    -- (item 27 raise-where-known: min(32768, known ceiling), else the provider
+    -- fallback from defaults.lua). Explicit values are still clamped by
+    -- ModelConstraints.clampMaxTokens().
 
     -- Reasoning/Thinking: resolved per-model via the central resolver.
     -- Precedence: action reasoning_config > per-model pref > per-provider pref >

@@ -96,12 +96,10 @@ function XAIHandler:buildResponsesRequest(message_history, config, model)
     local api_params = config.api_params or {}
     local default_params = defaults.additional_parameters or {}
     request_body.temperature = api_params.temperature or default_params.temperature or 0.7
-    local max_tokens = api_params.max_tokens or default_params.max_tokens or 16384
-    -- Same reasoning-headroom bump as OpenAI's Responses path: reasoning tokens
-    -- draw from max_output_tokens, and grok reasoning models reason by default.
-    if not api_params.max_tokens and ModelConstraints.supportsCapability("xai", model, "reasoning") then
-        max_tokens = 32768
-    end
+    -- Default via the ceiling-aware resolver (raise-where-known, item 27):
+    -- grok-4 family resolves to 32768 (reasoning draws from max_output_tokens).
+    local max_tokens = api_params.max_tokens
+        or ModelConstraints.resolveMaxTokens("xai", model, default_params.max_tokens or 16384)
     request_body.max_output_tokens = ModelConstraints.clampMaxTokens("xai", model, max_tokens)
 
     -- Reasoning effort from the per-model resolver, nested like OpenAI's

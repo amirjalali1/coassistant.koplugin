@@ -42,16 +42,18 @@ These are the base defaults for each provider. They define:
 - Base API URLs
 - Default models (via getDefaultModel from koassistant_model_lists.lua)
 - Default temperature (0.7 for most providers)
-- Default max_tokens (16384 for all providers)
+- FALLBACK max_tokens (16384 curated / 4096 community — community models often
+  cap low and have no ceiling data, so their low fallback is load-bearing).
+  Since item 27 (2026-08-06) the fallback only applies to UNKNOWN models:
+  handlers route defaults through ModelConstraints.resolveMaxTokens, which
+  raises known-ceiling models to min(32768, ceiling) so reasoning/thinking
+  (billed against the same budget everywhere) can't starve the answer.
 
-IMPORTANT: Per-action temperature/token tuning is in prompts/actions.lua
-Don't consolidate those here - they're intentional action-specific overrides.
-
-Examples of per-action tuning:
-- Dictionary: temperature = 0.3, max_tokens = 1024 (short responses)
-- X-Ray Analysis: max_tokens = 16384 (long-form response)
-
-Each action can override these defaults based on its specific needs.
+IMPORTANT: Per-action temperature tuning is in prompts/actions.lua. The old
+per-action max_tokens pins (4096/8192) were removed with item 27 — max_tokens
+is a guillotine, not a style control, and starved pins were truncating
+reasoning models to nothing (issue #98). Only deliberate RAISES above the 32K
+target remain pinned (X-Ray/merge 65536).
 ]]
 local ProviderDefaults = {
     anthropic = {

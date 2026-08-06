@@ -98,12 +98,11 @@ function GeminiHandler:buildRequestBody(message_history, config)
         thinking_enabled = true
     end
 
-    -- Determine max_tokens - use 16384 as base default for all modes
-    -- Gemini thinking tokens count toward maxOutputTokens, so thinking gets even more
+    -- Default via the ceiling-aware resolver (raise-where-known, item 27):
+    -- gemini-3.x/2.5 resolve to 32768 (thinking tokens count toward
+    -- maxOutputTokens); unknown/fetched models keep 16384.
     local max_tokens = api_params.max_tokens
-    if not max_tokens then
-        max_tokens = thinking_enabled and 32768 or 16384
-    end
+        or ModelConstraints.resolveMaxTokens("gemini", model, default_params.max_tokens or 16384)
 
     -- Gemini 2.5: thinking tokens share the maxOutputTokens budget.
     -- Double maxOutputTokens to compensate, capped at model ceiling (65536).

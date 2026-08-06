@@ -74,7 +74,8 @@ function DeepSeekHandler:buildRequestBody(message_history, config)
     local default_params = defaults.additional_parameters or {}
 
     request_body.temperature = api_params.temperature or default_params.temperature or 0.7
-    request_body.max_tokens = api_params.max_tokens or default_params.max_tokens or 16384
+    request_body.max_tokens = api_params.max_tokens
+        or ModelConstraints.resolveMaxTokens("deepseek", model, default_params.max_tokens or 16384)
     request_body.max_tokens = ModelConstraints.clampMaxTokens("deepseek", model, request_body.max_tokens)
 
     -- DeepSeek V4 thinking toggle (resolved upstream by the reasoning resolver).

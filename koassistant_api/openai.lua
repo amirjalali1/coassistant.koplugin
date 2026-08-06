@@ -86,11 +86,10 @@ function OpenAIHandler:buildResponsesRequest(message_history, config, model)
 
     local api_params = config.api_params or {}
     local default_params = defaults.additional_parameters or {}
-    local max_tokens = api_params.max_tokens or default_params.max_tokens or 16384
-    -- Same reasoning-headroom bump as the Chat Completions path
-    if not api_params.max_tokens and ModelConstraints.supportsCapability("openai", model, "reasoning") then
-        max_tokens = 32768
-    end
+    -- Default via the ceiling-aware resolver (raise-where-known, item 27):
+    -- gpt-5.x resolves to 32768 so reasoning can't starve the answer.
+    local max_tokens = api_params.max_tokens
+        or ModelConstraints.resolveMaxTokens("openai", model, default_params.max_tokens or 16384)
     request_body.max_output_tokens = max_tokens
 
     -- Temperature is deliberately OMITTED: every model in responses_web_search
@@ -224,14 +223,11 @@ function OpenAIHandler:buildRequestBody(message_history, config)
     local default_params = defaults.additional_parameters or {}
 
     request_body.temperature = api_params.temperature or default_params.temperature or 0.7
-    request_body.max_tokens = api_params.max_tokens or default_params.max_tokens or 16384
-
-    -- Reasoning models (o3, o4-mini, GPT-5) share max_completion_tokens between
-    -- reasoning and content. Bump default to give headroom (like Gemini's 32768).
-    -- Only when action didn't explicitly set max_tokens.
-    if not api_params.max_tokens and ModelConstraints.supportsCapability("openai", model, "reasoning") then
-        request_body.max_tokens = 32768
-    end
+    -- Default via the ceiling-aware resolver (raise-where-known, item 27):
+    -- gpt-5.x resolves to 32768 (reasoning shares max_completion_tokens with
+    -- content, so the headroom matters); unknown/fetched models keep 16384.
+    request_body.max_tokens = api_params.max_tokens
+        or ModelConstraints.resolveMaxTokens("openai", model, default_params.max_tokens or 16384)
 
     -- OpenAI's newer models (GPT-5.x, o-series, GPT-4.1) require max_completion_tokens instead of max_tokens
     local needs_new_param = model:match("^gpt%-5") or model:match("^o%d") or model:match("^gpt%-4%.1")

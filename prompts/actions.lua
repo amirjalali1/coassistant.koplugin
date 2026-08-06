@@ -249,7 +249,6 @@ Actions.highlight = {
         -- Uses global behavior variant (full/minimal)
         api_params = {
             temperature = 0.5,  -- More focused for explanations
-            max_tokens = 4096,
         },
         include_book_context = true,
         builtin = true,
@@ -266,7 +265,6 @@ Actions.highlight = {
         -- Uses global behavior variant
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,
         },
         include_book_context = true,
         builtin = true,
@@ -284,7 +282,6 @@ Actions.highlight = {
         -- Uses global behavior variant
         api_params = {
             temperature = 0.4,  -- More deterministic for summaries
-            max_tokens = 4096,
         },
         include_book_context = true,
         in_highlight_menu = 6,
@@ -301,7 +298,6 @@ Actions.highlight = {
         -- Uses global behavior variant
         api_params = {
             temperature = 0.7,  -- Balanced for expansive but coherent elaboration
-            max_tokens = 4096,
         },
         include_book_context = true,
         in_highlight_menu = 5,
@@ -325,7 +321,6 @@ Surface connections that enrich understanding, not tangential trivia. {concisene
         include_book_context = true,
         api_params = {
             temperature = 0.7,
-            max_tokens = 4096,
         },
         in_highlight_menu = 7,
         builtin = true,
@@ -366,7 +361,6 @@ If I have no prior highlights or notebook entries, just reflect on this passage 
 {conciseness_nudge}]],
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -401,7 +395,6 @@ Focus on comprehension — help me grasp what I'm reading, not evaluate it. {con
 {text_fallback_nudge}]],
         api_params = {
             temperature = 0.5,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -444,7 +437,6 @@ This is about what this passage means for ME as a reader — not just what it me
 {text_fallback_nudge}]],
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -484,7 +476,6 @@ Ground the analysis in the specific passage — what makes THIS particular piece
 {text_fallback_nudge}]],
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -515,7 +506,6 @@ If multiple claims are present, address each separately. If the passage is opini
 {conciseness_nudge} {hallucination_nudge}]],
         api_params = {
             temperature = 0.3,  -- Low temp for factual accuracy
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -545,7 +535,6 @@ If the passage is descriptive rather than argumentative, challenge its framing a
 {conciseness_nudge} {hallucination_nudge}]],
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -574,7 +563,6 @@ Focus on what's genuinely new or different from what the text describes. If the 
 {conciseness_nudge} {hallucination_nudge}]],
         api_params = {
             temperature = 0.5,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -609,7 +597,6 @@ Write in an encyclopedic tone: factual, neutral, well-organized. Prioritize accu
 {conciseness_nudge} {hallucination_nudge}]],
         api_params = {
             temperature = 0.3,  -- Low temp for factual accuracy
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -643,7 +630,6 @@ Keep bullets short — essential grammar only, no explanatory asides or parenthe
         skip_domain = true,
         api_params = {
             temperature = 0.3,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1100,7 +1086,6 @@ If web search is available, consider searching for the DOI or citation context t
 Do not use emojis. {hallucination_nudge}]],
         api_params = {
             temperature = 0.8,  -- More creative for recommendations
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1113,7 +1098,6 @@ Do not use emojis. {hallucination_nudge}]],
         template = "explain_author",
         api_params = {
             temperature = 0.7,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1126,7 +1110,6 @@ Do not use emojis. {hallucination_nudge}]],
         template = "historical_context",
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1314,7 +1297,6 @@ CRITICAL: Do not reveal ANYTHING beyond {reading_progress}. No foreshadowing, no
 {hallucination_nudge}]],
         api_params = {
             temperature = 0.5,
-            max_tokens = 8192,
         },
         builtin = true,
         -- (in_reading_features removed)
@@ -1376,7 +1358,6 @@ If you don't recognize this work or the title/content seems unclear, tell me hon
         -- Inherits global reasoning setting (user choice)
         api_params = {
             temperature = 0.5,  -- Factual recall, lower variance
-            max_tokens = 8192,
         },
         builtin = true,
         -- (in_reading_features removed)
@@ -1467,7 +1448,6 @@ If you don't recognize this work or the highlights seem insufficient for meaning
         -- Inherits global reasoning setting (user choice)
         api_params = {
             temperature = 0.5,
-            max_tokens = 4096,
         },
         builtin = true,
         -- (in_reading_features removed)
@@ -1503,7 +1483,6 @@ If this is fiction, focus on literary influences, movements, and stylistic desce
 Aim for the most significant connections, not an exhaustive list. {conciseness_nudge} {hallucination_nudge}]],
         api_params = {
             temperature = 0.7,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1556,7 +1535,6 @@ This is an overview, not an essay. {conciseness_nudge} {hallucination_nudge}
 {text_fallback_nudge}]],
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,
         },
         builtin = true,
         in_quick_actions = 7,
@@ -1604,7 +1582,6 @@ Adapt to the work's nature:
 {text_fallback_nudge}]],
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1651,7 +1628,6 @@ Note: These are general questions for the complete work. If the reader is mid-bo
 {text_fallback_nudge}]],
         api_params = {
             temperature = 0.7,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1681,7 +1657,6 @@ Note: These are general questions for the complete work. If the reader is mid-bo
 {text_fallback_nudge}]],
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1828,7 +1803,6 @@ CRITICAL: No spoilers beyond {reading_progress}. Guide attention without reveali
 {text_fallback_nudge}]],
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1846,7 +1820,6 @@ CRITICAL: No spoilers beyond {reading_progress}. Guide attention without reveali
         template = "suggest_from_library",
         api_params = {
             temperature = 0.7,
-            max_tokens = 4096,
         },
         reasoning_config = { default = "off" },
         builtin = true,
@@ -1883,7 +1856,6 @@ Attribute opinions to their sources where possible. Distinguish between critical
 {conciseness_nudge} {hallucination_nudge}]],
         api_params = {
             temperature = 0.5,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1900,7 +1872,6 @@ Actions.library = {
         template = "compare_books",
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,  -- Comparisons can be lengthy
         },
         builtin = true,
     },
@@ -1913,7 +1884,6 @@ Actions.library = {
         template = "common_themes",
         api_params = {
             temperature = 0.7,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1926,7 +1896,6 @@ Actions.library = {
         template = "collection_summary",
         api_params = {
             temperature = 0.7,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1940,7 +1909,6 @@ Actions.library = {
         template = "quick_summaries",
         api_params = {
             temperature = 0.5,
-            max_tokens = 4096,  -- Multiple summaries need space
         },
         builtin = true,
     },
@@ -1953,7 +1921,6 @@ Actions.library = {
         template = "reading_order",
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1967,7 +1934,6 @@ Actions.library = {
         template = "recommend_books",
         api_params = {
             temperature = 0.8,  -- Higher creativity for discovery
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -1985,7 +1951,6 @@ Actions.library = {
         template = "cross_book_notes",
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -2003,7 +1968,6 @@ Actions.library = {
         template = "next_from_library",
         api_params = {
             temperature = 0.7,
-            max_tokens = 4096,
         },
         reasoning_config = { default = "off" },
         builtin = true,
@@ -2021,7 +1985,6 @@ Actions.library = {
         template = "discover_books",
         api_params = {
             temperature = 0.8,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -2038,7 +2001,6 @@ Actions.library = {
         template = "analyze_library",
         api_params = {
             temperature = 0.6,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -2056,7 +2018,6 @@ Actions.library = {
         template = "challenge_my_taste",
         api_params = {
             temperature = 0.7,
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -2083,7 +2044,6 @@ Focus on the top 3-5 most significant global news stories. Keep it concise and f
         skip_domain = true,  -- News doesn't need domain context
         api_params = {
             temperature = 0.3,  -- Low temp for factual reporting
-            max_tokens = 4096,
         },
         builtin = true,
         in_gesture_menu = true,  -- Available in gesture menu by default
@@ -2109,7 +2069,6 @@ Actions.special = {
         translate_view = true,  -- Use special translate view
         api_params = {
             temperature = 0.3,  -- Very deterministic for translations
-            max_tokens = 8192,  -- Long passages need room
         },
         builtin = true,
     },
@@ -2141,7 +2100,6 @@ One line only. No etymology, no synonyms. No headers.]],
         -- storage_key set dynamically based on dictionary_disable_auto_save setting
         api_params = {
             temperature = 0.3,  -- Deterministic for definitions
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -2175,7 +2133,6 @@ All labels and explanations in {dictionary_language}. Inline bold labels, no hea
         -- storage_key set dynamically based on dictionary_disable_auto_save setting
         api_params = {
             temperature = 0.3,  -- Deterministic for definitions
-            max_tokens = 4096,
         },
         builtin = true,
     },
@@ -2213,7 +2170,6 @@ Format: bold labels, bullet points and labeled fields within sections — not pr
         -- storage_key set dynamically based on dictionary_disable_auto_save setting
         api_params = {
             temperature = 0.4,
-            max_tokens = 4096,  -- Detailed analysis needs more space
         },
         builtin = true,
     },

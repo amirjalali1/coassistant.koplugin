@@ -149,11 +149,16 @@ TestRunner:test("max_output_tokens replaces max_tokens", function()
     TestRunner:assertTrue(result.body.max_tokens == nil, "no max_tokens key")
 end)
 
-TestRunner:test("reasoning models get the 32K headroom bump (shared budget)", function()
+TestRunner:test("known-ceiling models get the 32K default (raise-where-known)", function()
+    -- Item 27: the default is ceiling-based (resolveMaxTokens), not
+    -- reasoning-gated — the whole grok-4 family has a known >=32K ceiling.
     local result = XAIHandler:buildRequestBody(HISTORY, webConfig())
-    TestRunner:assertEqual(result.body.max_output_tokens, 32768, "grok-4.5 reasons by default")
+    TestRunner:assertEqual(result.body.max_output_tokens, 32768, "grok-4.5 resolves to the 32K target")
     result = XAIHandler:buildRequestBody(HISTORY, webConfig({ model = "grok-4.20-0309-non-reasoning" }))
-    TestRunner:assertEqual(result.body.max_output_tokens, 16384, "non-reasoning model keeps the default")
+    TestRunner:assertEqual(result.body.max_output_tokens, 32768, "same family, same known ceiling")
+    -- grok-build isn't Responses-capable → chat wire → plain max_tokens field
+    result = XAIHandler:buildRequestBody(HISTORY, webConfig({ model = "grok-build-0.1" }))
+    TestRunner:assertEqual(result.body.max_tokens, 16384, "unknown-ceiling model keeps the provider default")
 end)
 
 TestRunner:test("web_search tool is bare (no context-size dial on xAI)", function()

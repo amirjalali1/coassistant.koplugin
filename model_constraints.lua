@@ -273,15 +273,68 @@ ModelConstraints.capabilities = {
 -- Maximum output token limits per model
 -- Used by handlers to clamp max_tokens before sending requests
 -- Models with known output token ceilings (prevents API 400 errors)
+-- Max-output ceilings (item 27, raise-where-known). DUAL ROLE: clampMaxTokens
+-- caps explicit values down to these; resolveMaxTokens raises the default
+-- request UP to min(MAX_TOKENS_TARGET, ceiling) for known models. Precision
+-- above MAX_TOKENS_TARGET (32768) is irrelevant to the resolver — entries
+-- BELOW it are the load-bearing ones (they prevent 400s AND cap the raise).
+-- Prefix-matched (specific ids before shorter family prefixes not needed —
+-- pairs() order is undefined, so never add a prefix that shadows a different-
+-- valued specific entry). Sources: provider docs, OpenRouter public catalog
+-- (top_provider.max_completion_tokens, fetched 2026-08-06), API error text.
 ModelConstraints._max_output_tokens = {
     anthropic = {
         ["claude-opus-5"] = 128000,      -- 128K max output (API error text, verified 2026-07-25)
         ["claude-sonnet-5"] = 128000,    -- 128K max output
+        ["claude-fable-5"] = 128000,     -- 128K (OpenRouter catalog 2026-08-06; matches 5-family)
         ["claude-opus-4-8"] = 128000,    -- 128K max output
         ["claude-sonnet-4-6"] = 64000,
         ["claude-haiku-4-5"] = 64000,
     },
-    -- deepseek: v4 models allow 384K output (no cap needed)
+    openai = {
+        ["gpt-5"] = 128000,              -- whole 5.x family incl. 5.4-mini/nano (docs + OpenRouter catalog)
+        ["gpt-4.1"] = 32768,             -- documented output cap
+        ["gpt-4o"] = 16384,              -- documented output cap (guard for fetched models)
+    },
+    deepseek = {
+        ["deepseek-v4-pro"] = 384000,    -- documented (1M ctx / 384K out)
+        ["deepseek-v4-flash"] = 131072,  -- OpenRouter catalog 2026-08-06
+    },
+    gemini = {
+        ["gemini-3"] = 65536,            -- 3.x family (docs; OpenRouter catalog agrees)
+        ["gemini-2.5"] = 65536,          -- 2.5 family (docs)
+    },
+    xai = {
+        -- Known-good floor: the handler shipped 32768 requests on grok-4
+        -- reasoning models in the field; grok-4.3 documents 131K but the
+        -- family-wide max is unprobed — raise per-model when probed.
+        ["grok-4"] = 32768,
+    },
+    zai = {
+        ["glm-5"] = 128000,              -- GLM-5.x documented 128K max output
+        ["glm-4.7"] = 96000,             -- family ≥96K since GLM-4.5; exact value unprobed
+    },
+    openrouter = {
+        -- All values = top_provider.max_completion_tokens from the public
+        -- catalog (2026-08-06). x-ai/* and mistralai/* report none — left out.
+        ["anthropic/claude-sonnet-5"] = 128000,
+        ["anthropic/claude-opus-5"] = 128000,
+        ["anthropic/claude-fable-5"] = 128000,
+        ["anthropic/claude-sonnet-4.6"] = 128000,
+        ["anthropic/claude-opus-4.8"] = 128000,
+        ["anthropic/claude-haiku-4.5"] = 64000,
+        ["openai/gpt-5"] = 128000,       -- prefix: 5.6-sol/terra/luna, 5.5, 5.4, 5.4-mini
+        ["openai/gpt-oss"] = 131072,
+        ["google/gemini-3"] = 65536,
+        ["deepseek/deepseek-v4-pro"] = 384000,
+        ["deepseek/deepseek-v4-flash"] = 131072,
+        ["meta-llama/llama-3.3-70b-instruct"] = 16384,
+        ["qwen/qwen3-max"] = 65536,
+        ["qwen/qwen3-235b-a22b"] = 8192,
+        ["perplexity/sonar-pro"] = 8000,
+        ["moonshotai/kimi-k2-thinking"] = 100352,
+        ["minimax/minimax-m2.1"] = 131072,
+    },
     groq = {
         ["groq/compound"] = 8192,
         ["groq/compound-mini"] = 8192,
@@ -955,6 +1008,25 @@ function ModelConstraints.logAdjustments(provider, adjustments)
     end
 end
 
+--- Known max-output ceiling for a model, or nil.
+--- User-declared ceiling (custom_models.lua) wins over the builtin table — the
+--- override exists to correct stale caps in either direction.
+local function lookupMaxOutput(provider, model)
+    local user_cap = ModelOverrides.maxOutputTokens(provider, model)
+    if user_cap then return user_cap end
+
+    local provider_caps = ModelConstraints._max_output_tokens[provider]
+    if not provider_caps or not model then return nil end
+
+    for cap_model, max_val in pairs(provider_caps) do
+        -- Prefix match (e.g., "deepseek-chat" matches "deepseek-chat-v2")
+        if model == cap_model or model:match("^" .. cap_model:gsub("%-", "%%-")) then
+            return max_val
+        end
+    end
+    return nil
+end
+
 --- Clamp max_tokens to model-specific ceiling (if any)
 --- Acts as a ceiling: values below the cap pass through unchanged.
 --- @param provider string: Provider name (e.g., "deepseek", "groq")
@@ -963,25 +1035,33 @@ end
 --- @return number|nil: Clamped value, or original if no cap applies
 function ModelConstraints.clampMaxTokens(provider, model, value)
     if not value then return value end
-
-    -- User-declared ceiling (custom_models.lua) wins over the builtin one — the
-    -- override exists to correct stale caps in either direction.
-    local user_cap = ModelOverrides.maxOutputTokens(provider, model)
-    if user_cap then
-        return math.min(value, user_cap)
-    end
-
-    local provider_caps = ModelConstraints._max_output_tokens[provider]
-    if not provider_caps then return value end
-
-    for cap_model, max_val in pairs(provider_caps) do
-        -- Prefix match (e.g., "deepseek-chat" matches "deepseek-chat-v2")
-        if model == cap_model or model:match("^" .. cap_model:gsub("%-", "%%-")) then
-            return math.min(value, max_val)
-        end
-    end
-
+    local ceiling = lookupMaxOutput(provider, model)
+    if ceiling then return math.min(value, ceiling) end
     return value
+end
+
+-- Target request size when the model's output ceiling is known (item 27,
+-- raise-where-known): generous enough that reasoning/thinking — which bills
+-- against the same budget on every provider — can never starve the answer,
+-- low enough to stay a runaway-cost backstop.
+ModelConstraints.MAX_TOKENS_TARGET = 32768
+
+--- Default max_tokens for a request that carries no explicit value (no action
+--- pin, no user api_param). Raise-where-known: models with a KNOWN output
+--- ceiling (custom_models.lua override or the curated table) get
+--- min(MAX_TOKENS_TARGET, ceiling); unknown models keep the provider's
+--- field-proven fallback, so missing curation degrades to today's behavior,
+--- never to a 400.
+--- @param provider string
+--- @param model string|nil
+--- @param fallback number: provider default (defaults.lua) for unknown models
+--- @return number
+function ModelConstraints.resolveMaxTokens(provider, model, fallback)
+    local ceiling = lookupMaxOutput(provider, model)
+    if ceiling then
+        return math.min(ModelConstraints.MAX_TOKENS_TARGET, ceiling)
+    end
+    return fallback
 end
 
 -- Leading text of the Gemini-3 grounding tip. Shared so the generic rate-limit tip can
