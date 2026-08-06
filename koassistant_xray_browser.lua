@@ -1349,11 +1349,21 @@ function XrayBrowser:showDormantDetail(stub_idx, stub, nav_context)
             {
                 text = _("Add as its own entry"),
                 callback = afterClose(function()
-                    if self_ref:_commitDormantOp(
-                        function(data) return XrayParser.promoteStub(data, stub_idx, stub.name) end,
-                        T(_("\"%1\" added to the X-Ray."), stub.name)) then
-                        self_ref:_refreshDormantPage()
-                    end
+                    -- Round 27 (maintainer: "could easily be done by accident
+                    -- and there is no way back"): confirm, and name the way
+                    -- back so it is not a one-way door
+                    local ConfirmBox = require("ui/widget/confirmbox")
+                    UIManager:show(ConfirmBox:new{
+                        text = T(_("Add \"%1\" to this book's X-Ray as its own entry?\nIt stops being listed as carried. Its entry page offers \"Move back to carried list\"."), stub.name),
+                        ok_text = _("Add"),
+                        ok_callback = function()
+                            if self_ref:_commitDormantOp(
+                                function(data) return XrayParser.promoteStub(data, stub_idx, stub.name) end,
+                                T(_("\"%1\" added to the X-Ray."), stub.name)) then
+                                self_ref:_refreshDormantPage()
+                            end
+                        end,
+                    })
                 end),
             },
             {
@@ -2077,6 +2087,45 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         -- Categories with no top row (distribution-excluded singletons): the
         -- jump keeps its own row rather than disappearing
         table.insert(buttons_rows, { group_button })
+    end
+
+    -- "Move back to carried list" — the way back out of "Add as its own entry"
+    -- (round 27 maintainer: "it could easily be done by accident and there is
+    -- no way back"). Offered only for entries that carry cross-book background:
+    -- those belong to an earlier book, so the carried list is an honest home.
+    -- A native entry of THIS book would be mislabeled there — removing one of
+    -- those is the separate "edit/delete X-Ray entries" question. Undo is
+    -- LOCAL: a fold that already copied this forward is not rewritten, exactly
+    -- like any other later edit.
+    if not self.scope and not self.metadata.checkpoint and self.metadata.book_file
+        and type(item) == "table" and type(item.background) == "table"
+        and #item.background > 0 then
+        local demote_name = XrayParser.getItemName(item, category_key)
+        if type(demote_name) == "string" and demote_name ~= "" then
+            table.insert(buttons_rows, {{
+                text = _("Move back to carried list"),
+                callback = function()
+                    local ConfirmBox = require("ui/widget/confirmbox")
+                    UIManager:show(ConfirmBox:new{
+                        text = T(_("Move \"%1\" out of this book's X-Ray and back to the carried list?\nIts history from earlier books is kept, and its entry page can add it back."), demote_name),
+                        ok_text = _("Move"),
+                        ok_callback = function()
+                            if viewer then viewer:onClose() end
+                            if self_ref:_commitDormantOp(
+                                function(data)
+                                    return XrayParser.demoteToStub(data, category_key, demote_name)
+                                end,
+                                T(_("\"%1\" moved back to the carried list."), demote_name)) then
+                                -- Back to root: the entry this page rendered no
+                                -- longer exists, and the pages under it hold
+                                -- item tables that still list it
+                                while #self_ref.nav_stack > 0 do self_ref:navigateBack() end
+                            end
+                        end,
+                    })
+                end,
+            }})
+        end
     end
 
     -- Resolve references into tappable cross-category navigation buttons

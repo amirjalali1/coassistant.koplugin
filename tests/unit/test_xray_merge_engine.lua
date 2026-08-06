@@ -1058,6 +1058,36 @@ TestRunner:test("wakeDormant: a carried character never wakes a same-named term"
         "the stub stays carried, honestly, until a real person matches it")
 end)
 
+TestRunner:test("promoteStub / demoteToStub: the round trip is lossless", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local data = XrayParser.parse([[{
+      "type": "fiction",
+      "characters": [{"name": "Mira", "description": "The keeper."}],
+      "__dormant": [
+        {"name": "Tobias Renn", "aliases": ["Toby"], "category": "characters",
+         "source": "The Lamp", "description": "The boy who watched the harbor.",
+         "background": [{"source": "The Lamp", "text": "Rowed out every evening."}]}
+      ]
+    }]])
+    TestRunner:assertTrue(XrayParser.promoteStub(data, 1, "Tobias Renn"), "promote ok")
+    TestRunner:assertEqual(#data.characters, 2, "now a visible entry")
+    TestRunner:assertEqual(#(data[XrayParser.DORMANT_KEY] or {}), 0, "and gone from the ledger")
+    TestRunner:assertTrue(XrayParser.demoteToStub(data, "characters", "Tobias Renn"), "demote ok")
+    TestRunner:assertEqual(#data.characters, 1, "removed from the category again")
+    local back = (data[XrayParser.DORMANT_KEY] or {})[1]
+    TestRunner:assertTrue(back ~= nil, "back in the ledger")
+    TestRunner:assertEqual(back.name, "Tobias Renn", "same identity")
+    TestRunner:assertEqual(back.aliases[1], "Toby", "aliases survive the round trip")
+    TestRunner:assertEqual(back.source, "The Lamp",
+        "source read back off the background, so the row reads as it did before")
+    TestRunner:assertEqual(back.background[1].text, "Rowed out every evening.",
+        "the earlier book's history is kept")
+    -- A native entry of THIS book has no cross-book background: refused, since
+    -- the carried list would mislabel it (the UI gate mirrors this)
+    TestRunner:assertEqual(XrayParser.demoteToStub(data, "characters", "Mira"), false,
+        "an entry with no carried background is not demotable")
+end)
+
 TestRunner:test("wakeDormant: an unmapped category is its own family (round 27)", function()
     local XrayParser = require("koassistant_xray_parser")
     -- Full inclusion puts themes in the ledger, and themes have no family

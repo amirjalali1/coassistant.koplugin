@@ -2080,6 +2080,67 @@ function XrayParser.promoteStub(data, stub_idx, stub_name)
     return true
 end
 
+--- The inverse of promoteStub: a visible entry goes back to the carried list.
+--- Round 27 (maintainer: "Add as its own entry could easily be done by accident
+--- and there is no way back"). Restricted by its CALLERS to entries that carry
+--- cross-book background — those honestly belong to an earlier book, so the
+--- carried list is an honest home for them; a native entry of THIS book would
+--- be mislabeled there, and a destructive "delete entry" is a separate
+--- question. Nothing is marked on promote, so nothing leaks into a prompt:
+--- the round trip is inferred from the data itself.
+--- @param data table Parsed X-Ray (mutated)
+--- @param cat_key string Category holding the entry
+--- @param item_name string Entry name (ambiguous names refused, as elsewhere)
+--- @return boolean ok
+function XrayParser.demoteToStub(data, cat_key, item_name)
+    if type(data) ~= "table" or type(cat_key) ~= "string" or type(item_name) ~= "string" then
+        return false
+    end
+    local arr = data[cat_key]
+    if type(arr) ~= "table" then return false end
+    local at
+    for i, item in ipairs(arr) do
+        if type(item) == "table" and XrayParser.getItemName(item, cat_key) == item_name then
+            if at then return false end -- ambiguous name — refuse, as removeStub does
+            at = i
+        end
+    end
+    if not at then return false end
+    local item = arr[at]
+    -- Source: the earliest book that contributed background, so the row reads
+    -- "carried from <that book>" exactly as it did before it was promoted
+    local source
+    if type(item.background) == "table" then
+        for _idx, b in ipairs(item.background) do
+            if type(b) == "table" and type(b.source) == "string" and b.source ~= "" then
+                source = b.source
+                break
+            end
+        end
+    end
+    if not source then return false end
+    local stub = {
+        name = item_name,
+        category = cat_key,
+        source = source,
+        description = type(item.description) == "string" and item.description ~= ""
+            and item.description or nil,
+        background = item.background,
+    }
+    if type(item.aliases) == "table" and #item.aliases > 0 then
+        stub.aliases = {}
+        for _idx, a in ipairs(item.aliases) do stub.aliases[#stub.aliases + 1] = a end
+    end
+    table.remove(arr, at)
+    local ledger = data[XrayParser.DORMANT_KEY]
+    if type(ledger) ~= "table" then
+        ledger = {}
+        data[XrayParser.DORMANT_KEY] = ledger
+    end
+    ledger[#ledger + 1] = stub
+    return true
+end
+
 --- Merge partial X-Ray update into existing data.
 --- The AI outputs only new/changed entries; this merges them into the full dataset.
 --- @param old_data table Complete existing X-Ray data (mutated in place)
