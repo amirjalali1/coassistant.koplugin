@@ -5750,7 +5750,11 @@ end
 ---   "xray"      — that book's live X-Ray (grayed "(no X-Ray)")
 --- @param file string The current book (its groups are listed)
 --- @param mode string "artifacts" | "xray"
---- @param opts table|nil { before_open = fn } — runs before a member surface opens
+--- @param opts table|nil { before_open = fn } — runs before a member surface
+---   opens; { location = { category_key, item_name, item_aliases } } ("xray"
+---   mode only) — where the reader is in THIS book's X-Ray, so the member's
+---   opens at the same entity/category (XrayBrowser:_applyPendingLocation
+---   falls back one level at a time when it has neither)
 function AskGPT:_showGroupMembersPopup(file, mode, opts)
   local BookGroups = require("koassistant_book_groups")
   local list = BookGroups.groupsFor(file)
@@ -5776,6 +5780,19 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
           cb = function()
             UIManager:close(dialog)
             if opts and opts.before_open then opts.before_open() end
+            -- Round 25: land the jump where the reader was in THIS book's
+            -- X-Ray (set inside the callback, so a dismissed popup leaves no
+            -- stranded descriptor; the book stamp guards a browser that never
+            -- opens — e.g. an unparseable cache falls through to plain text)
+            if opts and opts.location then
+              require("koassistant_xray_browser")._pending_navigate_to = {
+                category_key = opts.location.category_key,
+                item_name = opts.location.item_name,
+                item_aliases = opts.location.item_aliases,
+                book_file = captured,
+                fallback = true,
+              }
+            end
             self_ref:showCacheViewer({ name = _("X-Ray"), key = "_xray_cache",
               data = entry, book_title = title, file = captured,
               skip_stale_popup = true })
@@ -7787,10 +7804,15 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       end
       -- With no live X-Ray, the versions list is the rungs' ONLY browse surface —
       -- show it for ANY rung count, not just a complete ladder (device round 1 T3:
-      -- a cancelled from-nothing build left its rungs unviewable)
-      if nc_rungs > 0 then
+      -- a cancelled from-nothing build left its rungs unviewable).
+      -- Round 25: count the ARCHIVE RING too. It counted rungs only, so after a
+      -- rebuild that archived the live X-Ray and cleared the ladder this row —
+      -- the one surface the reader lands on next — was absent, hiding the very
+      -- version the rebuild had just promised to keep.
+      local nc_arch = nc_ac.getXrayCheckpointCount(self.ui.document.file)
+      if nc_rungs + nc_arch > 0 then
         table.insert(nc_ver_rows, {{
-          text = T(_("All versions (%1)…"), nc_rungs),
+          text = T(_("All versions (%1)…"), nc_rungs + nc_arch),
           callback = function()
             UIManager:close(dialog)
             self_ref:_showXrayCheckpointList(opts)
@@ -7843,6 +7865,22 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           callback = function()
             UIManager:close(dialog)
             self_ref:_startXrayLadderBuild()
+          end,
+        }})
+      end
+    elseif self.ui and self.ui.document and self.ui.document.file then
+      -- Paged documents (PDF): no ladder rows here, but archived versions must
+      -- still be reachable with no live X-Ray (round 25 — archives are never
+      -- strandable, whatever the document type)
+      local pg_ac = require("koassistant_action_cache")
+      local pg_arch = pg_ac.getXrayCheckpointCount(self.ui.document.file)
+        + pg_ac.getXrayLadderCount(self.ui.document.file)
+      if pg_arch > 0 then
+        table.insert(nc_ver_rows, {{
+          text = T(_("All versions (%1)…"), pg_arch),
+          callback = function()
+            UIManager:close(dialog)
+            self_ref:_showXrayCheckpointList(opts)
           end,
         }})
       end
@@ -9010,6 +9048,19 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
 
   local function dispatch()
     local rebuild_pick = pickIsRebuild()
+    -- Round 25 (device report 2026-08-06 — data loss): a rebuild's DESTRUCTIVE
+    -- half is deferred to the successful write wherever the create runs in the
+    -- foreground. Archiving+clearing inside this confirm meant every abort
+    -- after it (a dismissed dialog, a declined size warning, a failed request,
+    -- a quit mid-stream) left the book with NO live X-Ray — and the archive it
+    -- promised was itself unreachable, because the "All versions" row hangs
+    -- under the X-Ray row. The eager archive was redundant anyway: the success
+    -- write already ring-archives the outgoing version (koassistant_dialogs
+    -- handleResponse + WriteBack.commitXray). Ladder deliveries keep the eager
+    -- clear — their builds re-plan lineage from the cleared state.
+    local defer_destroy = rebuild_pick and cr.coverage == "whole"
+      and cr.delivery ~= "checkpoints" and cr.delivery ~= "one_bg"
+      and cr.delivery ~= "follow"
     local function go()
       -- Round 21: the coverage goal is a BOOK property bounding the auto
       -- scheduler — target picks store it, whole-book picks clear it (position
@@ -9052,7 +9103,8 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
             -- not a fresh complete-track analysis
             self_ref:_executeBookLevelActionDirect(action, action_id, { update_to_full = true })
           else
-            self_ref:_executeBookLevelActionDirect(action, action_id, { full_document = true })
+            self_ref:_executeBookLevelActionDirect(action, action_id,
+              { full_document = true, xray_rebuild = defer_destroy or nil })
           end
         else
           self_ref:_startXrayLadderBuild({
@@ -9069,27 +9121,40 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     local ConfirmBox = require("ui/widget/confirmbox")
     local ActionCache = require("koassistant_action_cache")
     local limit = ActionCache.checkpointLimitFromFeatures(features)
-    local confirm_text = limit ~= 0
-      and _("Rebuild from scratch, replacing the current X-Ray? The outgoing version is archived under \"All versions\".")
-      or _("Rebuild from scratch, replacing the current X-Ray? Version archiving is off, so the current one will be gone.")
+    local confirm_text
+    if defer_destroy then
+      -- Honest wording for the deferred path: nothing is touched until the new
+      -- X-Ray arrives, so a cancelled rebuild costs nothing
+      confirm_text = limit ~= 0
+        and _("Rebuild from scratch, replacing the current X-Ray? The current one is kept until the new one arrives, then archived under \"All versions\".")
+        or _("Rebuild from scratch, replacing the current X-Ray? The current one is kept until the new one arrives, then replaced — version archiving is off, so it will be gone.")
+    else
+      confirm_text = limit ~= 0
+        and _("Rebuild from scratch, replacing the current X-Ray? The outgoing version is archived under \"All versions\".")
+        or _("Rebuild from scratch, replacing the current X-Ray? Version archiving is off, so the current one will be gone.")
+    end
     local n_rungs = ActionCache.getXrayLadderCount(cc_file)
     if n_rungs > 0 then
       confirm_text = confirm_text .. "\n"
-        .. T(_("Its %1 checkpoints belong to the old version and are deleted with it."), n_rungs)
+        .. (defer_destroy
+          and T(_("Its %1 checkpoints belong to the old version and are deleted when the new one is saved."), n_rungs)
+          or T(_("Its %1 checkpoints belong to the old version and are deleted with it."), n_rungs))
     end
     UIManager:show(ConfirmBox:new{
       text = confirm_text,
       ok_text = _("Rebuild"),
       ok_callback = function()
-        local live = ActionCache.getXrayCache(cc_file)
-        if live and live.result and limit ~= 0 then
-          ActionCache.pushXrayCheckpoint(cc_file, live, limit)
+        if not defer_destroy then
+          local live = ActionCache.getXrayCache(cc_file)
+          if live and live.result and limit ~= 0 then
+            ActionCache.pushXrayCheckpoint(cc_file, live, limit)
+          end
+          ActionCache.clearXrayCache(cc_file)
+          ActionCache.clear(cc_file, "xray")
+          ActionCache.clearXrayLadder(cc_file)
+          self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+          self_ref:_refreshXrayAutoState()
         end
-        ActionCache.clearXrayCache(cc_file)
-        ActionCache.clear(cc_file, "xray")
-        ActionCache.clearXrayLadder(cc_file)
-        self_ref._file_dialog_row_cache = { file = nil, rows = nil }
-        self_ref:_refreshXrayAutoState()
         go()
       end,
     })
@@ -13444,6 +13509,12 @@ function AskGPT:_executeBookLevelActionDirect(action, action_id, opts)
   -- Full-document X-Ray: propagate transient flag to config for prompt transformation in dialogs
   if opts and opts.full_document then
     config_copy.features._full_document_xray = true
+  end
+  -- Deferred rebuild (round 25): the old X-Ray is still on disk while this
+  -- request runs — the flag makes the create ignore it (from-nothing) and
+  -- hands the destructive half to the successful write
+  if opts and opts.xray_rebuild then
+    config_copy.features._xray_rebuild = true
   end
   -- Update to 100%: override progress to 1.0 (same spoiler-free prompt, no schema change)
   if opts and opts.update_to_full then

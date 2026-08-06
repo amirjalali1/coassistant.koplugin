@@ -623,24 +623,35 @@ function ActionCache.getAvailableArtifacts(document_path, exclude_key, doc)
             end
         end
     end
-    -- Archived X-Ray versions (#73): listed right under the X-Ray row, only when
-    -- the X-Ray itself is listed (the ring never outlives the X-Ray; the X-Ray
-    -- browser's own "other artifacts" list — exclude_key = _xray_cache — keeps
-    -- its hamburger entry instead). Callers handle is_xray_versions_group by
-    -- opening the checkpoint list (no data payload).
-    for i, art in ipairs(available) do
-        if art.key == "_xray_cache" then
-            -- Ring + ladder: the checkpoint list aggregates both, so the count does too
-            local cp_count = ActionCache.getXrayCheckpointCount(document_path)
-                + ActionCache.getXrayLadderCount(document_path)
-            if cp_count > 0 then
-                table.insert(available, i + 1, {
-                    name = T(_("Previous X-Ray Versions (%1)"), cp_count),
-                    key = "_xray_versions",
-                    is_xray_versions_group = true,
-                })
+    -- Archived X-Ray versions (#73): listed right under the X-Ray row. The
+    -- X-Ray browser's own "other artifacts" list (exclude_key = _xray_cache)
+    -- keeps its hamburger entry instead. Callers handle is_xray_versions_group
+    -- by opening the checkpoint list (no data payload).
+    -- ORPHAN SAFETY NET (2026-08-06, device report): the ring CAN outlive the
+    -- live X-Ray — a rebuild archives and clears up front, so a cancelled or
+    -- never-answered rebuild leaves archives with no X-Ray row to hang under,
+    -- and they were unreachable from every surface until a new X-Ray existed.
+    -- Archived work must never be strandable: with no live X-Ray the group is
+    -- listed standalone (first, since nothing else X-Ray-ish is there).
+    if exclude_key ~= "_xray_cache" then
+        local xray_idx
+        for i, art in ipairs(available) do
+            if art.key == "_xray_cache" then
+                xray_idx = i
+                break
             end
-            break
+        end
+        -- Ring + ladder: the checkpoint list aggregates both, so the count does too
+        local cp_count = ActionCache.getXrayCheckpointCount(document_path)
+            + ActionCache.getXrayLadderCount(document_path)
+        if cp_count > 0 then
+            table.insert(available, xray_idx and (xray_idx + 1) or 1, {
+                name = xray_idx and T(_("Previous X-Ray Versions (%1)"), cp_count)
+                    or T(_("Archived X-Ray Versions (%1)"), cp_count),
+                key = "_xray_versions",
+                is_xray_versions_group = true,
+                is_orphan = not xray_idx or nil,
+            })
         end
     end
     -- Add section X-Ray entries as a group (no position-based promotion here;

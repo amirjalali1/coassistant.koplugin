@@ -906,5 +906,65 @@ TestRunner:test("promoteStub: stub becomes a visible entry in its own category",
     TestRunner:assertTrue(data[XrayParser.DORMANT_KEY] == nil, "ledger emptied and dropped")
 end)
 
+print("")
+print("  [round 25: cross-book identity resolution for group navigation]")
+
+local GROUP_NAV_JSON = [[{
+  "type": "fiction",
+  "characters": [
+    {"name": "Alvsund", "aliases": ["The Keeper", "Mira"], "description": "Kept the light."},
+    {"name": "Kell Damsgard", "description": "The harbormaster."}
+  ],
+  "locations": [{"name": "Saltrest", "description": "A coastal town."}],
+  "lexicon": [{"term": "Turning", "definition": "The sea deciding something."}],
+  "conclusion": {"summary": "It ends."},
+  "__dormant": [
+    {"name": "Tobias Renn", "aliases": ["Toby"], "category": "characters",
+     "description": "Found the gullstone.", "source": "Gullstone"}
+  ]
+}]]
+
+TestRunner:test("findByIdentity: matches by alias and across categories", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local data = XrayParser.parse(GROUP_NAV_JSON)
+    local item, cat, idx = XrayParser.findByIdentity(data, { "Mira Alvsund", "the keeper" }, "characters")
+    TestRunner:assertEqual(item and item.name, "Alvsund", "alias bridges the drifted name")
+    TestRunner:assertEqual(cat, "characters", "owning category returned")
+    TestRunner:assertEqual(idx, 1, "index returned for nav context")
+    -- Category drift: the reader was in Cast, the match lives in World
+    local item2, cat2 = XrayParser.findByIdentity(data, { "Saltrest" }, "characters")
+    TestRunner:assertEqual(item2 and item2.name, "Saltrest", "found outside the preferred category")
+    TestRunner:assertEqual(cat2, "locations", "reports where it actually lives")
+    -- Lexicon uses term, not name
+    local item3, cat3 = XrayParser.findByIdentity(data, { "Turning" }, nil)
+    TestRunner:assertEqual(cat3, "lexicon", "term-keyed categories match too")
+    TestRunner:assertTrue(item3 ~= nil, "lexicon item returned")
+    TestRunner:assertTrue(XrayParser.findByIdentity(data, { "Nobody At All" }, nil) == nil,
+        "no match -> nil (caller falls back a level)")
+    TestRunner:assertTrue(XrayParser.findByIdentity(data, {}, nil) == nil, "no handles -> nil")
+end)
+
+TestRunner:test("findByIdentity: singleton categories never match", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local data = XrayParser.parse(GROUP_NAV_JSON)
+    -- "conclusion" is a singleton (no navigable entity list) — a stray handle
+    -- must not land the reader on it
+    TestRunner:assertTrue(XrayParser.findByIdentity(data, { "Conclusion" }, nil) == nil,
+        "singletons excluded from identity matching")
+end)
+
+TestRunner:test("findDormantByIdentity: carried entity is the honest landing", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local data = XrayParser.parse(GROUP_NAV_JSON)
+    local stub, idx = XrayParser.findDormantByIdentity(data, { "Toby" })
+    TestRunner:assertEqual(stub and stub.name, "Tobias Renn", "matched by alias in the ledger")
+    TestRunner:assertEqual(idx, 1, "ledger index returned for the detail view")
+    TestRunner:assertTrue(XrayParser.findDormantByIdentity(data, { "Kell Damsgard" }) == nil,
+        "an ACTIVE entity is not a dormant hit")
+    TestRunner:assertTrue(
+        XrayParser.findDormantByIdentity({ type = "fiction" }, { "Toby" }) == nil,
+        "no ledger -> nil")
+end)
+
 local ok = TestRunner:summary()
 return ok

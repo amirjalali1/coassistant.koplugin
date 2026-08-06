@@ -483,6 +483,9 @@ local function commitEntityMerge(opts, state, pair, keep_side, merged_descriptio
                     plugin_ref:_refreshXrayAutoState()
                 end
             end
+            -- A browser left open by a merge-launched dedup (the post-fold
+            -- nudge keeps it up) would render pre-merge entries (round 25)
+            require("koassistant_xray_browser"):reloadLiveMain(file)
         end,
     })
     if not ok then

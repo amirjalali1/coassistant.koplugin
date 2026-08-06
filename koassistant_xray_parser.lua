@@ -1833,6 +1833,85 @@ function XrayParser.wakeDormant(data)
     return woken
 end
 
+--- Find an ACTIVE entity by any of several identity handles (round 25, cross-
+--- book group navigation): the same person can be "Mira Alvsund" in one volume
+--- and "the Keeper" in the next, and can drift category between volumes, so
+--- match on name AND aliases across every category — preferred category first,
+--- then the rest. Pure.
+--- @param data table Parsed X-Ray
+--- @param names table Identity handles to try (name + aliases of the source item)
+--- @param preferred_category string|nil Category key to search first
+--- @return table|nil item, string|nil category_key, number|nil index
+function XrayParser.findByIdentity(data, names, preferred_category)
+    if type(data) ~= "table" or type(names) ~= "table" or #names == 0 then return nil end
+    local wanted = {}
+    for _idx, n in ipairs(names) do
+        if type(n) == "string" and n ~= "" then wanted[n:lower()] = true end
+    end
+    if not next(wanted) then return nil end
+    local function scan(cat)
+        if SINGLETON_CATEGORIES[cat.key] or type(cat.items) ~= "table" then return nil end
+        for i, item in ipairs(cat.items) do
+            if type(item) == "table" then
+                local name = XrayParser.getItemName(item, cat.key)
+                if type(name) == "string" and wanted[name:lower()] then return item, cat.key, i end
+                local aliases = ensure_array(item.aliases)
+                if aliases then
+                    for _idx2, a in ipairs(aliases) do
+                        if type(a) == "string" and wanted[a:lower()] then return item, cat.key, i end
+                    end
+                end
+            end
+        end
+        return nil
+    end
+    local categories = XrayParser.getCategories(data)
+    if preferred_category then
+        for _idx, cat in ipairs(categories) do
+            if cat.key == preferred_category then
+                local item, key, i = scan(cat)
+                if item then return item, key, i end
+                break
+            end
+        end
+    end
+    for _idx, cat in ipairs(categories) do
+        if cat.key ~= preferred_category then
+            local item, key, i = scan(cat)
+            if item then return item, key, i end
+        end
+    end
+    return nil
+end
+
+--- Same identity match against the DORMANT ledger: an entity absent from this
+--- book's visible entries may still be carried here from an earlier volume,
+--- which is a more honest landing than "not found". Pure.
+--- @param data table Parsed X-Ray
+--- @param names table Identity handles to try
+--- @return table|nil stub, number|nil index
+function XrayParser.findDormantByIdentity(data, names)
+    if type(data) ~= "table" or type(names) ~= "table" then return nil end
+    local ledger = data[XrayParser.DORMANT_KEY]
+    if type(ledger) ~= "table" then return nil end
+    local wanted = {}
+    for _idx, n in ipairs(names) do
+        if type(n) == "string" and n ~= "" then wanted[n:lower()] = true end
+    end
+    if not next(wanted) then return nil end
+    for i, stub in ipairs(ledger) do
+        if type(stub) == "table" then
+            if type(stub.name) == "string" and wanted[stub.name:lower()] then return stub, i end
+            if type(stub.aliases) == "table" then
+                for _idx2, a in ipairs(stub.aliases) do
+                    if type(a) == "string" and wanted[a:lower()] then return stub, i end
+                end
+            end
+        end
+    end
+    return nil
+end
+
 --- Remove one ledger stub, positional identity verified by name (the dedup
 --- rule: never act on an entry the reader did not see). Falls back to a
 --- name scan ONLY when the name is unambiguous in the ledger. Mutates data.

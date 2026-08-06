@@ -4292,7 +4292,10 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         or (config.features and config.features.book_metadata and config.features.book_metadata.file)
     local cache_enabled = prompt and prompt.use_response_caching and cache_file
 
-    if cache_enabled and not (config.features and config.features._full_document_xray) then
+    -- A deferred rebuild leaves the outgoing X-Ray on disk while the new one is
+    -- generated (round 25) — it must never be read as an incremental base
+    if cache_enabled and not (config.features and (config.features._full_document_xray
+            or config.features._xray_rebuild)) then
         local ActionCache = require("koassistant_action_cache")
         -- Ladder chain: rung N+1 continues from rung N (injected by the fire path),
         -- never from the live cache — the live X-Ray tracks the reader throughout
@@ -4631,9 +4634,28 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                         -- its dormant ledger from the nearest X-Rayed predecessor
                         -- in the book's group — locally, zero tokens, visible
                         -- content untouched — then the wake-pass promotes any
-                        -- skip-volume entities already present. Rebuilds recover
-                        -- the ledger they just dropped; runs for background and
-                        -- ladder creates too (the seed never interrupts)
+                        -- skip-volume entities already present. Runs for
+                        -- background and ladder creates too (the seed never
+                        -- interrupts).
+                        -- Round 25: FIRST carry the outgoing X-Ray's own ledger
+                        -- across. Re-seeding alone silently lost carried history
+                        -- whenever the predecessor walk came back empty (its
+                        -- X-Ray deleted, its text-extraction consent revoked) —
+                        -- a rebuild must never cost knowledge the book already
+                        -- held. populateDormant unions by name, so the seed
+                        -- below refreshes these rather than duplicating them.
+                        local prev_live = require("koassistant_action_cache").getXrayCache(cache_file)
+                        if prev_live and prev_live.result
+                            and XrayParser.isJSON(prev_live.result) then
+                            local prev_parsed = XrayParser.parse(prev_live.result)
+                            local prev_ledger = prev_parsed and not prev_parsed.error
+                                and prev_parsed[XrayParser.DORMANT_KEY]
+                            if type(prev_ledger) == "table" and #prev_ledger > 0 then
+                                parsed[XrayParser.DORMANT_KEY] = prev_ledger
+                                logger.info("KOAssistant: X-Ray rebuild carried",
+                                    #prev_ledger, "dormant entit(y/ies) from the outgoing version")
+                            end
+                        end
                         local seeded, seed_src = require("koassistant_xray_merge").seedDormant(
                             cache_file, parsed, config.features,
                             temp_config and temp_config.provider, ui)
@@ -4899,14 +4921,26 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     -- one this run started from). SKIP when the outgoing entry is a ladder
                     -- rung (shared archive rule, slice 2): a promoted rung getting
                     -- ring-archived on the next update would dup it and evict real history.
+                    -- Deferred rebuild (round 25): this IS the rebuild's
+                    -- destructive moment. The outgoing version is archived even
+                    -- when it is a promoted rung — the rebuild deletes the old
+                    -- lineage's ladder right below, so the rung would otherwise
+                    -- be the copy nothing kept.
+                    local rebuilding = config.features and config.features._xray_rebuild
                     local prev_xray = ActionCache.getXrayCache(cache_file)
                     if prev_xray and prev_xray.result and prev_xray.result ~= cache_answer
-                        and not ActionCache.isXrayLadderRung(cache_file, prev_xray) then
+                        and (rebuilding or not ActionCache.isXrayLadderRung(cache_file, prev_xray)) then
                         ActionCache.pushXrayCheckpoint(cache_file, prev_xray,
                             ActionCache.checkpointLimitFromFeatures(config.features))
                     end
                     local xray_success = ActionCache.setXrayCache(cache_file, cache_answer, progress, xray_metadata)
                     if xray_success then
+                        -- Old-lineage rungs die WITH the successful write, never
+                        -- before it (must precede this run's own rung push)
+                        if rebuilding then
+                            ActionCache.clearXrayLadder(cache_file)
+                            logger.info("KOAssistant: rebuild committed - old X-Ray archived, old ladder cleared")
+                        end
                         logger.info("KOAssistant: Saved X-Ray to reusable cache at", progress, "used_highlights=", used_highlights, "used_book_text=", book_text_was_provided)
                         -- Slice 2 (item 37(c)): fold the manual point into the
                         -- ladder — it is now a timeline point kept like any

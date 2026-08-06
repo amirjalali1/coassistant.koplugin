@@ -968,6 +968,11 @@ function XrayMerge.buildHeadlessConfig(opts, payload)
     config.features.is_book_context = true
     config.features.is_general_context = nil
     config.features.is_library_context = nil
+    -- Round 25 (device report): merges stream raw delta JSON, and the
+    -- post-create fold runs OVER the X-Ray the reader just opened — a
+    -- full-screen JSON firehose there reads as "it opened the wrong X-Ray".
+    -- Hidden streaming keeps the waiting animation and the cancel affordance.
+    config.features.hidden_streaming = true
     local bm = {}
     for k, v in pairs(config.features.book_metadata or {}) do bm[k] = v end
     bm.file = opts.file
@@ -1700,6 +1705,9 @@ function XrayMerge.executeCrossBook(opts)
                             plugin_ref:_refreshXrayAutoState()
                         end
                     end
+                    -- An X-Ray browser open on this book holds a pre-merge
+                    -- snapshot (round 25) — reload it in place
+                    require("koassistant_xray_browser"):reloadLiveMain(file)
                 end,
             })
             if opts.on_done then opts.on_done(ok, not ok and res_or_err or nil) end
@@ -1907,7 +1915,10 @@ function XrayMerge.preCreateFoldAsk(opts, proceed)
         UIManager:close(ask)
         proceed(nil)
     end }}
-    ask = ButtonDialog:new{ title = ask_text, buttons = buttons }
+    -- Not dismissable: this ask gates the create itself, so a tap outside would
+    -- silently abandon the X-Ray with no message ("Just this book" is the
+    -- explicit opt-out)
+    ask = ButtonDialog:new{ title = ask_text, buttons = buttons, dismissable = false }
     UIManager:show(ask)
     return true
 end

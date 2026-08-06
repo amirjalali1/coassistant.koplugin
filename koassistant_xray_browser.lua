@@ -948,7 +948,20 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
     if XrayBrowser._pending_navigate_to then
         local navigate_to = XrayBrowser._pending_navigate_to
         XrayBrowser._pending_navigate_to = nil
-        local target_items = self.xray_data[navigate_to.category_key]
+        -- Book guard (round 25): the descriptor is a module-level static and is
+        -- only consumed by a browser that actually opens — an unparseable cache
+        -- leaves it stranded, where the NEXT book's browser would consume it.
+        -- Producers that stamp book_file opt into the check.
+        if navigate_to.book_file and navigate_to.book_file ~= self.metadata.book_file then
+            navigate_to = nil
+        end
+        if navigate_to and navigate_to.fallback then
+            -- Group jump: land as close to the reader's previous position as
+            -- this book allows, then fall back one level at a time
+            self:_applyPendingLocation(navigate_to)
+            navigate_to = nil
+        end
+        local target_items = navigate_to and self.xray_data[navigate_to.category_key]
         if target_items then
             for _idx, target_item in ipairs(target_items) do
                 if XrayParser.getItemName(target_item, navigate_to.category_key) == navigate_to.item_name then
@@ -1285,6 +1298,92 @@ function XrayBrowser:showDormantLinkPicker(stub_idx, stub)
     UIManager:show(dialog)
 end
 
+--- Land a group jump as close to the reader's previous position as this book
+--- allows (round 25 — "open the other X-Ray where you are now, or one level up
+--- if that entry doesn't exist"). Ladder, most specific first:
+---   1. the same entity, matched by name OR alias in ANY category (volumes
+---      rename and re-classify recurring figures) → its detail, with the
+---      owning category pushed underneath so Back lands there;
+---   2. the entity carried but not yet appeared here → its carried-entity
+---      detail (the ledger IS this book's honest answer, and it says so);
+---   3. the same category → its item list;
+---   4. neither → the root, untouched.
+--- @param navigate_to table { category_key, item_name, item_aliases }
+function XrayBrowser:_applyPendingLocation(navigate_to)
+    local names = {}
+    if navigate_to.item_name then names[#names + 1] = navigate_to.item_name end
+    if type(navigate_to.item_aliases) == "table" then
+        for _idx, a in ipairs(navigate_to.item_aliases) do names[#names + 1] = a end
+    end
+    local categories = XrayParser.getCategories(self.xray_data)
+    local function categoryByKey(key)
+        for _idx, cat in ipairs(categories) do
+            if cat.key == key then return cat end
+        end
+        return nil
+    end
+    if #names > 0 then
+        local item, cat_key, idx = XrayParser.findByIdentity(
+            self.xray_data, names, navigate_to.category_key)
+        if item then
+            local cat = categoryByKey(cat_key)
+            if cat then self:showCategoryItems(cat) end
+            self:showItemDetail(item, cat_key, XrayParser.getItemName(item, cat_key), nil, {
+                items = cat and cat.items,
+                index = idx,
+                category_key = cat_key,
+                category_label = cat and cat.label,
+            })
+            return
+        end
+        local stub, stub_idx = XrayParser.findDormantByIdentity(self.xray_data, names)
+        if stub then
+            self:showDormantDetail(stub_idx, stub)
+            return
+        end
+    end
+    local cat = navigate_to.category_key and categoryByKey(navigate_to.category_key)
+    if cat and type(cat.items) == "table" and #cat.items > 0 then
+        if cat.key == "current_state" or cat.key == "current_position"
+            or cat.key == "reader_engagement" or cat.key == "conclusion" then
+            self:showItemDetail(cat.items[1], cat.key, cat.label)
+        else
+            self:showCategoryItems(cat)
+        end
+    end
+end
+
+--- Re-read the live main X-Ray from disk into the OPEN browser and repaint
+--- (round 25, device report): a merge run from outside the browser — the
+--- post-create fold especially, which fires while the reader is looking at the
+--- X-Ray it just built — rewrites the artifact underneath a view that holds a
+--- parsed snapshot from open time. Every merge entry point that OPENED the
+--- browser retires it (the T11 rule); this is the equivalent for a view the
+--- merge did not open: refresh in place rather than close it out from under
+--- the reader. Root-level only (a deeper view's item tables reference the old
+--- data), section/archived views never touch live truth. Safe no-op when no
+--- browser is open or another book's is.
+--- @param file string Book path whose live X-Ray changed
+--- @return boolean refreshed
+function XrayBrowser:reloadLiveMain(file)
+    if not (self.menu and self.metadata and self.metadata.book_file == file) then return false end
+    if self.scope or self.metadata.checkpoint then return false end
+    local ActionCache = require("koassistant_action_cache")
+    local entry = ActionCache.getXrayCache(file)
+    if not (entry and entry.result and XrayParser.isJSON(entry.result)) then return false end
+    local data = XrayParser.parse(entry.result)
+    if not data or data.error then return false end
+    local user_aliases = ActionCache.getUserAliases(file)
+    if next(user_aliases) then
+        XrayParser.mergeUserAliases(data, user_aliases)
+    end
+    self.xray_data = data
+    if #self.nav_stack == 0 then
+        self.menu:switchItemTable(self:buildMainTitle(), self:buildCategoryItems(), -1)
+    end
+    return true
+end
+
 --- One dormant-ledger edit against DISK truth (dedup's commit pattern):
 --- fresh parse → apply → re-encode → commitXray (pre-op version ring-archived
 --- once per browser session) → refresh the open root menu.
@@ -1354,6 +1453,7 @@ function XrayBrowser:navigateForward(title, items, focus_idx)
     table.insert(self.nav_stack, {
         title = self.current_title,
         items = self.menu.item_table,
+        location = self.location,
     })
     self.current_title = title
 
@@ -1374,10 +1474,13 @@ function XrayBrowser:navigateBack()
 
     local prev = table.remove(self.nav_stack)
     self.current_title = prev.title
+    -- The group jump follows the reader back out (round 25)
+    self.location = prev.location
 
     -- Remove from paths so back arrow disables when we reach root
     table.remove(self.menu.paths)
     if #self.nav_stack == 0 then
+        self.location = nil
         -- Back at root — rebuild to reflect any new artifacts (wiki, pins)
         local fresh_items = self:buildCategoryItems()
         self.menu:switchItemTable(self:buildMainTitle(), fresh_items, -1)
@@ -1495,6 +1598,11 @@ function XrayBrowser:showCategoryItems(category)
         })
     end
 
+    -- Where the reader is now, in machine-readable form (round 25): the group
+    -- row carries this to the next book's X-Ray so the jump lands in the same
+    -- place instead of at its root
+    self.location = { category_key = category.key, category_label = category.label }
+
     local title = category.label .. " (" .. #category.items .. ")"
     self:navigateForward(title, items)
 end
@@ -1506,6 +1614,14 @@ end
 --- @param source table|nil Back-navigation chain (from connection links)
 --- @param nav_context table|nil Category navigation {items, index, category_key, category_label}
 function XrayBrowser:showItemDetail(item, category_key, title, source, nav_context)
+    -- Location for the group jump (round 25): the entity's own identity
+    -- handles travel, so the next book resolves it even under another name
+    self.location = {
+        category_key = category_key,
+        category_label = nav_context and nav_context.category_label,
+        item_name = XrayParser.getItemName(item, category_key),
+        item_aliases = item.aliases,
+    }
     local detail_text = XrayParser.formatItemDetail(item, category_key)
 
     -- For current state/position: prepend reading progress for clarity
@@ -4463,6 +4579,10 @@ function XrayBrowser:showOptions()
                 callback = function()
                     closeOptions()
                     plugin_ref:_showGroupMembersPopup(group_file, "xray", {
+                        -- Round 25: carry where the reader is, so the other
+                        -- volume opens at the same entity/category when it has
+                        -- one (see _applyPendingLocation's fallback ladder)
+                        location = self_ref.location,
                         before_open = function()
                             if self_ref.menu then UIManager:close(self_ref.menu) end
                         end,
