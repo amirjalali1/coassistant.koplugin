@@ -8771,7 +8771,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
     if not is_general_context and plugin and document_path
         and plugin._inBookGroup and plugin:_inBookGroup(document_path) then
         group_button = {
-            text = Constants.getEmojiText("\u{1F4DA}", _("Group"), enable_emoji),
+            text = Constants.getEmojiText("\u{1F5C2}\u{FE0F}", _("Group"), enable_emoji),
             callback = function()
                 UIManager:close(input_dialog)
                 if plugin then plugin.current_input_dialog = nil end

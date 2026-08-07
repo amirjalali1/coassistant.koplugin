@@ -378,6 +378,28 @@ function BookPicker.pathOrderLess(a, b)
     return tostring(a) < tostring(b)
 end
 
+--- Every book in a folder, in natural filename order — WITHOUT showing the
+--- picker. Round 29 (maintainer: "is there no way to just add the whole folder
+--- and its contents?"): adding a library SCAN folder needs no list because it
+--- stores the folder PATH and re-resolves it per request; a group stores member
+--- PATHS, so it has to enumerate. This is that enumeration, sharing the picker's
+--- own scanner call so the two paths can never disagree about what counts as a
+--- book. Recurses (LibraryScanner's depth cap) like the picker's folder source.
+--- @param folder_path string
+--- @return table|nil paths Array of file paths, or nil on failure/empty
+--- @return string|nil err
+function BookPicker.listFolderBooks(folder_path)
+    if type(folder_path) ~= "string" or folder_path == "" then return nil, nil end
+    local entries, err = BookPicker:_loadFolderEntries(folder_path)
+    if not entries then return nil, err end
+    local paths = {}
+    for _idx, entry in ipairs(entries) do
+        if entry.file then paths[#paths + 1] = entry.file end
+    end
+    table.sort(paths, BookPicker.pathOrderLess)
+    return paths
+end
+
 --- Selected set → array in natural filename order (see pathOrderLess).
 --- @param selected table Hash keyed by file path
 --- @return table Array of paths
@@ -391,55 +413,12 @@ end
 --- Show the book picker
 --- @param opts table Options: on_confirm = function(selected_files_hash),
 ---   initial_source = "history"|folder_path, on_close = function(),
----   start_in_folder = true (open the folder chooser instead of the initial
----   list — round 29, the one-tap "add a whole folder" entry),
----   select_all = true (preselect everything loaded)
+---   select_all = true (open with everything preselected — the "choose which"
+---   arm of a whole-folder add, where the default is all of them)
 function BookPicker:show(opts)
     local on_confirm = opts and opts.on_confirm
     local on_close = opts and opts.on_close
     local initial_source = opts and opts.initial_source or "history"
-
-    -- Round 29: "add a whole folder" is this picker's existing flow (Browse
-    -- Folder… → Select All Visible → Confirm) with the discovery removed —
-    -- open straight into the folder chooser, then RE-ENTER show() with that
-    -- folder as the source so the normal construction path runs unchanged.
-    -- The picker stays the ONE book-selection surface; callers get an entry
-    -- point, not a second implementation.
-    if opts and opts.start_in_folder then
-        local PathChooser = require("ui/widget/pathchooser")
-        local Device = require("device")
-        local DataStorage = require("datastorage")
-        local self_ref = self
-        -- Cancelling the chooser must still honour the caller's on_close: unlike
-        -- the in-picker "Browse Folder…" row, nothing is open underneath here
-        -- (show() returns before building the menu), so without this the caller's
-        -- screen never comes back. PathChooser extends FileChooser/Menu, whose
-        -- close hook is `close_callback` — there is no onClose property; the
-        -- picked flag keeps a successful confirm from ALSO firing on_close.
-        local picked = false
-        UIManager:show(PathChooser:new{
-            title = _("Select Folder"),
-            path = self._folder_path
-                or G_reader_settings:readSetting("home_dir")
-                or Device.home_dir
-                or DataStorage:getDataDir(),
-            select_directory = true,
-            select_file = false,
-            onConfirm = function(selected_path)
-                picked = true
-                self_ref:show({
-                    on_confirm = on_confirm,
-                    on_close = on_close,
-                    initial_source = selected_path,
-                    select_all = opts.select_all,
-                })
-            end,
-            close_callback = function()
-                if not picked and on_close then on_close() end
-            end,
-        })
-        return
-    end
 
     -- Load initial entries
     local entries, err
@@ -478,7 +457,6 @@ function BookPicker:show(opts)
     end
     self._entries = entries
     self._selected = {}
-    -- Round 29: preselect everything the source loaded (the one-tap folder add)
     if opts and opts.select_all then
         for _idx, entry in ipairs(entries) do
             if entry.file then self._selected[entry.file] = true end

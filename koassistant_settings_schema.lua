@@ -88,6 +88,12 @@ local SettingsSchema = {
             id = "book_groups",
             type = "action",
             text = _("Groups"),
+            -- 🗂️ (round 29): ONE icon for groups everywhere — the newer entry
+            -- points had drifted to 📚, which is already Library Chat/Action.
+            -- Dividers, not a folder: a group is a curated ordered list that
+            -- survives file moves and does NOT follow a directory, so 📁 would
+            -- read as filesystem-backed — exactly the wrong idea next to the
+            -- "add all books in a folder" import.
             emoji = "\u{1F5C2}\u{FE0F}",
             callback = "showBookGroupsManager",
             separator = true,

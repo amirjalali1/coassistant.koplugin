@@ -213,20 +213,27 @@ function GroupsUI.showGroup(group_id, opts)
     -- must get right. Adds now go in natural filename order (vol 2 before vol
     -- 10) and always APPEND, never splice: a hand-tuned order survives, and
     -- one move fixes a stray.
-    local function addSelected(selected_files, done)
+    -- Shared tail for every add path: name an unnamed group after its first
+    -- book (kenken QoL #90 — CJK typing is painful in KOReader), report, reopen.
+    local function addedDone(added)
+        local g = BookGroups.byId(group_id)
+        if g and (g.name == "?" or g.name == "") and g.books[1] then
+            BookGroups.rename(group_id, BookGroups.displayTitle(g.books[1], opts.ui))
+        end
+        if added and added > 0 then
+            UIManager:show(require("ui/widget/notification"):new{
+                text = T(_("Added %1 book(s)."), added),
+            })
+        end
+        GroupsUI.showGroup(group_id, opts)
+    end
+    local function addSelected(selected_files)
         local BookPicker = require("koassistant_book_picker")
         local added = 0
         for _idx, path in ipairs(BookPicker.orderedSelection(selected_files)) do
             if BookGroups.addBook(group_id, path) then added = added + 1 end
         end
-        -- Kenken QoL (#90): an unnamed group takes its first book's title
-        -- (CJK typing is painful in KOReader)
-        local g = BookGroups.byId(group_id)
-        if g and (g.name == "?" or g.name == "") and g.books[1] then
-            BookGroups.rename(group_id, BookGroups.displayTitle(g.books[1], opts.ui))
-        end
-        if done then done(added) end
-        GroupsUI.showGroup(group_id, opts)
+        addedDone(added)
     end
     actions[#actions + 1] = {
         text = _("Add books…"),
@@ -240,26 +247,79 @@ function GroupsUI.showGroup(group_id, opts)
         end,
     }
     -- Kenken (#90): "designate a folder as a group" without ticking every box.
-    -- This is the SAME picker with its discovery removed (folder chooser first,
-    -- everything preselected) — the list still opens so a stray file can be
-    -- unticked before confirming. Snapshot only: the group does not follow the
-    -- folder afterwards (live binding is a separate, opt-in idea).
+    -- Round 29 second pass (maintainer: adding a library SCAN folder shows no
+    -- list, why does this?): because a scan folder stores the FOLDER PATH and
+    -- re-resolves it per request, while a group stores MEMBER PATHS and must
+    -- enumerate. So enumerate silently: chooser → one confirm naming the count
+    -- → done. No list. The confirm stays because this appends to a possibly
+    -- hand-ordered group and a mis-tapped folder could add hundreds of books;
+    -- curated picking is what "Add books…" above is for.
+    -- Snapshot only: the group does not follow the folder afterwards (live
+    -- binding is a separate, opt-in idea).
     actions[#actions + 1] = {
         text = _("Add all books in a folder…"),
         callback = function()
             UIManager:close(dialog)
-            local BookPicker = require("koassistant_book_picker")
-            BookPicker:show({
-                start_in_folder = true,
-                select_all = true,
-                on_confirm = function(selected_files)
-                    addSelected(selected_files, function(added)
-                        UIManager:show(require("ui/widget/notification"):new{
-                            text = T(_("Added %1 book(s) in filename order."), added),
+            local PathChooser = require("ui/widget/pathchooser")
+            local Device = require("device")
+            local DataStorage = require("datastorage")
+            local picked = false
+            UIManager:show(PathChooser:new{
+                title = _("Select Folder"),
+                path = G_reader_settings:readSetting("home_dir")
+                    or Device.home_dir or DataStorage:getDataDir(),
+                select_directory = true,
+                select_file = false,
+                onConfirm = function(folder)
+                    picked = true
+                    local BookPicker = require("koassistant_book_picker")
+                    local paths, err = BookPicker.listFolderBooks(folder)
+                    if not paths or #paths == 0 then
+                        UIManager:show(require("ui/widget/infomessage"):new{
+                            text = err or T(_("No books found in:\n%1"), folder),
+                            timeout = 3,
                         })
-                    end)
+                        GroupsUI.showGroup(group_id, opts)
+                        return
+                    end
+                    -- Three ways out, because "all of them" is the common case
+                    -- but not the only one: add everything, open the picker with
+                    -- everything already ticked so a few can be dropped, or back
+                    -- out. The picker arm is why BookPicker keeps `select_all`.
+                    local ButtonDialog = require("ui/widget/buttondialog")
+                    local ask
+                    ask = ButtonDialog:new{
+                        title = T(_("Add %1 book(s) from \"%2\" to this group, in filename order?"),
+                            #paths, folder:match("([^/]+)/?$") or folder),
+                        buttons = {
+                            {{ text = T(_("Add all (%1)"), #paths), callback = function()
+                                UIManager:close(ask)
+                                local added = 0
+                                for _idx, path in ipairs(paths) do
+                                    if BookGroups.addBook(group_id, path) then added = added + 1 end
+                                end
+                                addedDone(added)
+                            end }},
+                            {{ text = _("Choose which…"), callback = function()
+                                UIManager:close(ask)
+                                BookPicker:show({
+                                    initial_source = folder,
+                                    select_all = true,
+                                    on_confirm = function(selected_files) addSelected(selected_files) end,
+                                    on_close = function() GroupsUI.showGroup(group_id, opts) end,
+                                })
+                            end }},
+                            {{ text = _("Cancel"), callback = function()
+                                UIManager:close(ask)
+                                GroupsUI.showGroup(group_id, opts)
+                            end }},
+                        },
+                    }
+                    UIManager:show(ask)
                 end,
-                on_close = function() GroupsUI.showGroup(group_id, opts) end,
+                close_callback = function()
+                    if not picked then GroupsUI.showGroup(group_id, opts) end
+                end,
             })
         end,
     }

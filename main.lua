@@ -14968,7 +14968,7 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
   -- landing (members popup) stays on the Quick Actions panel entry, which only
   -- renders when the open book is in a group.
   button_defs["book_groups"] = {
-    text = E("\u{1F4DA}", _("Groups")),
+    text = E("\u{1F5C2}\u{FE0F}", _("Groups")),
     callback = function()
       opening_subdialog = true
       UIManager:close(dialog)
@@ -15186,7 +15186,7 @@ function AskGPT:onKOAssistantQuickActions()
     chat_history = "\u{1F4DC}",        -- 📜
     notebook = "\u{1F4D3}",            -- 📓
     view_caches = "\u{1F4E6}",         -- 📦
-    book_group = "\u{1F4DA}",          -- 📚
+    book_group = "\u{1F5C2}\u{FE0F}",  -- 🗂️ (one icon for groups everywhere)
     ai_quick_settings = "\u{2699}\u{FE0F}", -- ⚙️
     book_settings = "\u{1F4D5}",       -- 📕
   }
