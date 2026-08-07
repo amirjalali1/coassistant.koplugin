@@ -124,6 +124,7 @@ Output ONLY a JSON object in this delta format — it will be programmatically m
 - OMIT categories with nothing to add — they are preserved as-is
 - timeline / argument_development and current_state / current_position belong to "{title}" alone — NEVER include them
 - Do not invent entities that appear in neither X-Ray
+- If the two books genuinely share nothing — no recurring person, place, concept or term, and nothing from the related book that helps a reader of "{title}" — return exactly {"background_updates": []} and nothing else. An empty result is a correct, expected answer for unrelated books; NEVER manufacture a connection to avoid it, and never fold in an entity merely because both books mention something similar in passing.
 
 @@KOA_MERGE_NEVER@@
 
@@ -1104,7 +1105,7 @@ end
 --- @param target_file string|nil Target book file path (robust self-filter)
 --- @return function transform(delta, base_parsed)
 function XrayMerge.crossBookTransform(source_title, source_parsed, target_title, meta_out,
-        source_file, target_file)
+        source_file, target_file, stats)
     return function(delta, base_parsed)
         if type(delta) ~= "table" or type(base_parsed) ~= "table" then return end
         local updates = delta.background_updates
@@ -1144,13 +1145,34 @@ function XrayMerge.crossBookTransform(source_title, source_parsed, target_title,
             end
             -- Carry layer 1: whatever did NOT arrive goes dormant instead of
             -- being lost — the wake-pass right after the merge promotes any
-            -- stub that already matches
+            -- stub that already matches.
+            -- Round 28 considered gating this on a SERIES relationship (a
+            -- dormant stub reads as "has not appeared YET", a sequence claim)
+            -- and REVERTED: round 27 already decided full inclusion precisely
+            -- because a non-series PROJECT group wants its siblings' entities
+            -- carried. The zero-overlap case that motivated the idea is now
+            -- handled earlier and better — an empty delta never reaches a
+            -- write at all (executeCrossBook's isEmptyDelta short-circuit).
             stubbed = XrayMerge.populateDormant(base_parsed, delta, source_parsed,
                 source_title, source_file, target_title, target_file)
         end
+        -- Round 28: what the fold actually CHANGED, so the caller can tell a
+        -- legitimate "these books share nothing" from a successful merge
+        local arrived = 0
+        for key, arr in pairs(delta) do
+            if not PROTECTED_CATEGORIES[key] and type(arr) == "table" then
+                arrived = arrived + #arr
+            end
+        end
+        if stats then
+            stats.applied = applied
+            stats.arrived = arrived
+            stats.stubbed = stubbed
+        end
         logger.info("KOAssistant XrayMerge: cross-book background —",
             applied, "applied,", unmatched, "unmatched,", dropped, "rewrites dropped,",
-            carried_n, "ancestor labels carried,", stubbed, "gone dormant")
+            carried_n, "ancestor labels carried,", stubbed, "gone dormant,",
+            arrived, "new entities")
     end
 end
 
@@ -2036,6 +2058,18 @@ function XrayMerge.executeCrossBook(opts)
             }
             local source_parsed = XrayParser.parse(
                 (source.entry and source.entry.result) or "")
+            -- Round 28: an EMPTY delta is the correct answer for two books that
+            -- share nothing — the prompt asks for exactly that. It is not a
+            -- failed merge, and reporting it as one ("response is not a valid
+            -- X-Ray JSON structure", device report) reads as a bug in the
+            -- plugin rather than an answer about the books. Nothing is written.
+            if XrayParser.isEmptyDelta(result) then
+                logger.info("KOAssistant XrayMerge: fold into", file,
+                    "found NO OVERLAP with", (source and source.title) or "?")
+                if opts.on_done then opts.on_done(true, nil, { no_overlap = true }) end
+                return
+            end
+            local merge_stats = {}
             local ok, res_or_err = WriteBack.applyXray({
                 document_path = file,
                 answer = result,
@@ -2047,7 +2081,7 @@ function XrayMerge.executeCrossBook(opts)
                 -- original labels (chained merges no longer lose Vol 1).
                 -- Round 28: file paths ride as the identity keys.
                 transform = XrayMerge.crossBookTransform(source.title,
-                    source_parsed, bm.title, wb_meta, source.file, file),
+                    source_parsed, bm.title, wb_meta, source.file, file, merge_stats),
                 -- Cross-book knowledge claims NO target pages: progress stays
                 -- the base's (floor guard) and coverage_spans union base-only
                 -- (slice-1 reconcile — the new pass carries none)
@@ -2067,7 +2101,14 @@ function XrayMerge.executeCrossBook(opts)
                     require("koassistant_xray_browser"):reloadLiveMain(file)
                 end,
             })
-            if opts.on_done then opts.on_done(ok, not ok and res_or_err or nil) end
+            -- A well-formed delta that touched nothing is the same answer as an
+            -- empty one — say so instead of claiming a merge happened
+            local touched_nothing = ok
+                and (merge_stats.applied or 0) == 0 and (merge_stats.arrived or 0) == 0
+            if opts.on_done then
+                opts.on_done(ok, not ok and res_or_err or nil,
+                    touched_nothing and { no_overlap = true, wrote = true } or nil)
+            end
         end)
 end
 
@@ -2130,6 +2171,7 @@ function XrayMerge.runSeriesChain(opts)
     local n_merges = #chain - 1
     if n_merges < 1 then return end
     local skipped = 0
+    local no_overlap_n = 0
     -- Preflight consent sweep (2026-08-05): fail BEFORE the first request
     -- names the blocking book — never stop a paid run midway on a knowable
     -- condition. The per-step checks stay (settings can change mid-run).
@@ -2145,12 +2187,15 @@ function XrayMerge.runSeriesChain(opts)
     if opts.close_browser then opts.close_browser() end
     local function step(idx)
         if idx > n_merges then
-            UIManager:show(Notification:new{
-                text = skipped > 0
-                    and T(_("Series chain complete: %1 merges, %2 already done."),
-                        n_merges - skipped, skipped)
-                    or T(_("Series chain complete: %1 merges."), n_merges),
-            })
+            local done_text = skipped > 0
+                and T(_("Series chain complete: %1 merges, %2 already done."),
+                    n_merges - skipped, skipped)
+                or T(_("Series chain complete: %1 merges."), n_merges)
+            if no_overlap_n > 0 then
+                done_text = done_text .. " "
+                    .. T(_("%1 found nothing to carry over."), no_overlap_n)
+            end
+            UIManager:show(Notification:new{ text = done_text })
             -- Post-merge duplicate check on the final receiving book (the
             -- chain is always attended); earlier hops go unchecked — one
             -- dialog per chain, and the reader can scan any volume manually
@@ -2210,8 +2255,14 @@ function XrayMerge.runSeriesChain(opts)
             main_entry = fresh_tgt,
             source = { file = src_c.file, title = src_c.title,
                 author = src_c.author, entry = fresh_src },
-            on_done = function(ok, err)
+            on_done = function(ok, err, outcome)
                 if ok then
+                    -- A hop that found nothing is not a failure — it continues
+                    -- the chain, but the final tally says so (round 28):
+                    -- consecutive volumes sharing nothing is worth noticing
+                    if outcome and outcome.no_overlap then
+                        no_overlap_n = no_overlap_n + 1
+                    end
                     step(idx + 1)
                 else
                     UIManager:show(InfoMessage:new{
@@ -2369,8 +2420,13 @@ function XrayMerge.runPostCreateFold(opts)
         title = opts.title, author = opts.author,
         main_entry = main_entry,
         source = { file = nearest, title = nearest_title, entry = nearest_entry },
-        on_done = function(ok, err)
-            if ok then
+        on_done = function(ok, err, outcome)
+            if ok and outcome and outcome.no_overlap then
+                UIManager:show(InfoMessage:new{
+                    text = T(_("Nothing to fold in: \"%1\" and this book share no people, places or concepts."), nearest_title),
+                    timeout = 4,
+                })
+            elseif ok then
                 UIManager:show(Notification:new{
                     text = T(_("Folded \"%1\" into this book's X-Ray."), nearest_title),
                 })
@@ -2608,8 +2664,18 @@ function XrayMerge.startCrossBookFlow(opts)
                                     author = opts.author,
                                     main_entry = main_entry,
                                     source = captured,
-                                    on_done = opts.on_done or function(ok, err)
-                                        if ok then
+                                    on_done = opts.on_done or function(ok, err, outcome)
+                                        if ok and outcome and outcome.no_overlap then
+                                            -- Round 28: an honest answer about the
+                                            -- two books, not a plugin failure —
+                                            -- InfoMessage (dismissable, readable)
+                                            -- rather than a passing toast
+                                            UIManager:show(InfoMessage:new{
+                                                text = T(_("Nothing to fold in: \"%1\" and this book share no people, places or concepts. Nothing was changed."), captured.title),
+                                                timeout = 5,
+                                            })
+                                            XrayMerge.reopenLive(opts)
+                                        elseif ok then
                                             UIManager:show(Notification:new{
                                                 text = T(_("Merged the X-Ray of \"%1\" into this book."), captured.title),
                                             })
@@ -2619,9 +2685,16 @@ function XrayMerge.startCrossBookFlow(opts)
                                             XrayMerge.reopenLive(opts)
                                             XrayMerge.maybeOfferDedupScan(opts)
                                         else
+                                            -- Round 28: name the likely cause. The
+                                            -- raw reason stays for diagnosis, but a
+                                            -- bare "not a valid X-Ray JSON
+                                            -- structure" reads as a plugin bug when
+                                            -- it usually means the model answered
+                                            -- in prose. Nothing was written.
                                             UIManager:show(InfoMessage:new{
-                                                text = T(_("X-Ray merge failed: %1"), tostring(err or "unknown error")),
-                                                timeout = 4,
+                                                text = T(_("X-Ray merge failed — the model did not return a usable result. Nothing was changed; trying again often works.\n\n%1"),
+                                                    tostring(err or "unknown error")),
+                                                timeout = 6,
                                             })
                                         end
                                     end,

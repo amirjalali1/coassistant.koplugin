@@ -583,6 +583,49 @@ function XrayParser.parse(text)
     return nil, "failed to parse JSON from response"
 end
 
+--- True when a model response is well-formed JSON that carries NO X-Ray
+--- content — `{}`, `{"background_updates": []}`, `{"characters": []}`, or any
+--- object whose every value is an empty table/string. Round 28 (#90 device
+--- report: merging two unrelated books reported "response is not a valid
+--- X-Ray JSON structure"): for the cross-book merge an empty delta is the
+--- CORRECT answer for books that share nothing, but `{}` fails
+--- isValidXrayData (no recognized key) and so was indistinguishable from
+--- garbage. Callers use this to tell "nothing to merge" from "bad response".
+--- @param text string Raw model output
+--- @return boolean
+function XrayParser.isEmptyDelta(text)
+    if type(text) ~= "string" or text == "" then return false end
+    local candidate = text
+    -- Same fence tolerance as parse()
+    local fence_open = text:find("```json%s*\n") or text:find("```%s*\n")
+    if fence_open then
+        local content_start = text:find("\n", fence_open)
+        if content_start then
+            local rest = text:sub(content_start + 1)
+            local fence_close = rest:find("```")
+            candidate = fence_close and rest:sub(1, fence_close - 1) or rest
+        end
+    end
+    local first_brace = candidate:find("{")
+    local last_brace
+    for i = #candidate, 1, -1 do
+        if candidate:byte(i) == 125 then last_brace = i break end
+    end
+    if not (first_brace and last_brace and last_brace > first_brace) then return false end
+    local ok, data = pcall(json.decode, candidate:sub(first_brace, last_brace))
+    if not ok or type(data) ~= "table" then return false end
+    for _key, value in pairs(data) do
+        if type(value) == "table" then
+            if next(value) ~= nil then return false end
+        elseif type(value) == "string" then
+            if value ~= "" then return false end
+        elseif value ~= nil then
+            return false
+        end
+    end
+    return true
+end
+
 --- Check if X-Ray data is fiction type
 --- Falls back to key-based detection if type field is missing
 --- @param data table Parsed X-Ray data

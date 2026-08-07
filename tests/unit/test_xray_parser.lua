@@ -137,6 +137,28 @@ TestRunner:test("two DIFFERENT files sharing one label stay separate", function(
     TestRunner:eq(#merged, 2)
 end)
 
+TestRunner:suite("round 28 — isEmptyDelta (no-overlap merges are an ANSWER)")
+TestRunner:test("content-free JSON is recognized, in every shape a model emits", function()
+    for _idx, s in ipairs({ "{}", '{"background_updates": []}', '{"characters": []}',
+        '```json\n{"background_updates": []}\n```', '{"background_updates": [], "characters": []}' }) do
+        TestRunner:ok(XrayParser.isEmptyDelta(s), "empty: " .. s:gsub("\n", "\\n"))
+    end
+end)
+TestRunner:test("anything with real content is NOT empty", function()
+    for _idx, s in ipairs({ '{"background_updates": [{"name":"X","background":"y"}]}',
+        '{"characters":[{"name":"Jack"}]}', '{"error":"I cannot do this"}',
+        "These two books share nothing.", "" }) do
+        TestRunner:ok(not XrayParser.isEmptyDelta(s), "not empty: " .. s)
+    end
+end)
+TestRunner:test("the empty delta the merge prompt asks for still PARSES as valid data", function()
+    -- Both facts matter: parse() accepts it (so a merge that returns it is not
+    -- an error), and isEmptyDelta flags it (so the caller reports "no overlap")
+    local d = XrayParser.parse('{"background_updates": []}')
+    TestRunner:ok(d, "parses")
+    TestRunner:ok(XrayParser.isEmptyDelta('{"background_updates": []}'), "and is flagged empty")
+end)
+
 TestRunner:suite("round 28 — stripForPromptJSON")
 TestRunner:test("background and dormant stripped; entities and state kept", function()
     local src = '{"characters":[{"name":"Jack","description":"kept","background":[{"source":"Vol 1","text":"hidden"}]}],"current_state":{"summary":"kept"},"__dormant":[{"name":"Ghost","category":"characters"}]}'
