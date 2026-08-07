@@ -793,7 +793,8 @@ function XrayMerge.reconcileBackground(parsed, file, ui)
     -- group-mate; series positions from ordered groups only
     local members, member_list, file_pos = { [file] = true }, { file }, {}
     for _gidx, g in ipairs(BookGroups.groupsFor(file)) do
-        local ordered = g.ordered ~= false
+        -- Round 30: kind is the truth, and it resolves the pre-kind field too
+        local ordered = BookGroups.isOrdered(g)
         for i, bf in ipairs(g.books or {}) do
             if type(bf) == "string" and bf ~= "" then
                 if not members[bf] then
@@ -2277,6 +2278,125 @@ function XrayMerge.runSeriesChain(opts)
     step(1)
 end
 
+--- PROJECT fan-in (round 30): fold every other member's X-Ray into THIS book,
+--- one after another. The order-free counterpart to runSeriesChain — a project
+--- group has no "earlier feeds later", so there is no chain to walk and no
+--- spoiler direction to warn about; knowledge flows inward to the book the
+--- reader is actually holding, and the other members are left untouched.
+---
+--- Deliberately N-1 merges into ONE target, never N² across the group: the
+--- 2026-08-07 sketch established that copying a project's shared concepts into
+--- every member would reintroduce the item-44 erosion one level up (each copy
+--- drifts independently). The symmetric always-on version is read-time
+--- resolution, which is a separate, unbuilt idea; this is the explicit one-off.
+--- @param opts table { file, title, author, ui, plugin, configuration,
+---   sources = ordered {file, title, author, entry} rows, main_entry,
+---   skip_done, close_browser, reopen_live, on_done }
+function XrayMerge.runFanIn(opts)
+    local ActionCache = require("koassistant_action_cache")
+    local XrayParser = require("koassistant_xray_parser")
+    local InfoMessage = require("ui/widget/infomessage")
+    local Notification = require("ui/widget/notification")
+    local sources = opts.sources or {}
+    local n_total = #sources
+    if n_total < 1 then return end
+    -- Separate tallies: conflating them makes the closing line lie (a run where
+    -- every fold legitimately found nothing must not read "Folded in 0 book(s)"
+    -- with no explanation, and a source whose X-Ray vanished is not "done")
+    local merged, no_overlap_n, done_n, unavailable_n = 0, 0, 0, 0
+    -- Consent preflight on the TARGET only: it is the one book whose failure
+    -- makes the whole run pointless. A SOURCE that is not shareable is skipped
+    -- per book below instead — unlike a chain, a fan-in has no dependency
+    -- between steps, so one denied book must not cost the reader the other N-1.
+    if not XrayMerge.consentOk({ opts.main_entry }, opts.features, opts.provider,
+            opts.file, opts.ui) then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Cannot start: text-extraction consent is missing for \"%1\"."),
+                opts.title or "?"),
+            timeout = 5,
+        })
+        return
+    end
+    if opts.close_browser then opts.close_browser() end
+    local function finish()
+        local parts = { T(_("Folded in %1 book(s)."), merged) }
+        if no_overlap_n > 0 then
+            parts[#parts + 1] = T(_("%1 shared nothing."), no_overlap_n)
+        end
+        if done_n > 0 then
+            parts[#parts + 1] = T(_("%1 already done."), done_n)
+        end
+        if unavailable_n > 0 then
+            parts[#parts + 1] = T(_("%1 skipped (no X-Ray or not shareable)."), unavailable_n)
+        end
+        UIManager:show(Notification:new{ text = table.concat(parts, " ") })
+        XrayMerge.reopenLive(opts)
+        XrayMerge.maybeOfferDedupScan(opts)
+        if opts.on_done then opts.on_done(true) end
+    end
+    local function stop(text)
+        UIManager:show(InfoMessage:new{ text = text, timeout = 5 })
+        -- A partially merged book must still be reachable: land back on it
+        -- rather than leaving the reader on a closed browser
+        XrayMerge.reopenLive(opts)
+        if opts.on_done then opts.on_done(false, text) end
+    end
+    local function step(idx)
+        if idx > n_total then return finish() end
+        local src = sources[idx]
+        -- Both sides re-read fresh: the previous fold rewrote the target
+        local fresh_tgt = ActionCache.getXrayCache(opts.file)
+        local fresh_src = ActionCache.getXrayCache(src.file)
+        if not (fresh_tgt and fresh_tgt.result and XrayParser.isJSON(fresh_tgt.result)) then
+            return stop(T(_("Stopped: the X-Ray of \"%1\" is no longer available."),
+                opts.title or "?"))
+        end
+        -- Re-checked every step, not just at the start: settings can change
+        -- mid-run, and the target's gate is the one that must stop the run
+        if not XrayMerge.consentOk({ fresh_tgt }, opts.features, opts.provider,
+                opts.file, opts.ui) then
+            return stop(T(_("Stopped: text-extraction consent is missing for \"%1\"."),
+                opts.title or "?"))
+        end
+        if not (fresh_src and fresh_src.result and XrayParser.isJSON(fresh_src.result))
+            or not XrayMerge.consentOk({ fresh_src }, opts.features, opts.provider,
+                src.file, opts.ui) then
+            unavailable_n = unavailable_n + 1
+            return step(idx + 1)
+        end
+        if opts.skip_done and XrayMerge.hasFolded(fresh_tgt, src.title) then
+            done_n = done_n + 1
+            logger.info("KOAssistant XrayMerge: fan-in skipped", src.title, "- already folded")
+            return step(idx + 1)
+        end
+        UIManager:show(Notification:new{
+            text = T(_("Folding in %1 of %2: %3"), idx, n_total, src.title),
+        })
+        XrayMerge.executeCrossBook({
+            file = opts.file, ui = opts.ui, plugin = opts.plugin,
+            configuration = opts.configuration,
+            title = opts.title, author = opts.author,
+            main_entry = fresh_tgt,
+            source = { file = src.file, title = src.title,
+                author = src.author, entry = fresh_src },
+            on_done = function(ok, err, outcome)
+                if ok then
+                    if outcome and outcome.no_overlap then
+                        no_overlap_n = no_overlap_n + 1
+                    else
+                        merged = merged + 1
+                    end
+                    step(idx + 1)
+                else
+                    stop(T(_("Stopped at \"%1\": %2"), src.title,
+                        tostring(err or "unknown error")))
+                end
+            end,
+        })
+    end
+    step(1)
+end
+
 --- Carry layer 3(iii), the PRE-create fold ask (maintainer decision
 --- 2026-08-06, replacing the post-create offer): BEFORE an attended fresh
 --- main X-Ray of a grouped book whose previous book has an X-Ray, ask once —
@@ -2731,6 +2851,87 @@ function XrayMerge.startCrossBookFlow(opts)
     end
     table.sort(predecessors, function(a, b) return a.group_pos < b.group_pos end)
     local fold_rows = {}
+    -- Round 30 — PROJECT groups get the order-free counterpart: fan-in. A
+    -- project has no predecessors (predecessorsOf is series-only), so the chain
+    -- row above never appears for one; instead offer to fold every other member
+    -- INTO this book. Group-mates are identifiable by group_name, which
+    -- orderCandidates sets for unordered groups too (only pos/direction drop).
+    do
+        local BG = require("koassistant_book_groups")
+        local tgt_group = (opts.group_id and BG.byId(opts.group_id))
+            or BG.groupsFor(opts.file)[1]
+        if tgt_group and BG.kindOf(tgt_group) == BG.KIND_PROJECT then
+            local mates = {}
+            for _idx, cand in ipairs(candidates) do
+                if cand.group_name then mates[#mates + 1] = cand end
+            end
+            if #mates >= 2 then
+                local done_n = 0
+                for _idx, m in ipairs(mates) do
+                    if XrayMerge.hasFolded(main_entry, m.title) then done_n = done_n + 1 end
+                end
+                -- Members the picker never listed (no X-Ray of their own)
+                local missing_n = math.max(0, (#tgt_group.books - 1) - #mates)
+                table.insert(fold_rows, {{
+                    text = T(_("Fold in the other books (%1)…"), #mates),
+                    callback = function()
+                        UIManager:close(picker)
+                        local confirm_title = T(_("Fold %1 other book(s) of \"%2\" into this book's X-Ray?"),
+                                #mates, tgt_group.name)
+                            .. "\n" .. _("Knowledge flows INTO this book only — the other books are not changed.")
+                        -- Undo is per-STEP here, and every step archives the SAME
+                        -- book: a long fan-in can push the pre-run version out of
+                        -- the ring entirely, so promising "undo from All versions"
+                        -- the way the series chain does would be a lie (there each
+                        -- hop archives a different book).
+                        local ring = ActionCache.checkpointLimitFromFeatures(features)
+                        if ring > 0 and #mates >= ring then
+                            confirm_title = confirm_title .. "\n"
+                                .. T(_("Note: each step archives this X-Ray, and only %1 versions are kept — after this run the version from before it may no longer be in the list."), ring)
+                        else
+                            confirm_title = confirm_title .. "\n"
+                                .. _("Each step archives this X-Ray first, so the run can be undone from All versions.")
+                        end
+                        if missing_n > 0 then
+                            confirm_title = confirm_title .. "\n"
+                                .. T(_("Skipped: %1 group member(s) have no X-Ray yet."), missing_n)
+                        end
+                        if done_n > 0 then
+                            confirm_title = confirm_title .. "\n"
+                                .. T(_("%1 of them are already folded in. Skipping them saves requests, but does not pick up changes made since."), done_n)
+                        end
+                        local function launch(skip_done)
+                            XrayMerge.runFanIn({
+                                file = opts.file, title = opts.title, author = opts.author,
+                                ui = opts.ui, plugin = opts.plugin,
+                                configuration = opts.configuration,
+                                features = features, provider = provider,
+                                main_entry = main_entry, sources = mates,
+                                skip_done = skip_done,
+                                close_browser = opts.close_browser,
+                                reopen_live = opts.reopen_live,
+                                on_done = opts.on_done,
+                            })
+                        end
+                        local confirm
+                        local btns = {}
+                        if done_n > 0 and done_n < #mates then
+                            btns[#btns + 1] = {{ text = T(_("Fold in new only (%1)"), #mates - done_n),
+                                callback = function() UIManager:close(confirm) launch(true) end }}
+                        end
+                        btns[#btns + 1] = {{ text = T(_("Fold in all (%1)"), #mates),
+                            callback = function() UIManager:close(confirm) launch(false) end }}
+                        btns[#btns + 1] = {{ text = _("Back"), callback = function()
+                            UIManager:close(confirm)
+                            XrayMerge.startCrossBookFlow(opts)
+                        end }}
+                        confirm = ButtonDialog:new{ title = confirm_title, buttons = btns }
+                        UIManager:show(confirm)
+                    end,
+                }})
+            end
+        end
+    end
     if #predecessors >= 2 then
         table.insert(fold_rows, {{
             text = T(_("Fold in earlier books (%1)…"), #predecessors),

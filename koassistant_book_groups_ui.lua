@@ -66,6 +66,33 @@ local function displayName(group)
     return (group.name ~= "" and group.name ~= "?") and group.name or _("(unnamed)")
 end
 
+--- Short name for a group kind (round 30). Kept SHORT: three of these share
+--- one row with a ●/○ marker each.
+--- @param kind string
+--- @return string
+function GroupsUI.kindLabel(kind)
+    local BookGroups = groups()
+    if kind == BookGroups.KIND_PROJECT then return _("Project") end
+    if kind == BookGroups.KIND_PLAIN then return _("Plain") end
+    return _("Series")
+end
+
+--- What each kind actually DOES — the same sentence in the picker and under the
+--- group title, so the choice is never a guess.
+--- @param kind string
+--- @return string
+function GroupsUI.kindDescription(kind)
+    local BookGroups = groups()
+    if kind == BookGroups.KIND_PROJECT then
+        return _("Books on a shared subject, in no particular order. You can fold the other members' X-Rays into whichever book you are reading; nothing is carried forward automatically and no book counts as earlier or later.")
+    end
+    if kind == BookGroups.KIND_PLAIN then
+        return _("Just a list. The books share navigation, and you can still merge any two by hand, but nothing is suggested or carried across.")
+    end
+    return _("Order is the reading order — it drives merge suggestions, carried-over knowledge and previous/next navigation.")
+end
+
+
 --- Self-refreshing member move dialog (kenken QoL, #90: 30-book reordering).
 --- The arrow dialog PERSISTS across presses: each press moves the book,
 --- refreshes the group list underneath, and re-shows this dialog with fresh
@@ -197,15 +224,25 @@ function GroupsUI.showGroup(group_id, opts)
     -- middle"): the book list is one row per book (it has to be — each row is
     -- a tap target), so the ACTIONS are what makes the window long. The
     -- ordered-series switch leads them, then the rest pair up two to a row.
-    local is_ordered = BookGroups.isOrdered(group)
-    rows[#rows + 1] = {{
-        text = (is_ordered and "☑ " or "☐ ") .. _("Ordered series"),
-        align = "left",
-        callback = function()
-            BookGroups.setOrdered(group_id, not is_ordered)
-            reopen()
-        end,
-    }}
+    -- Round 30: the round-27 "Ordered series" checkbox became a three-way KIND,
+    -- laid out as three buttons on the ONE row the checkbox used to occupy
+    -- (maintainer). No extra dialog: the selected kind is marked here and the
+    -- sentence under the group title changes with it, so the consequence of
+    -- each choice is visible in place rather than behind a popup.
+    local kind = BookGroups.kindOf(group)
+    local kind_row = {}
+    for _idx, k in ipairs({ BookGroups.KIND_SERIES, BookGroups.KIND_PROJECT,
+            BookGroups.KIND_PLAIN }) do
+        local captured = k
+        kind_row[#kind_row + 1] = {
+            text = (captured == kind and "● " or "○ ") .. GroupsUI.kindLabel(captured),
+            callback = function()
+                if captured ~= kind then BookGroups.setKind(group_id, captured) end
+                reopen()
+            end,
+        }
+    end
+    rows[#rows + 1] = kind_row
     local actions = {}
     -- Round 29: the picker hands back a SET (hash keyed by path), so a plain
     -- pairs() loop added books in ARBITRARY order — for a 30-volume folder the
@@ -379,9 +416,7 @@ function GroupsUI.showGroup(group_id, opts)
     }}
     dialog = ButtonDialog:new{
         title = T(_("Group: %1"), displayName(group))
-            .. "\n" .. (is_ordered
-                and _("Order is the reading order — it drives merge suggestions, carried-over knowledge and previous/next navigation.")
-                or _("Not a series: the books share navigation and merges, but nothing is carried forward automatically and the order is just list order.")),
+            .. "\n" .. GroupsUI.kindDescription(kind),
         buttons = rows,
     }
     -- The move dialog closes/reopens this list under itself (kenken QoL)
@@ -480,7 +515,11 @@ function GroupsUI.showBookRow(path, opts)
         local captured = group
         local pos = BookGroups.positionOf(captured, path)
         rows[#rows + 1] = {{
-            text = T(_("In %1 (book %2 of %3)"), captured.name, pos, #captured.books),
+            -- Round 30: only a SERIES has a book number — saying "book 2 of 5"
+            -- about a project or a plain list asserts an order that does not exist
+            text = BookGroups.isOrdered(captured)
+                and T(_("In %1 (book %2 of %3)"), captured.name, pos, #captured.books)
+                or T(_("In %1 (%2 books)"), captured.name, #captured.books),
             align = "left",
             callback = function()
                 UIManager:close(dialog)

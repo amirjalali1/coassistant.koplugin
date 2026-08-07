@@ -223,6 +223,75 @@ TestRunner:test("isOrdered: nil means ordered; setOrdered stores only the false"
     BookGroups.remove(g.id)
 end)
 
+print("")
+print("  [group kinds (round 30: series / project / plain)]")
+
+TestRunner:test("kindOf: absent kind reads from the pre-kind data, never guesses", function()
+    -- A group written before `kind` existed: no fields at all = SERIES, which
+    -- is what every such group has always behaved as
+    TestRunner:assertEqual(BookGroups.kindOf({}), BookGroups.KIND_SERIES,
+        "no kind, no ordered → series")
+    TestRunner:assertEqual(BookGroups.kindOf(nil), BookGroups.KIND_SERIES,
+        "nil group → series (no gate)")
+    -- Round 27's ordered=false turned sequence features OFF and granted nothing
+    -- in return, so it must read as PLAIN — promoting it to project would start
+    -- offering folds the reader never opted into
+    TestRunner:assertEqual(BookGroups.kindOf({ ordered = false }), BookGroups.KIND_PLAIN,
+        "ordered=false without kind → plain, NOT project")
+    -- An explicit kind always wins over the mirror field
+    TestRunner:assertEqual(BookGroups.kindOf({ kind = "project", ordered = false }),
+        BookGroups.KIND_PROJECT, "explicit kind wins")
+    TestRunner:assertEqual(BookGroups.kindOf({ kind = "nonsense" }), BookGroups.KIND_SERIES,
+        "an unknown kind falls back to series rather than breaking")
+end)
+
+TestRunner:test("setKind: persists, mirrors `ordered`, and drives isOrdered/sharesKnowledge", function()
+    local g = BookGroups.create("Foucault")
+    TestRunner:assertTrue(BookGroups.setKind(g.id, BookGroups.KIND_PROJECT), "set project")
+    local stored = BookGroups.byId(g.id)
+    TestRunner:assertEqual(stored.kind, "project", "kind persisted")
+    TestRunner:assertEqual(stored.ordered, false, "ordered mirrored for older readers")
+    TestRunner:assertEqual(BookGroups.isOrdered(stored), false, "a project has no order")
+    TestRunner:assertTrue(BookGroups.sharesKnowledge(stored), "but it DOES share knowledge")
+
+    TestRunner:assertTrue(BookGroups.setKind(g.id, BookGroups.KIND_PLAIN), "set plain")
+    stored = BookGroups.byId(g.id)
+    TestRunner:assertEqual(BookGroups.isOrdered(stored), false, "plain has no order")
+    TestRunner:assertTrue(not BookGroups.sharesKnowledge(stored), "and shares nothing")
+
+    TestRunner:assertTrue(BookGroups.setKind(g.id, BookGroups.KIND_SERIES), "back to series")
+    stored = BookGroups.byId(g.id)
+    TestRunner:assertEqual(stored.ordered, nil, "series clears the mirror to absent")
+    TestRunner:assertTrue(BookGroups.isOrdered(stored), "order restored")
+    TestRunner:assertTrue(BookGroups.sharesKnowledge(stored), "series shares too")
+
+    TestRunner:assertEqual(BookGroups.setKind(g.id, "bogus"), false, "invalid kind refused")
+    TestRunner:assertEqual(BookGroups.setKind("nope", "project"), false, "unknown id fails")
+    BookGroups.remove(g.id)
+end)
+
+TestRunner:test("setOrdered maps onto kinds so there is ONE write path", function()
+    local g = BookGroups.create("Legacy")
+    BookGroups.setOrdered(g.id, false)
+    TestRunner:assertEqual(BookGroups.kindOf(BookGroups.byId(g.id)), BookGroups.KIND_PLAIN,
+        "the old false means plain")
+    BookGroups.setOrdered(g.id, true)
+    TestRunner:assertEqual(BookGroups.kindOf(BookGroups.byId(g.id)), BookGroups.KIND_SERIES,
+        "and the old true means series")
+    BookGroups.remove(g.id)
+end)
+
+TestRunner:test("a project yields no predecessors — the sequence chokepoint holds", function()
+    local g = BookGroups.create("Sexuality")
+    BookGroups.addBook(g.id, "/f1"); BookGroups.addBook(g.id, "/f2"); BookGroups.addBook(g.id, "/f3")
+    TestRunner:assertEqual(#BookGroups.predecessorsOf("/f3"), 2, "series: two earlier volumes")
+    BookGroups.setKind(g.id, BookGroups.KIND_PROJECT)
+    local preds, group = BookGroups.predecessorsOf("/f3")
+    TestRunner:assertEqual(#preds, 0, "project: nothing is 'earlier'")
+    TestRunner:assertTrue(group ~= nil, "group still returned so callers can name it")
+    BookGroups.remove(g.id)
+end)
+
 TestRunner:test("predecessorsOf: the ONE chokepoint — unordered yields none, group still named", function()
     local g = BookGroups.create("Papers")
     BookGroups.addBook(g.id, "/p1"); BookGroups.addBook(g.id, "/p2"); BookGroups.addBook(g.id, "/p3")

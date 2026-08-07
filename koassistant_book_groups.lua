@@ -106,32 +106,87 @@ function BookGroups.rename(id, name)
     return false
 end
 
---- Is this group a sequence? nil = yes (every pre-round-27 group).
+-- Group KINDS (round 30). Two independent capabilities are in play — is there
+-- an ORDER (predecessors, spoiler clamp, chain folds, carry seed) and is
+-- cross-book KNOWLEDGE SHARING wanted (fold offers, group-level artifacts) —
+-- and only three of the four combinations are useful, so this is one 3-way
+-- choice rather than two switches:
+--   series  = order + sharing   (the default, and every pre-existing group)
+--   project = sharing, no order (siblings on a shared subject: fan-in folds,
+--             no "earlier feeds later", no spoiler direction)
+--   plain   = neither           (navigation and manual per-book merges only)
+BookGroups.KIND_SERIES = "series"
+BookGroups.KIND_PROJECT = "project"
+BookGroups.KIND_PLAIN = "plain"
+
+local VALID_KINDS = {
+    [BookGroups.KIND_SERIES] = true,
+    [BookGroups.KIND_PROJECT] = true,
+    [BookGroups.KIND_PLAIN] = true,
+}
+
+--- This group's kind, resolved for groups written before the field existed.
+--- Absent kind + absent `ordered` = SERIES (what every group has always been).
+--- Absent kind + `ordered = false` = PLAIN: round 27's switch turned the
+--- sequence features off and granted nothing in return, so it must NOT silently
+--- become a project and start offering folds it never offered.
+--- @param group table|nil
+--- @return string kind
+function BookGroups.kindOf(group)
+    if not group then return BookGroups.KIND_SERIES end
+    if VALID_KINDS[group.kind] then return group.kind end
+    if group.ordered == false then return BookGroups.KIND_PLAIN end
+    return BookGroups.KIND_SERIES
+end
+
+--- Does this group carry a reading ORDER? THE sequence chokepoint's input —
+--- predecessorsOf reads it, so every sequence feature follows from here.
 --- @param group table|nil
 --- @return boolean
 function BookGroups.isOrdered(group)
-    return not group or group.ordered ~= false
+    return BookGroups.kindOf(group) == BookGroups.KIND_SERIES
 end
 
---- Turn the sequence semantics on/off for a group (round 27).
+--- Does this group share knowledge across its members (fold offers)?
+--- @param group table|nil
+--- @return boolean
+function BookGroups.sharesKnowledge(group)
+    local kind = BookGroups.kindOf(group)
+    return kind == BookGroups.KIND_SERIES or kind == BookGroups.KIND_PROJECT
+end
+
+--- Set the group's kind (round 30).
+--- @param id string
+--- @param kind string One of KIND_SERIES / KIND_PROJECT / KIND_PLAIN
 --- @return boolean changed
-function BookGroups.setOrdered(id, ordered)
+function BookGroups.setKind(id, kind)
+    if not VALID_KINDS[kind] then return false end
     local data = load()
     for _idx, group in ipairs(data.groups) do
         if group.id == id then
-            -- Stored only when false: nil is the default, so an ordered group
-            -- serializes exactly as it did before this field existed.
-            -- (Spelled out — `cond and false or nil` always yields nil.)
-            if ordered == false then
-                group.ordered = false
-            else
+            -- `kind` is the truth. `ordered` is written alongside purely as a
+            -- back-compat mirror for anything (or any older build) still
+            -- reading the round-27 field; kindOf prefers `kind`, so the two
+            -- can never be consulted in the wrong order.
+            group.kind = kind
+            if kind == BookGroups.KIND_SERIES then
                 group.ordered = nil
+            else
+                group.ordered = false
             end
             save(data)
             return true
         end
     end
     return false
+end
+
+--- Round 27 API kept for callers that only care about the sequence switch:
+--- true → series, false → plain. Delegates so there is ONE write path.
+--- @return boolean changed
+function BookGroups.setOrdered(id, ordered)
+    return BookGroups.setKind(id,
+        ordered == false and BookGroups.KIND_PLAIN or BookGroups.KIND_SERIES)
 end
 
 function BookGroups.remove(id)
