@@ -207,24 +207,57 @@ function GroupsUI.showGroup(group_id, opts)
         end,
     }}
     local actions = {}
+    -- Round 29: the picker hands back a SET (hash keyed by path), so a plain
+    -- pairs() loop added books in ARBITRARY order — for a 30-volume folder the
+    -- reading order came out scrambled, which is the one thing a series group
+    -- must get right. Adds now go in natural filename order (vol 2 before vol
+    -- 10) and always APPEND, never splice: a hand-tuned order survives, and
+    -- one move fixes a stray.
+    local function addSelected(selected_files, done)
+        local BookPicker = require("koassistant_book_picker")
+        local added = 0
+        for _idx, path in ipairs(BookPicker.orderedSelection(selected_files)) do
+            if BookGroups.addBook(group_id, path) then added = added + 1 end
+        end
+        -- Kenken QoL (#90): an unnamed group takes its first book's title
+        -- (CJK typing is painful in KOReader)
+        local g = BookGroups.byId(group_id)
+        if g and (g.name == "?" or g.name == "") and g.books[1] then
+            BookGroups.rename(group_id, BookGroups.displayTitle(g.books[1], opts.ui))
+        end
+        if done then done(added) end
+        GroupsUI.showGroup(group_id, opts)
+    end
     actions[#actions + 1] = {
         text = _("Add books…"),
         callback = function()
             UIManager:close(dialog)
             local BookPicker = require("koassistant_book_picker")
             BookPicker:show({
+                on_confirm = function(selected_files) addSelected(selected_files) end,
+                on_close = function() GroupsUI.showGroup(group_id, opts) end,
+            })
+        end,
+    }
+    -- Kenken (#90): "designate a folder as a group" without ticking every box.
+    -- This is the SAME picker with its discovery removed (folder chooser first,
+    -- everything preselected) — the list still opens so a stray file can be
+    -- unticked before confirming. Snapshot only: the group does not follow the
+    -- folder afterwards (live binding is a separate, opt-in idea).
+    actions[#actions + 1] = {
+        text = _("Add all books in a folder…"),
+        callback = function()
+            UIManager:close(dialog)
+            local BookPicker = require("koassistant_book_picker")
+            BookPicker:show({
+                start_in_folder = true,
+                select_all = true,
                 on_confirm = function(selected_files)
-                    for path in pairs(selected_files or {}) do
-                        BookGroups.addBook(group_id, path)
-                    end
-                    -- Kenken QoL (#90): an unnamed group takes its first
-                    -- book's title (CJK typing is painful in KOReader)
-                    local g = BookGroups.byId(group_id)
-                    if g and (g.name == "?" or g.name == "") and g.books[1] then
-                        BookGroups.rename(group_id,
-                            BookGroups.displayTitle(g.books[1], opts.ui))
-                    end
-                    GroupsUI.showGroup(group_id, opts)
+                    addSelected(selected_files, function(added)
+                        UIManager:show(require("ui/widget/notification"):new{
+                            text = T(_("Added %1 book(s) in filename order."), added),
+                        })
+                    end)
                 end,
                 on_close = function() GroupsUI.showGroup(group_id, opts) end,
             })

@@ -318,12 +318,128 @@ function BookPicker:_browseFolder()
     UIManager:show(path_chooser)
 end
 
+--- Natural-order comparison of two file paths by FILENAME, digit runs compared
+--- numerically ("vol 2" before "vol 10"). Round 29: the picker hands callers a
+--- SET (hash keyed by path), so anything that cares about order — a group's
+--- reading order above all — must impose one; plain `pairs()` scrambled a
+--- 30-volume folder add.
+---
+--- CONTRACT: this is a table.sort comparator, so it must be a strict weak
+--- ordering — irreflexive, antisymmetric AND TRANSITIVE. Two ways the obvious
+--- implementation breaks that, both caught by the round-29 audit:
+---   * Comparing TOTAL name lengths as the final tie-break. Equal-but-differently
+---     padded runs ("Vol 0002" vs "Vol 2b") advance the two cursors by different
+---     amounts, so total length no longer reflects what is left UNREAD — that
+---     produced real cycles ("Vol 1b" < "Vol 001" < "Vol 1 Bonus" < "Vol 1b").
+---     The tie-break must ask which side ran out of name first.
+---   * tonumber() on the digit run. LuaJIT gives doubles, so runs past 2^53 that
+---     differ only in low digits compare EQUAL (and desktop Lua 5.4+ parses them
+---     exactly, so a test would pass here and fail on device). Digit runs are
+---     compared as strings instead — exact at any length, no float involved.
+--- @param a string
+--- @param b string
+--- @return boolean a_before_b
+function BookPicker.pathOrderLess(a, b)
+    local function name(p)
+        local n = (type(p) == "string" and (p:match("([^/]+)$") or p)) or ""
+        -- Drop ONE trailing extension: it must not participate in ordering, or a
+        -- mixed-format series splits (".epub" vs ".pdf" reordering volumes) and
+        -- "Vol 2.epub" falls behind "Vol 2 - Special.epub" on a byte compare of
+        -- "." against " ". `%w+` (not a 4-char cap) so KOReader's 5-char
+        -- providers — .epub3, .xhtml, .htmlz — strip too. Deliberately NOT
+        -- repeated: a second pass would eat the ".5" of "Vol 3.5.epub", and
+        -- decimal side-volumes are real. A double extension like ".fb2.zip"
+        -- keeps its inner part, which is consistent across such files anyway.
+        return (n:gsub("%.%w+$", ""))
+    end
+    local na, nb = name(a):lower(), name(b):lower()
+    local ia, ib = 1, 1
+    while ia <= #na and ib <= #nb do
+        local da, ea = na:find("^%d+", ia)
+        local db, eb = nb:find("^%d+", ib)
+        if da and db then
+            -- Exact numeric compare without tonumber: strip leading zeros, then
+            -- longer digit string = larger value, equal length = lexicographic
+            local sa = (na:sub(da, ea):gsub("^0+", ""))
+            local sb = (nb:sub(db, eb):gsub("^0+", ""))
+            if #sa ~= #sb then return #sa < #sb end
+            if sa ~= sb then return sa < sb end
+            ia, ib = ea + 1, eb + 1
+        else
+            local ca, cb = na:sub(ia, ia), nb:sub(ib, ib)
+            if ca ~= cb then return ca < cb end
+            ia, ib = ia + 1, ib + 1
+        end
+    end
+    -- Whichever name ran out first sorts first ("Vol 2" before "Vol 2 Extra").
+    -- Comparing what REMAINS, never the total lengths — see the contract above.
+    local a_done, b_done = ia > #na, ib > #nb
+    if a_done ~= b_done then return a_done end
+    return tostring(a) < tostring(b)
+end
+
+--- Selected set → array in natural filename order (see pathOrderLess).
+--- @param selected table Hash keyed by file path
+--- @return table Array of paths
+function BookPicker.orderedSelection(selected)
+    local out = {}
+    for path in pairs(selected or {}) do out[#out + 1] = path end
+    table.sort(out, BookPicker.pathOrderLess)
+    return out
+end
+
 --- Show the book picker
---- @param opts table Options: on_confirm = function(selected_files_hash), initial_source = "history"|folder_path, on_close = function()
+--- @param opts table Options: on_confirm = function(selected_files_hash),
+---   initial_source = "history"|folder_path, on_close = function(),
+---   start_in_folder = true (open the folder chooser instead of the initial
+---   list — round 29, the one-tap "add a whole folder" entry),
+---   select_all = true (preselect everything loaded)
 function BookPicker:show(opts)
     local on_confirm = opts and opts.on_confirm
     local on_close = opts and opts.on_close
     local initial_source = opts and opts.initial_source or "history"
+
+    -- Round 29: "add a whole folder" is this picker's existing flow (Browse
+    -- Folder… → Select All Visible → Confirm) with the discovery removed —
+    -- open straight into the folder chooser, then RE-ENTER show() with that
+    -- folder as the source so the normal construction path runs unchanged.
+    -- The picker stays the ONE book-selection surface; callers get an entry
+    -- point, not a second implementation.
+    if opts and opts.start_in_folder then
+        local PathChooser = require("ui/widget/pathchooser")
+        local Device = require("device")
+        local DataStorage = require("datastorage")
+        local self_ref = self
+        -- Cancelling the chooser must still honour the caller's on_close: unlike
+        -- the in-picker "Browse Folder…" row, nothing is open underneath here
+        -- (show() returns before building the menu), so without this the caller's
+        -- screen never comes back. PathChooser extends FileChooser/Menu, whose
+        -- close hook is `close_callback` — there is no onClose property; the
+        -- picked flag keeps a successful confirm from ALSO firing on_close.
+        local picked = false
+        UIManager:show(PathChooser:new{
+            title = _("Select Folder"),
+            path = self._folder_path
+                or G_reader_settings:readSetting("home_dir")
+                or Device.home_dir
+                or DataStorage:getDataDir(),
+            select_directory = true,
+            select_file = false,
+            onConfirm = function(selected_path)
+                picked = true
+                self_ref:show({
+                    on_confirm = on_confirm,
+                    on_close = on_close,
+                    initial_source = selected_path,
+                    select_all = opts.select_all,
+                })
+            end,
+            close_callback = function()
+                if not picked and on_close then on_close() end
+            end,
+        })
+        return
+    end
 
     -- Load initial entries
     local entries, err
@@ -362,6 +478,12 @@ function BookPicker:show(opts)
     end
     self._entries = entries
     self._selected = {}
+    -- Round 29: preselect everything the source loaded (the one-tap folder add)
+    if opts and opts.select_all then
+        for _idx, entry in ipairs(entries) do
+            if entry.file then self._selected[entry.file] = true end
+        end
+    end
     self._confirm_callback = on_confirm
     self._close_callback = on_close
     self._confirmed = false

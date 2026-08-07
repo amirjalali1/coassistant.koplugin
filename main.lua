@@ -5837,6 +5837,18 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
       }}
     end
   end
+  -- Round 29 (audit): every row here is a NAVIGATION target, and a row is
+  -- disabled when its book has nothing to navigate to — so a fresh group (one
+  -- book, or siblings with no artifacts yet) rendered a popup with nothing
+  -- tappable and no way onward. Always offer the manager, which is where
+  -- adding, reordering and the series/project switch live.
+  rows[#rows + 1] = {{
+    text = _("Manage groups…"),
+    callback = function()
+      UIManager:close(dialog)
+      self_ref:showBookGroupsManager()
+    end,
+  }}
   dialog = ButtonDialog:new{
     title = #list == 1 and T(_("Group: %1"), list[1].name) or _("Groups"),
     buttons = rows,
@@ -14946,6 +14958,21 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       opening_subdialog = true
       UIManager:close(dialog)
       self_ref:onKOAssistantBrowseArtifacts()
+    end,
+  }
+
+  -- Round 29: Groups joins the cross-book family in Quick Settings. This is the
+  -- GLOBAL surface (like Browse Artifacts / Browse Notebooks), so it opens the
+  -- manager unconditionally — a panel item labelled "Groups" that could not
+  -- reach group management was the audit's dead-end finding. The book-scoped
+  -- landing (members popup) stays on the Quick Actions panel entry, which only
+  -- renders when the open book is in a group.
+  button_defs["book_groups"] = {
+    text = E("\u{1F4DA}", _("Groups")),
+    callback = function()
+      opening_subdialog = true
+      UIManager:close(dialog)
+      self_ref:showBookGroupsManager()
     end,
   }
 
