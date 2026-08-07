@@ -304,6 +304,11 @@ function WriteBack.parseXrayAnswer(answer, base, transform)
     -- drop any imitation before merging (the base's real ledger survives
     -- XrayParser.merge untouched: fixed key list)
     parsed[XrayParser.DORMANT_KEY] = nil
+    -- Round 28 (#90): background is code-owned too — a model echo of the
+    -- mechanical lines must never replace the stored ones. Runs BEFORE the
+    -- transform, whose cross-book carry attaches the legitimate, code-owned
+    -- background onto delta entries.
+    XrayParser.dropModelBackground(parsed)
     if base ~= nil then
         local base_parsed = base
         if type(base) == "table" and base.result ~= nil then
@@ -401,6 +406,17 @@ function WriteBack.applyXray(opts)
     local parsed, err, cache_json = WriteBack.parseXrayAnswer(opts.answer, opts.base, opts.transform)
     if not parsed then
         return false, err or "parse failed"
+    end
+    -- Round 28 (#90): reconcile mechanical background against the book's
+    -- group — backfill file identities onto legacy labeled lines, drop
+    -- self-lines, dedupe per source book, order by series position
+    local ok_rec, rec_changed = pcall(function()
+        return require("koassistant_xray_merge").reconcileBackground(parsed, opts.document_path)
+    end)
+    if ok_rec and rec_changed then
+        local json = require("json")
+        local ok_enc, re = pcall(json.encode, parsed, { pretty = true, indent = true })
+        if ok_enc and type(re) == "string" then cache_json = re end
     end
     local base_entry = opts.base_entry
     if base_entry == nil and type(opts.base) == "table"

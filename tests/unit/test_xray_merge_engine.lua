@@ -1201,5 +1201,65 @@ TestRunner:test("carryActiveBackground: a renamed entity stays carried, not lost
         "with its source label intact")
 end)
 
+print("  [round 28: hop skip + self-filter + file identity]")
+
+TestRunner:test("hasFolded: provenance-listed source counts as done, others don't", function()
+    local entry = { merged_from_books = "Vol 1; Vol 2" }
+    TestRunner:assertTrue(XrayMerge.hasFolded(entry, "Vol 1"), "Vol 1 folded")
+    TestRunner:assertTrue(XrayMerge.hasFolded(entry, "Vol 2"), "Vol 2 folded")
+    TestRunner:assertTrue(not XrayMerge.hasFolded(entry, "Vol 3"), "Vol 3 not folded")
+    TestRunner:assertTrue(not XrayMerge.hasFolded({}, "Vol 1"), "no provenance = not folded")
+    TestRunner:assertTrue(not XrayMerge.hasFolded(nil, "Vol 1"), "nil entry safe")
+end)
+
+TestRunner:test("populateDormant: the target's own lines never ride back in (self-filter)", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local base = XrayParser.parse([[{ "type": "fiction", "characters": [{"name": "Almark"}] }]])
+    -- Vol 3's X-Ray holds a character whose background includes a line
+    -- labeled/keyed with VOL 4 — the very book we are merging INTO (an
+    -- out-of-order merge left it there)
+    local source = XrayParser.parse([[{
+      "type": "fiction",
+      "characters": [{"name": "Morgen", "description": "A roommate.",
+        "background": [
+          {"source": "Vol 1", "text": "Fishing enthusiast.", "file": "/b/v1.epub"},
+          {"source": "Vol 4", "text": "SELF line by path.", "file": "/b/v4.epub"},
+          {"source": "vol 4 ", "text": "SELF line by label drift."}
+        ]}]
+    }]])
+    XrayMerge.populateDormant(base, nil, source, "Vol 3", "/b/v3.epub", "Vol 4", "/b/v4.epub")
+    local ledger = base[XrayParser.DORMANT_KEY]
+    TestRunner:assertEqual(#ledger, 1, "one stub")
+    TestRunner:assertEqual(ledger[1].file, "/b/v3.epub", "stub carries its source book's path")
+    TestRunner:assertEqual(#ledger[1].background, 1, "both self lines filtered")
+    TestRunner:assertEqual(ledger[1].background[1].file, "/b/v1.epub", "ancestor file key rides")
+end)
+
+TestRunner:test("populateDormant: a transitive stub that IS the target stays out", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local base = XrayParser.parse([[{ "type": "fiction", "characters": [{"name": "Almark"}] }]])
+    local source = XrayParser.parse([[{ "type": "fiction", "characters": [{"name": "Koruen"}] }]])
+    source[XrayParser.DORMANT_KEY] = {
+        { name = "Ghost", category = "characters", source = "Vol 1", file = "/b/v1.epub" },
+        { name = "Echo", category = "characters", source = "Vol 4", file = "/b/v4.epub" },
+    }
+    XrayMerge.populateDormant(base, nil, source, "Vol 3", "/b/v3.epub", "Vol 4", "/b/v4.epub")
+    local names = {}
+    for _idx, stub in ipairs(base[XrayParser.DORMANT_KEY] or {}) do names[stub.name] = true end
+    TestRunner:assertTrue(names["Ghost"], "the genuine ancestor stub carried")
+    TestRunner:assertTrue(names["Koruen"], "the source's own active carried")
+    TestRunner:assertTrue(not names["Echo"], "the target's own stub did not round-trip")
+end)
+
+TestRunner:test("applyBackgroundUpdates: file identity rides the sanctioned channel", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local base = XrayParser.parse([[{ "type": "fiction", "characters": [{"name": "Almark"}] }]])
+    XrayMerge.applyBackgroundUpdates(base,
+        { { name = "Almark", background = "The lead of the earlier volume." } },
+        "Vol 3", "/b/v3.epub")
+    TestRunner:assertEqual(base.characters[1].background[1].file, "/b/v3.epub")
+    TestRunner:assertEqual(base.characters[1].background[1].source, "Vol 3")
+end)
+
 local ok = TestRunner:summary()
 return ok

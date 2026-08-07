@@ -205,8 +205,9 @@ function XrayMerge.buildDeltaPrompt(sections, main_entry, entity_index, never_pa
     prompt = fillLiteral(prompt, "%COVERAGE%", XrayMerge.coveragePhrase(main_entry))
     return prompt, {
         inputs = XrayMerge.buildInputsBlock(sections),
-        -- The dormant ledger never rides a prompt (item 49 — zero token cost)
-        main = require("koassistant_xray_parser").stripDormantJSON(main_entry.result or ""),
+        -- Neither the dormant ledger (item 49) nor the mechanical background
+        -- lines (round 28) ride a prompt — both are code-owned
+        main = require("koassistant_xray_parser").stripForPromptJSON(main_entry.result or ""),
         index = entity_index or "",
         never = XrayMerge.neverLines(never_pairs),
     }
@@ -221,9 +222,31 @@ function XrayMerge.buildCrossBookInputsBlock(source)
     local head = string.format('Related book — "%s"%s:', source.title or "?",
         (source.author and source.author ~= "" and (" by " .. source.author)) or "")
     -- Ledger stripped: the model matches/composes/selects on ACTIVE entities
-    -- only — dormant carry is code's job (item 49)
-    return head .. "\n" .. require("koassistant_xray_parser").stripDormantJSON(
+    -- only — dormant carry is code's job (item 49). Background stripped too
+    -- (round 28): the transitive carry is mechanical, and a folded series
+    -- otherwise compounds every ancestor's paragraphs into each hop's prompt
+    return head .. "\n" .. require("koassistant_xray_parser").stripForPromptJSON(
         (source.entry and source.entry.result) or "")
+end
+
+--- True when a cache entry's provenance already lists a source title (same
+--- trimmed-exact match appendBookProvenance dedupes on). Round 28: lets the
+--- series chain skip hops that already ran — n-1 re-merges shrink to just the
+--- new volumes. Caveat (disclosed in the confirm): provenance carries no
+--- version info, so a source UPDATED since its fold still counts as done.
+--- @param entry table|nil Cache entry ({ merged_from_books })
+--- @param source_title string|nil
+--- @return boolean
+function XrayMerge.hasFolded(entry, source_title)
+    local merged = entry and entry.merged_from_books
+    if type(merged) ~= "string" or merged == ""
+        or type(source_title) ~= "string" or source_title == "" then
+        return false
+    end
+    for part in merged:gmatch("([^;]+)") do
+        if part:match("^%s*(.-)%s*$") == source_title then return true end
+    end
+    return false
 end
 
 --- Accumulate cross-book provenance titles ("A; B"), exact-dup safe. Pure.
@@ -251,7 +274,7 @@ function XrayMerge.buildCrossBookPrompt(main_entry, entity_index, never_pairs, s
         XrayMerge.coveragePhrase(main_entry))
     return prompt, {
         inputs = XrayMerge.buildCrossBookInputsBlock(source),
-        main = require("koassistant_xray_parser").stripDormantJSON(main_entry.result or ""),
+        main = require("koassistant_xray_parser").stripForPromptJSON(main_entry.result or ""),
         index = entity_index or "",
         never = XrayMerge.neverLines(never_pairs),
     }
@@ -334,17 +357,27 @@ local function mergeAliasesInto(item, additions)
     if added then item.aliases = aliases end
 end
 
+-- Normalized title compare (trimmed, case-folded): labels in background lines
+-- came from title strings captured at different times through different
+-- resolution paths — casing/whitespace drift must not defeat a self-check.
+local function normTitle(s)
+    if type(s) ~= "string" then return nil end
+    local r = s:lower():gsub("^%s+", ""):gsub("%s+$", "")
+    return r
+end
+
 --- Attach cross-book background to existing entities MECHANICALLY (item 44):
 --- the matched entry keeps its description verbatim; the background rides the
---- item's `background` array ({ source, text }, per-source replace — see
---- XrayParser.mergeBackground) and optional new aliases are unioned in.
---- Matching is by name OR alias, case-insensitive. Mutates base_data. Pure
---- otherwise.
+--- item's `background` array ({ source, text [, file] } — file-keyed identity
+--- since round 28, per-source replace — see XrayParser.mergeBackground) and
+--- optional new aliases are unioned in. Matching is by name OR alias,
+--- case-insensitive. Mutates base_data. Pure otherwise.
 --- @param base_data table Parsed target X-Ray
 --- @param updates table Array of { name, background, aliases? }
---- @param source_title string The related book's title (provenance label)
+--- @param source_title string The related book's title (display label)
+--- @param source_file string|nil The related book's file path (identity key)
 --- @return number applied, number unmatched
-function XrayMerge.applyBackgroundUpdates(base_data, updates, source_title)
+function XrayMerge.applyBackgroundUpdates(base_data, updates, source_title, source_file)
     local XrayParser = require("koassistant_xray_parser")
     local applied, unmatched = 0, 0
     if type(base_data) ~= "table" or type(updates) ~= "table" then
@@ -356,7 +389,7 @@ function XrayMerge.applyBackgroundUpdates(base_data, updates, source_title)
         local item = name and lookup[name:lower()]
         if item and type(upd.background) == "string" and upd.background ~= "" then
             item.background = XrayParser.mergeBackground(item.background,
-                { { source = source_title, text = upd.background } })
+                { { source = source_title, text = upd.background, file = source_file } })
             mergeAliasesInto(item, upd.aliases)
             applied = applied + 1
         else
@@ -380,20 +413,13 @@ end
 --- @param delta table|nil Model delta AFTER the rewrite-drop pass (kept entries only)
 --- @param source_parsed table Parsed source X-Ray
 --- @param target_title string|nil The target book's title (self-label filter)
+--- @param target_file string|nil The target book's file path (round 28: the
+---   robust self-filter — title strings drift, paths don't)
 --- @return table Distinct labels actually carried (array of strings)
-function XrayMerge.carrySourceBackground(base_parsed, delta, source_parsed, target_title)
+function XrayMerge.carrySourceBackground(base_parsed, delta, source_parsed, target_title, target_file)
     local XrayParser = require("koassistant_xray_parser")
     local carried, carried_set = {}, {}
     if type(source_parsed) ~= "table" then return carried end
-    -- Self-label filter compares normalized (trimmed, case-folded): the label in
-    -- a background line came from an earlier merge's title string, the target
-    -- title from live book metadata — casing/whitespace drift between the two
-    -- must not let a self-label slip through.
-    local function normTitle(s)
-        if type(s) ~= "string" then return nil end
-        local r = s:lower():gsub("^%s+", ""):gsub("%s+$", "")
-        return r
-    end
     local target_norm = normTitle(target_title)
     local base_lookup = buildEntityLookup(base_parsed or {})
     -- The delta's kept carry-over entries, keyed like buildEntityLookup
@@ -440,11 +466,17 @@ function XrayMerge.carrySourceBackground(base_parsed, delta, source_parsed, targ
                     local target_item = findIn(base_lookup, name, item)
                         or findIn(delta_lookup, name, item)
                     if target_item then
+                        -- Fill-gaps keys: file when known, source label always
                         local existing_sources = {}
                         if type(target_item.background) == "table" then
                             for _idx3, b in ipairs(target_item.background) do
-                                if type(b) == "table" and type(b.source) == "string" then
-                                    existing_sources[b.source] = true
+                                if type(b) == "table" then
+                                    if type(b.source) == "string" then
+                                        existing_sources[b.source] = true
+                                    end
+                                    if type(b.file) == "string" then
+                                        existing_sources[b.file] = true
+                                    end
                                 end
                             end
                         end
@@ -454,8 +486,11 @@ function XrayMerge.carrySourceBackground(base_parsed, delta, source_parsed, targ
                                 and type(b.source) == "string" and b.source ~= ""
                                 and b.source ~= "?"
                                 and normTitle(b.source) ~= target_norm
-                                and not existing_sources[b.source] then
-                                additions[#additions + 1] = { source = b.source, text = b.text }
+                                and not (target_file and b.file == target_file)
+                                and not existing_sources[b.source]
+                                and not (b.file and existing_sources[b.file]) then
+                                additions[#additions + 1] = { source = b.source, text = b.text,
+                                    file = type(b.file) == "string" and b.file or nil }
                             end
                         end
                         if #additions > 0 then
@@ -487,12 +522,37 @@ end
 --- @param base_parsed table Parsed target X-Ray (mutated)
 --- @param delta table|nil Model delta AFTER the rewrite-drop pass (kept = arriving entities)
 --- @param source_parsed table Parsed source X-Ray
---- @param source_title string The source book's title (stub provenance)
+--- @param source_title string The source book's title (stub provenance label)
+--- @param source_file string|nil The source book's file path (round 28 identity key)
+--- @param target_title string|nil The TARGET book's title — self-filter (round
+---   28: this path had none, so a self-labeled line reaching a ledger came
+---   back via the wake-pass)
+--- @param target_file string|nil The target book's file path (robust self-filter)
 --- @return number stubs newly added
-function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_title)
+function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_title,
+        source_file, target_title, target_file)
     local XrayParser = require("koassistant_xray_parser")
     if type(base_parsed) ~= "table" or type(source_parsed) ~= "table" then return 0 end
     local DK = XrayParser.DORMANT_KEY
+    local target_norm = normTitle(target_title)
+    -- Carried lines a stub may bring along: cleanly attributable, never the
+    -- target book's own label/path riding back in
+    local function stubLines(background)
+        if type(background) ~= "table" then return nil end
+        local bg
+        for _idx, b in ipairs(background) do
+            if type(b) == "table" and type(b.text) == "string" and b.text ~= ""
+                and type(b.source) == "string" and b.source ~= ""
+                and b.source ~= "?"
+                and normTitle(b.source) ~= target_norm
+                and not (target_file and b.file == target_file) then
+                bg = bg or {}
+                bg[#bg + 1] = { source = b.source, text = b.text,
+                    file = type(b.file) == "string" and b.file or nil }
+            end
+        end
+        return bg
+    end
     -- Everything the target can already match: its actives + the delta's
     -- arriving entities (they become actives in the merge right after this)
     local present = buildEntityLookup(base_parsed)
@@ -574,18 +634,6 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
                             aliases = {}
                             for _idx3, a in ipairs(item.aliases) do aliases[#aliases + 1] = a end
                         end
-                        -- Only cleanly attributable carried lines ride along
-                        local bg
-                        if type(item.background) == "table" then
-                            for _idx3, b in ipairs(item.background) do
-                                if type(b) == "table" and type(b.text) == "string" and b.text ~= ""
-                                    and type(b.source) == "string" and b.source ~= ""
-                                    and b.source ~= "?" then
-                                    bg = bg or {}
-                                    bg[#bg + 1] = { source = b.source, text = b.text }
-                                end
-                            end
-                        end
                         stash({
                             name = name,
                             aliases = aliases,
@@ -593,7 +641,9 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
                             description = type(item.description) == "string"
                                 and item.description ~= "" and item.description or nil,
                             source = source_title,
-                            background = bg,
+                            file = source_file,
+                            -- Only cleanly attributable carried lines ride along
+                            background = stubLines(item.background),
                         })
                     end
                 end
@@ -607,16 +657,21 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
     -- same write.
     if type(source_parsed[DK]) == "table" then
         for _idx, stub in ipairs(source_parsed[DK]) do
-            -- Everything the source carries rides on (round 27 full inclusion)
+            -- Everything the source carries rides on (round 27 full inclusion).
+            -- Round 28: a transitive stub that IS this target (by path or
+            -- label) stays out — it would wake into the book it came from
             if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= ""
-                and not PROTECTED_CATEGORIES[stub.category or ""] then
+                and not PROTECTED_CATEGORIES[stub.category or ""]
+                and not (target_file and stub.file == target_file)
+                and not (target_norm and normTitle(stub.source) == target_norm) then
                 stash({
                     name = stub.name,
                     aliases = stub.aliases,
                     category = stub.category,
                     description = stub.description,
                     source = stub.source or source_title,
-                    background = stub.background,
+                    file = stub.file,
+                    background = stubLines(stub.background),
                 })
             end
         end
@@ -687,6 +742,193 @@ function XrayMerge.carryActiveBackground(prev_parsed, parsed)
     return added
 end
 
+--- Round 28 (#90 device report: doubled self-labeled Vol-4 lines, background
+--- order 4,2,1,3): write-time reconciliation of every mechanical background
+--- array against the book's group(s).
+---   1. BACKFILL — a legacy title-labeled line whose label matches a group
+---      member's title (doc_props title/display_title/AI override, normalized)
+---      gains that member's file path as its identity key. Existing data heals
+---      on the next write.
+---   2. SELF-DROP — lines resolving to the book itself go: background about
+---      this very book is what the artifact IS. Self-lines only ever arrived
+---      via model echoes (now dropped at parse) or title-string drift.
+---   3. DEDUPE — per source file/label via mergeBackground (newest wins).
+---   4. ORDER — series position first (reading order), then other file-keyed
+---      lines, then legacy labels in arrival order.
+--- Dormant stubs get the same treatment (incl. their own source-file
+--- backfill; a stub sourced from this very book is dropped). Bounded cost:
+--- one DocSettings resolve per group member, only when the artifact carries
+--- background or a ledger at all.
+--- @param parsed table Parsed X-Ray data (mutated)
+--- @param file string This book's file path
+--- @param ui table|nil Live UI handle (open-book resolves)
+--- @return boolean changed True when anything was modified
+function XrayMerge.reconcileBackground(parsed, file, ui)
+    if type(parsed) ~= "table" or type(file) ~= "string" or file == "" then return false end
+    local XrayParser = require("koassistant_xray_parser")
+    local DK = XrayParser.DORMANT_KEY
+    -- Fast out: nothing to reconcile
+    local function anyBg(items)
+        for _idx, item in ipairs(items) do
+            if type(item) == "table" and type(item.background) == "table"
+                and #item.background > 0 then
+                return true
+            end
+        end
+        return false
+    end
+    local has_bg = false
+    for _idx, cat in ipairs(XrayParser.getCategories(parsed)) do
+        if type(cat.items) == "table" and anyBg(cat.items) then
+            has_bg = true
+            break
+        end
+    end
+    local ledger = type(parsed[DK]) == "table" and parsed[DK] or nil
+    if not has_bg and not (ledger and #ledger > 0) then return false end
+
+    local BookGroups = require("koassistant_book_groups")
+    -- Member set: this book always (self-drop needs its variants), plus every
+    -- group-mate; series positions from ordered groups only
+    local members, member_list, file_pos = { [file] = true }, { file }, {}
+    for _gidx, g in ipairs(BookGroups.groupsFor(file)) do
+        local ordered = g.ordered ~= false
+        for i, bf in ipairs(g.books or {}) do
+            if type(bf) == "string" and bf ~= "" then
+                if not members[bf] then
+                    members[bf] = true
+                    member_list[#member_list + 1] = bf
+                end
+                if ordered and file_pos[bf] == nil then file_pos[bf] = i end
+            end
+        end
+    end
+    -- Title-variant → file map (normalized). A variant claimed by two
+    -- DIFFERENT members is ambiguous — never backfill from it (and never
+    -- self-drop on it: a line we cannot attribute is kept).
+    local variant_to_file = {}
+    for _midx, member in ipairs(member_list) do
+        local ok_ds, ds = pcall(function()
+            return require("koassistant_doc_settings").resolve(member, ui)
+        end)
+        if ok_ds and ds then
+            local props = ds:readSetting("doc_props") or {}
+            local names = { props.title, props.display_title }
+            local ok_ov, ov_title = pcall(function()
+                return require("koassistant_book_settings").getMetadataOverride(ds)
+            end)
+            if ok_ov and ov_title ~= nil then names[#names + 1] = ov_title end
+            for _n, t in ipairs(names) do
+                local norm = normTitle(t)
+                if norm and norm ~= "" then
+                    if variant_to_file[norm] == nil then
+                        variant_to_file[norm] = member
+                    elseif variant_to_file[norm] ~= member then
+                        variant_to_file[norm] = false -- ambiguous
+                    end
+                end
+            end
+        end
+    end
+
+    local changed = false
+    local function reconcileArray(arr)
+        if type(arr) ~= "table" or #arr == 0 then return arr end
+        local kept = {}
+        for _idx, b in ipairs(arr) do
+            if type(b) == "table" and type(b.text) == "string" and b.text ~= "" then
+                local line = { source = b.source, text = b.text,
+                    file = type(b.file) == "string" and b.file ~= "" and b.file or nil }
+                local norm = normTitle(line.source)
+                if not line.file and norm then
+                    local hit = variant_to_file[norm]
+                    if type(hit) == "string" then
+                        line.file = hit
+                        changed = true
+                    end
+                end
+                if line.file == file then
+                    changed = true -- self line dropped (backfill resolved it to this book)
+                else
+                    kept[#kept + 1] = line
+                end
+            else
+                changed = true -- malformed line dropped
+            end
+        end
+        local merged = XrayParser.mergeBackground(nil, kept) or {}
+        -- Order: series position → other file-keyed → legacy, arrival order
+        -- kept inside each bucket (positions are unique per file post-dedupe,
+        -- so the sort has no equal keys to destabilize)
+        local pos_b, file_b, legacy_b = {}, {}, {}
+        for _idx, b in ipairs(merged) do
+            if b.file and file_pos[b.file] then
+                pos_b[#pos_b + 1] = b
+            elseif b.file then
+                file_b[#file_b + 1] = b
+            else
+                legacy_b[#legacy_b + 1] = b
+            end
+        end
+        table.sort(pos_b, function(a, b2) return file_pos[a.file] < file_pos[b2.file] end)
+        local out = {}
+        for _bidx, bucket in ipairs({ pos_b, file_b, legacy_b }) do
+            for _l, b in ipairs(bucket) do out[#out + 1] = b end
+        end
+        if #out ~= #arr then
+            changed = true
+        else
+            for i, b in ipairs(out) do
+                local o = arr[i]
+                if type(o) ~= "table" or o.source ~= b.source
+                    or o.file ~= b.file or o.text ~= b.text then
+                    changed = true
+                    break
+                end
+            end
+        end
+        if #out == 0 then return nil end
+        return out
+    end
+
+    for _idx, cat in ipairs(XrayParser.getCategories(parsed)) do
+        if type(cat.items) == "table" then
+            for _idx2, item in ipairs(cat.items) do
+                if type(item) == "table" and item.background ~= nil then
+                    item.background = reconcileArray(item.background)
+                end
+            end
+        end
+    end
+    if ledger then
+        local kept_stubs = {}
+        for _idx, stub in ipairs(ledger) do
+            if type(stub) == "table" then
+                local snorm = normTitle(stub.source)
+                if not stub.file and snorm then
+                    local hit = variant_to_file[snorm]
+                    if type(hit) == "string" then
+                        stub.file = hit
+                        changed = true
+                    end
+                end
+                if stub.background ~= nil then
+                    stub.background = reconcileArray(stub.background)
+                end
+                if stub.file == file then
+                    changed = true -- a stub of the book itself is meaningless here
+                else
+                    kept_stubs[#kept_stubs + 1] = stub
+                end
+            else
+                changed = true
+            end
+        end
+        parsed[DK] = #kept_stubs > 0 and kept_stubs or nil
+    end
+    return changed
+end
+
 --- Nearest eligible carry source: walks the group's predecessors nearest→
 --- farthest and returns the FIRST with a valid JSON main X-Ray AND
 --- text-extraction consent (its own ledger rides along, so one eligible
@@ -734,7 +976,8 @@ function XrayMerge.seedDormant(file, parsed, features, provider, ui)
     if type(parsed) ~= "table" then return 0, nil end
     local src = XrayMerge.seedSource(file, features, provider, ui)
     if not src then return 0, nil end
-    local added = XrayMerge.populateDormant(parsed, nil, src.parsed, src.title)
+    local added = XrayMerge.populateDormant(parsed, nil, src.parsed, src.title,
+        src.file, nil, file)
     return added, src.title
 end
 
@@ -857,14 +1100,17 @@ end
 --- @param source_parsed table|nil Parsed source X-Ray (transitive carry input)
 --- @param target_title string|nil The target book's title (self-label filter)
 --- @param meta_out table|nil applyXray meta table to receive carried labels
+--- @param source_file string|nil Source book file path (round 28 identity key)
+--- @param target_file string|nil Target book file path (robust self-filter)
 --- @return function transform(delta, base_parsed)
-function XrayMerge.crossBookTransform(source_title, source_parsed, target_title, meta_out)
+function XrayMerge.crossBookTransform(source_title, source_parsed, target_title, meta_out,
+        source_file, target_file)
     return function(delta, base_parsed)
         if type(delta) ~= "table" or type(base_parsed) ~= "table" then return end
         local updates = delta.background_updates
         delta.background_updates = nil
         local applied, unmatched = XrayMerge.applyBackgroundUpdates(
-            base_parsed, updates or {}, source_title)
+            base_parsed, updates or {}, source_title, source_file)
         for key in pairs(PROTECTED_CATEGORIES) do delta[key] = nil end
         local lookup = buildEntityLookup(base_parsed)
         local dropped = 0
@@ -888,7 +1134,7 @@ function XrayMerge.crossBookTransform(source_title, source_parsed, target_title,
         local stubbed = 0
         if type(source_parsed) == "table" then
             local labels = XrayMerge.carrySourceBackground(
-                base_parsed, delta, source_parsed, target_title)
+                base_parsed, delta, source_parsed, target_title, target_file)
             carried_n = #labels
             if meta_out then
                 for _idx, label in ipairs(labels) do
@@ -899,7 +1145,8 @@ function XrayMerge.crossBookTransform(source_title, source_parsed, target_title,
             -- Carry layer 1: whatever did NOT arrive goes dormant instead of
             -- being lost — the wake-pass right after the merge promotes any
             -- stub that already matches
-            stubbed = XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_title)
+            stubbed = XrayMerge.populateDormant(base_parsed, delta, source_parsed,
+                source_title, source_file, target_title, target_file)
         end
         logger.info("KOAssistant XrayMerge: cross-book background —",
             applied, "applied,", unmatched, "unmatched,", dropped, "rewrites dropped,",
@@ -1797,9 +2044,10 @@ function XrayMerge.executeCrossBook(opts)
                 -- Item 44: background attaches mechanically; existing entries
                 -- can never be replaced or shortened by this merge. Item 49:
                 -- the source's own ancestor background carries over with
-                -- original labels (chained merges no longer lose Vol 1)
+                -- original labels (chained merges no longer lose Vol 1).
+                -- Round 28: file paths ride as the identity keys.
                 transform = XrayMerge.crossBookTransform(source.title,
-                    source_parsed, bm.title, wb_meta),
+                    source_parsed, bm.title, wb_meta, source.file, file),
                 -- Cross-book knowledge claims NO target pages: progress stays
                 -- the base's (floor guard) and coverage_spans union base-only
                 -- (slice-1 reconcile — the new pass carries none)
@@ -1881,6 +2129,7 @@ function XrayMerge.runSeriesChain(opts)
     local chain = opts.chain or {}
     local n_merges = #chain - 1
     if n_merges < 1 then return end
+    local skipped = 0
     -- Preflight consent sweep (2026-08-05): fail BEFORE the first request
     -- names the blocking book — never stop a paid run midway on a knowable
     -- condition. The per-step checks stay (settings can change mid-run).
@@ -1897,7 +2146,10 @@ function XrayMerge.runSeriesChain(opts)
     local function step(idx)
         if idx > n_merges then
             UIManager:show(Notification:new{
-                text = T(_("Series chain complete: %1 merges."), n_merges),
+                text = skipped > 0
+                    and T(_("Series chain complete: %1 merges, %2 already done."),
+                        n_merges - skipped, skipped)
+                    or T(_("Series chain complete: %1 merges."), n_merges),
             })
             -- Post-merge duplicate check on the final receiving book (the
             -- chain is always attended); earlier hops go unchecked — one
@@ -1937,6 +2189,15 @@ function XrayMerge.runSeriesChain(opts)
                 timeout = 5,
             })
             return
+        end
+        -- Round 28: a hop whose fold is already recorded in the target's
+        -- provenance is skipped (opt-in — the confirm's "Re-run all" clears
+        -- it). Checked fresh from disk at hop time, same as everything else.
+        if opts.skip_done and XrayMerge.hasFolded(fresh_tgt, src_c.title) then
+            skipped = skipped + 1
+            logger.info("KOAssistant XrayMerge: chain hop", idx, "skipped -",
+                src_c.title, "already folded into", tgt_c.title)
+            return step(idx + 1)
         end
         UIManager:show(Notification:new{
             text = T(_("Merging %1 of %2: %3 into %4"), idx, n_merges,
@@ -2078,6 +2339,9 @@ function XrayMerge.runPostCreateFold(opts)
         XrayMerge.runSeriesChain({
             chain = chain, features = features, provider = provider,
             ui = opts.ui, plugin = opts.plugin, configuration = opts.configuration,
+            -- Round 28: hops that already ran are skipped — the ask said
+            -- "bring the series up to date", not "redo it"
+            skip_done = true,
         })
         return
     end
@@ -2410,6 +2674,15 @@ function XrayMerge.startCrossBookFlow(opts)
                 chain[#chain + 1] = { file = opts.file, title = opts.title,
                     author = opts.author, entry = main_entry }
                 local n_merges = #chain - 1
+                -- Round 28 (field report: adding Vol 4 re-ran 1→2 and 2→3):
+                -- hops already recorded in the target's provenance can be
+                -- skipped — only the new volumes cost requests
+                local done_n = 0
+                for i = 1, n_merges do
+                    if XrayMerge.hasFolded(chain[i + 1].entry, chain[i].title) then
+                        done_n = done_n + 1
+                    end
+                end
                 local confirm_title = T(_("Bring %1 up to date: %2 merges, oldest first — each book's X-Ray folds into the next book's (1 into 2, 2 into 3, …)?"),
                         predecessors[1].group_name, n_merges)
                     .. "\n" .. _("Every volume ends up carrying its predecessors' knowledge as labeled background. Each receiving X-Ray is archived first, so every step can be undone from that book's version list.")
@@ -2417,26 +2690,62 @@ function XrayMerge.startCrossBookFlow(opts)
                     confirm_title = confirm_title .. "\n"
                         .. T(_("Skipped: %1 earlier book(s) have no X-Ray yet."), missing_n)
                 end
+                if done_n > 0 then
+                    confirm_title = confirm_title .. "\n"
+                        .. T(_("%1 of these merges already ran. Skipping them saves requests, but does not pick up changes made to those X-Rays since — \"Re-run all\" refreshes everything."), done_n)
+                end
+                local function launchChain(skip_done)
+                    XrayMerge.runSeriesChain({
+                        chain = chain, features = features, provider = provider,
+                        ui = opts.ui, plugin = opts.plugin,
+                        configuration = opts.configuration,
+                        close_browser = opts.close_browser,
+                        reopen_live = opts.reopen_live,
+                        on_done = opts.on_done,
+                        skip_done = skip_done,
+                    })
+                end
                 local confirm
+                local chain_buttons = {}
+                if done_n > 0 and done_n < n_merges then
+                    table.insert(chain_buttons, {{
+                        text = T(_("Merge new only (%1)"), n_merges - done_n),
+                        callback = function()
+                            UIManager:close(confirm)
+                            launchChain(true)
+                        end,
+                    }})
+                    table.insert(chain_buttons, {{
+                        text = T(_("Re-run all (%1)"), n_merges),
+                        callback = function()
+                            UIManager:close(confirm)
+                            launchChain(false)
+                        end,
+                    }})
+                elseif done_n >= n_merges and n_merges > 0 then
+                    table.insert(chain_buttons, {{
+                        text = T(_("Re-run all (%1)"), n_merges),
+                        callback = function()
+                            UIManager:close(confirm)
+                            launchChain(false)
+                        end,
+                    }})
+                else
+                    table.insert(chain_buttons, {{
+                        text = _("Merge the series"),
+                        callback = function()
+                            UIManager:close(confirm)
+                            launchChain(false)
+                        end,
+                    }})
+                end
+                table.insert(chain_buttons, {{ text = _("Back"), callback = function()
+                    UIManager:close(confirm)
+                    XrayMerge.startCrossBookFlow(opts)
+                end }})
                 confirm = ButtonDialog:new{
                     title = confirm_title,
-                    buttons = {
-                        {{ text = _("Merge the series"), callback = function()
-                            UIManager:close(confirm)
-                            XrayMerge.runSeriesChain({
-                                chain = chain, features = features, provider = provider,
-                                ui = opts.ui, plugin = opts.plugin,
-                                configuration = opts.configuration,
-                                close_browser = opts.close_browser,
-                                reopen_live = opts.reopen_live,
-                                on_done = opts.on_done,
-                            })
-                        end }},
-                        {{ text = _("Back"), callback = function()
-                            UIManager:close(confirm)
-                            XrayMerge.startCrossBookFlow(opts)
-                        end }},
-                    },
+                    buttons = chain_buttons,
                 }
                 UIManager:show(confirm)
             end,

@@ -4420,10 +4420,11 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 end
                 prompt.prompt = original_prompt.update_prompt
 
-                -- Add cache data for placeholder substitution (the dormant
-                -- carry ledger never rides a prompt — item 49; safe no-op on
-                -- prose caches)
-                message_data.cached_result = XrayParser.stripDormantJSON(cached_entry.result)
+                -- Add cache data for placeholder substitution (neither the
+                -- dormant carry ledger — item 49 — nor the mechanical
+                -- background lines — round 28 — ever ride an update prompt;
+                -- safe no-op on prose caches)
+                message_data.cached_result = XrayParser.stripForPromptJSON(cached_entry.result)
                 message_data.cached_progress = cached_progress_display
                 message_data.cached_progress_decimal = cached_progress
                 -- Stash previous cache's metadata for sticky-true inheritance
@@ -4584,6 +4585,11 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     -- Capture the original action ID before any prompt modifications (for cache save)
     local original_action_id = prompt and prompt.id
 
+    -- Round 28 (#90): exact-retry handle for the unusable-X-Ray dialog in
+    -- handleResponse — one upvalue instead of nine (upvalue-cap discipline)
+    local retry_args = { prompt_type_or_action, highlightedText, ui, configuration,
+        existing_history, plugin, additional_input, on_complete, book_metadata }
+
     -- Get response from AI with callback for async streaming
     local function handleResponse(success, answer, err, reasoning, web_search_used)
         -- Smart retrieval (D3): the gather ran standalone before this request — fold its
@@ -4606,6 +4612,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             -- cache_answer = raw response for cache storage (JSON for structured browsing)
             local display_answer = answer
             local cache_answer = answer
+            local xray_unusable  -- round 28 (#90): reason text when the response must not become the artifact
             if action.cache_as_xray then
                 local XrayParser = require("koassistant_xray_parser")
                 local parsed = XrayParser.parse(answer)
@@ -4614,9 +4621,25 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     display_answer = parsed.error
                     cache_answer = nil  -- Signal to skip caching below
                     logger.info("KOAssistant: X-Ray returned error response, skipping cache:", parsed.error)
+                elseif parsed and not using_cache and not XrayParser.hasEntityContent(parsed) then
+                    -- Round 28 (#90 field report): a CREATE that parsed but holds no
+                    -- entity categories (e.g. a lone current_state — seen from
+                    -- flash-lite) must not become the artifact: nothing is browsable,
+                    -- and on a rebuild it would replace a real X-Ray with dead
+                    -- weight. Updates are exempt — a small delta touching only
+                    -- current_state is legitimate.
+                    xray_unusable = _("the response was missing X-Ray content (no characters or other entries)")
+                    cache_answer = nil
+                    logger.info("KOAssistant: X-Ray create had no entity categories, skipping cache")
                 elseif parsed then
                     -- Carry ledger (item 49): the model never authors the ledger
                     parsed[XrayParser.DORMANT_KEY] = nil
+                    -- Round 28 (#90): background is code-owned end-to-end. A model
+                    -- that has seen the mechanical background lines in a prompt can
+                    -- echo them back (mangled, self-labeled) and a rewrite carrying
+                    -- a background field would replace the stored one — drop them
+                    -- from every fresh response before any merge
+                    XrayParser.dropModelBackground(parsed)
                     -- Merge partial update into existing data when available
                     if using_cache and message_data._parsed_old_xray then
                         -- To debug X-Ray merge: uncomment koassistant_debug_utils.dumpXrayMerge() below
@@ -4681,22 +4704,51 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                             logger.info("KOAssistant: X-Ray create woke", #woken, "dormant entit(y/ies)")
                         end
                     end
+                    -- Round 28 (#90): reconcile mechanical background against the
+                    -- book's group — backfill file identities onto legacy labeled
+                    -- lines, drop self-lines, dedupe per source book, order by
+                    -- series position. Heals existing artifacts on their next write.
+                    if cache_file then
+                        pcall(function()
+                            require("koassistant_xray_merge").reconcileBackground(
+                                parsed, cache_file, ui)
+                        end)
+                    end
                     local book_meta = message_data.book_metadata or {}
                     local display_progress = message_data.reading_progress or ""
                     if config.features and config.features._full_document_xray then
                         display_progress = "Complete"
                     end
-                    display_answer = XrayParser.renderToMarkdown(
+                    -- Round 28 (#90 crash.log): a render crash must cost the
+                    -- markdown view only — never the merged artifact or the app
+                    local render_ok, rendered = pcall(XrayParser.renderToMarkdown,
                         parsed,
                         book_meta.title or "",
                         display_progress
                     )
+                    if render_ok then
+                        display_answer = rendered
+                    else
+                        logger.warn("KOAssistant: X-Ray render failed, showing raw response:", rendered)
+                    end
                     -- Pretty-print cached JSON so future updates receive readable structured data
                     local json_mod = require("json")
                     cache_answer = json_mod.encode(parsed, { pretty = true, indent = true })
                     logger.info("KOAssistant: X-Ray JSON parsed successfully, rendered to markdown for display")
                 else
-                    logger.info("KOAssistant: X-Ray response is not valid JSON, using as-is")
+                    -- Round 28 (#90): junk must never OVERWRITE a real X-Ray. With
+                    -- no previous X-Ray the legacy behavior stands (the raw text is
+                    -- cached and readable — some models produce usable prose);
+                    -- over an existing artifact the write is skipped instead.
+                    local prev = cache_file
+                        and require("koassistant_action_cache").getXrayCache(cache_file)
+                    if prev and prev.result then
+                        xray_unusable = _("the response was not valid X-Ray data")
+                        cache_answer = nil
+                        logger.info("KOAssistant: X-Ray response is not valid JSON - keeping existing X-Ray, skipping cache")
+                    else
+                        logger.info("KOAssistant: X-Ray response is not valid JSON, using as-is")
+                    end
                 end
             end
 
@@ -4943,7 +4995,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     -- be the copy nothing kept.
                     local rebuilding = config.features and config.features._xray_rebuild
                     local prev_xray = ActionCache.getXrayCache(cache_file)
-                    if prev_xray and prev_xray.result and prev_xray.result ~= cache_answer
+                    -- cache_answer guard (round 28): a skipped write must not
+                    -- ring-archive the survivor it is leaving in place
+                    if cache_answer and prev_xray and prev_xray.result and prev_xray.result ~= cache_answer
                         and (rebuilding or not ActionCache.isXrayLadderRung(cache_file, prev_xray)) then
                         ActionCache.pushXrayCheckpoint(cache_file, prev_xray,
                             ActionCache.checkpointLimitFromFeatures(config.features))
@@ -5108,6 +5162,26 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     elseif not was_asked then
                         XrayMerge.maybeNotePredecessorGap({ file = cache_file, ui = ui })
                     end
+                end)
+            end
+
+            -- Round 28 (#90, field-requested): an unusable X-Ray response on an
+            -- ATTENDED run gets a one-tap retry — same action, same scope, full
+            -- re-run (extraction is local). The artifact was left untouched
+            -- above. Unattended machinery (auto/ladder) keeps its own
+            -- transient-retry path and must not pop dialogs mid-read.
+            if xray_unusable and not (message_data._background_request
+                or message_data._background_create or message_data._ladder_build) then
+                local ConfirmBox = require("ui/widget/confirmbox")
+                UIManager:nextTick(function()
+                    UIManager:show(ConfirmBox:new{
+                        text = T(_("X-Ray not saved: %1.\n\nNothing was overwritten. Models sometimes return a broken response; trying again usually works."), xray_unusable),
+                        ok_text = _("Try again"),
+                        ok_callback = function()
+                            handlePredefinedPrompt(unpack(retry_args, 1, 9))
+                        end,
+                        cancel_text = _("Close"),
+                    })
                 end)
             end
 

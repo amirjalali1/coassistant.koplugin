@@ -245,6 +245,227 @@ local function normalizeKeyAliases(data)
     end
 end
 
+-- ============== Parse-time shape normalization (#90 field report) ==============
+-- Weak models emit structurally creative JSON: objects where strings belong
+-- ({"name": "X", "relationship": "friend"} inside connections), bare strings
+-- where objects belong (a timeline of plain strings rendered every Story Arc
+-- row as "Unknown"), maps where arrays belong, numbers for strings. Downstream
+-- code concatenates these; a single table element crashed renderToMarkdown in
+-- an update's on_complete — losing the merged result AND taking KOReader down
+-- (issue #90 crash.log 2026-08-07). Normalize once at parse so every consumer
+-- (render, browser rows, search, entity index) sees canonical shapes.
+-- Well-formed data passes through unchanged; stored artifacts heal on read.
+
+-- Best-effort string coercion for a value that should have been a string.
+local function coerceText(val)
+    if type(val) == "string" then return val end
+    if type(val) == "number" then return tostring(val) end
+    if type(val) == "table" then
+        -- Objects: prefer the identity fields models actually emit
+        local name
+        for _idx, f in ipairs({ "name", "term", "event", "text", "title" }) do
+            if type(val[f]) == "string" and val[f] ~= "" then
+                name = val[f]
+                break
+            end
+        end
+        if name then
+            local rel = type(val.relationship) == "string" and val.relationship ~= ""
+                and val.relationship
+                or type(val.role) == "string" and val.role ~= "" and val.role
+            if rel then
+                return name .. " (" .. rel .. ")"
+            end
+            return name
+        end
+        if type(val.description) == "string" and val.description ~= "" then
+            return val.description
+        end
+        -- Last resort: join the object's string values (sorted — pairs order
+        -- is nondeterministic and this must be stable across re-parses)
+        local parts = {}
+        for _k, v in pairs(val) do
+            if type(v) == "string" and v ~= "" then parts[#parts + 1] = v end
+        end
+        table.sort(parts)
+        if #parts > 0 then return table.concat(parts, " — ") end
+    end
+    return nil
+end
+
+-- Coerce a should-be-array-of-strings; nil when nothing survives.
+local function coerceStringArray(val)
+    if type(val) == "string" then
+        return val ~= "" and { val } or nil
+    end
+    if type(val) ~= "table" then return nil end
+    local out = {}
+    for _idx, v in ipairs(val) do
+        local s = coerceText(v)
+        if s and s ~= "" then out[#out + 1] = s end
+    end
+    return #out > 0 and out or nil
+end
+
+-- Keep only well-formed background lines ({ source, text [, file] } — the
+-- code-owned cross-book shape). Malformed lines are dropped, never coerced.
+local function sanitizeBackground(val)
+    if type(val) ~= "table" then return nil end
+    local out = {}
+    for _idx, b in ipairs(val) do
+        if type(b) == "table" and type(b.text) == "string" and b.text ~= "" then
+            out[#out + 1] = {
+                source = type(b.source) == "string" and b.source ~= "" and b.source or "?",
+                text = b.text,
+                file = type(b.file) == "string" and b.file ~= "" and b.file or nil,
+            }
+        end
+    end
+    return #out > 0 and out or nil
+end
+
+-- Fields normalized on every entity/event item
+local ITEM_STRING_FIELDS = { "name", "term", "event", "role", "description",
+    "significance", "importance", "details", "definition", "evidence", "chapter" }
+local ITEM_ARRAY_FIELDS = { "aliases", "connections", "references", "characters" }
+-- Categories keyed by something other than `name`
+local ENTITY_NAME_FIELD = {
+    lexicon = "term", terminology = "term", technical_terms = "term",
+    timeline = "event", argument_development = "event",
+}
+local SINGLETON_KEYS = { current_state = true, current_position = true, conclusion = true }
+local SINGLETON_ARRAY_FIELDS = { "conflicts", "questions", "questions_addressed",
+    "building_toward", "resolutions", "themes_resolved", "key_findings", "implications" }
+
+local function normalizeItem(item, name_field)
+    if type(item) == "string" then
+        if item == "" then return nil end
+        return { [name_field] = item }
+    end
+    if type(item) ~= "table" then return nil end
+    for _idx, f in ipairs(ITEM_STRING_FIELDS) do
+        if item[f] ~= nil and type(item[f]) ~= "string" then
+            item[f] = coerceText(item[f])
+        end
+    end
+    for _idx, f in ipairs(ITEM_ARRAY_FIELDS) do
+        if item[f] ~= nil then
+            item[f] = coerceStringArray(item[f])
+        end
+    end
+    if item.background ~= nil then
+        item.background = sanitizeBackground(item.background)
+    end
+    return item
+end
+
+--- Normalize category shapes in-place. Idempotent; runs on every successful
+--- parse (fresh responses AND stored artifacts). `__dormant` is deliberately
+--- untouched — it is code-owned and never model-shaped.
+--- @param data table Parsed X-Ray data (mutated)
+local function normalizeShapes(data)
+    if type(data) ~= "table" then return end
+    local seen = {}
+    for _i, list in ipairs({ FICTION_KEYS, NONFICTION_KEYS, ACADEMIC_KEYS }) do
+        for _j, key in ipairs(list) do
+            if not seen[key] then
+                seen[key] = true
+                local val = data[key]
+                if SINGLETON_KEYS[key] then
+                    if type(val) == "string" and val ~= "" then
+                        val = { summary = val }
+                        data[key] = val
+                    end
+                    if type(val) == "table" then
+                        if val.summary ~= nil and type(val.summary) ~= "string" then
+                            val.summary = coerceText(val.summary)
+                        end
+                        for _k, f in ipairs(SINGLETON_ARRAY_FIELDS) do
+                            if val[f] ~= nil then val[f] = coerceStringArray(val[f]) end
+                        end
+                    end
+                elseif key == "reader_engagement" then
+                    if type(val) == "table" then
+                        if val.patterns ~= nil and type(val.patterns) ~= "string" then
+                            val.patterns = coerceText(val.patterns)
+                        end
+                        if val.connections ~= nil and type(val.connections) ~= "string" then
+                            val.connections = coerceText(val.connections)
+                        end
+                        -- notable_highlights: strings AND {passage, why_notable}
+                        -- objects are both legal shapes — coerce fields, drop junk
+                        if val.notable_highlights ~= nil then
+                            local out
+                            if type(val.notable_highlights) == "table" then
+                                out = {}
+                                for _n, h in ipairs(val.notable_highlights) do
+                                    if type(h) == "string" then
+                                        if h ~= "" then out[#out + 1] = h end
+                                    elseif type(h) == "table" then
+                                        local passage = coerceText(h.passage)
+                                        if passage and passage ~= "" then
+                                            out[#out + 1] = { passage = passage,
+                                                why_notable = coerceText(h.why_notable) }
+                                        end
+                                    end
+                                end
+                            end
+                            val.notable_highlights = out and #out > 0 and out or nil
+                        end
+                    end
+                elseif type(val) == "table" then
+                    -- Entity/event array category
+                    local name_field = ENTITY_NAME_FIELD[key] or "name"
+                    local out = {}
+                    for _n, item in ipairs(val) do
+                        local norm = normalizeItem(item, name_field)
+                        if norm then out[#out + 1] = norm end
+                    end
+                    -- Map-instead-of-array salvage ({"Name": {...}, ...}):
+                    -- entries keyed by entity name, no array part at all
+                    if #out == 0 and next(val) ~= nil then
+                        local names = {}
+                        for k, v in pairs(val) do
+                            if type(k) == "string" and k ~= "" and type(v) == "table" then
+                                names[#names + 1] = k
+                            end
+                        end
+                        table.sort(names)
+                        for _n, k in ipairs(names) do
+                            local v = val[k]
+                            if type(v[name_field]) ~= "string" or v[name_field] == "" then
+                                v[name_field] = k
+                            end
+                            local norm = normalizeItem(v, name_field)
+                            if norm then out[#out + 1] = norm end
+                        end
+                    end
+                    data[key] = out
+                end
+            end
+        end
+    end
+    -- Cross-book merge deltas: background_updates pairs
+    if type(data.background_updates) == "table" then
+        local out = {}
+        for _n, upd in ipairs(data.background_updates) do
+            if type(upd) == "table" then
+                if upd.name ~= nil and type(upd.name) ~= "string" then
+                    upd.name = coerceText(upd.name)
+                end
+                if upd.background ~= nil and type(upd.background) ~= "string" then
+                    upd.background = coerceText(upd.background)
+                end
+                if upd.aliases ~= nil then
+                    upd.aliases = coerceStringArray(upd.aliases)
+                end
+                out[#out + 1] = upd
+            end
+        end
+        data.background_updates = out
+    end
+end
+
 --- Check if a table looks like valid X-Ray data (has at least one recognized category key)
 --- Also infers and sets the type field if missing.
 --- @param data table Candidate parsed data
@@ -296,6 +517,7 @@ function XrayParser.parse(text)
     -- Attempt 1: direct decode
     local ok, data = pcall(json.decode, text)
     if ok and isValidXrayData(data) then
+        normalizeShapes(data)
         return data, nil
     end
 
@@ -320,6 +542,7 @@ function XrayParser.parse(text)
             local stripped = text:sub(content_start, fence_close - 1)
             ok, data = pcall(json.decode, stripped)
             if ok and isValidXrayData(data) then
+                normalizeShapes(data)
                 return data, nil
             end
         end
@@ -341,6 +564,7 @@ function XrayParser.parse(text)
         extracted = text:sub(first_brace, last_brace)
         ok, data = pcall(json.decode, extracted)
         if ok and isValidXrayData(data) then
+            normalizeShapes(data)
             return data, nil
         end
     end
@@ -352,6 +576,7 @@ function XrayParser.parse(text)
     ok, data = pcall(json.decode, JsonRepair.escapeInnerQuotes(candidate))
     if ok and isValidXrayData(data) then
         logger.dbg("XrayParser: parsed via unescaped-quote repair")
+        normalizeShapes(data)
         return data, nil
     end
 
@@ -639,6 +864,46 @@ function XrayParser.getCategories(data)
             table.insert(cats, { key = "current_position", label = _("Current Position"), items = { data.current_position } })
         end
         return cats
+    end
+end
+
+-- Categories that never count as browsable X-Ray content
+local NON_ENTITY_KEYS = {
+    current_state = true, current_position = true,
+    conclusion = true, reader_engagement = true,
+}
+
+--- True when parsed data holds at least one entry in any entity/event
+--- category. A response that parses but fails this (e.g. a lone
+--- current_state, seen from weak models — #90 field report) is not a usable
+--- X-Ray CREATE and must not become the artifact. Round 28.
+--- @param data table Parsed X-Ray data
+--- @return boolean
+function XrayParser.hasEntityContent(data)
+    if type(data) ~= "table" then return false end
+    for _idx, cat in ipairs(XrayParser.getCategories(data)) do
+        if not NON_ENTITY_KEYS[cat.key] and type(cat.items) == "table" and #cat.items > 0 then
+            return true
+        end
+    end
+    return false
+end
+
+--- Round 28 (#90): background is code-owned end-to-end — attached by the
+--- cross-book machinery, never model-authored. A model that has SEEN the
+--- lines (any prompt carrying artifact JSON) can echo them back mangled or
+--- self-labeled, and a rewrite carrying a background field replaces the
+--- mechanical one in the merge. Strip every background field from a parsed
+--- MODEL RESPONSE before it meets a merge. Never run on stored artifacts.
+--- @param data table Freshly parsed model response (mutated)
+function XrayParser.dropModelBackground(data)
+    if type(data) ~= "table" then return end
+    for _idx, cat in ipairs(XrayParser.getCategories(data)) do
+        if type(cat.items) == "table" then
+            for _idx2, item in ipairs(cat.items) do
+                if type(item) == "table" then item.background = nil end
+            end
+        end
     end
 end
 
@@ -1217,6 +1482,12 @@ function XrayParser.renderToMarkdown(data, title, progress)
         end
     end
 
+    -- Belt over the parse-time normalization: a non-string line (unforeseen
+    -- shape reaching a raw insert) must cost that line, never the render —
+    -- a table here crashed table.concat mid-response (#90 crash.log)
+    for i, v in ipairs(lines) do
+        if type(v) ~= "string" then lines[i] = "" end
+    end
     return table.concat(lines, "\n")
 end
 
@@ -1620,6 +1891,13 @@ local APPEND_CATEGORIES = {
 --- @return table|nil
 function XrayParser.mergeBackground(existing, additions)
     local merged = {}
+    -- Round 28 (#90): identity is the source book's FILE PATH when known —
+    -- title strings drift (doc_props.title vs display_title vs override gave
+    -- the same volume two different labels on one device, so per-source
+    -- replace silently duplicated). The label stays display-only. A file-keyed
+    -- line also registers its source string, so a legacy line and its
+    -- path-keyed successor still collapse to one.
+    local by_file = {}
     local by_source = {}
     local function add(entry)
         if type(entry) ~= "table" then return end
@@ -1627,13 +1905,31 @@ function XrayParser.mergeBackground(existing, additions)
         if type(text) ~= "string" or text == "" then return end
         local source = type(entry.source) == "string" and entry.source ~= ""
             and entry.source or "?"
-        local idx = by_source[source]
-        if idx then
-            merged[idx] = { source = source, text = text }
-        else
-            merged[#merged + 1] = { source = source, text = text }
-            by_source[source] = #merged
+        local file = type(entry.file) == "string" and entry.file ~= ""
+            and entry.file or nil
+        local line = { source = source, text = text, file = file }
+        local idx = file and by_file[file]
+        if not idx then
+            local sidx = by_source[source]
+            if sidx then
+                local occ = merged[sidx]
+                -- Same source string but two DIFFERENT known files = a real
+                -- title collision — keep both lines rather than merge them
+                if not (occ.file and file and occ.file ~= file) then
+                    idx = sidx
+                    -- A replacement never LOSES an identity the slot had
+                    line.file = file or occ.file
+                end
+            end
         end
+        if idx then
+            merged[idx] = line
+        else
+            merged[#merged + 1] = line
+            idx = #merged
+        end
+        if line.file then by_file[line.file] = idx end
+        by_source[source] = idx
     end
     if type(existing) == "table" then
         for _idx, entry in ipairs(existing) do add(entry) end
@@ -1663,10 +1959,11 @@ local function mergeArrayCategory(old_items, new_items)
         local idx = name and lookup[name:lower()]
         if idx then
             -- background is attached mechanically (cross-book merge, item 44)
-            -- and never part of the model schema — a rewrite must not shed it
-            if new_item.background == nil then
-                new_item.background = old_items[idx].background
-            end
+            -- and never part of the model schema — a rewrite must not shed OR
+            -- replace it (round 28: the stored lines always win; model echoes
+            -- are dropped at parse, this is the belt for any path that skipped
+            -- dropModelBackground)
+            new_item.background = old_items[idx].background
             old_items[idx] = new_item
         else
             old_items[#old_items + 1] = new_item
@@ -1735,33 +2032,71 @@ function XrayParser.stripDormantJSON(json_str)
     return json_str
 end
 
+--- Prompt-safe copy for UPDATE/MERGE requests (round 28, #90): the dormant
+--- ledger AND every mechanical background line removed. Background is
+--- code-owned — the model can neither use nor legitimately return it, it
+--- inflates dense-script prompts (each folded volume adds paragraphs per
+--- entity, compounding through a series), and prompt-visible lines invited
+--- the echoes this round dropped. Chat contexts ({xray_cache}) deliberately
+--- KEEP background — there it is read-only knowledge for the assistant.
+--- Same never-fail contract as stripDormantJSON.
+--- @param json_str string|nil
+--- @return string|nil
+function XrayParser.stripForPromptJSON(json_str)
+    if type(json_str) ~= "string"
+        or (not json_str:find('"__dormant"', 1, true)
+            and not json_str:find('"background"', 1, true)) then
+        return json_str
+    end
+    local data = XrayParser.parse(json_str)
+    if type(data) ~= "table" or data.error then
+        return json_str
+    end
+    data[XrayParser.DORMANT_KEY] = nil
+    XrayParser.dropModelBackground(data)
+    local ok, out = pcall(json.encode, data, { pretty = true, indent = true })
+    if ok and type(out) == "string" then return out end
+    return json_str
+end
+
 --- Background lines a stub contributes to an entity that doesn't already
 --- carry lines from those source books (fill-gaps-only — an existing entry
 --- from the same source book wins, same rule as the transitive carry).
 --- Shared by the automatic wake-pass and the manual wake (browser). Pure.
 local function stubBackgroundAdditions(stub, existing_background)
+    -- Fill-gaps keys: file path when known (round 28 identity), label always
     local existing_sources = {}
     if type(existing_background) == "table" then
         for _idx, b in ipairs(existing_background) do
-            if type(b) == "table" and type(b.source) == "string" then
-                existing_sources[b.source] = true
+            if type(b) == "table" then
+                if type(b.source) == "string" then existing_sources[b.source] = true end
+                if type(b.file) == "string" then existing_sources[b.file] = true end
             end
         end
     end
     local additions = {}
+    local function seen(source, file)
+        return existing_sources[source] or (file and existing_sources[file])
+    end
+    local function mark(source, file)
+        existing_sources[source] = true
+        if file then existing_sources[file] = true end
+    end
     if type(stub.description) == "string" and stub.description ~= ""
         and type(stub.source) == "string" and stub.source ~= ""
-        and not existing_sources[stub.source] then
-        additions[#additions + 1] = { source = stub.source, text = stub.description }
-        existing_sources[stub.source] = true
+        and not seen(stub.source, stub.file) then
+        additions[#additions + 1] = { source = stub.source, text = stub.description,
+            file = type(stub.file) == "string" and stub.file or nil }
+        mark(stub.source, stub.file)
     end
     if type(stub.background) == "table" then
         for _idx, b in ipairs(stub.background) do
             if type(b) == "table" and type(b.text) == "string" and b.text ~= ""
                 and type(b.source) == "string" and b.source ~= ""
-                and not existing_sources[b.source] then
-                additions[#additions + 1] = { source = b.source, text = b.text }
-                existing_sources[b.source] = true
+                and not seen(b.source, b.file) then
+                additions[#additions + 1] = { source = b.source, text = b.text,
+                    file = type(b.file) == "string" and b.file or nil }
+                mark(b.source, b.file)
             end
         end
     end
