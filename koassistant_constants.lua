@@ -127,6 +127,7 @@ Constants.QUICK_ACTION_UTILITIES = {
     { id = "chat_history",       callback = "onKOAssistantChatHistory",         default = true },
     { id = "notebook",           callback = "onKOAssistantNotebook",            default = true },
     { id = "view_caches",        callback = "viewCache",                        default = true },  -- "View Artifacts": single button, opens cache picker
+    { id = "book_group",         callback = "onKOAssistantBookGroup",           default = true },  -- "Group": only rendered when this book is IN a group (dynamic, like view_caches)
     { id = "book_settings",      callback = "onKOAssistantBookSettings",        default = true },  -- per-book settings (domain, research, AI title/author)
     { id = "ai_quick_settings",  callback = "onKOAssistantAISettings",          default = true },
 }
@@ -145,6 +146,7 @@ function Constants.getQuickActionUtilityText(id, _)
         chat_history = _("Chat History"),
         notebook = _("Notebook"),
         view_caches = _("View Artifacts"),
+        book_group = _("Group"),
         ai_quick_settings = _("Quick Settings"),
         book_settings = _("Book Settings"),
     }

@@ -5576,6 +5576,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         local asked = XrayMerge.preCreateFoldAsk(
             { file = cache_file, ui = ui, configuration = config },
             function(mode)
+                -- Round 28: explicit abort — nothing was sent, so there is
+                -- nothing to clean up; just don't continue the pre-send chain
+                if mode == "cancel" then return end
                 message_data._precreate_fold_asked = true
                 if mode then
                     message_data._fold_after_create = mode
@@ -8760,6 +8763,23 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
         end
     end
 
+    -- Group button (round 28): same lazy, dynamic rule as View Artifacts —
+    -- built only when this book actually belongs to a group, so it never shows
+    -- for readers who don't use groups. Opens the members popup (jump to any
+    -- volume's artifacts), the same idiom the artifact viewers' "→ Group" uses.
+    local group_button = nil
+    if not is_general_context and plugin and document_path
+        and plugin._inBookGroup and plugin:_inBookGroup(document_path) then
+        group_button = {
+            text = Constants.getEmojiText("\u{1F4DA}", _("Group"), enable_emoji),
+            callback = function()
+                UIManager:close(input_dialog)
+                if plugin then plugin.current_input_dialog = nil end
+                plugin:_showGroupMembersPopup(document_path, "artifacts")
+            end,
+        }
+    end
+
         -- Helper: lay out buttons in rows of 2
         local function addButtonRows(button_rows, buttons)
             local current_row = {}
@@ -8872,14 +8892,18 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             -- Non-library contexts: flat layout
             addButtonRows(button_rows, action_buttons)
 
-            -- Artifact pairing: pair with last action if odd count, else solo row
-            if artifact_button then
+            -- Artifact/Group pairing: fill the last odd row, else start one.
+            -- Artifacts first (the more common destination), Group beside it —
+            -- the two together make one navigation row.
+            local nav_buttons = {}
+            if artifact_button then nav_buttons[#nav_buttons + 1] = artifact_button end
+            if group_button then nav_buttons[#nav_buttons + 1] = group_button end
+            for _idx, nav_button in ipairs(nav_buttons) do
                 local last_row = button_rows[#button_rows]
                 if last_row and #last_row == 1 and not control_row_set[last_row] then
-                    -- Odd action count: pair last action with artifact
-                    table.insert(last_row, artifact_button)
+                    table.insert(last_row, nav_button)
                 else
-                    table.insert(button_rows, { artifact_button })
+                    table.insert(button_rows, { nav_button })
                 end
             end
         end
@@ -9393,18 +9417,15 @@ local function openXrayBrowserFromCache(ui, data, cached, config, plugin, book_m
     -- Pass cleanup widgets so browser can close them when launching book text search
     browser_metadata._cleanup_widgets = cleanup_widgets
 
-    XrayBrowser:show(data, browser_metadata, ui, function()
-        -- Clear all three homes like main.lua's on_delete: doc-level key, the per-action
-        -- "xray" entry (update eligibility reads it), and derived wiki entries. A
-        -- doc-key-only clear leaves a live per-action entry that background auto-update
-        -- would resurrect from.
-        ActionCache.clearXrayCache(ui.document.file)
-        ActionCache.clear(ui.document.file, "xray")
-        ActionCache.clearWikiEntries(ui.document.file)
-        ActionCache.clearXrayCheckpoints(ui.document.file)
-        ActionCache.clearXrayLadder(ui.document.file)
+    XrayBrowser:show(data, browser_metadata, ui, function(keep_versions)
+        -- Round 28: ONE lineage-delete helper (ActionCache.deleteXray) — doc-level
+        -- key, the per-action "xray" entry (a doc-key-only clear leaves an entry
+        -- background auto-update resurrects from), wiki entries and the ladder;
+        -- the archived versions only when the reader chose so in the confirm.
+        ActionCache.deleteXray(ui.document.file, { keep_versions = keep_versions })
         UIManager:show(Notification:new{
-            text = T(_("%1 deleted"), "X-Ray"),
+            text = keep_versions and _("X-Ray deleted — archived versions kept")
+                or T(_("%1 deleted"), "X-Ray"),
             timeout = 2,
         })
     end)
@@ -9979,16 +10000,13 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
                                 used_annotations = xray_cache.used_annotations,
                                 used_book_text = xray_cache.used_book_text,
                             },
-                        }, ui, function()
-                            -- Same triple clear as main.lua's on_delete (see the other
-                            -- XrayBrowser:show delete callback above).
-                            ActionCache.clearXrayCache(ui.document.file)
-                            ActionCache.clear(ui.document.file, "xray")
-                            ActionCache.clearWikiEntries(ui.document.file)
-                            ActionCache.clearXrayCheckpoints(ui.document.file)
-                            ActionCache.clearXrayLadder(ui.document.file)
+                        }, ui, function(keep_versions)
+                            -- Same shared lineage delete as the other
+                            -- XrayBrowser:show callback above (round 28)
+                            ActionCache.deleteXray(ui.document.file, { keep_versions = keep_versions })
                             UIManager:show(Notification:new{
-                                text = T(_("%1 deleted"), "X-Ray"),
+                                text = keep_versions and _("X-Ray deleted — archived versions kept")
+                                    or T(_("%1 deleted"), "X-Ray"),
                                 timeout = 2,
                             })
                         end)

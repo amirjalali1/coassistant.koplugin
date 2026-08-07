@@ -33,6 +33,64 @@ local XrayBrowser = {}
 -- Forward declaration for mutual reference
 local dismissSearchReturnButton
 
+-- ============== Right-column (mandatory) fitting ==============
+-- KOReader's MenuItem lays the mandatory column out FIRST and gives the name
+-- whatever is left, so a long right-hand label starves the row's actual
+-- subject. Round 28 (#90 device report on the carried list: "you barely have
+-- any space for the main item"): one shared fitter for every X-Ray list.
+--   * MEASURED, not counted — the old per-list math divided by the width of a
+--     latin "a", which is ~half a CJK glyph, and compared it against a BYTE
+--     length (3 bytes per CJK char), so both sides were wrong in opposite
+--     directions and the byte-slice could cut mid-codepoint (mojibake).
+--   * A hard share cap keeps the subject readable even when the name is short
+--     — without it a two-character name still yields the row to a long title.
+local MANDATORY_MAX_SHARE = 0.45   -- right column never claims more than this
+local ELLIPSIS = "…"
+
+--- Truncate `secondary` (UTF-8 safe) so it fits beside `name` in a menu row.
+--- @param name string The row's subject (measured, never truncated here —
+---   the Menu widget elides it if the remainder is still too small)
+--- @param secondary string Candidate right-column text
+--- @param opts table { content_width, text_face, mandatory_face, padding,
+---   min_chars = floor below which truncation stops, max_share = override }
+--- @return string fitted (possibly ellipsized; "" when nothing fits)
+local function fitMandatory(name, secondary, opts)
+    if type(secondary) ~= "string" or secondary == "" then return "" end
+    local TextWidget = require("ui/widget/textwidget")
+    local util = require("util")
+    local function widthOf(text, face)
+        local w = TextWidget:new{ text = text, face = face }
+        local size = w:getSize().w
+        w:free()
+        return size
+    end
+    local budget = (opts.content_width * (opts.max_share or MANDATORY_MAX_SHARE))
+    local name_w = widthOf(name or "", opts.text_face)
+    local leftover = opts.content_width - name_w - opts.padding
+    -- The right column gets the smaller of "what the name left over" and its
+    -- share cap, but never less than the caller's declared minimum
+    local avail = math.min(budget, math.max(leftover, 0))
+    local chars = util.splitToChars(secondary)
+    local min_chars = math.min(opts.min_chars or 5, #chars)
+    local min_w = widthOf(table.concat(chars, "", 1, min_chars), opts.mandatory_face)
+    if avail < min_w then avail = min_w end
+    if widthOf(secondary, opts.mandatory_face) <= avail then return secondary end
+    -- Largest prefix that fits with an ellipsis (binary search over CHARS, so
+    -- a multi-byte glyph is never split)
+    local lo, hi, best = min_chars, #chars, nil
+    while lo <= hi do
+        local mid = math.floor((lo + hi) / 2)
+        local candidate = table.concat(chars, "", 1, mid) .. ELLIPSIS
+        if widthOf(candidate, opts.mandatory_face) <= avail then
+            best = candidate
+            lo = mid + 1
+        else
+            hi = mid - 1
+        end
+    end
+    return best or (table.concat(chars, "", 1, min_chars) .. ELLIPSIS)
+end
+
 --- Show a floating "Back to X-Ray" button overlay.
 --- Appears after navigateAndSearch closes the browser for document text search.
 --- Tap: reopens the X-Ray browser at the distribution view.
@@ -1249,13 +1307,32 @@ function XrayBrowser:_buildDormantItems()
     local self_ref = self
     local items = {}
     local rows = self:_dormantRows()
+    -- Round 28 (#90 device report: "you barely have any space for the main
+    -- item"): this list was the ONE X-Ray list that passed its right column
+    -- through raw, so a long (CJK) source title swallowed the row and the
+    -- carried entity's NAME — the thing you are reading the list for — got
+    -- elided. Same measured fitter as the category lists now; the category tag
+    -- is protected as the minimum, since it survives being the only thing left.
+    local Font = require("ui/font")
+    local Size = require("ui/size")
+    local fit_opts = {
+        content_width = Screen:getWidth() - 2 * (Size.padding.fullscreen or 0),
+        text_face = Font:getFace("smallinfofont", 18),
+        mandatory_face = Font:getFace("infont", 14),
+        padding = Screen:scaleBySize(10),
+        min_chars = 4,
+    }
     for i, r in ipairs(rows) do
         local captured_i, captured, display_i = r.idx, r.stub, i
         local short_cat = CHAPTER_CATEGORY_SHORT[captured.category]
         local src = (type(captured.source) == "string" and captured.source) or ""
+        -- The source title is what overflows, so fit THAT and keep the tag whole
+        local tag = short_cat and (short_cat .. " · ") or ""
+        local fitted_src = src ~= "" and fitMandatory(
+            (captured.name or "") .. tag, src, fit_opts) or ""
         table.insert(items, {
             text = captured.name,
-            mandatory = short_cat and (short_cat .. " · " .. src) or src,
+            mandatory = tag .. fitted_src,
             mandatory_dim = true,
             callback = function()
                 -- ◀/▶ walk the DISPLAYED rows (filtered + sorted); the ledger
@@ -1725,19 +1802,15 @@ end
 function XrayBrowser:showCategoryItems(category)
     local Font = require("ui/font")
     local Size = require("ui/size")
-    local TextWidget = require("ui/widget/textwidget")
 
     local items = {}
     local self_ref = self
 
-    -- Measure available width and font metrics for dynamic mandatory truncation.
-    -- Menu uses: available_width = content_width - mandatory_w - padding
-    -- We flip the priority: give name its full width, truncate mandatory to fit the rest.
+    -- Widths + faces for the shared mandatory fitter (measured per candidate,
+    -- so no reference-glyph estimate is needed any more)
     local content_width = Screen:getWidth() - 2 * (Size.padding.fullscreen or 0)
     local text_face = Font:getFace("smallinfofont", 18)
     local mandatory_face = Font:getFace("infont", 14)
-    -- Measure a reference character to estimate mandatory chars per pixel
-    local ref_char_w = TextWidget:new{ text = "a", face = mandatory_face }:getSize().w
     local padding = Screen:scaleBySize(10)
 
     -- Event-based categories: guarantee minimum mandatory (chapter label) width
@@ -1782,17 +1855,21 @@ function XrayBrowser:showCategoryItems(category)
             end
         end
 
-        -- Truncate mandatory (chapter label) to fit alongside the name.
-        -- The Menu widget truncates `text` (name) naturally — we only control mandatory length.
-        -- Event categories get a higher minimum so chapter labels aren't squashed to 2-3 chars.
+        -- Fit mandatory (role / chapter label) beside the name. Round 28: the
+        -- shared measured, UTF-8-safe fitter replaces the byte-counting math
+        -- (which mis-sized every non-latin label and could cut mid-glyph).
+        -- Event categories keep a higher minimum so chapter labels aren't
+        -- squashed to 2-3 chars.
         if secondary ~= "" then
-            local name_w = TextWidget:new{ text = name, face = text_face }:getSize().w
-            local avail_for_mandatory = content_width - name_w - padding
-            local min_chars = is_event_category and 15 or 5
-            local max_chars = math.max(min_chars, math.floor(avail_for_mandatory / ref_char_w))
-            if #secondary > max_chars then
-                secondary = secondary:sub(1, max_chars - 3) .. "..."
-            end
+            secondary = fitMandatory(name, secondary, {
+                content_width = content_width,
+                text_face = text_face,
+                mandatory_face = mandatory_face,
+                padding = padding,
+                min_chars = is_event_category and 15 or 5,
+                -- Event rows are ABOUT their chapter label — let it take more
+                max_share = is_event_category and 0.5 or nil,
+            })
         end
 
         local captured_item = item
@@ -4724,39 +4801,66 @@ function XrayBrowser:showOptions()
     -- Delete option
     if self.on_delete then
         local delete_text = self.scope and _("Delete Section X-Ray") or _("Delete X-Ray")
-        local delete_confirm
-        if self.scope then
-            delete_confirm = T(_("Delete Section X-Ray \"%1\"? This cannot be undone."), self.scope.label or "")
-        else
-            -- Round 13 (maintainer question): deleting the main X-Ray clears the
-            -- whole lineage — ring AND prepared versions (resurrection guard) —
-            -- so the confirm must say so. O(1) header counts.
-            delete_confirm = _("Delete this X-Ray? This cannot be undone.")
-            if self.metadata and self.metadata.book_file then
-                local DelCache = require("koassistant_action_cache")
-                local n_arch = DelCache.getXrayCheckpointCount(self.metadata.book_file)
-                local n_prep = DelCache.getXrayLadderCount(self.metadata.book_file)
-                if n_arch > 0 and n_prep > 0 then
-                    delete_confirm = T(_("Delete this X-Ray? Its %1 archived versions and %2 checkpoints are deleted with it. This cannot be undone."), n_arch, n_prep)
-                elseif n_arch > 0 then
-                    delete_confirm = T(_("Delete this X-Ray? Its %1 archived versions are deleted with it. This cannot be undone."), n_arch)
-                elseif n_prep > 0 then
-                    delete_confirm = T(_("Delete this X-Ray? Its %1 checkpoints are deleted with it. This cannot be undone."), n_prep)
-                end
-            end
+        -- Round 13 (maintainer question): deleting the main X-Ray clears the
+        -- whole lineage — ring AND prepared versions (resurrection guard) — so
+        -- the confirm must say so. O(1) header counts.
+        -- Round 28 (maintainer decision): the archived versions are no longer
+        -- collateral — when the ring is non-empty the reader picks. Prepared
+        -- checkpoints (ladder) always go: a surviving rung would resurrect the
+        -- X-Ray through promotion.
+        local n_arch, n_prep = 0, 0
+        if not self.scope and self.metadata and self.metadata.book_file then
+            local DelCache = require("koassistant_action_cache")
+            n_arch = DelCache.getXrayCheckpointCount(self.metadata.book_file)
+            n_prep = DelCache.getXrayLadderCount(self.metadata.book_file)
+        end
+        local function runDelete(keep_versions)
+            self_ref.on_delete(keep_versions)
+            if self_ref.menu then UIManager:close(self_ref.menu) end
         end
         table.insert(buttons, {{
             text = delete_text, align = "left",
             callback = function()
                 closeOptions()
+                if n_arch > 0 then
+                    local title = T(_("Delete this X-Ray? Its %1 archived versions can be kept — they stay reachable under \"Archived X-Ray Versions\" in View Artifacts."), n_arch)
+                    if n_prep > 0 then
+                        title = title .. "\n" .. T(_("Its %1 prepared checkpoints are deleted either way."), n_prep)
+                    end
+                    local del_dialog
+                    del_dialog = ButtonDialog:new{
+                        title = title,
+                        buttons = {
+                            {{ text = T(_("Delete X-Ray, keep %1 versions"), n_arch),
+                               callback = function()
+                                   UIManager:close(del_dialog)
+                                   runDelete(true)
+                               end }},
+                            {{ text = T(_("Delete X-Ray and %1 versions"), n_arch),
+                               callback = function()
+                                   UIManager:close(del_dialog)
+                                   runDelete(false)
+                               end }},
+                            {{ text = _("Cancel"),
+                               callback = function() UIManager:close(del_dialog) end }},
+                        },
+                    }
+                    UIManager:show(del_dialog)
+                    return
+                end
+                local delete_confirm
+                if self_ref.scope then
+                    delete_confirm = T(_("Delete Section X-Ray \"%1\"? This cannot be undone."), self_ref.scope.label or "")
+                elseif n_prep > 0 then
+                    delete_confirm = T(_("Delete this X-Ray? Its %1 checkpoints are deleted with it. This cannot be undone."), n_prep)
+                else
+                    delete_confirm = _("Delete this X-Ray? This cannot be undone.")
+                end
                 local ConfirmBox = require("ui/widget/confirmbox")
                 UIManager:show(ConfirmBox:new{
                     text = delete_confirm,
                     ok_text = _("Delete"),
-                    ok_callback = function()
-                        self_ref.on_delete()
-                        if self_ref.menu then UIManager:close(self_ref.menu) end
-                    end,
+                    ok_callback = function() runDelete(false) end,
                 })
             end,
         }})

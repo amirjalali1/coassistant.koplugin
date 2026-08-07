@@ -990,6 +990,11 @@ local ChatGPTViewer = InputContainer:extend {
   regenerate_label = nil,  -- Custom label for regenerate button (e.g., "Update" instead of "Regenerate")
   on_delete = nil,
   cache_type_name = nil,
+  -- delete_options (round 28): optional {{ text, arg }, ...} — when set, Delete
+  -- opens a choice dialog instead of a yes/no confirm and passes the chosen
+  -- `arg` to on_delete. Used by X-Ray to ask about its archived versions.
+  delete_options = nil,
+  delete_title = nil,
 
   -- Artifact viewer context (simple_view only)
   -- _info_text: pre-built multi-line string for Info popup (model, date, source, etc.)
@@ -2636,6 +2641,36 @@ function ChatGPTViewer:init()
         text = _("Delete"),
         id = "delete_cache",
         callback = function()
+          -- Round 28: an artifact that owns a LINEAGE (X-Ray + its archived
+          -- versions) lets the caller offer that choice here via
+          -- delete_options; each option's `arg` rides into on_delete. Without
+          -- it this stays the plain two-button confirm every other cache uses.
+          if type(self.delete_options) == "table" and #self.delete_options > 0 then
+            local ButtonDialog = require("ui/widget/buttondialog")
+            local del_dialog
+            local rows = {}
+            for _idx, opt in ipairs(self.delete_options) do
+              local captured = opt
+              table.insert(rows, {{
+                text = captured.text,
+                callback = function()
+                  UIManager:close(del_dialog)
+                  self:onClose()
+                  self.on_delete(captured.arg)
+                end,
+              }})
+            end
+            table.insert(rows, {{
+              text = _("Cancel"),
+              callback = function() UIManager:close(del_dialog) end,
+            }})
+            del_dialog = ButtonDialog:new{
+              title = self.delete_title or T(_("Delete this %1?"), self.cache_type_name or _("summary")),
+              buttons = rows,
+            }
+            UIManager:show(del_dialog)
+            return
+          end
           local ConfirmBox = require("ui/widget/confirmbox")
           UIManager:show(ConfirmBox:new{
             text = T(_("Delete this %1?"), self.cache_type_name or _("summary")),

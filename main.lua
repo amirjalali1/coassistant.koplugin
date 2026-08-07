@@ -5746,6 +5746,19 @@ function AskGPT:_inBookGroup(file)
   return file ~= nil and #require("koassistant_book_groups").groupsFor(file) > 0
 end
 
+--- Group entry for registry-driven surfaces (QA panel utility "book_group",
+--- gestures). Members popup when this book is in a group, the manager
+--- otherwise — so the entry is never a dead end.
+function AskGPT:onKOAssistantBookGroup()
+  local file = self.ui and self.ui.document and self.ui.document.file
+  if file and self:_inBookGroup(file) then
+    self:_showGroupMembersPopup(file, "artifacts")
+  else
+    self:showBookGroupsManager()
+  end
+  return true
+end
+
 --- Book-group members popup (item 46) — THE group-navigation idiom: one
 --- ordered list of the group's books (current one marked), replacing the old
 --- prev/next pair. What a tap opens depends on mode:
@@ -5905,17 +5918,13 @@ function AskGPT:showCacheViewer(cache_info)
     local cache_key = cache_info.key
     local cache_name = cache_info.name
 
-    on_delete = function()
+    on_delete = function(keep_versions)
       -- Clear the appropriate cache based on key
       if cache_key == "_xray_cache" then
-        ActionCache.clearXrayCache(file)
-        -- Also clear per-action cache (X-Ray saves to both document and per-action cache)
-        ActionCache.clear(file, "xray")
-        -- Clear all per-item wiki entries (derived from X-Ray data)
-        ActionCache.clearWikiEntries(file)
-        -- Checkpoint ring and version ladder die with the X-Ray
-        ActionCache.clearXrayCheckpoints(file)
-        ActionCache.clearXrayLadder(file)
+        -- Round 28: ONE lineage-delete helper; the ladder always dies (a
+        -- prepared rung would resurrect the X-Ray), the archived versions only
+        -- when the reader said so (delete_options below)
+        ActionCache.deleteXray(file, { keep_versions = keep_versions })
         -- Round 22 (D4): the coverage-ask stamp dies with the X-Ray — a
         -- future from-nothing build should ask again. Round 5: so does the
         -- promotion hold — it described the deleted timeline.
@@ -5940,7 +5949,8 @@ function AskGPT:showCacheViewer(cache_info)
       -- Invalidate file browser row cache so deleted artifacts don't reappear
       self._file_dialog_row_cache = { file = nil, rows = nil }
       UIManager:show(Notification:new{
-        text = T(_("%1 deleted"), cache_name),
+        text = keep_versions and _("X-Ray deleted — archived versions kept")
+          or T(_("%1 deleted"), cache_name),
         timeout = 2,
       })
     end
@@ -6155,6 +6165,20 @@ function AskGPT:showCacheViewer(cache_info)
     cache_type_name = cache_info.name,
     on_regenerate = on_regenerate,
     on_delete = on_delete,
+    -- Round 28: the X-Ray owns archived versions — deleting it asks whether
+    -- those go too (same choice as the X-Ray browser's own Delete). Only when
+    -- a ring actually exists; every other artifact keeps the plain confirm.
+    delete_options = (on_delete and cache_info.key == "_xray_cache" and file
+        and ActionCache.getXrayCheckpointCount(file) > 0) and {
+        { text = T(_("Delete X-Ray, keep %1 versions"),
+            ActionCache.getXrayCheckpointCount(file)), arg = true },
+        { text = T(_("Delete X-Ray and %1 versions"),
+            ActionCache.getXrayCheckpointCount(file)), arg = false },
+    } or nil,
+    delete_title = (on_delete and cache_info.key == "_xray_cache" and file
+        and ActionCache.getXrayCheckpointCount(file) > 0)
+        and T(_("Delete this X-Ray? Its %1 archived versions can be kept — they stay reachable under \"Archived X-Ray Versions\" in View Artifacts."),
+            ActionCache.getXrayCheckpointCount(file)) or nil,
     _plugin = self,
     _ui = self.ui,
     _info_text = info_popup_text,
@@ -15135,6 +15159,7 @@ function AskGPT:onKOAssistantQuickActions()
     chat_history = "\u{1F4DC}",        -- 📜
     notebook = "\u{1F4D3}",            -- 📓
     view_caches = "\u{1F4E6}",         -- 📦
+    book_group = "\u{1F4DA}",          -- 📚
     ai_quick_settings = "\u{2699}\u{FE0F}", -- ⚙️
     book_settings = "\u{1F4D5}",       -- 📕
   }
@@ -15161,6 +15186,20 @@ function AskGPT:onKOAssistantQuickActions()
               callback = function()
                 -- Don't close QA panel yet — close only when user picks an artifact
                 self_ref:viewCache(dialog)
+              end,
+            })
+          end
+        elseif util_id == "book_group" then
+          -- Round 28: same dynamic rule as View Artifacts — the row exists only
+          -- when this book actually belongs to a group, so readers who don't use
+          -- groups never see it. Opens the members popup (THE group-navigation
+          -- idiom), not the manager: from the panel you want to GO somewhere.
+          if self_ref:_inBookGroup(file) then
+            addButton({
+              text = Constants.getEmojiText(qa_emoji_map[util_id], _("Group"), qa_enable_emoji),
+              callback = function()
+                UIManager:close(dialog)
+                self_ref:_showGroupMembersPopup(file, "artifacts")
               end,
             })
           end

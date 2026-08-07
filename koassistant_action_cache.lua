@@ -832,6 +832,34 @@ function ActionCache.clearXrayCache(document_path)
     return ActionCache.clear(document_path, ActionCache.XRAY_CACHE_KEY)
 end
 
+--- Delete an X-Ray and everything derived from it — ONE place, so the three
+--- delete surfaces (X-Ray browser, artifact viewer, cache popups) can never
+--- drift apart on what "delete" means. Round 28 (maintainer decision after the
+--- #90 round: "if you delete the currently promoted X-Ray, everything goes?"):
+--- the archived VERSIONS are now the reader's choice — they are independent
+--- work, they survive standalone in the artifact list ("Archived X-Ray
+--- Versions (N)", the orphan safety net), and losing five of them to one tap
+--- was the asymmetry the versions list itself never had.
+--- The LADDER is never optional: a surviving prepared rung silently
+--- RESURRECTS a deleted X-Ray through promotion.
+--- @param document_path string The document file path
+--- @param opts table|nil { keep_versions = true → the checkpoint ring survives }
+--- @return boolean success
+function ActionCache.deleteXray(document_path, opts)
+    if not document_path then return false end
+    opts = opts or {}
+    ActionCache.clearXrayCache(document_path)
+    -- X-Ray writes BOTH the doc-level key and the per-action entry; a
+    -- doc-key-only clear leaves an entry background auto-update resurrects from
+    ActionCache.clear(document_path, "xray")
+    ActionCache.clearWikiEntries(document_path)
+    ActionCache.clearXrayLadder(document_path)
+    if not opts.keep_versions then
+        ActionCache.clearXrayCheckpoints(document_path)
+    end
+    return true
+end
+
 --- Clear document analysis cache
 --- @param document_path string The document file path
 --- @return boolean success

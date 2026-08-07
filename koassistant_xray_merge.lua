@@ -2238,7 +2238,8 @@ end
 --- the post-create gap note covers that case. Dismissing the dialog aborts
 --- the create, like dismissing the source popup.
 --- @param opts table { file, ui, configuration }
---- @param proceed function(mode) mode = "single"|"chain"|nil (declined)
+--- @param proceed function(mode) mode = "single"|"chain"|nil (declined) |
+---   "cancel" (round 28: abort the create — the caller must NOT send)
 --- @return boolean asked False when no dialog applies (proceed NOT called —
 ---   the caller continues synchronously)
 function XrayMerge.preCreateFoldAsk(opts, proceed)
@@ -2291,9 +2292,17 @@ function XrayMerge.preCreateFoldAsk(opts, proceed)
         UIManager:close(ask)
         proceed(nil)
     end }}
+    -- Round 28 (device report): with the dialog non-dismissable and every
+    -- button STARTING the X-Ray, there was no way out — the reader had to pick
+    -- one and then cancel the request it had already sent. Cancel aborts the
+    -- create itself, which is what the outside tap used to do.
+    buttons[#buttons + 1] = {{ text = _("Cancel"), callback = function()
+        UIManager:close(ask)
+        proceed("cancel")
+    end }}
     -- Not dismissable: this ask gates the create itself, so a tap outside would
-    -- silently abandon the X-Ray with no message ("Just this book" is the
-    -- explicit opt-out)
+    -- silently abandon the X-Ray with no message (Cancel is the explicit exit,
+    -- "Just this book" the explicit opt-out of folding)
     ask = ButtonDialog:new{ title = ask_text, buttons = buttons, dismissable = false }
     UIManager:show(ask)
     return true
