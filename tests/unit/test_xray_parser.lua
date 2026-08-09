@@ -240,6 +240,25 @@ TestRunner:test("term-named categories rename their term field", function()
     TestRunner:eq(data.technical_terms[1].aliases[1], "Grok")
 end)
 
+TestRunner:suite("2026-08-09 — addItemAliases (Manage ▸ Link)")
+TestRunner:test("adds missing handles, dedupes case-insensitively, skips own name", function()
+    local data = { characters = { { name = "Mira", aliases = { "The Keeper" } } } }
+    TestRunner:ok(XrayParser.addItemAliases(data, "characters", "Mira",
+        { "the keeper", "Mira", "Mira Alvsund" }))
+    TestRunner:eq(#data.characters[1].aliases, 2)
+    TestRunner:eq(data.characters[1].aliases[2], "Mira Alvsund")
+end)
+TestRunner:test("found-but-nothing-new still reports ok (link already recorded)", function()
+    local data = { characters = { { name = "Mira", aliases = { "The Keeper" } } } }
+    TestRunner:ok(XrayParser.addItemAliases(data, "characters", "Mira", { "The Keeper" }))
+    TestRunner:eq(#data.characters[1].aliases, 1)
+end)
+TestRunner:test("ambiguous and missing names are refused", function()
+    local data = { characters = { { name = "Ana" }, { name = "Ana" } } }
+    TestRunner:ok(not XrayParser.addItemAliases(data, "characters", "Ana", { "X" }))
+    TestRunner:ok(not XrayParser.addItemAliases(data, "characters", "Nobody", { "X" }))
+end)
+
 print("")
 print(string.rep("-", 50))
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))

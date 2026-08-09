@@ -647,7 +647,9 @@ function XrayDedup.startFlow(opts)
         local function afterCommit(ok, err, success_text)
             if ok then
                 UIManager:show(Notification:new{ text = success_text })
-                showList(true)
+                -- A Manage-seeded one-off ends here — the reader was never in
+                -- the scan list, so don't open one (2026-08-09)
+                if not opts.manual_seed then showList(true) end
             else
                 UIManager:show(InfoMessage:new{ text = err, timeout = 4 })
             end
@@ -798,7 +800,9 @@ function XrayDedup.startFlow(opts)
     -- conservative ("Bob" vs "Robert" is invisible to them) — let the reader
     -- pick the two entries; the pair rides the normal Merge / AI merge / Never
     -- options with reason "manual". Category → entry A → entry B.
-    showManualPick = function()
+    -- seed (2026-08-09, Manage ▸ "Merge with another entry…"): {cat_key, name}
+    -- pre-picks the category and entry A, jumping straight to the pair pick.
+    showManualPick = function(seed)
         local res = scan()
         if res.err then
             UIManager:show(InfoMessage:new{ text = res.err, timeout = 4 })
@@ -839,6 +843,43 @@ function XrayDedup.startFlow(opts)
                 callback = function() UIManager:close(dialog) end }}
             dialog = ButtonDialog:new{ title = title, buttons = rows }
             UIManager:show(dialog)
+        end
+        if seed then
+            local scat
+            for _idx, cat in ipairs(cats) do
+                if cat.key == seed.cat_key then
+                    scat = cat
+                    break
+                end
+            end
+            if not scat then
+                UIManager:show(InfoMessage:new{
+                    text = _("No other named entries in this category to merge with."),
+                    timeout = 3 })
+                return
+            end
+            local sidx, sitem, seen_n = nil, nil, 0
+            for i, it in ipairs(scat.items) do
+                if rawName(it) == seed.name then
+                    seen_n = seen_n + 1
+                    sidx, sitem = i, it
+                end
+            end
+            if seen_n == 1 then
+                pickEntry(scat, T(_("Pick the entry to pair with \"%1\""), seed.name), sidx,
+                    function(ib, item_b, name_b)
+                        showPairOptions({
+                            cat_key = scat.key,
+                            cat_label = scat.label or scat.key,
+                            name_a = seed.name, name_b = name_b,
+                            item_a = sitem, item_b = item_b,
+                            idx_a = sidx, idx_b = ib,
+                            reason = "manual",
+                        })
+                    end)
+                return
+            end
+            -- Seed missing or ambiguous on disk — fall through to the full picker
         end
         local catdlg
         local cat_rows = {}
@@ -958,7 +999,12 @@ function XrayDedup.startFlow(opts)
         UIManager:show(dialog)
     end
 
-    showList(false)
+    if opts.manual_seed then
+        -- Manage ▸ "Merge with another entry…" — straight to the seeded pick
+        showManualPick(opts.manual_seed)
+    else
+        showList(false)
+    end
     logger.info("KOAssistant XrayDedup: scan started for", opts.file)
 end
 

@@ -2414,17 +2414,58 @@ function XrayBrowser:_showEntityManagePopup(item, category_key, title, source, n
     end
     -- Rename (2026-08-09): live main views only — the commit path writes the
     -- MAIN artifact, so a section/checkpoint view must not offer it
-    if not self.scope and not self.metadata.checkpoint and self.metadata.book_file then
-        local rename_name = XrayParser.getItemName(item, category_key)
-        if type(rename_name) == "string" and rename_name ~= "" then
-            table.insert(buttons, {{
-                text = _("Rename…"),
-                callback = function()
-                    UIManager:close(dialog)
-                    self_ref:_renameEntity(item, category_key, viewer)
-                end,
-            }})
-        end
+    local live_main = not self.scope and not self.metadata.checkpoint
+        and self.metadata.book_file
+    local entry_name = XrayParser.getItemName(item, category_key)
+    local named = type(entry_name) == "string" and entry_name ~= ""
+    if live_main and named then
+        table.insert(buttons, {{
+            text = _("Rename…"),
+            callback = function()
+                UIManager:close(dialog)
+                self_ref:_renameEntity(item, category_key, viewer)
+            end,
+        }})
+    end
+    -- Merge with another entry (2026-08-09 round): the dedup flow's manual
+    -- picker, seeded with THIS entry — same keep/AI-merge options and the
+    -- same commit (+ ring archive). The browser unwinds to a fresh root
+    -- instead of closing (a merge rewrites the data the stacked pages hold);
+    -- the commit's reloadLiveMain then keeps that root honest.
+    if live_main and named and self.metadata.plugin then
+        table.insert(buttons, {{
+            text = _("Merge with another entry…"),
+            callback = function()
+                UIManager:close(dialog)
+                if viewer then viewer:onClose() end
+                self_ref:_unwindToRoot()
+                require("koassistant_xray_dedup").startFlow({
+                    file = self_ref.metadata.book_file,
+                    ui = self_ref.ui,
+                    plugin = self_ref.metadata.plugin,
+                    configuration = self_ref.metadata.configuration,
+                    title = self_ref.metadata.title,
+                    author = self_ref.metadata.book_author,
+                    manual_seed = { cat_key = category_key, name = entry_name },
+                    close_browser = function() end, -- root stays; reloadLiveMain refreshes it
+                })
+            end,
+        }})
+    end
+    -- Link with a group member's entry (2026-08-09 round, cross-book
+    -- identity): each side gains the other's names as aliases, so group
+    -- navigation, carry/wake matching and future folds treat them as one
+    -- entity. Aliases only — no content copied, no request made.
+    if live_main and named and self.metadata.plugin
+        and self.metadata.plugin._inBookGroup
+        and self.metadata.plugin:_inBookGroup(self.metadata.book_file) then
+        table.insert(buttons, {{
+            text = _("Link with a group member's entry…"),
+            callback = function()
+                UIManager:close(dialog)
+                self_ref:_linkEntityFlow(item, category_key, entry_name, viewer)
+            end,
+        }})
     end
     -- "Move back to carried list" — the way back out of "Add as its own entry"
     -- (round 27 maintainer: "it could easily be done by accident and there is
@@ -2476,6 +2517,215 @@ function XrayBrowser:_showEntityManagePopup(item, category_key, title, source, n
     UIManager:show(dialog)
 end
 
+--- Manage ▸ Link, step 1: pick a group member (X-Ray'd members enabled).
+--- The flow: member → their entry (same category family) → confirm → alias
+--- bridge written BOTH ways, remote book first.
+function XrayBrowser:_linkEntityFlow(item, category_key, link_name, viewer)
+    local BookGroups = require("koassistant_book_groups")
+    local ActionCache = require("koassistant_action_cache")
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local book_file = self.metadata.book_file
+    local self_ref = self
+    -- This entry's identity handles (name + aliases) — what the member gains
+    local our_names = { link_name }
+    for _idx, a in ipairs(type(item.aliases) == "table" and item.aliases or {}) do
+        if type(a) == "string" and a ~= "" then our_names[#our_names + 1] = a end
+    end
+    local seen_paths, mates = { [book_file] = true }, {}
+    for _g, group in ipairs(BookGroups.groupsFor(book_file)) do
+        for _i, path in ipairs(group.books) do
+            if not seen_paths[path] then
+                seen_paths[path] = true
+                mates[#mates + 1] = path
+            end
+        end
+    end
+    if #mates == 0 then return end
+    local family = XrayParser.CATEGORY_FAMILY[category_key] or category_key
+    local mate_dialog
+    local rows = {}
+    for _idx, path in ipairs(mates) do
+        local captured = path
+        local mate_title = BookGroups.displayTitle(captured, self.ui)
+        local ok, entry = pcall(ActionCache.getXrayCache, captured)
+        if ok and entry and entry.result then
+            rows[#rows + 1] = {{ text = mate_title, align = "left",
+                callback = function()
+                    UIManager:close(mate_dialog)
+                    self_ref:_linkPickRemote(captured, mate_title, entry, family,
+                        category_key, link_name, our_names, viewer)
+                end }}
+        else
+            rows[#rows + 1] = {{ text = mate_title .. " " .. _("(no X-Ray)"),
+                align = "left", enabled = false }}
+        end
+    end
+    rows[#rows + 1] = {{ text = _("Cancel"),
+        callback = function() UIManager:close(mate_dialog) end }}
+    mate_dialog = ButtonDialog:new{
+        title = T(_("Link \"%1\" with an entry in…"), link_name),
+        buttons = rows,
+    }
+    UIManager:show(mate_dialog)
+end
+
+--- Manage ▸ Link, step 2: pick the member's entry — same category FAMILY
+--- (people never link to glossary terms, the wake-pass scoping), the entry
+--- already matching our identity marked "(already linked)".
+function XrayBrowser:_linkPickRemote(member_file, member_title, entry, family,
+        category_key, link_name, our_names, viewer)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local parsed = XrayParser.parse(entry.result)
+    if not parsed or parsed.error then
+        UIManager:show(InfoMessage:new{
+            text = _("That book's X-Ray could not be parsed."), timeout = 3 })
+        return
+    end
+    local self_ref = self
+    local existing = XrayParser.findByIdentity(parsed, our_names, category_key)
+    local dialog
+    local rows = {}
+    for _idx, cat in ipairs(XrayParser.getCategories(parsed)) do
+        if (XrayParser.CATEGORY_FAMILY[cat.key] or cat.key) == family
+            and type(cat.items) == "table" then
+            for _i, it in ipairs(cat.items) do
+                local nm = XrayParser.getItemName(it, cat.key)
+                if type(nm) == "string" and nm ~= "" then
+                    if existing and it == existing then
+                        rows[#rows + 1] = {{ text = nm .. " " .. _("(already linked)"),
+                            align = "left", enabled = false }}
+                    else
+                        local c_it, c_key, c_nm = it, cat.key, nm
+                        rows[#rows + 1] = {{ text = nm, align = "left",
+                            callback = function()
+                                UIManager:close(dialog)
+                                self_ref:_confirmLink(member_file, member_title,
+                                    entry, parsed, c_it, c_key, c_nm,
+                                    category_key, link_name, our_names, viewer)
+                            end }}
+                    end
+                end
+            end
+        end
+    end
+    if #rows == 0 then
+        UIManager:show(InfoMessage:new{
+            text = T(_("\"%1\" has no named entries in this category family."), member_title),
+            timeout = 3 })
+        return
+    end
+    rows[#rows + 1] = {{ text = _("Cancel"),
+        callback = function() UIManager:close(dialog) end }}
+    dialog = ButtonDialog:new{
+        title = T(_("Link \"%1\" with which entry of \"%2\"?"), link_name, member_title),
+        buttons = rows,
+    }
+    UIManager:show(dialog)
+end
+
+--- Manage ▸ Link, step 3: confirm, then commit — REMOTE side first (its
+--- failure leaves this book untouched), then the local side via the
+--- dormant-op commit. Both sides ring-archive their pre-link version.
+function XrayBrowser:_confirmLink(member_file, member_title, entry, parsed,
+        r_item, r_cat, r_name, category_key, link_name, our_names, viewer)
+    local ConfirmBox = require("ui/widget/confirmbox")
+    local self_ref = self
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Link \"%1\" (this book) with \"%2\" (%3)?\nEach book's entry gains the other's names as aliases, so group navigation and future folds treat them as the same. No content is copied."),
+            link_name, r_name, member_title),
+        ok_text = _("Link"),
+        ok_callback = function()
+            self_ref:_commitLink(member_file, member_title, entry, parsed,
+                r_item, r_cat, r_name, category_key, link_name, our_names, viewer)
+        end,
+    })
+end
+
+function XrayBrowser:_commitLink(member_file, member_title, entry, parsed,
+        r_item, r_cat, r_name, category_key, link_name, our_names, viewer)
+    local WriteBack = require("koassistant_artifact_writeback")
+    local json = require("json")
+    local their_names = { r_name }
+    for _idx, a in ipairs(type(r_item.aliases) == "table" and r_item.aliases or {}) do
+        if type(a) == "string" and a ~= "" then their_names[#their_names + 1] = a end
+    end
+    if not XrayParser.addItemAliases(parsed, r_cat, r_name, our_names) then
+        UIManager:show(InfoMessage:new{
+            text = _("That entry changed on disk — reopen and retry."), timeout = 3 })
+        return
+    end
+    local okj, member_json = pcall(json.encode, parsed, { pretty = true, indent = true })
+    if not okj or type(member_json) ~= "string" then
+        UIManager:show(InfoMessage:new{
+            text = _("Failed to serialize the member's X-Ray."), timeout = 3 })
+        return
+    end
+    -- Continuity meta, the dedup commit's convention: the fresh timestamp
+    -- marks the modification, everything else rides through
+    local meta = {}
+    for k, v in pairs(entry) do meta[k] = v end
+    meta.result, meta.timestamp, meta.progress_decimal = nil, nil, nil
+    local ok_remote = WriteBack.commitXray(member_file, member_json,
+        entry.progress_decimal or 0, meta, {
+            prev = entry,
+            features = (self.metadata.configuration and self.metadata.configuration.features) or {},
+            refresh_fn = function()
+                -- No-op unless that book's browser is somehow live
+                require("koassistant_xray_browser"):reloadLiveMain(member_file)
+            end,
+        })
+    if not ok_remote then
+        UIManager:show(InfoMessage:new{
+            text = _("Could not write the member book's X-Ray — nothing was linked."),
+            timeout = 4 })
+        return
+    end
+    if viewer then viewer:onClose() end
+    if self:_commitDormantOp(
+        function(data)
+            return XrayParser.addItemAliases(data, category_key, link_name, their_names)
+        end,
+        T(_("Linked \"%1\" with \"%2\" (%3)."), link_name, r_name, member_title)) then
+        self:_rebuildToDetail(category_key, link_name)
+    else
+        -- The remote write landed; only this book's side is missing
+        UIManager:show(InfoMessage:new{
+            text = _("The member book was linked, but this book's write failed — run the link again to finish this side."),
+            timeout = 5 })
+    end
+end
+
+--- Reset navigation to a freshly built root in ONE switchItemTable — after a
+--- commit rewrote the data, every stacked page holds stale item tables.
+function XrayBrowser:_unwindToRoot()
+    if not self.menu then return end
+    self.nav_stack = {}
+    self.location = nil
+    local base_paths = self._level_up and 1 or 0
+    while #self.menu.paths > base_paths do table.remove(self.menu.paths) end
+    self.menu:switchItemTable(self:buildMainTitle(), self:buildCategoryItems(), -1)
+end
+
+--- Rebuild root → category → detail for a named entry synchronously — the
+--- switchItemTable calls batch into one repaint (the search-return pattern).
+--- Shared by rename and link, which change an entry and stay on it.
+function XrayBrowser:_rebuildToDetail(category_key, name)
+    if not self.menu then return end
+    self:_unwindToRoot()
+    for _idx, cat in ipairs(XrayParser.getCategories(self.xray_data) or {}) do
+        if cat.key == category_key then
+            self:showCategoryItems(cat)
+            break
+        end
+    end
+    for _idx, it in ipairs((self.xray_data and self.xray_data[category_key]) or {}) do
+        if XrayParser.getItemName(it, category_key) == name then
+            self:showItemDetail(it, category_key, name)
+            break
+        end
+    end
+end
+
 --- Rename input (Manage ▸ Rename…): pre-filled with the current name.
 function XrayBrowser:_renameEntity(item, category_key, viewer)
     local old_name = XrayParser.getItemName(item, category_key)
@@ -2521,29 +2771,10 @@ function XrayBrowser:_commitRename(category_key, old_name, new_name, viewer)
     local ActionCache = require("koassistant_action_cache")
     ActionCache.renameEntityKeys(book_file, category_key, old_name, new_name)
     -- STAY IN PLACE (maintainer 2026-08-09, replacing the unwind-to-root):
-    -- rebuild the path root → category → renamed detail synchronously — the
-    -- switchItemTable calls batch into one repaint (the search-return
-    -- pattern) — so no page in the fresh stack holds pre-rename item tables
+    -- rebuild the path to the renamed detail synchronously, so no page in the
+    -- fresh stack holds pre-rename item tables
     if viewer then viewer:onClose() end
-    if self.menu then
-        self.nav_stack = {}
-        self.location = nil
-        local base_paths = self._level_up and 1 or 0
-        while #self.menu.paths > base_paths do table.remove(self.menu.paths) end
-        self.menu:switchItemTable(self:buildMainTitle(), self:buildCategoryItems(), -1)
-        for _idx, cat in ipairs(XrayParser.getCategories(self.xray_data) or {}) do
-            if cat.key == category_key then
-                self:showCategoryItems(cat)
-                break
-            end
-        end
-        for _idx, it in ipairs((self.xray_data and self.xray_data[category_key]) or {}) do
-            if XrayParser.getItemName(it, category_key) == new_name then
-                self:showItemDetail(it, category_key, new_name)
-                break
-            end
-        end
-    end
+    self:_rebuildToDetail(category_key, new_name)
     local ConfirmBox = require("ui/widget/confirmbox")
     local self_ref = self
     UIManager:show(ConfirmBox:new{

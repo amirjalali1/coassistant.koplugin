@@ -6231,25 +6231,46 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
       elseif mode == "xray" then
         local ok, entry = pcall(ActionCache.getXrayCache, captured)
         if ok and entry and entry.result then
-          cb = function()
-            UIManager:close(dialog)
-            if opts and opts.before_open then opts.before_open() end
-            -- Round 25: land the jump where the reader was in THIS book's
-            -- X-Ray (set inside the callback, so a dismissed popup leaves no
-            -- stranded descriptor; the book stamp guards a browser that never
-            -- opens — e.g. an unparseable cache falls through to plain text)
-            if opts and opts.location then
-              require("koassistant_xray_browser")._pending_navigate_to = {
-                category_key = opts.location.category_key,
-                item_name = opts.location.item_name,
-                item_aliases = opts.location.item_aliases,
-                book_file = captured,
-                fallback = true,
-              }
+          -- Entity graying (2026-08-09 round answer A): with an entity
+          -- context, a member whose X-Ray lacks the entity (name+aliases,
+          -- entity's category preferred — findByIdentity) is disabled instead
+          -- of offering a jump that could only fall back. One parse per
+          -- member, only at popup-open; the → Group button itself stays
+          -- ungated (per-detail gating would pay these reads on every page).
+          local present = true
+          if opts and opts.location and opts.location.item_name then
+            local XrayParser = require("koassistant_xray_parser")
+            local parsed = XrayParser.parse(entry.result)
+            local names = { opts.location.item_name }
+            for _i, a in ipairs(opts.location.item_aliases or {}) do
+              names[#names + 1] = a
             end
-            self_ref:showCacheViewer({ name = _("X-Ray"), key = "_xray_cache",
-              data = entry, book_title = title, file = captured,
-              skip_stale_popup = true })
+            present = (parsed and not parsed.error
+              and XrayParser.findByIdentity(parsed, names, opts.location.category_key)) ~= nil
+          end
+          if present then
+            cb = function()
+              UIManager:close(dialog)
+              if opts and opts.before_open then opts.before_open() end
+              -- Round 25: land the jump where the reader was in THIS book's
+              -- X-Ray (set inside the callback, so a dismissed popup leaves no
+              -- stranded descriptor; the book stamp guards a browser that never
+              -- opens — e.g. an unparseable cache falls through to plain text)
+              if opts and opts.location then
+                require("koassistant_xray_browser")._pending_navigate_to = {
+                  category_key = opts.location.category_key,
+                  item_name = opts.location.item_name,
+                  item_aliases = opts.location.item_aliases,
+                  book_file = captured,
+                  fallback = true,
+                }
+              end
+              self_ref:showCacheViewer({ name = _("X-Ray"), key = "_xray_cache",
+                data = entry, book_title = title, file = captured,
+                skip_stale_popup = true })
+            end
+          else
+            title = title .. " " .. _("(not in its X-Ray)")
           end
         else
           title = title .. " " .. _("(no X-Ray)")

@@ -2524,6 +2524,48 @@ end
 --- @param cat_key string Category holding the entry
 --- @param item_name string Entry name (ambiguous names refused, as elsewhere)
 --- @return boolean ok
+--- Add identity handles to an entry's aliases (Manage ▸ Link, 2026-08-09):
+--- case-insensitive dedupe against the main name and existing aliases. Same
+--- exact-name find + ambiguity guard as renameItem. Returns true when the
+--- entry was found — even if every name was already present (the link is
+--- then already recorded). Pure.
+--- @param data table Parsed X-Ray
+--- @param cat_key string Category key
+--- @param item_name string Main name (exact)
+--- @param names table Identity handles to add
+--- @return boolean ok
+function XrayParser.addItemAliases(data, cat_key, item_name, names)
+    if type(data) ~= "table" or type(cat_key) ~= "string"
+        or type(item_name) ~= "string" or item_name == ""
+        or type(names) ~= "table" then
+        return false
+    end
+    local arr = data[cat_key]
+    if type(arr) ~= "table" then return false end
+    local at
+    for i, item in ipairs(arr) do
+        if type(item) == "table" and XrayParser.getItemName(item, cat_key) == item_name then
+            if at then return false end -- ambiguous name — refuse
+            at = i
+        end
+    end
+    if not at then return false end
+    local item = arr[at]
+    local aliases = ensure_array(item.aliases) or {}
+    local seen = { [item_name:lower()] = true }
+    for _idx, a in ipairs(aliases) do
+        if type(a) == "string" then seen[a:lower()] = true end
+    end
+    for _idx, n in ipairs(names) do
+        if type(n) == "string" and n ~= "" and not seen[n:lower()] then
+            seen[n:lower()] = true
+            aliases[#aliases + 1] = n
+        end
+    end
+    item.aliases = #aliases > 0 and aliases or nil
+    return true
+end
+
 --- Rename an entry's main name (Manage ▸ Rename, 2026-08-09). The old name is
 --- pushed onto the FRONT of aliases so the model keeps the mapping
 --- ({entity_index} shows "New (old, …)", {cached_result} carries the full
