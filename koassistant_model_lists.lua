@@ -453,7 +453,7 @@ local ModelLists = {
 
         -- Provider's most capable general-purpose model
         flagship = {
-            anthropic = "claude-sonnet-5",
+            anthropic = "claude-opus-5",             -- deep-reasoning flagship; sonnet-5 is the standard tier
             openai = "gpt-5.6-sol",
             openai_codex = "gpt-5.6-sol",
             deepseek = "deepseek-v4-pro",

@@ -132,11 +132,11 @@ print("== getModelForTier ==")
 -- Direct hits
 TestRunner.assert(ModelLists.getModelForTier("anthropic", "frontier", false) == "claude-fable-5",
     "anthropic frontier = claude-fable-5")
-TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", false) == "claude-sonnet-5",
-    "anthropic flagship = claude-sonnet-5")
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", false) == "claude-opus-5",
+    "anthropic flagship = claude-opus-5")
 
 -- Legacy "reasoning" request resolves to the flagship entry, never frontier
-TestRunner.assert(ModelLists.getModelForTier("anthropic", "reasoning", true) == "claude-sonnet-5",
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "reasoning", true) == "claude-opus-5",
     "reasoning alias resolves to flagship model")
 
 -- Fallback only DESCENDS: providers without frontier fall to flagship...
@@ -171,7 +171,7 @@ TestRunner.assert(ModelLists.getModelForTier("custom_lm_studio", "ultrafast", tr
     "ultrafast is the floor — no upward fallback")
 TestRunner.assert(ModelLists.getModelForTier("anthropic", "ultrafast", false) == "claude-haiku-x",
     "user tier overrides curated entry")
-TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", false) == "claude-sonnet-5",
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", false) == "claude-opus-5",
     "unrelated curated tiers unaffected by user override")
 TestRunner.assert(ModelOverrides.tierOverride("anthropic", "flagship") == nil,
     "tierOverride returns nil where the user has no opinion")
@@ -232,7 +232,7 @@ print("== GUI tier placements (tier GUI, features.tier_overrides) ==")
 ModelOverrides.setGuiTiers({ anthropic = { ultrafast = "claude-haiku-gui" } })
 TestRunner.assert(ModelLists.getModelForTier("anthropic", "ultrafast", false) == "claude-haiku-gui",
     "GUI placement overrides curated entry")
-TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", false) == "claude-sonnet-5",
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", false) == "claude-opus-5",
     "unrelated tiers unaffected by GUI placement")
 
 -- GUI layer beats the custom_models.lua file layer on the same slot
@@ -268,7 +268,7 @@ TestRunner.assert(ModelLists.resolveTierModel("custom_lm_studio", "fastest") == 
 ModelOverrides.setGuiTiers({ anthropic = { ultrafast = "claude-haiku-gui" } })
 TestRunner.assert(ModelLists.getTierForModel("anthropic", "claude-haiku-gui") == "ultrafast",
     "getTierForModel labels a GUI-placed model with its tier")
-TestRunner.assert(ModelLists.getTierForModel("anthropic", "claude-sonnet-5") == "flagship",
+TestRunner.assert(ModelLists.getTierForModel("anthropic", "claude-haiku-4-5-20251001") == "fast",
     "model in two tiers labels as the higher one (TIER_ORDER walk)")
 ModelOverrides.setGuiTiers(nil)
 
