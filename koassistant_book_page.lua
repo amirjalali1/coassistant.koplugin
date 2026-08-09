@@ -28,6 +28,20 @@ local _ = require("koassistant_gettext")
 
 local BookPage = {}
 
+--- The page's user-facing name, in ONE place — a wholesale rename is expected
+--- (maintainer 2026-08-09), so entry points must call these rather than
+--- hardcode. Two strings can't reach here (would cycle the require graph) and
+--- must be renamed alongside: Constants.getQuickActionUtilityText's
+--- book_overview entry, and nothing else.
+function BookPage.pageName()
+    return _("Book Overview")
+end
+
+--- Entry-row form used by the View-Artifacts popups
+function BookPage.entryLabel()
+    return _("Book overview…")
+end
+
 --- Same compact age the View Artifacts popup shows next to artifact names
 local function relativeDate(ts)
     ts = tonumber(ts)
@@ -151,17 +165,29 @@ local function buildItems(ctx)
         if cache.data and not cache.is_pinned_group and not cache.is_section_group
             and not cache.is_wiki_group then
             local parts = {}
-            if cache.data.progress_decimal and cache.data.progress_decimal < 1.0 then
+            -- Percent shown ALWAYS when tracked (maintainer 2026-08-09), 100%
+            -- included — position-irrelevant artifacts store 1.0 and read as
+            -- covering the whole book, which is what they do
+            if cache.data.progress_decimal then
                 parts[#parts + 1] = math.floor(cache.data.progress_decimal * 100 + 0.5) .. "%"
             end
             local age = relativeDate(cache.data.timestamp)
             if age then parts[#parts + 1] = age end
             if #parts > 0 then mandatory = table.concat(parts, " · ") end
         end
+        -- Quiz opens its ACTION popup when the book is open (View/Update/New
+        -- Quiz — the quiz viewer has no redo controls, unlike the artifact
+        -- viewers); a closed book can't quiz, so it falls through to viewing
+        local row_callback
+        if cache.key == "generate_quiz" and ctx.is_open_book then
+            row_callback = function() plugin:executeBookLevelAction("generate_quiz") end
+        else
+            row_callback = function() openArtifactRow(cache, ctx) end
+        end
         items[#items + 1] = {
             text = Constants.getEmojiText(artifactEmoji(cache), cache.name, ctx.enable_emoji),
             mandatory = mandatory,
-            callback = function() openArtifactRow(cache, ctx) end,
+            callback = row_callback,
         }
     end
 
@@ -200,6 +226,19 @@ local function buildItems(ctx)
         hold_callback = function() plugin:openNotebookForFile(file, true) end,
     }
 
+    -- Search in book (KOReader's own fulltext search) — open book only, and
+    -- the page closes first: search navigates the BOOK, which must not sit
+    -- hidden under a full-screen menu
+    if ctx.is_open_book and ui.search then
+        items[#items + 1] = {
+            text = Constants.getEmojiText("🔍", _("Search in book"), ctx.enable_emoji),
+            callback = function()
+                BookPage.close()
+                ui.search:onShowFulltextSearchInput()
+            end,
+        }
+    end
+
     -- Group membership (tap = members popup, hold = manage) / add to group
     local GroupsUI = require("koassistant_book_groups_ui")
     if plugin:_inBookGroup(file) then
@@ -232,6 +271,21 @@ local function buildItems(ctx)
             BookSettings.show({ plugin = plugin, ui = ui, document_path = file })
         end,
     }
+
+    -- Open Book (closed-book views only) — the X-Ray browser's reopen
+    -- pattern: a module-level pending marker survives the plugin
+    -- re-instantiation ReaderUI causes, and onReaderReady (main.lua) re-shows
+    -- the overview for the same book
+    if not ctx.is_open_book then
+        items[#items + 1] = {
+            text = Constants.getEmojiText("📖", _("Open Book"), ctx.enable_emoji),
+            callback = function()
+                BookPage._pending_reopen = { book_file = file }
+                BookPage.close()
+                require("apps/reader/readerui"):showReader(file)
+            end,
+        }
+    end
 
     return items
 end

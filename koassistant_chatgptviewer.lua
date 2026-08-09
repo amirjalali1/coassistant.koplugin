@@ -2396,7 +2396,7 @@ function ChatGPTViewer:init()
             }})
           end
           table.insert(art_buttons, {{
-            text = _("Book overview…"),
+            text = require("koassistant_book_page").entryLabel(),
             callback = function()
               UIManager:close(self._artifacts_dialog)
               self:onClose()

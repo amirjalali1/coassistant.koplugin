@@ -433,6 +433,29 @@ function AskGPT:init()
         end)
       end
     end
+    -- Auto-reopen the Book Overview after "Open Book" on its closed-book view
+    -- (same pattern as the X-Ray browser reopen above)
+    local BookPageReopen = require("koassistant_book_page")
+    if BookPageReopen._pending_reopen then
+      local bp_pending = BookPageReopen._pending_reopen
+      BookPageReopen._pending_reopen = nil
+      local bp_file = self.ui and self.ui.document and self.ui.document.file
+      if bp_file and bp_file == bp_pending.book_file then
+        local UIManager = require("ui/uimanager")
+        UIManager:scheduleIn(0.5, function()
+          local props = self.ui and self.ui.doc_props
+          BookPageReopen.show({
+            file = bp_file,
+            plugin = self,
+            ui = self.ui,
+            title = props and (props.display_title or props.title),
+            author = props and props.authors,
+            enable_emoji = configuration and configuration.features
+                and configuration.features.enable_emoji_icons == true,
+          })
+        end)
+      end
+    end
     -- Check if recap reminder should be shown
     self:checkRecapReminder()
     -- One-shot Automatic X-Ray offer (§7 P4, opt-in; gates inside)
@@ -753,7 +776,7 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
           }})
         end
         table.insert(btn_rows, {{
-          text = _("Book overview…"),
+          text = require("koassistant_book_page").entryLabel(),
           callback = function()
             UIManager:close(self_ref._cache_selector)
             if fb_menu then UIManager:close(fb_menu) end
@@ -782,6 +805,28 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
       end,
     })
   end
+
+  -- Book Overview (KOA) button — the book's home page (before Book Settings,
+  -- maintainer 2026-08-09)
+  table.insert(buttons, {
+    text = require("koassistant_book_page").pageName() .. " (KOA)",
+    callback = function()
+      local UIManager = require("ui/uimanager")
+      local current_dialog = UIManager:getTopmostVisibleWidget()
+      if current_dialog and current_dialog.close then
+        UIManager:close(current_dialog)
+      end
+      require("koassistant_book_page").show({
+        file = file,
+        plugin = self,
+        ui = self.ui,
+        title = title,
+        author = authors,
+        enable_emoji = configuration and configuration.features
+            and configuration.features.enable_emoji_icons == true,
+      })
+    end,
+  })
 
   -- Book Settings (KOA) button — per-book domain, research, AI title/author overrides
   table.insert(buttons, {
@@ -6046,7 +6091,7 @@ function AskGPT:viewCache(parent_dialog)
   -- Book page round (2026-08-09): the popup stays the two-tap fast path; the
   -- page is the explore view (same artifact rows + chats/notebook/group/settings)
   table.insert(buttons, {{
-    text = _("Book overview…"),
+    text = require("koassistant_book_page").entryLabel(),
     callback = function()
       UIManager:close(self_ref._cache_selector)
       if parent_dialog then UIManager:close(parent_dialog) end
@@ -6119,6 +6164,24 @@ end
 --- Cheap membership check — callers build "→ Group" buttons lazily from it.
 function AskGPT:_inBookGroup(file)
   return file ~= nil and #require("koassistant_book_groups").groupsFor(file) > 0
+end
+
+--- Book Overview entry for registry-driven surfaces (QA panel utility
+--- "book_overview"; reader mode, so the open book is the target)
+function AskGPT:onKOAssistantBookOverview()
+  local file = self.ui and self.ui.document and self.ui.document.file
+  if not file then return true end
+  local props = self.ui.doc_props
+  require("koassistant_book_page").show({
+    file = file,
+    plugin = self,
+    ui = self.ui,
+    title = props and (props.display_title or props.title),
+    author = props and props.authors,
+    enable_emoji = configuration and configuration.features
+        and configuration.features.enable_emoji_icons == true,
+  })
+  return true
 end
 
 --- Group entry for registry-driven surfaces (QA panel utility "book_group",
@@ -15590,6 +15653,7 @@ function AskGPT:onKOAssistantQuickActions()
     notebook = "\u{1F4D3}",            -- 📓
     view_caches = "\u{1F4E6}",         -- 📦
     book_group = "\u{1F5C2}\u{FE0F}",  -- 🗂️ (one icon for groups everywhere)
+    book_overview = "\u{1F4CB}",       -- 📋 (the overview page)
     ai_quick_settings = "\u{2699}\u{FE0F}", -- ⚙️
     book_settings = "\u{1F4D5}",       -- 📕
   }

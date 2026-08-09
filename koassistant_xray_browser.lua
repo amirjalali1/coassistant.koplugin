@@ -1167,9 +1167,9 @@ local function dormantListTitle(book_file, n)
     end
     if n then
         return series and T(_("Carried from earlier books (%1)"), n)
-            or T(_("Carried from related books (%1)"), n)
+            or T(_("Carried from group (%1)"), n)
     end
-    return series and _("Carried from earlier books") or _("Carried from related books")
+    return series and _("Carried from earlier books") or _("Carried from group")
 end
 
 function XrayBrowser:buildCategoryItems()
@@ -2511,7 +2511,6 @@ end
 --- strangers in the running text).
 function XrayBrowser:_commitRename(category_key, old_name, new_name, viewer)
     local book_file = self.metadata.book_file
-    if viewer then viewer:onClose() end
     if not self:_commitDormantOp(
         function(data)
             return XrayParser.renameItem(data, category_key, old_name, new_name)
@@ -2521,9 +2520,30 @@ function XrayBrowser:_commitRename(category_key, old_name, new_name, viewer)
     end
     local ActionCache = require("koassistant_action_cache")
     ActionCache.renameEntityKeys(book_file, category_key, old_name, new_name)
-    -- Back to root: pages under this one hold item tables that still carry
-    -- the old name (same pattern as the carried-list demote)
-    while #self.nav_stack > 0 do self:navigateBack() end
+    -- STAY IN PLACE (maintainer 2026-08-09, replacing the unwind-to-root):
+    -- rebuild the path root → category → renamed detail synchronously — the
+    -- switchItemTable calls batch into one repaint (the search-return
+    -- pattern) — so no page in the fresh stack holds pre-rename item tables
+    if viewer then viewer:onClose() end
+    if self.menu then
+        self.nav_stack = {}
+        self.location = nil
+        local base_paths = self._level_up and 1 or 0
+        while #self.menu.paths > base_paths do table.remove(self.menu.paths) end
+        self.menu:switchItemTable(self:buildMainTitle(), self:buildCategoryItems(), -1)
+        for _idx, cat in ipairs(XrayParser.getCategories(self.xray_data) or {}) do
+            if cat.key == category_key then
+                self:showCategoryItems(cat)
+                break
+            end
+        end
+        for _idx, it in ipairs((self.xray_data and self.xray_data[category_key]) or {}) do
+            if XrayParser.getItemName(it, category_key) == new_name then
+                self:showItemDetail(it, category_key, new_name)
+                break
+            end
+        end
+    end
     local ConfirmBox = require("ui/widget/confirmbox")
     local self_ref = self
     UIManager:show(ConfirmBox:new{

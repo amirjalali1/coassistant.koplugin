@@ -449,7 +449,7 @@ function ArtifactBrowser:showArtifactSelector(doc_path, doc_title, opts)
 
     if not select_mode then
         table.insert(buttons, {{
-            text = _("Book overview…"),
+            text = require("koassistant_book_page").entryLabel(),
             callback = function()
                 UIManager:close(self_ref._cache_selector)
                 require("koassistant_book_page").show({

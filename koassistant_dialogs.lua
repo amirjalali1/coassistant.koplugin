@@ -8830,7 +8830,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             }})
                         end
                         table.insert(btn_rows, {{
-                            text = _("Book overview…"),
+                            text = require("koassistant_book_page").entryLabel(),
                             callback = function()
                                 UIManager:close(plugin._cache_selector)
                                 UIManager:close(input_dialog)
