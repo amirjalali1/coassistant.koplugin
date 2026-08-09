@@ -226,6 +226,52 @@ TestRunner.assert(ModelLists.resolveTierModel("custom_only_frontier", "fastest")
     "fastest walk NEVER consults frontier (frontier-only provider resolves to nothing)")
 ModelOverrides._setUserForTests(false)
 
+print("== GUI tier placements (tier GUI, features.tier_overrides) ==")
+
+-- GUI layer beats curated
+ModelOverrides.setGuiTiers({ anthropic = { ultrafast = "claude-haiku-gui" } })
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "ultrafast", false) == "claude-haiku-gui",
+    "GUI placement overrides curated entry")
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", false) == "claude-sonnet-5",
+    "unrelated tiers unaffected by GUI placement")
+
+-- GUI layer beats the custom_models.lua file layer on the same slot
+ModelOverrides._setUserForTests({
+    tiers = { anthropic = { ultrafast = "claude-haiku-file" } },
+})
+TestRunner.assert(ModelOverrides.tierOverride("anthropic", "ultrafast") == "claude-haiku-gui",
+    "GUI beats custom_models.lua on the same slot")
+TestRunner.assert(ModelOverrides.userTierOverride("anthropic", "ultrafast") == "claude-haiku-file",
+    "userTierOverride reads the file layer only (Default-row resolution)")
+
+-- Invalid GUI values fall through to the file layer
+ModelOverrides.setGuiTiers({ anthropic = { ultrafast = "" }, openai = "not-a-table" })
+TestRunner.assert(ModelOverrides.tierOverride("anthropic", "ultrafast") == "claude-haiku-file",
+    "empty-string GUI value falls through to the file layer")
+TestRunner.assert(ModelLists.getModelForTier("openai", "fast", false) == "gpt-5.6-luna",
+    "non-table GUI provider entry is ignored (curated applies)")
+ModelOverrides._setUserForTests(false)
+
+-- Clearing re-exposes curated
+ModelOverrides.setGuiTiers(nil)
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "ultrafast", false) == "claude-haiku-4-5-20251001",
+    "setGuiTiers(nil) clears the GUI layer")
+
+-- Custom provider with only a GUI placement: tier hints + fastest walk work
+ModelOverrides.setGuiTiers({ custom_lm_studio = { fast = "qwen3-4b-gui" } })
+TestRunner.assert(ModelLists.getModelForTier("custom_lm_studio", "fast", false) == "qwen3-4b-gui",
+    "custom provider gets a GUI-defined tier")
+TestRunner.assert(ModelLists.resolveTierModel("custom_lm_studio", "fastest") == "qwen3-4b-gui",
+    "fastest walk consults GUI placements on custom providers")
+
+-- getTierForModel honors overrides and walks TIER_ORDER deterministically
+ModelOverrides.setGuiTiers({ anthropic = { ultrafast = "claude-haiku-gui" } })
+TestRunner.assert(ModelLists.getTierForModel("anthropic", "claude-haiku-gui") == "ultrafast",
+    "getTierForModel labels a GUI-placed model with its tier")
+TestRunner.assert(ModelLists.getTierForModel("anthropic", "claude-sonnet-5") == "flagship",
+    "model in two tiers labels as the higher one (TIER_ORDER walk)")
+ModelOverrides.setGuiTiers(nil)
+
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))
 return TestRunner.failed == 0

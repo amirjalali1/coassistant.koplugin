@@ -22,6 +22,16 @@ local ModelOverrides = {}
 ModelOverrides._user = nil     -- parsed custom_models.lua content
 ModelOverrides._derived = nil  -- parsed koassistant_model_caps.lua content
 
+-- GUI tier placements (tier GUI, docs/tier_gui_plan.md): the contents of
+-- features.tier_overrides, pushed by main.lua's updateConfigFromSettings on
+-- every request path — this module stays pure-loadable and never reads
+-- settings itself. Precedence inside tierOverride: GUI > custom_models.lua.
+ModelOverrides._gui_tiers = nil
+
+function ModelOverrides.setGuiTiers(tbl)
+    ModelOverrides._gui_tiers = type(tbl) == "table" and tbl or nil
+end
+
 local function prefixMatch(model, pattern)
     if not model or not pattern then return false end
     return model == pattern or model:match("^" .. pattern:gsub("%-", "%%-")) ~= nil
@@ -82,16 +92,28 @@ function ModelOverrides.capabilityOverride(provider, model, capability)
     return best and true or false
 end
 
---- User tier placement (item 18b): tiers[provider][tier] = model_id. Exact keys,
---- no prefix matching — a tier names one concrete model. This is also how custom
---- providers (id "custom_<slug>") get tiers at all.
---- @return string|nil model id, nil = no opinion (curated _tiers applies)
-function ModelOverrides.tierOverride(provider, tier)
+--- custom_models.lua tier placement only (item 18b) — the layer BELOW the GUI.
+--- Exposed separately because the tier GUI's "Default (X)" row needs the
+--- resolution a cleared override falls back to.
+--- @return string|nil model id, nil = no opinion
+function ModelOverrides.userTierOverride(provider, tier)
     local user = ensureUser()
     local map = user and user.tiers and user.tiers[provider]
     local model = type(map) == "table" and map[tier] or nil
     if type(model) == "string" and model ~= "" then return model end
     return nil
+end
+
+--- User tier placement: GUI (features.tier_overrides) first, then
+--- custom_models.lua (item 18b). Exact keys, no prefix matching — a tier names
+--- one concrete model. This is also how custom providers (id "custom_<slug>")
+--- get tiers at all.
+--- @return string|nil model id, nil = no opinion (curated _tiers applies)
+function ModelOverrides.tierOverride(provider, tier)
+    local gmap = ModelOverrides._gui_tiers and ModelOverrides._gui_tiers[provider]
+    local gmodel = type(gmap) == "table" and gmap[tier] or nil
+    if type(gmodel) == "string" and gmodel ~= "" then return gmodel end
+    return ModelOverrides.userTierOverride(provider, tier)
 end
 
 --- First user reasoning profile matching the model (array order = user's order).

@@ -511,8 +511,8 @@ local ModelLists = {
             xai = "grok-4.20-0309-non-reasoning",
             cohere = "command-r7b-12-2024",
             ollama = "llama3.2:3b",
-            openrouter = "google/gemini-3.6-flash",
-            requesty = "google/gemini-2.5-flash",
+            openrouter = "openai/gpt-5.6-luna",     -- was 3.6-flash: duplicated standard AND reasoning-mandatory via the router; luna mirrors the direct-openai fast pick, reasoning off by default
+            requesty = "openai/gpt-4o-mini",        -- was 2.5-flash (duplicated standard); gpt-4o-mini is the verified fast/low-cost pick and never reasons
             together = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             fireworks = "accounts/fireworks/models/llama-v3p3-70b-instruct",
             sambanova = "Meta-Llama-3.3-70B-Instruct",
@@ -535,8 +535,8 @@ local ModelLists = {
             xai = "grok-4.20-0309-non-reasoning",
             cohere = "command-r7b-12-2024",
             ollama = "tinyllama",
-            openrouter = "google/gemini-3.6-flash",
-            requesty = "google/gemini-2.5-flash",
+            openrouter = "openai/gpt-5.4-mini",     -- mini-class, reasoning off by default (NOT gpt-oss-20b: open-weight oss models reason at medium effort by default — wrong surprise for ultrafast)
+            requesty = "openai/gpt-4o-mini",
             together = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             fireworks = "accounts/fireworks/models/llama-v3p3-70b-instruct",
             sambanova = "Meta-Llama-3.3-70B-Instruct",
@@ -868,8 +868,11 @@ end
 -- @param model_id string - Model ID
 -- @return string - Tier name (defaults to "standard")
 function ModelLists.getTierForModel(provider, model_id)
-    for tier_name, tier_map in pairs(ModelLists._tiers) do
-        if tier_map[provider] == model_id then
+    -- Through lookupTier so GUI/custom_models.lua placements label correctly;
+    -- TIER_ORDER walk also makes a model placed in two tiers deterministic
+    -- (the old pairs() walk over _tiers was undefined-order).
+    for _idx, tier_name in ipairs(TIER_ORDER) do
+        if lookupTier(provider, tier_name) == model_id then
             return tier_name
         end
     end

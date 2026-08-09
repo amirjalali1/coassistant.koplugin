@@ -2041,6 +2041,12 @@ function AskGPT:updateConfigFromSettings()
   configuration.features.minimal_buttons = nil
   configuration.features.is_full_page_translate = nil  -- Only set by translateCurrentPage
 
+  -- Push GUI tier placements into the pure override layer (tier GUI,
+  -- docs/tier_gui_plan.md). ModelOverrides never reads settings itself; this
+  -- runs on every request path in both plugin instances, so cross-instance
+  -- staleness is covered by construction.
+  require("koassistant_model_overrides").setGuiTiers(features.tier_overrides)
+
   -- Log the current configuration for debugging
   local config_parts = {
     "provider=" .. (configuration.provider or "nil"),
@@ -2090,6 +2096,53 @@ function AskGPT:getCustomModels(provider)
   local features = self.settings:readSetting("features") or {}
   local custom_models = features.custom_models or {}
   return custom_models[provider] or {}
+end
+
+-- Tier GUI helpers (docs/tier_gui_plan.md): features.tier_overrides[provider][tier]
+-- = model_id. GUI layer of tier resolution (beats custom_models.lua placements).
+function AskGPT:getTierOverride(provider, tier)
+  local features = self.settings:readSetting("features") or {}
+  local map = features.tier_overrides and features.tier_overrides[provider]
+  local model = type(map) == "table" and map[tier] or nil
+  if type(model) == "string" and model ~= "" then return model end
+  return nil
+end
+
+-- model = nil clears the tier; empty provider tables are pruned so the settings
+-- file never accumulates husks.
+function AskGPT:setTierOverride(provider, tier, model)
+  local features = self.settings:readSetting("features") or {}
+  features.tier_overrides = features.tier_overrides or {}
+  features.tier_overrides[provider] = features.tier_overrides[provider] or {}
+  features.tier_overrides[provider][tier] = model
+  if next(features.tier_overrides[provider]) == nil then
+    features.tier_overrides[provider] = nil
+  end
+  if next(features.tier_overrides) == nil then
+    features.tier_overrides = nil
+  end
+  self.settings:saveSetting("features", features)
+  self.settings:flush()
+  self:updateConfigFromSettings()  -- pushes the new table into ModelOverrides
+end
+
+function AskGPT:clearTierOverrides(provider)
+  local features = self.settings:readSetting("features") or {}
+  if features.tier_overrides then
+    features.tier_overrides[provider] = nil
+    if next(features.tier_overrides) == nil then
+      features.tier_overrides = nil
+    end
+  end
+  self.settings:saveSetting("features", features)
+  self.settings:flush()
+  self:updateConfigFromSettings()
+end
+
+function AskGPT:hasTierOverrides(provider)
+  local features = self.settings:readSetting("features") or {}
+  local map = features.tier_overrides and features.tier_overrides[provider]
+  return type(map) == "table" and next(map) ~= nil
 end
 
 -- Helper: Save a custom model for a provider
@@ -3859,6 +3912,13 @@ function AskGPT:buildModelMenu(simplified)
         end,
       })
     end
+    -- Tier GUI (docs/tier_gui_plan.md): per-provider speed-ladder editor
+    table.insert(items, {
+      text = _("Model tiers..."),
+      sub_item_table_func = function()
+        return self_ref:buildTierMenu(provider)
+      end,
+    })
   end
 
   if #items == 0 then  -- No models at all (simplified mode with no models)
@@ -3869,6 +3929,114 @@ function AskGPT:buildModelMenu(simplified)
     })
   end
 
+  return items
+end
+
+-- Tier GUI (docs/tier_gui_plan.md): edit this provider's speed ladder. Tiers are
+-- RELATIVE — per-action model_tier hints and the ⚡ "fastest" walk resolve
+-- through them, always within the current provider. The GUI layer
+-- (features.tier_overrides) beats custom_models.lua placements, which beat the
+-- curated defaults in koassistant_model_lists.lua.
+function AskGPT:buildTierMenu(provider)
+  local self_ref = self
+  local ModelOverrides = require("koassistant_model_overrides")
+  local tiers = { "frontier", "flagship", "standard", "fast", "ultrafast" }
+  local tier_labels = {
+    frontier = _("Frontier"), flagship = _("Flagship"), standard = _("Standard"),
+    fast = _("Fast"), ultrafast = _("Ultrafast"),
+  }
+
+  -- The resolution a cleared tier falls back to: custom_models.lua > curated.
+  local function defaultFor(tier)
+    local tier_map = ModelLists._tiers[tier]
+    return ModelOverrides.userTierOverride(provider, tier)
+        or (tier_map and tier_map[provider]) or nil
+  end
+
+  -- Pick-list source: provider array + user-added models, deduped, plus the
+  -- current override even when it's in neither (stays visible and clearable).
+  local function candidateModels(override)
+    local seen, list = {}, {}
+    local function add(m)
+      if type(m) == "string" and m ~= "" and not seen[m] then
+        seen[m] = true
+        list[#list + 1] = m
+      end
+    end
+    if not self_ref:isCustomProvider(provider) then
+      for _idx, m in ipairs(ModelLists[provider] or {}) do add(m) end
+    end
+    for _idx, m in ipairs(self_ref:getCustomModels(provider)) do add(m) end
+    add(override)
+    return list
+  end
+
+  local function buildPickList(tier)
+    local pick = {}
+    local info = ModelLists.getTierInfo(tier)
+    if info and info.description then
+      pick[#pick + 1] = { text = info.description, enabled = false }
+    end
+    pick[#pick + 1] = {
+      text_func = function()
+        local def = defaultFor(tier)
+        return def and T(_("Default (%1)"), def) or _("Default (not set)")
+      end,
+      checked_func = function()
+        return self_ref:getTierOverride(provider, tier) == nil
+      end,
+      callback = function()
+        self_ref:setTierOverride(provider, tier, nil)
+      end,
+    }
+    for _idx, m in ipairs(candidateModels(self_ref:getTierOverride(provider, tier))) do
+      pick[#pick + 1] = {
+        text = m,
+        checked_func = function()
+          return self_ref:getTierOverride(provider, tier) == m
+        end,
+        callback = function()
+          self_ref:setTierOverride(provider, tier, m)
+        end,
+      }
+    end
+    return pick
+  end
+
+  local items = {
+    { text = _("Speed ladder for action hints and Quick Answer. Never switches provider."),
+      enabled = false },
+  }
+  for _idx, tier in ipairs(tiers) do
+    items[#items + 1] = {
+      text_func = function()
+        local override = self_ref:getTierOverride(provider, tier)
+        if override then
+          return T(_("%1: %2 (custom)"), tier_labels[tier], override)
+        end
+        local def = defaultFor(tier)
+        if def then
+          return T(_("%1: %2"), tier_labels[tier], def)
+        end
+        return T(_("%1: not set"), tier_labels[tier])
+      end,
+      sub_item_table_func = function()
+        return buildPickList(tier)
+      end,
+    }
+  end
+  items[#items + 1] = {
+    text = _("Reset all tiers to defaults"),
+    keep_menu_open = true,
+    enabled_func = function() return self_ref:hasTierOverrides(provider) end,
+    callback = function()
+      self_ref:clearTierOverrides(provider)
+      UIManager:show(Notification:new{
+        text = _("Tier customizations cleared"),
+        timeout = 1.5,
+      })
+    end,
+  }
   return items
 end
 
