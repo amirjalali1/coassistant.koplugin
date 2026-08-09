@@ -141,7 +141,18 @@ local function buildItems(ctx)
         }
     end
 
-    -- Chats about this book (count from the chat index — no chat loads)
+    -- Ask about this book (the book-context input dialog with its actions —
+    -- same launcher the file-browser long-press uses; handles both modes)
+    items[#items + 1] = {
+        text = _("Ask about this book…"),
+        callback = function()
+            plugin:showKOAssistantDialogForFile(file, ctx.title, ctx.author)
+        end,
+    }
+
+    -- Chats about this book (count from the chat index — no chat loads).
+    -- close_on_up: the page is the level above that chat list — its up-arrow
+    -- closes the list back onto the page instead of the all-documents list
     local chat_index = G_reader_settings:readSetting("koassistant_chat_index", {})
     local chat_count = type(chat_index[file]) == "table"
         and tonumber(chat_index[file].count) or 0
@@ -150,7 +161,7 @@ local function buildItems(ctx)
         mandatory = tostring(chat_count),
         dim = chat_count == 0,
         callback = chat_count > 0 and function()
-            plugin:showChatHistoryForFile(file)
+            plugin:showChatHistoryForFile(file, { close_on_up = true })
         end or nil,
     }
 

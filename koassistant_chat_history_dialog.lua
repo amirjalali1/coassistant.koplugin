@@ -761,6 +761,12 @@ function ChatHistoryDialog:showChatsForDocument(ui, document, chat_history_manag
         onReturn = function()
             safeClose(chat_menu)
             self_ref.current_menu = nil
+            -- Launched from a book-scoped surface (book page round 2026-08-09):
+            -- level-up returns to the LAUNCHER sitting underneath (it closes us
+            -- and stops), not to the all-documents list — the book page is the
+            -- level above this list in that cycle. Other entries keep the
+            -- documents list as their up level.
+            if nav_context and nav_context.close_on_up then return end
             self_ref:showChatHistoryBrowser(ui, nil, chat_history_manager, config, nav_context)
         end,
         close_callback = function()

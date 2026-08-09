@@ -20103,14 +20103,23 @@ end
 
 --- Show chat history filtered to a specific book
 --- @param file_path string The document file path
-function AskGPT:showChatHistoryForFile(file_path)
+--- @param nav_context table|nil Navigation context passthrough (book page passes
+---   close_on_up so level-up returns to the page underneath, not the documents list)
+function AskGPT:showChatHistoryForFile(file_path, nav_context)
   local ChatHistoryDialog = require("koassistant_chat_history_dialog")
   local ChatHistoryManager = require("koassistant_chat_history_manager")
 
   local chat_history_manager = ChatHistoryManager:new()
+  if nav_context then
+    -- Mirror showChatHistoryBrowser's own default init (skipped when a context
+    -- is passed in)
+    nav_context.level = nav_context.level or "documents"
+    nav_context.came_from_document = true
+    nav_context.initial_document = file_path
+  end
   -- Pass the live module config (self.CONFIG was never assigned → nil → resumed chats ran with
   -- empty features/no provider). Matches AskGPT:showChatHistory()'s call.
-  ChatHistoryDialog:showChatHistoryBrowser(self.ui, file_path, chat_history_manager, configuration)
+  ChatHistoryDialog:showChatHistoryBrowser(self.ui, file_path, chat_history_manager, configuration, nav_context)
 end
 
 --- Open notebook for viewing or editing

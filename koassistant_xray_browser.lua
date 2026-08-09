@@ -2176,10 +2176,15 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
             })
         end
         if self.metadata.book_file then
+            -- "Edit…" (2026-08-09 maintainer): ONE entry-management popup
+            -- instead of per-op buttons — search terms + "move back to carried"
+            -- now; rename and manual merge are queued to join it (unified
+            -- entry-management direction)
             table.insert(search_row, {
-                text = _("Edit Search Terms"),
+                text = _("Edit…"),
                 callback = function()
-                    self_ref:editSearchTerms(item, category_key, title, source, nav_context)
+                    self_ref:_showEntityEditPopup(item, category_key, title,
+                        source, nav_context, viewer, true)
                 end,
             })
         end
@@ -2191,54 +2196,29 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
             table.insert(buttons_rows, search_row)
         end
     end
-    if group_button then
-        -- Categories with no top row (distribution-excluded singletons): the
-        -- jump keeps its own row rather than disappearing
-        table.insert(buttons_rows, { group_button })
-    end
-
-    -- "Move back to carried list" — the way back out of "Add as its own entry"
-    -- (round 27 maintainer: "it could easily be done by accident and there is
-    -- no way back"). Offered only for entries that carry cross-book background:
-    -- those belong to an earlier book, so the carried list is an honest home.
-    -- A native entry of THIS book would be mislabeled there — removing one of
-    -- those is the separate "edit/delete X-Ray entries" question. Undo is
-    -- LOCAL: a fold that already copied this forward is not rewritten, exactly
-    -- like any other later edit.
-    -- PLACEMENT (2026-08-09 maintainer: a full-width row on every background-
-    -- carrying character "is a bit much"): a compact slot on the nav bar (the
-    -- last row, next to Chat about this) instead of a row of its own — the top
-    -- row is already full on exactly these entries. The confirm carries the
-    -- full explanation, so the short label is enough.
-    if not self.scope and not self.metadata.checkpoint and self.metadata.book_file
+    -- Categories with no top row (distribution-excluded): management keeps a
+    -- fallback row rather than disappearing — Edit… appears here only when it
+    -- has something to offer (the carried-list op; search terms belong to
+    -- searchable categories). arguments/findings ARE carried cross-book
+    -- (round 27 full inclusion), so the op must stay reachable on them.
+    local fallback_row = {}
+    if DISTRIBUTION_EXCLUDED[category_key] and self.metadata.book_file
+        and not self.scope and not self.metadata.checkpoint
         and type(item) == "table" and type(item.background) == "table"
         and #item.background > 0 then
-        local demote_name = XrayParser.getItemName(item, category_key)
-        if type(demote_name) == "string" and demote_name ~= "" then
-            table.insert(row, {
-                text = "⇤ " .. _("Carried"),
-                callback = function()
-                    local ConfirmBox = require("ui/widget/confirmbox")
-                    UIManager:show(ConfirmBox:new{
-                        text = T(_("Move \"%1\" out of this book's X-Ray and back to the carried list?\nIts history from earlier books is kept, and its entry page can add it back."), demote_name),
-                        ok_text = _("Move"),
-                        ok_callback = function()
-                            if viewer then viewer:onClose() end
-                            if self_ref:_commitDormantOp(
-                                function(data)
-                                    return XrayParser.demoteToStub(data, category_key, demote_name)
-                                end,
-                                T(_("\"%1\" moved back to the carried list."), demote_name)) then
-                                -- Back to root: the entry this page rendered no
-                                -- longer exists, and the pages under it hold
-                                -- item tables that still list it
-                                while #self_ref.nav_stack > 0 do self_ref:navigateBack() end
-                            end
-                        end,
-                    })
-                end,
-            })
-        end
+        table.insert(fallback_row, {
+            text = _("Edit…"),
+            callback = function()
+                self_ref:_showEntityEditPopup(item, category_key, title,
+                    source, nav_context, viewer, false)
+            end,
+        })
+    end
+    if group_button then
+        table.insert(fallback_row, group_button)
+    end
+    if #fallback_row > 0 then
+        table.insert(buttons_rows, fallback_row)
     end
 
     -- Resolve references into tappable cross-category navigation buttons
@@ -2387,6 +2367,74 @@ end
 --- @param item_title string Display title for refreshing detail view
 --- @param source table|nil Navigation source for back-button chain
 --- @param nav_context table|nil Category navigation context (preserved for detail view)
+--- One popup for per-entry management (2026-08-09 unified entry-management
+--- direction): search terms + move-back-to-carried today; rename and manual
+--- merge are the queued additions. Replaces the per-op detail-page buttons.
+--- @param can_edit_terms boolean Search-terms row (searchable categories only)
+function XrayBrowser:_showEntityEditPopup(item, category_key, title, source, nav_context, viewer, can_edit_terms)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local self_ref = self
+    local dialog
+    local buttons = {}
+    if can_edit_terms then
+        table.insert(buttons, {{
+            text = _("Edit search terms"),
+            callback = function()
+                UIManager:close(dialog)
+                self_ref:editSearchTerms(item, category_key, title, source, nav_context)
+            end,
+        }})
+    end
+    -- "Move back to carried list" — the way back out of "Add as its own entry"
+    -- (round 27 maintainer: "it could easily be done by accident and there is
+    -- no way back"). Offered only for entries that carry cross-book background:
+    -- those belong to an earlier book, so the carried list is an honest home.
+    -- A native entry of THIS book would be mislabeled there — removing one of
+    -- those is the separate "edit/delete X-Ray entries" question. Undo is
+    -- LOCAL: a fold that already copied this forward is not rewritten, exactly
+    -- like any other later edit.
+    if not self.scope and not self.metadata.checkpoint and self.metadata.book_file
+        and type(item) == "table" and type(item.background) == "table"
+        and #item.background > 0 then
+        local demote_name = XrayParser.getItemName(item, category_key)
+        if type(demote_name) == "string" and demote_name ~= "" then
+            table.insert(buttons, {{
+                text = _("Move back to carried list"),
+                callback = function()
+                    UIManager:close(dialog)
+                    local ConfirmBox = require("ui/widget/confirmbox")
+                    UIManager:show(ConfirmBox:new{
+                        text = T(_("Move \"%1\" out of this book's X-Ray and back to the carried list?\nIts history from earlier books is kept, and its entry page can add it back."), demote_name),
+                        ok_text = _("Move"),
+                        ok_callback = function()
+                            if viewer then viewer:onClose() end
+                            if self_ref:_commitDormantOp(
+                                function(data)
+                                    return XrayParser.demoteToStub(data, category_key, demote_name)
+                                end,
+                                T(_("\"%1\" moved back to the carried list."), demote_name)) then
+                                -- Back to root: the entry this page rendered no
+                                -- longer exists, and the pages under it hold
+                                -- item tables that still list it
+                                while #self_ref.nav_stack > 0 do self_ref:navigateBack() end
+                            end
+                        end,
+                    })
+                end,
+            }})
+        end
+    end
+    table.insert(buttons, {{
+        text = _("Cancel"),
+        callback = function() UIManager:close(dialog) end,
+    }})
+    dialog = ButtonDialog:new{
+        title = XrayParser.getItemName(item, category_key) or title,
+        buttons = buttons,
+    }
+    UIManager:show(dialog)
+end
+
 function XrayBrowser:editSearchTerms(item, category_key, item_title, source, nav_context)
     local ActionCache = require("koassistant_action_cache")
     local item_name = XrayParser.getItemName(item, category_key)
