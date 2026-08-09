@@ -642,6 +642,30 @@ function QuizViewer:_buildResultText()
 
     for idx, q in ipairs(questions) do
         table.insert(lines, T("**%1.** %2", idx, q.question))
+        -- Option text is included so an exported result stands on its own. The
+        -- letters are assigned by the plugin (QuizParser.balanceAnswers), so unlike
+        -- before they cannot be cross-referenced against the cached model JSON --
+        -- "Correct: C" alone no longer identifies anything outside this file.
+        if q.type == "multiple_choice" and type(q.options) == "table" then
+            for _li, letter in ipairs({ "A", "B", "C", "D" }) do
+                local opt = q.options[letter]
+                if opt then
+                    local picked = self.answers[idx] == letter
+                    local is_correct = q.correct == letter
+                    local marker = ""
+                    if picked and is_correct then
+                        marker = _(" (your answer, correct)")
+                    elseif picked then
+                        marker = _(" (your answer)")
+                    elseif is_correct and self.revealed[idx] then
+                        -- Only once revealed: an unanswered question must not be
+                        -- spoiled by its own export.
+                        marker = _(" (correct)")
+                    end
+                    table.insert(lines, T("- %1) %2%3", letter, opt, marker))
+                end
+            end
+        end
         if q.type == "multiple_choice" and self.answers[idx] then
             table.insert(lines, T(_("Your answer: %1. Correct: %2"), self.answers[idx], q.correct or "?"))
         end
