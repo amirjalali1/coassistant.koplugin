@@ -53,6 +53,30 @@ function BookPage.close()
     end
 end
 
+-- Row emoji for artifact rows (2026-08-09 maintainer: specific where an
+-- artifact has an obvious icon, the 📦 artifact box as the fallback).
+-- Keys: doc-cache keys + per-action ids from getAvailableArtifactsWithPinned.
+local ARTIFACT_EMOJI = {
+    ["_xray_cache"] = "🩻",
+    ["_analyze_cache"] = "🔬",
+    ["_summary_cache"] = "📄",
+    xray = "🩻",
+    xray_simple = "🩻",
+    recap = "⏪",
+    book_info = "ℹ️",
+    analyze_highlights = "📝",
+    generate_quiz = "❓",
+}
+
+local function artifactEmoji(cache)
+    if cache.is_pinned_group then return "📌" end
+    if cache.is_image_group then return "🖼️" end
+    if cache.is_xray_versions_group then return "🕘" end
+    if cache.is_wiki_group then return "📖" end
+    if cache.is_section_xray_group then return "🩻" end
+    return ARTIFACT_EMOJI[cache.key] or "📦"
+end
+
 --- True when this row opens the full-screen X-Ray browser (showCacheViewer's
 --- own routing condition) — the one destination the page must NOT sit behind
 local function opensXrayBrowser(cache)
@@ -135,29 +159,30 @@ local function buildItems(ctx)
             if #parts > 0 then mandatory = table.concat(parts, " · ") end
         end
         items[#items + 1] = {
-            text = cache.name,
+            text = Constants.getEmojiText(artifactEmoji(cache), cache.name, ctx.enable_emoji),
             mandatory = mandatory,
             callback = function() openArtifactRow(cache, ctx) end,
         }
     end
 
-    -- Ask about this book (the book-context input dialog with its actions —
-    -- same launcher the file-browser long-press uses; handles both modes)
+    -- Book Chat/Action (established terminology + 💬, the QA panel's pair) —
+    -- the book-context input dialog with its actions; same launcher the
+    -- file-browser long-press uses, handles both modes
     items[#items + 1] = {
-        text = _("Ask about this book…"),
+        text = Constants.getEmojiText("💬", _("Book Chat/Action"), ctx.enable_emoji),
         callback = function()
             plugin:showKOAssistantDialogForFile(file, ctx.title, ctx.author)
         end,
     }
 
-    -- Chats about this book (count from the chat index — no chat loads).
+    -- Chat History (count from the chat index — no chat loads).
     -- close_on_up: the page is the level above that chat list — its up-arrow
     -- closes the list back onto the page instead of the all-documents list
     local chat_index = G_reader_settings:readSetting("koassistant_chat_index", {})
     local chat_count = type(chat_index[file]) == "table"
         and tonumber(chat_index[file].count) or 0
     items[#items + 1] = {
-        text = _("Chats"),
+        text = Constants.getEmojiText("📜", _("Chat History"), ctx.enable_emoji),
         mandatory = tostring(chat_count),
         dim = chat_count == 0,
         callback = chat_count > 0 and function()
@@ -169,7 +194,7 @@ local function buildItems(ctx)
     local Notebook = require("koassistant_notebook")
     local nb_stats = Notebook.getStats(file)
     items[#items + 1] = {
-        text = _("Notebook"),
+        text = Constants.getEmojiText("📓", _("Notebook"), ctx.enable_emoji),
         mandatory = nb_stats and relativeDate(nb_stats.modified) or _("none"),
         callback = function() plugin:openNotebookForFile(file) end,
         hold_callback = function() plugin:openNotebookForFile(file, true) end,
@@ -201,7 +226,7 @@ local function buildItems(ctx)
     local ds = SafeDocSettings.resolve(file, ui)
     local customized = ds and BookSettings.countCustomized(ds) or 0
     items[#items + 1] = {
-        text = _("Book Settings"),
+        text = Constants.getEmojiText("📕", _("Book Settings"), ctx.enable_emoji),
         mandatory = customized > 0 and T(_("%1 customized"), customized) or nil,
         callback = function()
             BookSettings.show({ plugin = plugin, ui = ui, document_path = file })

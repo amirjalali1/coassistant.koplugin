@@ -1149,6 +1149,29 @@ end
 
 --- Build item table for the top-level category menu
 --- @return table items Menu item table
+--- Carried-list wording follows the group kind: "earlier" implies a reading
+--- order, which only series groups have. Project/plain folds still fill the
+--- ledger (fan-in / manual merges), so their label says "related books" —
+--- the wording the entity index already uses model-side. (2026-08-09)
+--- @param book_file string|nil
+--- @param n number|nil Count for the titled form; nil = bare row label
+--- @return string
+local function dormantListTitle(book_file, n)
+    local BookGroups = require("koassistant_book_groups")
+    local series = false
+    for _idx, g in ipairs(BookGroups.groupsFor(book_file or "") or {}) do
+        if BookGroups.kindOf(g) == BookGroups.KIND_SERIES then
+            series = true
+            break
+        end
+    end
+    if n then
+        return series and T(_("Carried from earlier books (%1)"), n)
+            or T(_("Carried from related books (%1)"), n)
+    end
+    return series and _("Carried from earlier books") or _("Carried from related books")
+end
+
 function XrayBrowser:buildCategoryItems()
     local categories = XrayParser.getCategories(self.xray_data)
     local enable_emoji = self.metadata.enable_emoji
@@ -1195,7 +1218,9 @@ function XrayBrowser:buildCategoryItems()
         and #self:_dormantRows() or 0
     if dormant_n > 0 then
         table.insert(items, {
-            text = Constants.getEmojiText("📚", _("Carried from earlier books"), enable_emoji),
+            -- 📥 not 📚 (2026-08-09): 📚 is Library Chat's icon; the ledger is
+            -- an inbox of entities brought IN from other books
+            text = Constants.getEmojiText("📥", dormantListTitle(self.metadata.book_file), enable_emoji),
             mandatory = tostring(dormant_n),
             callback = function()
                 self_ref:showDormantList()
@@ -1370,7 +1395,7 @@ function XrayBrowser:showDormantList()
     -- A carried stub is not a live entity in THIS book, so there is no honest
     -- "→ Group" target from these pages
     self.location = nil
-    self:navigateForward(T(_("Carried from earlier books (%1)"), #items), items)
+    self:navigateForward(dormantListTitle(self.metadata.book_file, #items), items)
 end
 
 --- Repaint the carried list in place after an edit (the root-only refresh in
@@ -1383,7 +1408,7 @@ function XrayBrowser:_refreshDormantPage()
         self:navigateBack()
         return
     end
-    self.current_title = T(_("Carried from earlier books (%1)"), #items)
+    self.current_title = dormantListTitle(self.metadata.book_file, #items)
     self.menu:switchItemTable(self.current_title, items, -1)
 end
 
@@ -2181,9 +2206,9 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
             -- now; rename and manual merge are queued to join it (unified
             -- entry-management direction)
             table.insert(search_row, {
-                text = _("Edit…"),
+                text = _("Manage…"),
                 callback = function()
-                    self_ref:_showEntityEditPopup(item, category_key, title,
+                    self_ref:_showEntityManagePopup(item, category_key, title,
                         source, nav_context, viewer, true)
                 end,
             })
@@ -2207,9 +2232,9 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         and type(item) == "table" and type(item.background) == "table"
         and #item.background > 0 then
         table.insert(fallback_row, {
-            text = _("Edit…"),
+            text = _("Manage…"),
             callback = function()
-                self_ref:_showEntityEditPopup(item, category_key, title,
+                self_ref:_showEntityManagePopup(item, category_key, title,
                     source, nav_context, viewer, false)
             end,
         })
@@ -2368,10 +2393,12 @@ end
 --- @param source table|nil Navigation source for back-button chain
 --- @param nav_context table|nil Category navigation context (preserved for detail view)
 --- One popup for per-entry management (2026-08-09 unified entry-management
---- direction): search terms + move-back-to-carried today; rename and manual
---- merge are the queued additions. Replaces the per-op detail-page buttons.
+--- direction, "Manage…"): search terms + rename + move-back-to-carried;
+--- merge-with-another-entry is the queued addition (needs an entity picker —
+--- the dedup scan covers duplicate merges today). Replaces the per-op
+--- detail-page buttons.
 --- @param can_edit_terms boolean Search-terms row (searchable categories only)
-function XrayBrowser:_showEntityEditPopup(item, category_key, title, source, nav_context, viewer, can_edit_terms)
+function XrayBrowser:_showEntityManagePopup(item, category_key, title, source, nav_context, viewer, can_edit_terms)
     local ButtonDialog = require("ui/widget/buttondialog")
     local self_ref = self
     local dialog
@@ -2384,6 +2411,20 @@ function XrayBrowser:_showEntityEditPopup(item, category_key, title, source, nav
                 self_ref:editSearchTerms(item, category_key, title, source, nav_context)
             end,
         }})
+    end
+    -- Rename (2026-08-09): live main views only — the commit path writes the
+    -- MAIN artifact, so a section/checkpoint view must not offer it
+    if not self.scope and not self.metadata.checkpoint and self.metadata.book_file then
+        local rename_name = XrayParser.getItemName(item, category_key)
+        if type(rename_name) == "string" and rename_name ~= "" then
+            table.insert(buttons, {{
+                text = _("Rename…"),
+                callback = function()
+                    UIManager:close(dialog)
+                    self_ref:_renameEntity(item, category_key, viewer)
+                end,
+            }})
+        end
     end
     -- "Move back to carried list" — the way back out of "Add as its own entry"
     -- (round 27 maintainer: "it could easily be done by accident and there is
@@ -2433,6 +2474,80 @@ function XrayBrowser:_showEntityEditPopup(item, category_key, title, source, nav
         buttons = buttons,
     }
     UIManager:show(dialog)
+end
+
+--- Rename input (Manage ▸ Rename…): pre-filled with the current name.
+function XrayBrowser:_renameEntity(item, category_key, viewer)
+    local old_name = XrayParser.getItemName(item, category_key)
+    if type(old_name) ~= "string" or old_name == "" then return end
+    local self_ref = self
+    local input
+    input = InputDialog:new{
+        title = T(_("Rename \"%1\""), old_name),
+        input = old_name,
+        description = _("The old name is kept as an alias, so the AI still knows who this is in updates and merges."),
+        buttons = {{
+            { text = _("Cancel"), id = "close", callback = function()
+                UIManager:close(input)
+            end },
+            { text = _("Rename"), is_enter_default = true, callback = function()
+                local new_name = input:getInputText()
+                new_name = new_name and new_name:match("^%s*(.-)%s*$") or ""
+                UIManager:close(input)
+                if new_name == "" or new_name == old_name then return end
+                self_ref:_commitRename(category_key, old_name, new_name, viewer)
+            end },
+        }},
+    }
+    UIManager:show(input)
+    input:onShowKeyboard()
+end
+
+--- Commit a rename: artifact via the dedup commit pattern (ring-archive =
+--- built-in undo), then re-key the name-keyed side stores (wiki, search
+--- terms, never-merge), then the matching follow-up — the old name stays
+--- model-visible as an alias either way; whether it keeps matching THE TEXT
+--- is the reader's call (the "Andy" case: a nickname that would match
+--- strangers in the running text).
+function XrayBrowser:_commitRename(category_key, old_name, new_name, viewer)
+    local book_file = self.metadata.book_file
+    if viewer then viewer:onClose() end
+    if not self:_commitDormantOp(
+        function(data)
+            return XrayParser.renameItem(data, category_key, old_name, new_name)
+        end,
+        T(_("\"%1\" renamed to \"%2\"."), old_name, new_name)) then
+        return
+    end
+    local ActionCache = require("koassistant_action_cache")
+    ActionCache.renameEntityKeys(book_file, category_key, old_name, new_name)
+    -- Back to root: pages under this one hold item tables that still carry
+    -- the old name (same pattern as the carried-list demote)
+    while #self.nav_stack > 0 do self:navigateBack() end
+    local ConfirmBox = require("ui/widget/confirmbox")
+    local self_ref = self
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Keep matching \"%1\" in the book text?\nThe AI keeps the old name either way — this only affects occurrence counts, search and highlight matching."), old_name),
+        ok_text = _("Keep matching"),
+        cancel_text = _("Stop matching"),
+        cancel_callback = function()
+            local ua = ActionCache.getUserAliases(book_file)
+            local rec = ua[new_name]
+            if type(rec) ~= "table" then
+                rec = {}
+                ua[new_name] = rec
+            end
+            rec.ignore = rec.ignore or {}
+            for _idx, term in ipairs(rec.ignore) do
+                if type(term) == "string" and term:lower() == old_name:lower() then return end
+            end
+            table.insert(rec.ignore, old_name)
+            ActionCache.setUserAliases(book_file, ua)
+            -- The open root menu shows counts built from the pre-ignore
+            -- aliases; a reload picks the ignore up
+            self_ref:reloadLiveMain(book_file)
+        end,
+    })
 end
 
 function XrayBrowser:editSearchTerms(item, category_key, item_title, source, nav_context)

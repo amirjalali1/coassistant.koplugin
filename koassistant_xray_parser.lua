@@ -1989,6 +1989,23 @@ end
 --- @param old_items table Existing items array (mutated)
 --- @param new_items table New items to merge in
 --- @return table old_items The merged array
+--- Case-insensitive alias union: keep's aliases first, then new ones not
+--- already present. nil when both sides are empty.
+local function unionAliases(keep_aliases, new_aliases)
+    local out, seen = {}, {}
+    for _idx, list in ipairs({ keep_aliases, new_aliases }) do
+        if type(list) == "table" then
+            for _i, alias in ipairs(list) do
+                if type(alias) == "string" and alias ~= "" and not seen[alias:lower()] then
+                    seen[alias:lower()] = true
+                    out[#out + 1] = alias
+                end
+            end
+        end
+    end
+    return #out > 0 and out or nil
+end
+
 local function mergeArrayCategory(old_items, new_items)
     local lookup = {}
     for i, item in ipairs(old_items) do
@@ -1997,16 +2014,53 @@ local function mergeArrayCategory(old_items, new_items)
             lookup[name:lower()] = i
         end
     end
+    -- Aliases match too, at LOWER priority than main names (2026-08-09
+    -- rename/merge hardening): a delta that re-emits a dedup-dropped or
+    -- pre-rename name as its main name must fold into the surviving entry,
+    -- not re-create the duplicate. A main name always wins the key; an alias
+    -- never shadows another entry's actual name.
+    local alias_of = {}
+    for i, item in ipairs(old_items) do
+        if type(item) == "table" and type(item.aliases) == "table" then
+            for _ai, alias in ipairs(item.aliases) do
+                if type(alias) == "string" and alias ~= "" then
+                    local key = alias:lower()
+                    if lookup[key] == nil and alias_of[key] == nil then
+                        alias_of[key] = i
+                    end
+                end
+            end
+        end
+    end
     for _idx, new_item in ipairs(new_items) do
         local name = getItemSearchName(new_item)
-        local idx = name and lookup[name:lower()]
+        local key = name and name:lower()
+        local idx = key and lookup[key]
+        local via_alias = false
+        if not idx and key then
+            idx = alias_of[key]
+            via_alias = idx ~= nil
+        end
         if idx then
+            local keep = old_items[idx]
             -- background is attached mechanically (cross-book merge, item 44)
             -- and never part of the model schema — a rewrite must not shed OR
             -- replace it (round 28: the stored lines always win; model echoes
             -- are dropped at parse, this is the belt for any path that skipped
             -- dropModelBackground)
-            new_item.background = old_items[idx].background
+            new_item.background = keep.background
+            if via_alias then
+                -- The delta used a secondary name: identity stays the entry's
+                -- (a rewrite must not resurrect a renamed/absorbed name as
+                -- the main one)
+                local keep_name = getItemSearchName(keep)
+                if new_item.name ~= nil then new_item.name = keep_name
+                elseif new_item.term ~= nil then new_item.term = keep_name
+                elseif new_item.event ~= nil then new_item.event = keep_name end
+            end
+            -- Stored aliases survive the rewrite (dedup absorbs and renames
+            -- live there; a model echo that drops them must not shed them)
+            new_item.aliases = unionAliases(keep.aliases, new_item.aliases)
             old_items[idx] = new_item
         else
             old_items[#old_items + 1] = new_item
@@ -2470,6 +2524,53 @@ end
 --- @param cat_key string Category holding the entry
 --- @param item_name string Entry name (ambiguous names refused, as elsewhere)
 --- @return boolean ok
+--- Rename an entry's main name (Manage ▸ Rename, 2026-08-09). The old name is
+--- pushed onto the FRONT of aliases so the model keeps the mapping
+--- ({entity_index} shows "New (old, …)", {cached_result} carries the full
+--- array) and the alias-aware delta-merge folds late deltas that still use
+--- it. Refuses ambiguous names (same guard as demoteToStub). Side stores
+--- keyed by the old name are the caller's job (ActionCache.renameEntityKeys).
+--- @param data table Parsed X-Ray
+--- @param cat_key string Category key
+--- @param old_name string Current main name (exact)
+--- @param new_name string Replacement main name
+--- @return boolean ok
+function XrayParser.renameItem(data, cat_key, old_name, new_name)
+    if type(data) ~= "table" or type(cat_key) ~= "string"
+        or type(old_name) ~= "string" or old_name == ""
+        or type(new_name) ~= "string" or new_name == ""
+        or old_name == new_name then
+        return false
+    end
+    local arr = data[cat_key]
+    if type(arr) ~= "table" then return false end
+    local at
+    for i, item in ipairs(arr) do
+        if type(item) == "table" and XrayParser.getItemName(item, cat_key) == old_name then
+            if at then return false end -- ambiguous name — refuse
+            at = i
+        end
+    end
+    if not at then return false end
+    local item = arr[at]
+    if item.name ~= nil then item.name = new_name
+    elseif item.term ~= nil then item.term = new_name
+    elseif item.event ~= nil then item.event = new_name
+    else return false end
+    -- Old name → front of aliases; the new name stops being an alias if it
+    -- was one (it is the main name now)
+    local aliases = { old_name }
+    local seen = { [old_name:lower()] = true, [new_name:lower()] = true }
+    for _idx, alias in ipairs(type(item.aliases) == "table" and item.aliases or {}) do
+        if type(alias) == "string" and alias ~= "" and not seen[alias:lower()] then
+            seen[alias:lower()] = true
+            aliases[#aliases + 1] = alias
+        end
+    end
+    item.aliases = aliases
+    return true
+end
+
 function XrayParser.demoteToStub(data, cat_key, item_name)
     if type(data) ~= "table" or type(cat_key) ~= "string" or type(item_name) ~= "string" then
         return false

@@ -174,6 +174,72 @@ TestRunner:test("prose and background-free JSON pass through untouched", functio
     TestRunner:eq(XrayParser.stripForPromptJSON(plain), plain)
 end)
 
+TestRunner:suite("2026-08-09 — alias-aware delta merge (rename/dedup hardening)")
+TestRunner:test("delta re-emitting an alias folds into the entry, identity kept", function()
+    local old = { characters = { { name = "Andrew", aliases = { "Andy" },
+        description = "old", background = { { source = "Vol 1", text = "b" } } } } }
+    local new = { characters = { { name = "Andy", description = "new" } } }
+    local merged = XrayParser.merge(old, new)
+    TestRunner:eq(#merged.characters, 1, "no duplicate created")
+    TestRunner:eq(merged.characters[1].name, "Andrew", "main name preserved")
+    TestRunner:eq(merged.characters[1].description, "new", "content updated")
+    TestRunner:ok(merged.characters[1].background, "background carried")
+    TestRunner:eq(merged.characters[1].aliases[1], "Andy", "alias set survives")
+end)
+TestRunner:test("a main name always beats another entry's alias", function()
+    local old = { characters = {
+        { name = "Bob", description = "1" },
+        { name = "Carl", aliases = { "Bob" }, description = "2" } } }
+    local new = { characters = { { name = "Bob", description = "upd" } } }
+    local merged = XrayParser.merge(old, new)
+    TestRunner:eq(#merged.characters, 2, "both entries live")
+    TestRunner:eq(merged.characters[1].description, "upd", "real Bob updated")
+    TestRunner:eq(merged.characters[2].description, "2", "Carl untouched")
+end)
+TestRunner:test("stored aliases survive a rewrite that drops them", function()
+    local old = { characters = { { name = "Ana", aliases = { "The Girl" }, description = "o" } } }
+    local new = { characters = { { name = "Ana", description = "n" } } }
+    local merged = XrayParser.merge(old, new)
+    TestRunner:eq(merged.characters[1].aliases[1], "The Girl", "absorbed alias kept")
+end)
+TestRunner:test("an unknown name still appends", function()
+    local old = { characters = { { name = "Ana", description = "o" } } }
+    local new = { characters = { { name = "Zed", description = "z" } } }
+    local merged = XrayParser.merge(old, new)
+    TestRunner:eq(#merged.characters, 2, "appended")
+end)
+
+TestRunner:suite("2026-08-09 — renameItem (Manage ▸ Rename)")
+TestRunner:test("renames and pushes the old name onto the front of aliases", function()
+    local data = { characters = { { name = "Andy", aliases = { "kid" }, description = "d" } } }
+    TestRunner:ok(XrayParser.renameItem(data, "characters", "Andy", "Andrew"))
+    TestRunner:eq(data.characters[1].name, "Andrew")
+    TestRunner:eq(data.characters[1].aliases[1], "Andy")
+    TestRunner:eq(data.characters[1].aliases[2], "kid")
+end)
+TestRunner:test("the new name stops being an alias of itself", function()
+    local data = { characters = { { name = "Andy", aliases = { "Andrew" } } } }
+    TestRunner:ok(XrayParser.renameItem(data, "characters", "Andy", "Andrew"))
+    TestRunner:eq(data.characters[1].name, "Andrew")
+    TestRunner:eq(#data.characters[1].aliases, 1)
+    TestRunner:eq(data.characters[1].aliases[1], "Andy")
+end)
+TestRunner:test("ambiguous names are refused", function()
+    local data = { characters = { { name = "Andy" }, { name = "Andy" } } }
+    TestRunner:ok(not XrayParser.renameItem(data, "characters", "Andy", "Andrew"))
+end)
+TestRunner:test("missing name / same name are refused", function()
+    local data = { characters = { { name = "Andy" } } }
+    TestRunner:ok(not XrayParser.renameItem(data, "characters", "Nobody", "X"))
+    TestRunner:ok(not XrayParser.renameItem(data, "characters", "Andy", "Andy"))
+end)
+TestRunner:test("term-named categories rename their term field", function()
+    local data = { technical_terms = { { term = "Grok", description = "d" } } }
+    TestRunner:ok(XrayParser.renameItem(data, "technical_terms", "Grok", "Grokking"))
+    TestRunner:eq(data.technical_terms[1].term, "Grokking")
+    TestRunner:eq(data.technical_terms[1].aliases[1], "Grok")
+end)
+
 print("")
 print(string.rep("-", 50))
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))

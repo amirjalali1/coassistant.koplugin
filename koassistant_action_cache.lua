@@ -1198,6 +1198,75 @@ function ActionCache.getNeverMergePairs(document_path)
     return ActionCache.neverMergePairsFrom(ActionCache.getUserAliases(document_path))
 end
 
+--- Re-key the name-keyed side stores after an entry rename (Manage ▸ Rename,
+--- 2026-08-09): the AI Wiki entry, the user search-terms record, and
+--- never-merge pairs. The artifact itself is renamed by XrayParser.renameItem;
+--- this moves everything keyed by the old main-name string so nothing orphans.
+--- @param document_path string The document file path
+--- @param category_key string The entry's X-Ray category
+--- @param old_name string Previous main name
+--- @param new_name string New main name
+function ActionCache.renameEntityKeys(document_path, category_key, old_name, new_name)
+    if type(old_name) ~= "string" or type(new_name) ~= "string"
+        or old_name == "" or new_name == "" or old_name == new_name then
+        return
+    end
+    -- Wiki entry rides to the new key (a re-key is a rewrite; timestamp moves)
+    local wiki = ActionCache.getWikiEntry(document_path, category_key, old_name)
+    if wiki and wiki.result then
+        ActionCache.setWikiEntry(document_path, category_key, new_name, wiki.result, wiki)
+        ActionCache.clearWikiEntry(document_path, category_key, old_name)
+    end
+    local all = ActionCache.getUserAliases(document_path)
+    local dirty = false
+    -- Search-terms record moves under the new name (merged if one exists)
+    local old_rec = all[old_name]
+    if type(old_rec) == "table" then
+        local new_rec = all[new_name]
+        if type(new_rec) == "table" then
+            for _idx, list_key in ipairs({ "add", "ignore" }) do
+                local src = old_rec[list_key]
+                if type(src) == "table" then
+                    new_rec[list_key] = new_rec[list_key] or {}
+                    for _i, term in ipairs(src) do
+                        local seen = false
+                        for _j, have in ipairs(new_rec[list_key]) do
+                            if type(have) == "string" and type(term) == "string"
+                                and have:lower() == term:lower() then
+                                seen = true
+                                break
+                            end
+                        end
+                        if not seen then table.insert(new_rec[list_key], term) end
+                    end
+                end
+            end
+        else
+            all[new_name] = old_rec
+        end
+        all[old_name] = nil
+        dirty = true
+    end
+    -- Never-merge pairs follow the rename
+    local pairs_list = all[ActionCache.NEVER_MERGE_KEY]
+    if type(pairs_list) == "table" then
+        local lk = old_name:lower()
+        for _idx, pair in ipairs(pairs_list) do
+            if type(pair) == "table" then
+                for side = 1, 2 do
+                    if type(pair[side]) == "string" and pair[side]:lower() == lk then
+                        pair[side] = new_name
+                        dirty = true
+                    end
+                end
+            end
+        end
+    end
+    if dirty then
+        ActionCache.setUserAliases(document_path, all)
+    end
+end
+
 --- Record a pair of entity names as never-merge (order/case-insensitive dedup).
 --- @return boolean success
 function ActionCache.addNeverMergePair(document_path, name_a, name_b)
