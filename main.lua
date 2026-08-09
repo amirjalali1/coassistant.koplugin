@@ -4009,9 +4009,16 @@ function AskGPT:buildTierMenu(provider)
 
   local function buildPickList(tier)
     local pick = {}
+    -- Tier description behind a tap (rows truncate, descriptions don't fit)
     local info = ModelLists.getTierInfo(tier)
     if info and info.description then
-      pick[#pick + 1] = { text = info.description, enabled = false }
+      pick[#pick + 1] = {
+        text = T(_("About: %1"), tier_labels[tier]),
+        keep_menu_open = true,
+        callback = function()
+          UIManager:show(InfoMessage:new{ text = info.description })
+        end,
+      }
     end
     pick[#pick + 1] = {
       text_func = function()
@@ -4039,9 +4046,18 @@ function AskGPT:buildTierMenu(provider)
     return pick
   end
 
+  -- Menu rows truncate rather than wrap, so the explanation lives behind a tap
+  -- (maintainer 2026-08-09: long disabled info rows overflow the row width)
   local items = {
-    { text = _("Speed ladder for action hints and Quick Answer. Never switches provider."),
-      enabled = false },
+    {
+      text = _("About tiers"),
+      keep_menu_open = true,
+      callback = function()
+        UIManager:show(InfoMessage:new{
+          text = _("A speed ladder for this provider: actions that declare a speed tier (like Quick Define and Translate) and the Quick Answer preset pick their model from it.\n\nTiers never switch providers — use a per-action provider pin or a global tier pin for that.\n\nFrontier is never chosen automatically."),
+        })
+      end,
+    },
   }
   -- Masking marker (tier GUI phase 2): global pins outrank this ladder for
   -- tier-invoking requests — say so instead of letting the rows look dead.
@@ -4053,10 +4069,15 @@ function AskGPT:buildTierMenu(provider)
       end
     end
     if #pinned > 0 then
+      local pinned_list = table.concat(pinned, ", ")
       table.insert(items, {
-        text = T(_("Overridden by global pins: %1 (Settings › Advanced › Tier Models)"),
-          table.concat(pinned, ", ")),
-        enabled = false,
+        text = T(_("Global pins: %1"), pinned_list),
+        keep_menu_open = true,
+        callback = function()
+          UIManager:show(InfoMessage:new{
+            text = T(_("Global tier pins override this ladder for: %1.\n\nEdit them under Settings → Advanced → Tier Models (Global)."), pinned_list),
+          })
+        end,
       })
     end
   end
@@ -4108,8 +4129,15 @@ function AskGPT:buildGlobalTierMenu()
     fast = _("Fast"), ultrafast = _("Ultrafast"),
   }
   local items = {
-    { text = _("Applies only when an action or Quick Answer asks for a speed tier — overrides the selected provider and model for that request only."),
-      enabled = false },
+    {
+      text = _("About global pins"),
+      keep_menu_open = true,
+      callback = function()
+        UIManager:show(InfoMessage:new{
+          text = _("Each tier either follows the active provider's ladder (default) or pins one provider and model.\n\nA pin applies only when an action or Quick Answer asks for a speed tier, and overrides the selected provider and model for that request only.\n\nIf the pinned provider has no usable API key, the pin is ignored and the active provider's ladder applies."),
+        })
+      end,
+    },
   }
   for _idx, tier in ipairs(tiers) do
     items[#items + 1] = {

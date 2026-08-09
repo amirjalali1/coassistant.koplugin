@@ -444,6 +444,30 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
             end
         end
     end
+    -- Provider-only action pin + tier hint (maintainer 2026-08-09): the pin
+    -- names the provider, the tier picks the model class INSIDE it — ladder
+    -- only, never global pins (an explicit action pin is the stronger intent
+    -- and must not be hijacked to another provider). createTempConfig applied
+    -- the provider; without this the action would sit on the provider's
+    -- default model and the hint would be dead. Written like the override
+    -- apply above (model + cloned per-provider table) — the model_override
+    -- path skips pinned actions by design. No stash: a pinned action's chat
+    -- staying on its pin is existing semantics.
+    if features.use_action_tiers ~= false and action and action.model_tier
+            and action.provider and not action.model then
+        local m = require("koassistant_model_lists")
+            .resolveTierModel(action.provider, action.model_tier)
+        if m then
+            config.model = m
+            config.provider_settings = config.provider_settings or {}
+            local ps = {}
+            for k, v in pairs(config.provider_settings[action.provider] or {}) do
+                ps[k] = v
+            end
+            ps.model = m
+            config.provider_settings[action.provider] = ps
+        end
+    end
     -- One-shot provider/model override — applied BEFORE every provider-dependent
     -- read below (caching gate, Perplexity check, reasoning resolution). An
     -- action's own provider pin (already applied by createTempConfig/

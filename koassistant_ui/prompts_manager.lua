@@ -1770,7 +1770,7 @@ function PromptsManager:showStep3_Settings(state)
 
     -- Provider/model display
     local provider_display = state.provider or _("Global")
-    local model_display = state.model or _("Global")
+    local model_display = state.model or (state.provider and _("Provider default")) or _("Global")
 
     -- Collect items, lay out 2 per row (same order as edit dialogs)
     local items = {}
@@ -3143,12 +3143,12 @@ function PromptsManager:showProviderSelector(state, show_all)
                     text = label,
                     callback = function()
                         state.provider = provider
-                        -- Set default model for this provider
-                        if ModelLists[provider] and #ModelLists[provider] > 0 then
-                            state.model = ModelLists[provider][1]
-                        else
-                            state.model = nil
-                        end
+                        -- Provider-only pin (maintainer 2026-08-09): the model
+                        -- stays unpinned — the request follows this provider's
+                        -- configured/default model as it changes, instead of
+                        -- freezing today's array head. Pick a specific model
+                        -- via the Model row if wanted.
+                        state.model = nil
                         UIManager:close(self.provider_dialog)
                         UIManager:close(self.advanced_dialog)
                         self:showStep3_Settings(state)
@@ -3196,6 +3196,20 @@ function PromptsManager:showModelSelector(state)
     local models = ModelLists[state.provider] or {}
 
     local buttons = {}
+
+    -- Provider default (no model pin): the action follows the pinned provider's
+    -- configured/default model, instead of freezing one id
+    table.insert(buttons, {
+        {
+            text = ((state.model == nil) and "● " or "○ ") .. _("Provider default"),
+            callback = function()
+                state.model = nil
+                UIManager:close(self.model_dialog)
+                UIManager:close(self.advanced_dialog)
+                self:showStep3_Settings(state)
+            end,
+        },
+    })
 
     -- Add model options
     for _idx,model in ipairs(models) do
@@ -3399,7 +3413,7 @@ function PromptsManager:showBuiltinSettingsDialog(state)
 
     -- Provider/model display
     local provider_display = state.provider or _("Global")
-    local model_display = state.model or _("Global")
+    local model_display = state.model or (state.provider and _("Provider default")) or _("Global")
 
     local buttons = {}
 
@@ -3959,11 +3973,10 @@ function PromptsManager:showBuiltinProviderSelector(state, show_all)
                     text = label,
                     callback = function()
                         state.provider = provider
-                        if ModelLists[provider] and #ModelLists[provider] > 0 then
-                            state.model = ModelLists[provider][1]
-                        else
-                            state.model = nil
-                        end
+                        -- Provider-only pin (maintainer 2026-08-09): model stays
+                        -- unpinned — defers to the provider's default, or its
+                        -- tier pick when the action carries a model_tier hint
+                        state.model = nil
                         UIManager:close(self.builtin_provider_dialog)
                         UIManager:close(self.builtin_settings_dialog)
                         self:showBuiltinSettingsDialog(state)
@@ -4010,6 +4023,20 @@ function PromptsManager:showBuiltinModelSelector(state)
     local models = ModelLists[state.provider] or {}
 
     local buttons = {}
+
+    -- Provider default (no model pin): defers to the provider's default, or its
+    -- tier pick when the action carries a model_tier hint
+    table.insert(buttons, {
+        {
+            text = ((state.model == nil) and "● " or "○ ") .. _("Provider default"),
+            callback = function()
+                state.model = nil
+                UIManager:close(self.builtin_model_dialog)
+                UIManager:close(self.builtin_settings_dialog)
+                self:showBuiltinSettingsDialog(state)
+            end,
+        },
+    })
 
     for _idx,model in ipairs(models) do
         local prefix = (state.model == model) and "● " or "○ "
@@ -4337,7 +4364,7 @@ function PromptsManager:showCustomQuickSettingsDialog(state)
 
     -- Provider/model display (custom providers store an id — show their name)
     local provider_display = state.provider and self.plugin:getProviderDisplayName(state.provider) or _("Global")
-    local model_display = state.model or _("Global")
+    local model_display = state.model or (state.provider and _("Provider default")) or _("Global")
 
     local buttons = {
         -- Name (editable, full width)
@@ -4976,6 +5003,20 @@ function PromptsManager:showCustomModelSelector(state)
     else
         models = ModelLists[state.provider] or {}
     end
+
+    -- Provider default (no model pin): defers to the provider's default, or its
+    -- tier pick when the action carries a model_tier hint
+    table.insert(buttons, {
+        {
+            text = ((state.model == nil) and "● " or "○ ") .. _("Provider default"),
+            callback = function()
+                state.model = nil
+                UIManager:close(self.custom_model_dialog)
+                UIManager:close(self.custom_quick_dialog)
+                self:showCustomQuickSettingsDialog(state)
+            end,
+        },
+    })
 
     for _idx, model in ipairs(models) do
         local is_selected = state.model == model
