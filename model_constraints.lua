@@ -1036,12 +1036,19 @@ function ModelConstraints.logAdjustments(provider, adjustments)
     end
 end
 
---- Known max-output ceiling for a model, or nil.
---- User-declared ceiling (custom_models.lua) wins over the builtin table — the
---- override exists to correct stale caps in either direction.
+--- Known max-output ceiling for a model, or nil. Three layers:
+---   user (custom_models.lua)  — explicit intent, corrects staleness either way
+---   learned (derived cache)   — parsed from the provider's OWN max_tokens 400
+---                               by the self-heal; empirical, so it beats a
+---                               curated guess (a wrong curated value is exactly
+---                               what produced the 400 it was learned from)
+---   curated (_max_output_tokens below)
 local function lookupMaxOutput(provider, model)
     local user_cap = ModelOverrides.maxOutputTokens(provider, model)
     if user_cap then return user_cap end
+
+    local learned = ModelOverrides.derivedMaxOutput(provider, model)
+    if learned then return learned end
 
     local provider_caps = ModelConstraints._max_output_tokens[provider]
     if not provider_caps or not model then return nil end
@@ -1084,6 +1091,72 @@ end
 -- against the same budget on every provider — can never starve the answer,
 -- low enough to stay a runaway-cost backstop.
 ModelConstraints.MAX_TOKENS_TARGET = 32768
+
+--- Parse a provider 400 for a max_tokens/context-length rejection (item 27
+--- self-heal). PURE — no IO, no state. Deliberately acts ONLY on errors where
+--- the provider STATES its numbers: every real rejection format does (OpenAI
+--- "supports at most N completion tokens", Anthropic "max_tokens: X > N",
+--- Groq "must be less than or equal to N", vLLM's context sentence), and a
+--- stated number beats blind halving — the retry lands exactly right, and a
+--- misparse can never cache a wrong ceiling. An error that merely MENTIONS
+--- max_tokens without numbers returns nil: no retry, no cache, no guessing.
+--- @param err_text string|nil the error message as surfaced to the user
+--- @return table|nil  { kind = "output_cap", cap = N }  — model's stated output
+---                    limit; safe to CACHE and retry at
+---                    { kind = "context", retry_at = N } — context overflow with
+---                    computable completion room; retry ONCE, never cache (the
+---                    number depends on this request's prompt length)
+function ModelConstraints.parseMaxTokensError(err_text)
+    if type(err_text) ~= "string" or err_text == "" then return nil end
+    local sane = function(n) return n and n >= 1024 and n < 10000000 end
+
+    -- vLLM-family context overflow (Novita, Featherless, local servers, ...):
+    -- "This model's maximum context length is 12288 tokens. However, you
+    --  requested 20480 tokens (8192 in the messages, 12288 in the completion)."
+    -- Checked FIRST: it also contains completion-token numbers that the
+    -- output-cap patterns below must never mistake for a model ceiling.
+    local ctx = err_text:match("[Mm]aximum context length[^%d]*(%d+)")
+        or err_text:match("context length of only (%d+)")
+    if ctx then
+        local limit = tonumber(ctx)
+        local prompt = tonumber(err_text:match("(%d+)%s+in the messages")
+            or err_text:match("(%d+)%s+tokens? in the messages"))
+        if limit and prompt and limit > prompt then
+            local room = limit - prompt - 256  -- margin for chat template overhead
+            if room >= 1024 then
+                return { kind = "context", retry_at = room }
+            end
+        end
+        return nil  -- context overflow but no computable room: retrying can't help
+    end
+
+    -- Output-cap statements, most specific first. Each pattern anchors on
+    -- wording that only appears in a max-output rejection.
+    local cap = err_text:match("supports at most (%d+) completion tokens")            -- OpenAI
+        or err_text:match("supports at most (%d+) output tokens")
+        or err_text:match("max_tokens: %d+ > (%d+)")                                   -- Anthropic
+        or err_text:match("max_tokens[^%d]-must be less than or equal to[^%d]*(%d+)")  -- Groq et al
+        or err_text:match("max_completion_tokens[^%d]-must be less than or equal to[^%d]*(%d+)")
+        or err_text:match("max_tokens[^%d]-cannot exceed[^%d]*(%d+)")
+        or err_text:match("maximum allowed number of output tokens[^%d]*(%d+)")
+        or err_text:match("[Mm]ax output tokens[^%d]-is[^%d]*(%d+)")
+        or err_text:match("max_new_tokens[^%d]-must be[^%d]-at most[^%d]*(%d+)")       -- TGI-family
+    local n = tonumber(cap)
+    if sane(n) then
+        return { kind = "output_cap", cap = n }
+    end
+    return nil
+end
+
+--- Persist a ceiling LEARNED from a provider's own rejection into the derived
+--- caps cache, so every later request resolves right the first time. The
+--- derived layer sits between the user layer and the curated table in
+--- lookupMaxOutput — empirical beats curated guess, explicit user intent beats
+--- both. Exact model id only (derived data is never prefix-matched).
+function ModelConstraints.learnMaxOutput(provider, model, cap)
+    if not (provider and model and type(cap) == "number") then return false end
+    return ModelOverrides.recordDerivedMaxOutput(provider, model, cap)
+end
 
 --- Default max_tokens for a request that carries no explicit value (no action
 --- pin, no user api_param). Raise-where-known: models with a KNOWN output

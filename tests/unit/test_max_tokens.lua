@@ -182,6 +182,76 @@ do
     end
 end
 
+-- parseMaxTokensError: the self-heal's decision function. Only provider-STATED
+-- numbers may be acted on — a misparse here caches a wrong ceiling silently.
+do
+    local P = ModelConstraints.parseMaxTokensError
+
+    -- OpenAI: oversized max_tokens / max_completion_tokens
+    local r = P("max_tokens is too large: 100000. This model supports at most 16384 completion tokens, whereas you provided 100000.")
+    TestRunner.assert(r and r.kind == "output_cap" and r.cap == 16384, "OpenAI 'supports at most N completion tokens'")
+
+    -- Anthropic: the format our own curated entries were verified from
+    r = P("max_tokens: 200000 > 128000, which is the maximum allowed number of output tokens for claude-sonnet-5")
+    TestRunner.assert(r and r.kind == "output_cap" and r.cap == 128000, "Anthropic 'max_tokens: X > N'")
+
+    -- Groq (issue #89's family): must be less than or equal to
+    r = P("`max_tokens` must be less than or equal to `32768`, the maximum value for `max_tokens` is less than the `context_window` for this model")
+    TestRunner.assert(r and r.kind == "output_cap" and r.cap == 32768, "Groq 'must be less than or equal to N'")
+
+    -- vLLM family (Novita, Featherless, local servers): context overflow with
+    -- computable room -> one-shot retry value, NEVER a cacheable cap
+    r = P("This model's maximum context length is 12288 tokens. However, you requested 20480 tokens (8192 in the messages, 12288 in the completion). Please reduce the length of the messages or completion.")
+    TestRunner.assert(r and r.kind == "context" and r.retry_at == 12288 - 8192 - 256,
+        "vLLM context overflow computes room = limit - prompt - margin")
+    TestRunner.assert(r and r.cap == nil, "context overflow carries NO cacheable cap")
+
+    -- Context overflow with no room left: no retry (it cannot help)
+    TestRunner.assert(P("This model's maximum context length is 8192 tokens. However, you requested 40000 tokens (7900 in the messages, 32100 in the completion).") == nil,
+        "context overflow with < 1024 room -> nil (no pointless retry)")
+
+    -- Negatives: must not fire on unrelated or numberless errors
+    TestRunner.assert(P("temperature must be 1.0 for this model") == nil, "temperature error -> nil")
+    TestRunner.assert(P("Rate limit exceeded. Please retry after 20 seconds. Limit: 30000 tokens per minute.") == nil, "rate-limit text -> nil")
+    TestRunner.assert(P("max_tokens is invalid") == nil, "numberless max_tokens error -> nil (no blind guessing)")
+    TestRunner.assert(P("") == nil and P(nil) == nil, "empty/nil -> nil")
+    TestRunner.assert(P("max_tokens must be less than or equal to 512") == nil,
+        "sub-1024 'cap' fails the sanity gate (likely a different limit)")
+end
+
+-- Learned-ceiling layer: user > LEARNED > curated, and the learned value feeds
+-- both the default and the clamp exactly like any other ceiling.
+do
+    local ModelOverrides = require("koassistant_model_overrides")
+    -- Curated says sonnet-5 = 128000 -> default 32768. A learned 12000 must win.
+    ModelOverrides._setDerivedForTests({
+        anthropic = { ["claude-sonnet-5"] = { fetched = 0, params = {}, max_output = 12000 } },
+    })
+    TestRunner.assert(ModelConstraints.resolveMaxTokens("anthropic", "claude-sonnet-5", FALLBACK) == 12000,
+        "learned ceiling beats the curated table (it was learned from a real 400)")
+    TestRunner.assert(ModelConstraints.clampMaxTokens("anthropic", "claude-sonnet-5", 65536) == 12000,
+        "learned ceiling clamps explicit pins")
+    -- ...but explicit user intent beats the learned value
+    ModelOverrides._setUserForTests({
+        max_output_tokens = { anthropic = { ["claude-sonnet-5"] = 128000 } },
+    })
+    TestRunner.assert(ModelConstraints.clampMaxTokens("anthropic", "claude-sonnet-5", 65536) == 65536,
+        "user-declared ceiling overrides a stale learned one")
+    ModelOverrides._setUserForTests(false)
+    ModelOverrides._setDerivedForTests(false)
+
+    -- recordDerived (params refetch) must PRESERVE a learned max_output; the
+    -- persist step may fail in the test env (no settings dir) — the in-memory
+    -- merge is what's asserted.
+    ModelOverrides._setDerivedForTests({
+        novita = { ["some-model"] = { fetched = 1, params = {}, max_output = 9000 } },
+    })
+    ModelOverrides.recordDerived("novita", "some-model", { tools = true })
+    TestRunner.assert(ModelOverrides.derivedMaxOutput("novita", "some-model") == 9000,
+        "params refetch preserves the learned max_output")
+    ModelOverrides._setDerivedForTests(false)
+end
+
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))
 return TestRunner.failed == 0

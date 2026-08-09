@@ -445,6 +445,51 @@ local function queryChatGPT(message_history, temp_config, on_complete, settings)
     local query_return = STREAMING_IN_PROGRESS
     local function doQueryWithAuth()
 
+    -- max_tokens self-heal (item 27): when the provider rejects the request
+    -- because our max_tokens exceeds the model's real output cap or context
+    -- room, the 400 states its numbers — parse them, retry ONCE at exactly the
+    -- stated value, and (for output caps) persist the ceiling into the derived
+    -- caps cache so every later request on this model resolves right the first
+    -- time. Curated data can't cover an open-ended model space ("Fetch models",
+    -- custom providers); this converts each wrong guess into one extra second,
+    -- permanently. Runs from both completion paths' failure branches, AFTER the
+    -- user-cancel checks; the once-flag makes a wrong parse fail loudly on the
+    -- second attempt instead of looping.
+    local dispatchRequest
+    local max_tokens_retry_done = false
+    local function tryMaxTokensSelfHeal(err)
+        if max_tokens_retry_done then return false end
+        local parsed = ModelConstraints.parseMaxTokensError(err)
+        if not parsed then return false end
+        max_tokens_retry_done = true
+        local model = config.model
+        if not model then
+            local pd = Defaults.ProviderDefaults[provider]
+            model = pd and pd.model or nil
+        end
+        if parsed.kind == "output_cap" and model then
+            ModelConstraints.learnMaxOutput(provider, model, parsed.cap)
+        end
+        local retry_at = parsed.cap or parsed.retry_at
+        logger.warn("KOAssistant: max_tokens self-heal (" .. parsed.kind .. "), retrying at",
+            retry_at, "for", provider, model or "?")
+        -- Copy-on-write (Config Copy Pattern): the retry value must not linger
+        -- on the caller's config — a context-room value is valid for THIS
+        -- prompt only, and output caps are served by the derived cache anyway.
+        local retry_config = {}
+        for k, v in pairs(config) do retry_config[k] = v end
+        retry_config.api_params = {}
+        for k, v in pairs(config.api_params or {}) do retry_config.api_params[k] = v end
+        retry_config.api_params.max_tokens = retry_at
+        dispatchRequest(retry_config)
+        return true
+    end
+
+    -- The parameter shadows the outer `config` on purpose: the body below is
+    -- the original request flow, unchanged; the self-heal re-enters it with its
+    -- corrected copy while the first pass uses the caller's config verbatim.
+    dispatchRequest = function(config) --luacheck: ignore 431
+
     local success, result = pcall(function()
         return handler:query(message_history, config)
     end)
@@ -486,6 +531,7 @@ local function queryChatGPT(message_history, temp_config, on_complete, settings)
             non_streaming_bg_fn,
             provider,
             function(bg_success, content, err, reasoning, web_search_used, usage)
+                if not bg_success and tryMaxTokensSelfHeal(err) then return end
                 if on_complete then
                     on_complete(bg_success, content, err, reasoning, web_search_used, usage)
                 end
@@ -553,6 +599,9 @@ local function queryChatGPT(message_history, temp_config, on_complete, settings)
                 end
 
                 if not stream_success then
+                    -- Self-heal before surfacing: finishStream has already
+                    -- closed the stream dialog, so the retry opens a fresh one.
+                    if tryMaxTokensSelfHeal(err) then return end
                     local emsg = ModelConstraints.decorateRequestError(
                         err or "Unknown streaming error", provider, config.model, config)
                     if on_complete then on_complete(false, nil, emsg) end
@@ -602,6 +651,10 @@ local function queryChatGPT(message_history, temp_config, on_complete, settings)
         on_complete(true, content, nil, reasoning, web_search_used)
     end
     query_return = result
+
+    end -- dispatchRequest
+
+    return dispatchRequest(config)
 
     end -- doQueryWithAuth
 
