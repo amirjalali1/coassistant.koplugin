@@ -335,6 +335,34 @@ ModelConstraints._max_output_tokens = {
         ["moonshotai/kimi-k2-thinking"] = 100352,
         ["minimax/minimax-m2.1"] = 131072,
     },
+    -- Community hosts (item 27 round 3, 2026-08-09). Adding entries here can only
+    -- ever HELP: resolveMaxTokens asks min(32768, ceiling) and clampMaxTokens caps
+    -- explicit values down, so a correct ceiling can never produce a 400 — unlike
+    -- raising a provider's flat fallback, which can. Values read from each
+    -- provider's own public /models catalog on 2026-08-09 unless noted.
+    cerebras = {
+        -- Verified identical across every model Cerebras currently serves
+        -- (gpt-oss-120b, zai-glm-4.7, gemma-4-31b): limits.max_completion_tokens
+        -- = 40960. Provider-wide "" entry so FETCHED models inherit it too; any
+        -- specific id added later wins on longest-prefix.
+        [""] = 40960,
+    },
+    deepinfra = {
+        -- Docs state output caps at 16384 regardless of model. The catalog's
+        -- metadata.max_tokens mirrors context_length (identical for all 182
+        -- entries), so it is a context field and cannot serve as an output cap.
+        -- Documented value, not catalog-verified.
+        [""] = 16384,
+    },
+    novita = {
+        -- Per-model and genuinely varied: 31 of 145 chat models cap below 16384,
+        -- floor gryphe/mythomax-l2-13b at 3200. Only the two ids we ship are
+        -- entered; anything else keeps the conservative provider fallback.
+        ["deepseek/deepseek-v4"] = 393216,          -- covers -pro and -flash
+        -- Output cap EQUALS the entire context window here, so any larger ask is
+        -- an immediate 400 -- the clearest evidence that a flat raise is unsafe.
+        ["meta-llama/llama-3.3-70b-instruct"] = 12288,
+    },
     groq = {
         ["groq/compound"] = 8192,
         ["groq/compound-mini"] = 8192,
@@ -1331,11 +1359,16 @@ function ModelConstraints.getReasoningProfile(provider, model)
             end
         end
     end
+    -- Passthrough for a model we do not recognize. `unknown` distinguishes it
+    -- from a CURATED axis="none" entry (a model we know does not reason): the
+    -- two look identical otherwise, but callers that must fail safe around
+    -- reasoning need to tell "known not to reason" from "no idea".
     return {
         axis = "none",
         default_state = "off",
         can_disable = false,
         can_enable = false,
+        unknown = true,
     }
 end
 

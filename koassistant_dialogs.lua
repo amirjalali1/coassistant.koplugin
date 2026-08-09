@@ -326,20 +326,31 @@ local function effectiveDispatchProvider(features, action, base_provider)
 end
 
 -- Reasoning headroom (#98): thinking tokens bill against max_tokens on every
--- provider, so an action's pinned max_tokens (sized for the answer alone) can be
--- consumed entirely by reasoning — the stream then ends with zero answer text
--- ("No response received. Raw: ..."). When the resolved decision leaves reasoning
--- ON (including "off" requests clamped up on models that can't disable it, e.g.
--- Gemini 3.x), drop a pinned value below the provider's own default so the
--- handler falls back to its defaults — which are reasoning-aware where it
--- matters (openai/gemini/xai bump to 32768). Every fallback value is already
--- sent on unpinned requests, so this can never exceed a ceiling the defaults
--- don't already reach.
+-- provider, so a pinned max_tokens (sized for the answer alone) can be consumed
+-- entirely by reasoning, ending the stream with zero answer text. Built-in
+-- actions no longer pin (item 27); this covers USER-authored custom actions and
+-- copies of built-ins duplicated before that change. Dropping the pin hands the
+-- request to the handler's own ceiling-aware default, which is already what an
+-- unpinned request sends — so this can never exceed a real ceiling.
+--
+-- Fires when the model IS reasoning, OR when we do not recognize the model at
+-- all. That second case is the one that matters in practice: anything pulled in
+-- via "Fetch models", any custom/local provider model, gets the passthrough
+-- profile, which reports mode "off" — so gating on mode alone skipped exactly
+-- the models most likely to need this. The asymmetry justifies it: guessing
+-- "might reason" costs a larger response than asked for, guessing the other way
+-- costs an EMPTY one, which the reader cannot diagnose.
+--
+-- The floor is a constant, not the provider's fallback: on providers whose
+-- fallback IS 4096 a pinned 4096 is not "< fallback", so the net never fired
+-- precisely where the budget was tightest.
+local REASONING_HEADROOM_FLOOR = 16384
 local function ensureReasoningHeadroom(api_params, provider, decision)
-    if not (decision and decision.mode == "on" and api_params.max_tokens) then return end
-    local pd = Defaults.ProviderDefaults[provider]
-    local floor = pd and pd.additional_parameters and pd.additional_parameters.max_tokens or 16384
-    if api_params.max_tokens < floor then
+    if not (api_params and api_params.max_tokens and decision) then return end
+    local might_reason = decision.mode == "on"
+        or (decision.profile and decision.profile.unknown)
+    if not might_reason then return end
+    if api_params.max_tokens < REASONING_HEADROOM_FLOOR then
         api_params.max_tokens = nil
     end
 end
@@ -5189,9 +5200,17 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 on_complete(history, temp_config)
             end
         else
-            -- Treat empty answer as error
+            -- Treat empty answer as error. When the model returned REASONING but
+            -- no answer, say so — the generic message sent issue #98 chasing the
+            -- wrong cause for two rounds. The streaming path makes the same
+            -- distinction; this branch is its non-streaming twin (no truncation
+            -- signal is available here, so it uses the softer of the two).
             if success and (not answer or answer == "") then
-                err = _("No response received from AI")
+                if type(reasoning) == "string" and reasoning ~= "" then
+                    err = _("The model produced only reasoning and no answer text. Try again.")
+                else
+                    err = _("No response received from AI")
+                end
             end
             if on_complete then
                 on_complete(nil, err or "Unknown error")

@@ -238,25 +238,44 @@ local ProviderDefaults = {
     },
 
     -- Community set (M1, model_management_strategy.md "End-state REVISION 2"):
-    -- docs-based, no maintainer key yet. Conservative max_tokens (small hosted
-    -- models often cap low; no clampMaxTokens entries exist for these).
+    -- docs-based, no maintainer key yet.
+    --
+    -- These fallbacks are the LAST resort — they apply only to a model with no
+    -- ceiling entry in ModelConstraints._max_output_tokens. Raising one is the
+    -- single riskiest edit in this file: too high is an unconditional 400 on
+    -- every request, and there is no in-app way for a user to lower it. Prefer
+    -- adding a ceiling entry (which can only help) over raising a fallback.
+    --
+    -- Round 3 (2026-08-09) raised the three where documentation is strong:
+    -- cerebras/minimax/deepinfra 4096 -> 16384. The rest deliberately STAY at
+    -- 4096, against the instinct to flatten them, because their live catalogs
+    -- disprove it:
+    --   vercel      floor 4000 across the gateway (30 of 209 models < 16384) --
+    --               4096 already exceeds 5 Mistral models; needs ceiling entries
+    --   featherless 2048 context floor over a ~21k-model catalog (~35% < 16384)
+    --   novita      floor 3200; llama-3.3-70b-instruct's output cap EQUALS its
+    --               12288 context, so a bigger ask is an instant 400
+    --   chutes      per-chute default is 1024, templates 2048-8192
+    --   hyperbolic  no data of any kind; an honest unknown beats a confident guess
+    -- The real fix for these is per-model ceilings (see _max_output_tokens) or a
+    -- self-healing retry on a max_tokens 400 -- not a flat number.
     cerebras = {
         provider = "cerebras",
         model = getDefaultModel("cerebras"),
         base_url = "https://api.cerebras.ai/v1/chat/completions",
-        additional_parameters = { temperature = 0.7, max_tokens = 4096 }
+        additional_parameters = { temperature = 0.7, max_tokens = 16384 }
     },
     minimax = {
         provider = "minimax",
         model = getDefaultModel("minimax"),
         base_url = "https://api.minimax.io/v1/chat/completions",
-        additional_parameters = { temperature = 0.7, max_tokens = 4096 }
+        additional_parameters = { temperature = 0.7, max_tokens = 16384 }
     },
     deepinfra = {
         provider = "deepinfra",
         model = getDefaultModel("deepinfra"),
         base_url = "https://api.deepinfra.com/v1/openai/chat/completions",
-        additional_parameters = { temperature = 0.7, max_tokens = 4096 }
+        additional_parameters = { temperature = 0.7, max_tokens = 16384 }
     },
     novita = {
         provider = "novita",

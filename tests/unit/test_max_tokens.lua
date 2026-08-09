@@ -97,9 +97,35 @@ for _idx, c in ipairs(unknown) do
         c[1] .. "/" .. c[2] .. " (unknown ceiling) keeps the fallback")
 end
 
--- Community-provider low fallbacks pass through untouched
-TestRunner.assert(ModelConstraints.resolveMaxTokens("cerebras", "some-model", 4096) == 4096,
-    "community provider keeps its conservative 4096 fallback")
+-- Community providers with NO ceiling data keep their conservative fallback.
+-- Their live catalogs justify it and disprove a flat raise: vercel's gateway
+-- floor is 4000, featherless has a 2048 context floor, hyperbolic publishes
+-- nothing at all (checked 2026-08-09).
+for _idx, prov in ipairs({ "hyperbolic", "featherless", "vercel", "chutes" }) do
+    TestRunner.assert(ModelConstraints.resolveMaxTokens(prov, "some-model", 4096) == 4096,
+        prov .. " has no ceiling data -> keeps its conservative 4096 fallback")
+end
+
+-- Community hosts WITH catalog-verified ceilings do get the raise, including
+-- for models the user fetched later (provider-wide "" entry).
+TestRunner.assert(ModelConstraints.resolveMaxTokens("cerebras", "gpt-oss-120b", 16384) == TARGET,
+    "cerebras (catalog: 40960 on every model) reaches the target")
+TestRunner.assert(ModelConstraints.resolveMaxTokens("cerebras", "a-model-we-never-listed", 16384) == TARGET,
+    "cerebras provider-wide entry covers fetched models too")
+TestRunner.assert(ModelConstraints.resolveMaxTokens("deepinfra", "anything", 16384) == 16384,
+    "deepinfra's documented 16384 output cap bounds the ask")
+
+-- A per-model ceiling must WIN over the provider-wide raise, and must cap an
+-- explicit pin. novita's llama-3.3-70b-instruct is the sharp case: its output
+-- cap equals its entire 12288 context, so anything larger is an instant 400.
+TestRunner.assert(ModelConstraints.resolveMaxTokens("novita", "meta-llama/llama-3.3-70b-instruct", 4096) == 12288,
+    "novita llama-3.3 resolves to its real 12288 cap")
+TestRunner.assert(ModelConstraints.clampMaxTokens("novita", "meta-llama/llama-3.3-70b-instruct", 65536) == 12288,
+    "X-Ray's 65536 pin clamps to novita llama-3.3's 12288 cap instead of 400ing")
+TestRunner.assert(ModelConstraints.resolveMaxTokens("novita", "deepseek/deepseek-v4-pro", 4096) == TARGET,
+    "novita deepseek-v4 prefix entry (393216) reaches the target")
+TestRunner.assert(ModelConstraints.resolveMaxTokens("novita", "gryphe/mythomax-l2-13b", 4096) == 4096,
+    "an unlisted novita model keeps the conservative fallback (its real cap is 3200)")
 
 -- clampMaxTokens still protects explicit pins with the same table
 TestRunner.assert(ModelConstraints.clampMaxTokens("openrouter", "qwen/qwen3-235b-a22b", 65536) == 8192,
@@ -125,6 +151,36 @@ TestRunner.assert(ModelConstraints.resolveMaxTokens("mistral", "ministral-8b-lat
 TestRunner.assert(ModelConstraints.clampMaxTokens("mistral", "ministral-8b-latest", 30000) == 8192,
     "user-declared low ceiling clamps explicit pins")
 ModelOverrides._setUserForTests(false)
+
+-- The reasoning-headroom net (dialogs.ensureReasoningHeadroom) must fire for
+-- models we do not RECOGNIZE, not just models we know reason: anything from
+-- "Fetch models", any custom/local provider model, gets the passthrough profile
+-- and reports mode "off", so a mode-only gate skipped exactly the models most
+-- likely to starve (#98). `profile.unknown` is that seam — it must be set for
+-- unrecognized models and NOT set for a curated axis="none" entry, which is a
+-- model we positively know does not reason.
+do
+    local unknown_cases = {
+        { "openai", "totally-made-up-model" },
+        { "custom_lmstudio", "some-local-llm" },
+        { "ollama", "gemma4" },
+    }
+    for _idx, c in ipairs(unknown_cases) do
+        local prof = ModelConstraints.getReasoningProfile(c[1], c[2])
+        TestRunner.assert(prof.unknown == true,
+            c[1] .. "/" .. c[2] .. " is unrecognized -> profile.unknown must be true")
+    end
+
+    local known_cases = {
+        { "anthropic", "claude-sonnet-5" },      -- known reasoner
+        { "openrouter", "perplexity/sonar" },    -- CURATED axis="none": known NOT to reason
+    }
+    for _idx, c in ipairs(known_cases) do
+        local prof = ModelConstraints.getReasoningProfile(c[1], c[2])
+        TestRunner.assert(prof.unknown == nil,
+            c[1] .. "/" .. c[2] .. " is curated -> profile.unknown must NOT be set")
+    end
+end
 
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))

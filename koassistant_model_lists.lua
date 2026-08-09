@@ -338,21 +338,25 @@ local ModelLists = {
     -- "Fetch models from provider" (per-user live list). No tier placements
     -- (tier features no-op). Promotion to curated = keys pipeline (item 25e M4).
     ---------------------------------------------------------------------------
+    -- Seed ids below marked "live 2026-08-09" were checked against the provider's
+    -- own public /models catalog. The others remain docs-based guesses.
+    -- Four ids were WRONG and 404'd on the user's first request (two of them the
+    -- provider's DEFAULT model, i.e. the provider was unusable out of the box).
     cerebras = {
-        "gpt-oss-120b",                             -- seed (unverified)
-        "llama-3.3-70b",                            -- seed (unverified)
+        "gpt-oss-120b",                             -- live 2026-08-09
+        "zai-glm-4.7",                              -- live 2026-08-09 (was "llama-3.3-70b", deprecated by Cerebras 2026-02-16)
     },
     minimax = {
-        "MiniMax-M3",                               -- seed (unverified)
+        "MiniMax-M3",                               -- seed (unverified: catalog needs a key)
         "MiniMax-M2.7",                             -- seed (unverified)
     },
     deepinfra = {
-        "meta-llama/Llama-3.3-70B-Instruct",        -- seed (unverified)
-        "deepseek-ai/DeepSeek-V4",                  -- seed (unverified)
+        "meta-llama/Llama-3.3-70B-Instruct-Turbo",  -- live 2026-08-09 (non-Turbo id does not exist)
+        "deepseek-ai/DeepSeek-V4-Pro",              -- live 2026-08-09 (bare "DeepSeek-V4" does not exist)
     },
     novita = {
-        "deepseek/deepseek-v4",                     -- seed (unverified)
-        "meta-llama/llama-3.3-70b-instruct",        -- seed (unverified)
+        "deepseek/deepseek-v4-pro",                 -- live 2026-08-09 (bare "deepseek-v4" does not exist)
+        "meta-llama/llama-3.3-70b-instruct",        -- live 2026-08-09
     },
     hyperbolic = {
         "meta-llama/Llama-3.3-70B-Instruct",        -- seed (unverified)
