@@ -64,7 +64,7 @@ local ModelLists = {
         "gemini-3.6-flash",             -- standard (default), newest flash
         "gemini-3.5-flash",             -- previous flash (kept available)
         "gemini-3.1-pro-preview",       -- flagship, reasoning (paid only; no 3.5/3.6 pro yet)
-        "gemini-3.5-flash-lite",        -- ultrafast (newest lite)
+        "gemini-3.5-flash-lite",        -- fast/ultrafast (newest lite)
         "gemini-3.1-flash-lite",        -- ultrafast (previous)
         -- Gemini 2.5 (kept for popularity)
         "gemini-2.5-flash",             -- still popular, free tier
@@ -505,7 +505,7 @@ local ModelLists = {
             openai = "gpt-5.6-luna",
             openai_codex = "gpt-5.6-luna",
             deepseek = "deepseek-v4-flash",
-            gemini = "gemini-3.6-flash",
+            gemini = "gemini-3.5-flash-lite",   -- lite = the no-default-thinking class; 3.6-flash here duplicated standard and can't turn thinking off (floor = minimal)
             groq = "llama-3.1-8b-instant",
             mistral = "ministral-14b-latest",
             xai = "grok-4.20-0309-non-reasoning",
