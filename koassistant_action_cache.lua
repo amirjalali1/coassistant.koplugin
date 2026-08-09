@@ -168,6 +168,35 @@ local function findSafeDelimiter(content)
     return 10 -- Fallback (extremely unlikely to need more)
 end
 
+--- Serialize the cross-book fold ledger (groups round (D)): an ARRAY of
+--- { file, title, at, source_ts } records, so the field-by-field serializer
+--- needs its own writer (CLAUDE.md Cache Field Parity). Shared by the entry
+--- serializer and the checkpoint ring. Writes nothing for an empty ledger, so
+--- an absent field stays absent on disk.
+--- @param file table Open file handle
+--- @param ledger table|nil
+--- @param indent string Leading whitespace for the field line
+local function writeMergedFrom(file, ledger, indent)
+    if type(ledger) ~= "table" or #ledger == 0 then return end
+    file:write(indent .. "merged_from = {\n")
+    for _idx, rec in ipairs(ledger) do
+        if type(rec) == "table" and type(rec.title) == "string" then
+            file:write(indent .. "    { title = " .. string.format("%q", rec.title))
+            if type(rec.file) == "string" then
+                file:write(", file = " .. string.format("%q", rec.file))
+            end
+            if tonumber(rec.at) then
+                file:write(", at = " .. string.format("%d", tonumber(rec.at)))
+            end
+            if tonumber(rec.source_ts) then
+                file:write(", source_ts = " .. string.format("%d", tonumber(rec.source_ts)))
+            end
+            file:write(" },\n")
+        end
+    end
+    file:write(indent .. "},\n")
+end
+
 --- Get cache file path for a document
 --- @param document_path string The document file path
 --- @return string|nil cache_path The full path to the cache file
@@ -328,6 +357,7 @@ local function saveCache(document_path, cache)
             if entry.merged_from_books then
                 file:write(string.format("        merged_from_books = %q,\n", entry.merged_from_books))
             end
+            writeMergedFrom(file, entry.merged_from, "        ")
             -- Quiz state (answers, correct, revealed) — nested table serialization
             if entry.quiz_state and type(entry.quiz_state) == "table" then
                 file:write("        quiz_state = {\n")
@@ -472,8 +502,13 @@ function ActionCache.set(document_path, action_id, result, progress_decimal, met
         coverage_spans = metadata and metadata.coverage_spans,
         producer = metadata and metadata.producer,
         base_timestamp = metadata and metadata.base_timestamp,
-        -- Cross-book merge provenance (item 43): accumulated source titles
+        -- Cross-book merge provenance (item 43): accumulated source titles,
+        -- kept as the display form of the structured fold ledger below
         merged_from_books = metadata and metadata.merged_from_books,
+        -- Groups round (D): file-keyed, dated fold ledger
+        -- ({ file, title, at, source_ts }) — tells "folded" from "folded, but
+        -- that book's X-Ray has changed since". XrayMerge owns its shape.
+        merged_from = metadata and metadata.merged_from,
     }
 
     return saveCache(document_path, cache)
@@ -1248,6 +1283,7 @@ local CHECKPOINT_COPY_FIELDS = {
     "model", "full_document", "flow_visible_pages", "source_mode",
     "chapter_label", "intro",
     "coverage_spans", "producer", "base_timestamp", "merged_from_books",
+    "merged_from",
 }
 
 local function buildCheckpointEntry(source)
@@ -1321,6 +1357,7 @@ local function writeCheckpointRing(path, ring)
         if cp.merged_from_books then
             file:write(string.format("        merged_from_books = %q,\n", cp.merged_from_books))
         end
+        writeMergedFrom(file, cp.merged_from, "        ")
         local result_text = cp.result or ""
         local eq_str = string.rep("=", findSafeDelimiter(result_text))
         file:write(string.format("        result = [%s[\n", eq_str))
@@ -1524,6 +1561,7 @@ function ActionCache.restoreXrayCheckpoint(document_path, index, limit)
         producer = entry.producer,
         base_timestamp = entry.base_timestamp,
         merged_from_books = entry.merged_from_books,
+        merged_from = entry.merged_from,
     }
     local ok_doc = ActionCache.setXrayCache(document_path, entry.result, entry.progress_decimal or 0, meta)
     local ok_action = ActionCache.set(document_path, "xray", entry.result, entry.progress_decimal or 0, meta)
@@ -1773,6 +1811,7 @@ function ActionCache.promoteXrayLadderRung(document_path, rung, limit, opts)
         producer = rung.producer,
         base_timestamp = rung.base_timestamp,
         merged_from_books = rung.merged_from_books,
+        merged_from = rung.merged_from,
     }
     local ok_doc = ActionCache.setXrayCache(document_path, rung.result, rung.progress_decimal or 0, meta)
     local ok_action = ActionCache.set(document_path, "xray", rung.result, rung.progress_decimal or 0, meta)

@@ -241,13 +241,62 @@ TestRunner:test("buildCrossBookPrompt: sentinels present, coverage phrased, no r
     TestRunner:assertTrue(has(prompt, "NEVER repeat an existing entity"), "no-rewrite rule")
 end)
 
-TestRunner:test("appendBookProvenance accumulates and dedups exact titles", function()
-    TestRunner:assertEqual(XrayMerge.appendBookProvenance(nil, "Book One"), "Book One")
-    TestRunner:assertEqual(XrayMerge.appendBookProvenance("Book One", "Book Two"),
-        "Book One; Book Two")
-    TestRunner:assertEqual(XrayMerge.appendBookProvenance("Book One; Book Two", "Book One"),
-        "Book One; Book Two", "exact re-merge does not duplicate")
-    TestRunner:assertEqual(XrayMerge.appendBookProvenance("", "Book One"), "Book One")
+TestRunner:test("appendMergedFrom accumulates and dedups, provenanceString displays", function()
+    local led = XrayMerge.appendMergedFrom(nil, { title = "Book One", at = 100 })
+    TestRunner:assertEqual(XrayMerge.provenanceString(led), "Book One")
+    XrayMerge.appendMergedFrom(led, { title = "Book Two", at = 100 })
+    TestRunner:assertEqual(XrayMerge.provenanceString(led), "Book One; Book Two")
+    XrayMerge.appendMergedFrom(led, { title = "Book One", at = 200 })
+    TestRunner:assertEqual(XrayMerge.provenanceString(led), "Book One; Book Two",
+        "exact re-merge does not duplicate")
+    TestRunner:assertEqual(#led, 2, "still two records")
+    TestRunner:assertEqual(XrayMerge.provenanceString(nil), "", "empty ledger displays empty")
+end)
+
+TestRunner:test("appendMergedFrom: same book by FILE dedups across a title change", function()
+    local led = XrayMerge.appendMergedFrom(nil,
+        { file = "/b/one.epub", title = "Book One", at = 100, source_ts = 50 })
+    XrayMerge.appendMergedFrom(led,
+        { file = "/b/one.epub", title = "Book One (2nd ed.)", at = 200, source_ts = 150 })
+    TestRunner:assertEqual(#led, 1, "file identity wins over the changed title")
+    TestRunner:assertEqual(led[1].source_ts, 150, "newer source version recorded")
+    TestRunner:assertEqual(led[1].at, 200, "and when we took it")
+end)
+
+TestRunner:test("ledgerOf: legacy merged_from_books string reads as title-only records", function()
+    local led = XrayMerge.ledgerOf({ merged_from_books = "Vol 1; Vol 2 " })
+    TestRunner:assertEqual(#led, 2, "both titles")
+    TestRunner:assertEqual(led[1].title, "Vol 1")
+    TestRunner:assertEqual(led[2].title, "Vol 2", "trimmed")
+    TestRunner:assertTrue(led[1].source_ts == nil, "legacy records carry no version")
+    TestRunner:assertEqual(#XrayMerge.ledgerOf(nil), 0, "nil entry safe")
+    TestRunner:assertEqual(#XrayMerge.ledgerOf({}), 0, "no provenance = empty ledger")
+end)
+
+TestRunner:test("foldStatus: current / stale / unknown / none", function()
+    local entry = { merged_from = {
+        { file = "/b/one.epub", title = "Vol 1", at = 200, source_ts = 150 },
+        { title = "Vol 0" },   -- transitively carried: no version
+    } }
+    TestRunner:assertEqual(XrayMerge.foldStatus(entry,
+        { title = "Vol 1", file = "/b/one.epub", timestamp = 150 }), "current",
+        "source unchanged since the fold")
+    TestRunner:assertEqual(XrayMerge.foldStatus(entry,
+        { title = "Vol 1", file = "/b/one.epub", timestamp = 900 }), "stale",
+        "source rebuilt since the fold")
+    TestRunner:assertEqual(XrayMerge.foldStatus(entry,
+        { title = "Vol 1", file = "/b/one.epub" }), "unknown",
+        "caller could not say which version exists now")
+    TestRunner:assertEqual(XrayMerge.foldStatus(entry,
+        { title = "Vol 0", timestamp = 900 }), "unknown",
+        "a record with no version is never called stale")
+    TestRunner:assertEqual(XrayMerge.foldStatus(entry,
+        { title = "Vol 9", timestamp = 900 }), "none")
+    TestRunner:assertEqual(XrayMerge.foldStatus(nil, { title = "Vol 1" }), "none",
+        "nil entry safe")
+    TestRunner:assertEqual(XrayMerge.foldStatus({ merged_from_books = "Vol 1" },
+        { title = "Vol 1", timestamp = 900 }), "unknown",
+        "LEGACY entries never read as stale — no silent paid re-folds")
 end)
 
 print("")
@@ -396,6 +445,8 @@ TestRunner:test("transitive carry: ancestor labels ride a chained merge, self-la
         "carry-over entry keeps the ancestor label")
     TestRunner:assertTrue(has(meta.merged_from_books, "Vol 1"),
         "carried label recorded in merged_from_books")
+    TestRunner:assertEqual(XrayMerge.foldStatus(meta, { title = "Vol 1", timestamp = 999 }),
+        "unknown", "and in the ledger, versionless (we never read Vol 1 ourselves)")
 end)
 
 TestRunner:test("transitive carry never overwrites a fresher direct merge of the same ancestor", function()
@@ -647,25 +698,34 @@ end)
 print("")
 print("  [carry layer 3: create-time seed + provenance gap]")
 
-TestRunner:test("unionProvenance: chained merges record transitive sources", function()
+TestRunner:test("unionMergedFrom: chained merges record transitive sources", function()
     -- vol 3 folds vol 2, which itself carries vol 1: all three are included
-    local out = XrayMerge.unionProvenance(nil, "Gullstone", "The Lamp")
-    TestRunner:assertEqual(out, "Gullstone; The Lamp", "source's own provenance rides")
-    out = XrayMerge.unionProvenance(out, "What Vardo Knew", "The Lamp; Gullstone")
-    TestRunner:assertEqual(out, "Gullstone; The Lamp; What Vardo Knew",
+    local out = XrayMerge.unionMergedFrom(nil,
+        { title = "Gullstone", source_ts = 10 },
+        XrayMerge.ledgerOf({ merged_from_books = "The Lamp" }))
+    TestRunner:assertEqual(XrayMerge.provenanceString(out), "Gullstone; The Lamp",
+        "source's own provenance rides")
+    TestRunner:assertTrue(out[2].source_ts == nil,
+        "a transitively carried ancestor claims no version — we hold it second-hand")
+    out = XrayMerge.unionMergedFrom(out,
+        { title = "What Vardo Knew", source_ts = 20 },
+        XrayMerge.ledgerOf({ merged_from_books = "The Lamp; Gullstone" }))
+    TestRunner:assertEqual(XrayMerge.provenanceString(out),
+        "Gullstone; The Lamp; What Vardo Knew",
         "re-listed ancestors dedup by exact title")
     TestRunner:assertEqual(#XrayMerge.provenanceGap({ "The Lamp", "Gullstone" }, out), 0,
         "a chained volume no longer reads as gap-ridden")
 end)
 
-TestRunner:test("provenanceGap: exact-title identity within the ;-list", function()
+TestRunner:test("provenanceGap: exact-title identity over the ledger", function()
     local missing = XrayMerge.provenanceGap({ "The Lamp", "Gullstone" },
-        "The Lamplighter; Gullstone")
+        XrayMerge.ledgerOf({ merged_from_books = "The Lamplighter; Gullstone" }))
     TestRunner:assertEqual(#missing, 1, "substring must not match")
     TestRunner:assertEqual(missing[1], "The Lamp", "the unfolded title is named")
     TestRunner:assertEqual(#XrayMerge.provenanceGap({ "A", "B" }, nil), 2,
         "no provenance at all -> everything missing")
-    TestRunner:assertEqual(#XrayMerge.provenanceGap({ "A", "B" }, " A ;B"), 0,
+    TestRunner:assertEqual(#XrayMerge.provenanceGap({ "A", "B" },
+        XrayMerge.ledgerOf({ merged_from_books = " A ;B" })), 0,
         "whitespace-tolerant, all present -> none missing")
 end)
 
@@ -1204,7 +1264,7 @@ end)
 print("  [round 28: hop skip + self-filter + file identity]")
 
 TestRunner:test("hasFolded: provenance-listed source counts as done, others don't", function()
-    local entry = { merged_from_books = "Vol 1; Vol 2" }
+    local entry = { merged_from_books = "Vol 1; Vol 2" }  -- legacy string shape
     TestRunner:assertTrue(XrayMerge.hasFolded(entry, "Vol 1"), "Vol 1 folded")
     TestRunner:assertTrue(XrayMerge.hasFolded(entry, "Vol 2"), "Vol 2 folded")
     TestRunner:assertTrue(not XrayMerge.hasFolded(entry, "Vol 3"), "Vol 3 not folded")

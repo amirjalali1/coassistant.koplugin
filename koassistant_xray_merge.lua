@@ -230,37 +230,133 @@ function XrayMerge.buildCrossBookInputsBlock(source)
         (source.entry and source.entry.result) or "")
 end
 
---- True when a cache entry's provenance already lists a source title (same
---- trimmed-exact match appendBookProvenance dedupes on). Round 28: lets the
---- series chain skip hops that already ran — n-1 re-merges shrink to just the
---- new volumes. Caveat (disclosed in the confirm): provenance carries no
---- version info, so a source UPDATED since its fold still counts as done.
---- @param entry table|nil Cache entry ({ merged_from_books })
---- @param source_title string|nil
---- @return boolean
-function XrayMerge.hasFolded(entry, source_title)
-    local merged = entry and entry.merged_from_books
-    if type(merged) ~= "string" or merged == ""
-        or type(source_title) ~= "string" or source_title == "" then
-        return false
-    end
-    for part in merged:gmatch("([^;]+)") do
-        if part:match("^%s*(.-)%s*$") == source_title then return true end
-    end
-    return false
+-- =============================================================================
+-- Cross-book fold ledger (groups round item (D), 2026-08-09)
+-- =============================================================================
+-- Provenance was a "; "-joined TITLE STRING, so "folded" could not be told from
+-- "folded, but that book's X-Ray has been rebuilt since" — which is exactly the
+-- staleness caveat the round-28 confirm had to disclose. The ledger is the
+-- file-keyed, dated form:
+--     merged_from = { { file = , title = , at = , source_ts = }, ... }
+-- `file` and `source_ts` are ABSENT for transitively carried labels (a
+-- background line names an ancestor book we never opened) and for everything
+-- written before this existed. Those read as status "unknown", NEVER "stale":
+-- a reader must not be nudged into paying for re-folds of work already done,
+-- and the version they carry is genuinely unknowable after the fact.
+-- `merged_from_books` survives as a DERIVED display string, so every existing
+-- reader (browser Info, checkpoint copy, write-back continuity) is untouched.
+
+local function trimLabel(s)
+    if type(s) ~= "string" then return nil end
+    local t = s:match("^%s*(.-)%s*$")
+    return t ~= "" and t or nil
 end
 
---- Accumulate cross-book provenance titles ("A; B"), exact-dup safe. Pure.
---- @param existing string|nil The entry's current merged_from_books
---- @param title string|nil Source book title
---- @return string
-function XrayMerge.appendBookProvenance(existing, title)
-    title = title or "?"
-    if not existing or existing == "" then return title end
-    for part in existing:gmatch("([^;]+)") do
-        if part:match("^%s*(.-)%s*$") == title then return existing end
+--- Same-source identity: the file when BOTH sides know one, else the
+--- trimmed-exact title match the string form always used (so a legacy
+--- title-only record still matches a modern file-keyed fold of the same book).
+local function sameSource(rec, desc)
+    if rec.file and desc.file then return rec.file == desc.file end
+    return rec.title ~= nil and rec.title == trimLabel(desc.title)
+end
+
+--- A cache entry's fold ledger, structured. Reads the modern `merged_from`
+--- array; falls back to parsing the legacy `merged_from_books` string into
+--- title-only records. Always returns a NEW table. Pure.
+--- @param entry table|nil Cache entry
+--- @return table ledger
+function XrayMerge.ledgerOf(entry)
+    local out = {}
+    local led = entry and entry.merged_from
+    if type(led) == "table" then
+        for _idx, rec in ipairs(led) do
+            local title = type(rec) == "table" and trimLabel(rec.title)
+            if title then
+                out[#out + 1] = { file = rec.file, title = title,
+                    at = tonumber(rec.at), source_ts = tonumber(rec.source_ts) }
+            end
+        end
+        return out
     end
-    return existing .. "; " .. title
+    for part in tostring((entry and entry.merged_from_books) or ""):gmatch("([^;]+)") do
+        local title = trimLabel(part)
+        if title then out[#out + 1] = { title = title } end
+    end
+    return out
+end
+
+--- The ledger's display form — the legacy `merged_from_books` string, which
+--- stays the field every reader outside this module consumes. Pure.
+--- @param ledger table|nil
+--- @return string
+function XrayMerge.provenanceString(ledger)
+    local titles = {}
+    for _idx, rec in ipairs(ledger or {}) do titles[#titles + 1] = rec.title end
+    return table.concat(titles, "; ")
+end
+
+--- Record one fold in a ledger, in place. An already-listed source is updated
+--- rather than duplicated: it keeps its file if we now know one, and when a
+--- NEWER source version is folded, both `source_ts` (which version we carry)
+--- and `at` (when we took it) move to the new fold. Pure apart from the
+--- os.time() default, which callers may pass in as `desc.at`.
+--- @param ledger table|nil
+--- @param desc table { file =, title =, source_ts =, at = }
+--- @return table ledger
+function XrayMerge.appendMergedFrom(ledger, desc)
+    ledger = ledger or {}
+    local incoming = {
+        file = desc and desc.file,
+        title = trimLabel(desc and desc.title) or "?",
+        at = tonumber(desc and desc.at) or os.time(),
+        source_ts = tonumber(desc and desc.source_ts),
+    }
+    for _idx, rec in ipairs(ledger) do
+        if sameSource(rec, incoming) then
+            rec.file = rec.file or incoming.file
+            if incoming.source_ts and incoming.source_ts ~= rec.source_ts then
+                rec.source_ts = incoming.source_ts
+                rec.at = incoming.at
+            end
+            return ledger
+        end
+    end
+    ledger[#ledger + 1] = incoming
+    return ledger
+end
+
+--- Fold status of one source against a target entry's ledger:
+---   "none"    — never folded
+---   "current" — folded, and that X-Ray has not changed since
+---   "stale"   — folded, but the source's X-Ray is newer than what we carry
+---   "unknown" — folded, but no version was recorded (legacy or transitively
+---               carried) — counts as done everywhere, never as a reason to
+---               spend a request re-running it
+--- @param entry table|nil Target cache entry
+--- @param source table|nil { title =, file =, timestamp = } (the SOURCE entry's timestamp)
+--- @return string status
+function XrayMerge.foldStatus(entry, source)
+    if type(source) ~= "table" then return "none" end
+    for _idx, rec in ipairs(XrayMerge.ledgerOf(entry)) do
+        if sameSource(rec, source) then
+            local src_ts = tonumber(source.timestamp)
+            if not src_ts or not rec.source_ts then return "unknown" end
+            return src_ts > rec.source_ts and "stale" or "current"
+        end
+    end
+    return "none"
+end
+
+--- True when a fold is already recorded, whatever its version status. Round 28:
+--- lets the series chain skip hops that already ran — n-1 re-merges shrink to
+--- just the new volumes.
+--- @param entry table|nil Cache entry
+--- @param source_title string|nil
+--- @param source_file string|nil Preferred identity when known
+--- @return boolean
+function XrayMerge.hasFolded(entry, source_title, source_file)
+    return XrayMerge.foldStatus(entry,
+        { title = source_title, file = source_file }) ~= "none"
 end
 
 --- Cross-book delta prompt + payload (fold one book's X-Ray into this book's
@@ -1052,36 +1148,34 @@ function XrayMerge.namingCanonBlock(source_parsed, source_title)
         .. table.concat(lines, "\n")
 end
 
---- Provenance union for cross-book merges: the target's existing list + the
---- source title + the source's OWN provenance — a merge carries the source's
---- ancestor-labeled background along (item 49), so transitive sources are
---- genuinely included and must be recorded, or chained volumes read as
---- gap-ridden (provenanceGap) and "Includes background from" understates.
---- Pure.
---- @param existing string|nil Target's merged_from_books
---- @param source_title string The book being folded in
---- @param source_provenance string|nil That book's own merged_from_books
---- @return string Updated ";"-separated provenance
-function XrayMerge.unionProvenance(existing, source_title, source_provenance)
-    local out = XrayMerge.appendBookProvenance(existing, source_title)
-    for part in (source_provenance or ""):gmatch("([^;]+)") do
-        local t = part:match("^%s*(.-)%s*$")
-        if t ~= "" then out = XrayMerge.appendBookProvenance(out, t) end
+--- Ledger union for cross-book merges: the target's ledger + the source + the
+--- source's OWN ledger — a merge carries the source's ancestor-labeled
+--- background along (item 49), so transitive sources are genuinely included and
+--- must be recorded, or chained volumes read as gap-ridden (provenanceGap) and
+--- "Includes background from" understates. Transitive records deliberately
+--- carry NO version: we hold the ancestor's content second-hand, so which
+--- version of it we have is the source book's fact, not ours to claim. Pure.
+--- @param ledger table|nil Target's ledger (XrayMerge.ledgerOf output)
+--- @param source_desc table { file =, title =, source_ts = } The book being folded in
+--- @param source_ledger table|nil That book's own ledger
+--- @return table ledger
+function XrayMerge.unionMergedFrom(ledger, source_desc, source_ledger)
+    local out = XrayMerge.appendMergedFrom(ledger, source_desc)
+    for _idx, rec in ipairs(source_ledger or {}) do
+        XrayMerge.appendMergedFrom(out, { file = rec.file, title = rec.title })
     end
     return out
 end
 
 --- Carry layer 3(ii) gap check: which of these titles are missing from a
---- book's merge provenance? Same identity rule as appendBookProvenance
---- (exact title match within the ";"-separated list). Pure.
+--- book's merge provenance? Same trimmed-exact title identity the ledger uses.
+--- Pure.
 --- @param titles table Ordered titles that SHOULD have been folded in
---- @param merged_from string|nil The book's merged_from_books value
+--- @param ledger table|nil The book's ledger (XrayMerge.ledgerOf output)
 --- @return table missing Titles not found in the provenance
-function XrayMerge.provenanceGap(titles, merged_from)
+function XrayMerge.provenanceGap(titles, ledger)
     local have = {}
-    for part in (merged_from or ""):gmatch("([^;]+)") do
-        have[part:match("^%s*(.-)%s*$")] = true
-    end
+    for _idx, rec in ipairs(ledger or {}) do have[rec.title] = true end
     local missing = {}
     for _idx, t in ipairs(titles or {}) do
         if not have[t] then missing[#missing + 1] = t end
@@ -1139,10 +1233,14 @@ function XrayMerge.crossBookTransform(source_title, source_parsed, target_title,
                 base_parsed, delta, source_parsed, target_title, target_file)
             carried_n = #labels
             if meta_out then
+                -- Carried labels name ancestor books we never read: title only,
+                -- no version — they land in the ledger as "unknown" folds.
+                local led = XrayMerge.ledgerOf(meta_out)
                 for _idx, label in ipairs(labels) do
-                    meta_out.merged_from_books = XrayMerge.appendBookProvenance(
-                        meta_out.merged_from_books, label)
+                    XrayMerge.appendMergedFrom(led, { title = label })
                 end
+                meta_out.merged_from = led
+                meta_out.merged_from_books = XrayMerge.provenanceString(led)
             end
             -- Carry layer 1: whatever did NOT arrive goes dormant instead of
             -- being lost — the wake-pass right after the merge promotes any
@@ -2047,15 +2145,21 @@ function XrayMerge.executeCrossBook(opts)
             -- Item 49 transitive carry: the transform appends carried ancestor
             -- labels to THIS table (reconcileXrayMeta reads it after the
             -- transform has run inside parseXrayAnswer)
+            local wb_ledger = XrayMerge.unionMergedFrom(
+                XrayMerge.ledgerOf(main_entry),
+                { file = source.file, title = source.title,
+                  source_ts = source.entry and source.entry.timestamp },
+                source.entry and XrayMerge.ledgerOf(source.entry))
             local wb_meta = {
                 model = model_name,
                 used_reasoning = used_reasoning,
                 used_book_text = union.used_book_text,
                 used_highlights = union.used_highlights,
                 producer = "book_merge",
-                merged_from_books = XrayMerge.unionProvenance(
-                    main_entry.merged_from_books, source.title,
-                    source.entry and source.entry.merged_from_books),
+                -- The ledger is the truth; the string is its display form, kept
+                -- in sync here AND after the transform appends carried labels
+                merged_from = wb_ledger,
+                merged_from_books = XrayMerge.provenanceString(wb_ledger),
             }
             local source_parsed = XrayParser.parse(
                 (source.entry and source.entry.result) or "")
@@ -2239,7 +2343,13 @@ function XrayMerge.runSeriesChain(opts)
         -- Round 28: a hop whose fold is already recorded in the target's
         -- provenance is skipped (opt-in — the confirm's "Re-run all" clears
         -- it). Checked fresh from disk at hop time, same as everything else.
-        if opts.skip_done and XrayMerge.hasFolded(fresh_tgt, src_c.title) then
+        -- A STALE hop is not skippable: the source's X-Ray has been rebuilt
+        -- since this fold, so what the target carries is genuinely out of date.
+        -- "unknown" (legacy/transitive, no version recorded) counts as done —
+        -- see the ledger note above.
+        local hop_status = XrayMerge.foldStatus(fresh_tgt,
+            { title = src_c.title, file = src_c.file, timestamp = fresh_src.timestamp })
+        if opts.skip_done and (hop_status == "current" or hop_status == "unknown") then
             skipped = skipped + 1
             logger.info("KOAssistant XrayMerge: chain hop", idx, "skipped -",
                 src_c.title, "already folded into", tgt_c.title)
@@ -2364,7 +2474,10 @@ function XrayMerge.runFanIn(opts)
             unavailable_n = unavailable_n + 1
             return step(idx + 1)
         end
-        if opts.skip_done and XrayMerge.hasFolded(fresh_tgt, src.title) then
+        -- Stale sources re-run here too (see the chain's note)
+        local src_status = XrayMerge.foldStatus(fresh_tgt,
+            { title = src.title, file = src.file, timestamp = fresh_src.timestamp })
+        if opts.skip_done and (src_status == "current" or src_status == "unknown") then
             done_n = done_n + 1
             logger.info("KOAssistant XrayMerge: fan-in skipped", src.title, "- already folded")
             return step(idx + 1)
@@ -2435,7 +2548,8 @@ function XrayMerge.preCreateFoldAsk(opts, proceed)
             earlier_titles[#earlier_titles + 1] = BookGroups.displayTitle(preds[i], opts.ui)
         end
     end
-    local missing = XrayMerge.provenanceGap(earlier_titles, nearest_entry.merged_from_books)
+    local missing = XrayMerge.provenanceGap(earlier_titles,
+        XrayMerge.ledgerOf(nearest_entry))
     local ask_text = T(_("\"%1\" (the previous book in %2) has an X-Ray. Fold its knowledge into this book's X-Ray once it is built? Recurring names then stay consistent across the series. The two X-Rays are sent, not the books."),
         nearest_title, (group and group.name) or _("this group"))
     if #missing > 0 then
@@ -2866,9 +2980,12 @@ function XrayMerge.startCrossBookFlow(opts)
                 if cand.group_name then mates[#mates + 1] = cand end
             end
             if #mates >= 2 then
-                local done_n = 0
+                local done_n, stale_n = 0, 0
                 for _idx, m in ipairs(mates) do
-                    if XrayMerge.hasFolded(main_entry, m.title) then done_n = done_n + 1 end
+                    local st = XrayMerge.foldStatus(main_entry, { title = m.title,
+                        file = m.file, timestamp = m.entry and m.entry.timestamp })
+                    if st == "stale" then stale_n = stale_n + 1
+                    elseif st ~= "none" then done_n = done_n + 1 end
                 end
                 -- Members the picker never listed (no X-Ray of their own)
                 local missing_n = math.max(0, (#tgt_group.books - 1) - #mates)
@@ -2898,7 +3015,11 @@ function XrayMerge.startCrossBookFlow(opts)
                         end
                         if done_n > 0 then
                             confirm_title = confirm_title .. "\n"
-                                .. T(_("%1 of them are already folded in. Skipping them saves requests, but does not pick up changes made since."), done_n)
+                                .. T(_("%1 of them are already folded in and up to date — those are skipped."), done_n)
+                        end
+                        if stale_n > 0 then
+                            confirm_title = confirm_title .. "\n"
+                                .. T(_("%1 of them were folded in before, but their X-Rays have changed since — those run again."), stale_n)
                         end
                         local function launch(skip_done)
                             XrayMerge.runFanIn({
@@ -2960,11 +3081,13 @@ function XrayMerge.startCrossBookFlow(opts)
                 -- Round 28 (field report: adding Vol 4 re-ran 1→2 and 2→3):
                 -- hops already recorded in the target's provenance can be
                 -- skipped — only the new volumes cost requests
-                local done_n = 0
+                local done_n, stale_n = 0, 0
                 for i = 1, n_merges do
-                    if XrayMerge.hasFolded(chain[i + 1].entry, chain[i].title) then
-                        done_n = done_n + 1
-                    end
+                    local st = XrayMerge.foldStatus(chain[i + 1].entry,
+                        { title = chain[i].title, file = chain[i].file,
+                          timestamp = chain[i].entry and chain[i].entry.timestamp })
+                    if st == "stale" then stale_n = stale_n + 1
+                    elseif st ~= "none" then done_n = done_n + 1 end
                 end
                 local confirm_title = T(_("Bring %1 up to date: %2 merges, oldest first — each book's X-Ray folds into the next book's (1 into 2, 2 into 3, …)?"),
                         predecessors[1].group_name, n_merges)
@@ -2975,7 +3098,11 @@ function XrayMerge.startCrossBookFlow(opts)
                 end
                 if done_n > 0 then
                     confirm_title = confirm_title .. "\n"
-                        .. T(_("%1 of these merges already ran. Skipping them saves requests, but does not pick up changes made to those X-Rays since — \"Re-run all\" refreshes everything."), done_n)
+                        .. T(_("%1 of these merges already ran and are up to date — those are skipped. \"Re-run all\" runs them anyway."), done_n)
+                end
+                if stale_n > 0 then
+                    confirm_title = confirm_title .. "\n"
+                        .. T(_("%1 ran before, but those X-Rays have changed since — they run again."), stale_n)
                 end
                 local function launchChain(skip_done)
                     XrayMerge.runSeriesChain({

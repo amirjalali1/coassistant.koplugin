@@ -45,8 +45,10 @@ end
 local BASE_CONTINUITY_FIELDS = {
     "model", "source_mode", "full_document", "progress_page", "flow_visible_pages",
     -- The artifact still CONTAINS the other books' background after later
-    -- updates (item 43 cross-book provenance)
+    -- updates (item 43 cross-book provenance; the ledger is its dated form —
+    -- both inherit or a rebuild would look like it had never been folded into)
     "merged_from_books",
+    "merged_from",
 }
 
 --- Reconcile permission/provenance metadata for a write that merges new

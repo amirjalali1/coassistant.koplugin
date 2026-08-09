@@ -107,6 +107,12 @@ local FULL_METADATA = {
     base_timestamp = 1753600123,
     -- Cross-book merge provenance (item 43)
     merged_from_books = "First Book; Second Book",
+    -- Groups round (D): the dated fold ledger behind that display string.
+    -- Second record is the transitive/legacy shape — title only.
+    merged_from = {
+        { title = "First Book", file = "/books/one.epub", at = 1753600200, source_ts = 1753600100 },
+        { title = "Second Book", at = 1753600300 },
+    },
 }
 
 local RESULT_TEXT = "Line one\nLine two with \"quotes\" and ]] brackets and ]=] tricky closer"
@@ -120,7 +126,21 @@ TestRunner:test("set() with every documented field survives a disk reload", func
     TestRunner:assertEqual(entry.result, RESULT_TEXT, "result")
     TestRunner:assertEqual(entry.progress_decimal, 0.5, "progress_decimal")
     for field, expected in pairs(FULL_METADATA) do
-        TestRunner:assertEqual(entry[field], expected, "field lost in round-trip: " .. field)
+        if type(expected) == "table" then
+            -- Array-of-records fields (merged_from) need their own writer in
+            -- saveCache; compare record by record so a dropped sub-field fails
+            local got = entry[field]
+            TestRunner:assertTrue(type(got) == "table", "table field lost: " .. field)
+            TestRunner:assertEqual(#got, #expected, "record count: " .. field)
+            for i, rec in ipairs(expected) do
+                for k, v in pairs(rec) do
+                    TestRunner:assertEqual(got[i] and got[i][k], v,
+                        "sub-field lost in round-trip: " .. field .. "[" .. i .. "]." .. k)
+                end
+            end
+        else
+            TestRunner:assertEqual(entry[field], expected, "field lost in round-trip: " .. field)
+        end
     end
 end)
 
