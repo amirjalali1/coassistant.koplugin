@@ -6027,6 +6027,25 @@ function AskGPT:viewCache(parent_dialog)
       end,
     }})
   end
+  -- Book page round (2026-08-09): the popup stays the two-tap fast path; the
+  -- page is the explore view (same artifact rows + chats/notebook/group/settings)
+  table.insert(buttons, {{
+    text = _("Book overview…"),
+    callback = function()
+      UIManager:close(self_ref._cache_selector)
+      if parent_dialog then UIManager:close(parent_dialog) end
+      local props = self_ref.ui and self_ref.ui.doc_props
+      require("koassistant_book_page").show({
+        file = file,
+        plugin = self_ref,
+        ui = self_ref.ui,
+        title = props and (props.display_title or props.title),
+        author = props and props.authors,
+        enable_emoji = configuration and configuration.features
+            and configuration.features.enable_emoji_icons == true,
+      })
+    end,
+  }})
   table.insert(buttons, {{
     text = _("Cancel"),
     callback = function()

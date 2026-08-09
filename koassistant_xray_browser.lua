@@ -1033,6 +1033,17 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
             return orig_onCloseWidget(menu_self)
         end
     end
+    -- Book page level-up (book page round, 2026-08-09): live views sit one
+    -- level BELOW the book page, so the ◀ arrow stays active at root — seeding
+    -- paths is what enables it (Menu: #paths > 0) — and navigateBack at root
+    -- opens the page instead of closing. Archived-version views keep plain
+    -- close (read-only inspection reached from a versions list).
+    if not metadata.checkpoint and metadata.book_file and metadata.plugin then
+        self._level_up = true
+        table.insert(self.menu.paths, true)
+    else
+        self._level_up = nil
+    end
     UIManager:show(self.menu)
 
     -- Auto-navigate to saved position (from file browser reopen or search return flow)
@@ -1762,8 +1773,21 @@ function XrayBrowser:navigateBack()
     if not self.menu then return end
 
     if #self.nav_stack == 0 then
-        -- At root level — close the browser
+        -- At root level — up to the book page when seeded (book page round;
+        -- live views sit one level below it), else close
+        local meta = self.metadata
+        local ui = self.ui
         UIManager:close(self.menu)
+        if self._level_up and meta then
+            require("koassistant_book_page").show({
+                file = meta.book_file,
+                plugin = meta.plugin,
+                ui = ui,
+                title = meta.title,
+                author = meta.book_author,
+                enable_emoji = meta.enable_emoji,
+            })
+        end
         return
     end
 
