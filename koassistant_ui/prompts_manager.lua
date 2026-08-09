@@ -1770,7 +1770,11 @@ function PromptsManager:showStep3_Settings(state)
 
     -- Provider/model display
     local provider_display = state.provider or _("Global")
-    local model_display = state.model or (state.provider and _("Provider default")) or _("Global")
+    local pinned_tier_model = self:pinnedTierModelFor(state)
+    local model_display = state.model
+        or (pinned_tier_model and T(_("Auto: %1"), pinned_tier_model))
+        or (state.provider and _("Provider default"))
+        or _("Global")
 
     -- Collect items, lay out 2 per row (same order as edit dialogs)
     local items = {}
@@ -3101,6 +3105,27 @@ function PromptsManager:showThinkingBudgetSelector(state)
     UIManager:show(spin_widget)
 end
 
+-- The action's tier hint resolved within the pinned provider (maintainer
+-- 2026-08-09) — mirrors the bake's provider-pinned tier branch in
+-- buildUnifiedRequestConfig (ladder only, kill switch respected). This variant
+-- ignores any currently picked model: it answers "what would run on Provider
+-- default", which the model selectors' preview row needs.
+function PromptsManager:pinnedTierModelForPick(state)
+    local tier = state.model_tier
+    if not state.provider or not tier or tier == "none" then return nil end
+    local f = self.plugin and self.plugin.settings
+        and self.plugin.settings:readSetting("features") or {}
+    if f.use_action_tiers == false then return nil end
+    return require("koassistant_model_lists").resolveTierModel(state.provider, tier)
+end
+
+-- Effective model for the CURRENT state: nil when a concrete model is pinned
+-- (the pin wins; no tier applies) — drives the "Auto: <model>" displays.
+function PromptsManager:pinnedTierModelFor(state)
+    if state.model then return nil end
+    return self:pinnedTierModelForPick(state)
+end
+
 -- Provider selector dialog
 function PromptsManager:showProviderSelector(state, show_all)
     local ModelLists = require("koassistant_model_lists")
@@ -3201,7 +3226,10 @@ function PromptsManager:showModelSelector(state)
     -- configured/default model, instead of freezing one id
     table.insert(buttons, {
         {
-            text = ((state.model == nil) and "● " or "○ ") .. _("Provider default"),
+            text = ((state.model == nil) and "● " or "○ ")
+                .. (self:pinnedTierModelForPick(state)
+                    and T(_("Provider default (tier: %1)"), self:pinnedTierModelForPick(state))
+                    or _("Provider default")),
             callback = function()
                 state.model = nil
                 UIManager:close(self.model_dialog)
@@ -3413,7 +3441,11 @@ function PromptsManager:showBuiltinSettingsDialog(state)
 
     -- Provider/model display
     local provider_display = state.provider or _("Global")
-    local model_display = state.model or (state.provider and _("Provider default")) or _("Global")
+    local pinned_tier_model = self:pinnedTierModelFor(state)
+    local model_display = state.model
+        or (pinned_tier_model and T(_("Auto: %1"), pinned_tier_model))
+        or (state.provider and _("Provider default"))
+        or _("Global")
 
     local buttons = {}
 
@@ -4028,7 +4060,10 @@ function PromptsManager:showBuiltinModelSelector(state)
     -- tier pick when the action carries a model_tier hint
     table.insert(buttons, {
         {
-            text = ((state.model == nil) and "● " or "○ ") .. _("Provider default"),
+            text = ((state.model == nil) and "● " or "○ ")
+                .. (self:pinnedTierModelForPick(state)
+                    and T(_("Provider default (tier: %1)"), self:pinnedTierModelForPick(state))
+                    or _("Provider default")),
             callback = function()
                 state.model = nil
                 UIManager:close(self.builtin_model_dialog)
@@ -4364,7 +4399,11 @@ function PromptsManager:showCustomQuickSettingsDialog(state)
 
     -- Provider/model display (custom providers store an id — show their name)
     local provider_display = state.provider and self.plugin:getProviderDisplayName(state.provider) or _("Global")
-    local model_display = state.model or (state.provider and _("Provider default")) or _("Global")
+    local pinned_tier_model = self:pinnedTierModelFor(state)
+    local model_display = state.model
+        or (pinned_tier_model and T(_("Auto: %1"), pinned_tier_model))
+        or (state.provider and _("Provider default"))
+        or _("Global")
 
     local buttons = {
         -- Name (editable, full width)
@@ -5008,7 +5047,10 @@ function PromptsManager:showCustomModelSelector(state)
     -- tier pick when the action carries a model_tier hint
     table.insert(buttons, {
         {
-            text = ((state.model == nil) and "● " or "○ ") .. _("Provider default"),
+            text = ((state.model == nil) and "● " or "○ ")
+                .. (self:pinnedTierModelForPick(state)
+                    and T(_("Provider default (tier: %1)"), self:pinnedTierModelForPick(state))
+                    or _("Provider default")),
             callback = function()
                 state.model = nil
                 UIManager:close(self.custom_model_dialog)
