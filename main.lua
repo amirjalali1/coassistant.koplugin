@@ -1824,6 +1824,19 @@ function AskGPT:initSettings()
       logger.info("KOAssistant: Migrated web_search_max_uses to web_search_effort")
     end
 
+    -- ONE-TIME migration (2026-08-09): the dictionary-bypass default action moved
+    -- from Dictionary to Quick Define. Clear a stored "dictionary" so those users
+    -- follow the new default too; the flag guard means re-picking Dictionary
+    -- afterwards sticks.
+    if not features._dict_bypass_default_migrated then
+      if features.dictionary_bypass_action == "dictionary" then
+        features.dictionary_bypass_action = nil
+        logger.info("KOAssistant: Dictionary bypass action moved to the Quick Define default")
+      end
+      features._dict_bypass_default_migrated = true
+      needs_save = true
+    end
+
     -- ONE-TIME seed (surrounding_context_plan.md): highlight actions' surrounding
     -- context used to fall back to the DICTIONARY context settings. Copy a tuned
     -- dictionary mode into the new highlight_context_mode so flag-true actions keep
@@ -16230,8 +16243,8 @@ function AskGPT:syncDictionaryBypass()
 
     local self_ref = self
     dictionary.onLookupWord = function(dict_self, word, is_sane, boxes, highlight, link, dict_close_callback)
-      -- Get the bypass action from settings (default: dictionary)
-      local action_id = features.dictionary_bypass_action or "dictionary"
+      -- Get the bypass action from settings (default: quick_define)
+      local action_id = features.dictionary_bypass_action or "quick_define"
       local bypass_action = self_ref.action_service:getAction("highlight", action_id)
 
       -- Also check special actions if not found
@@ -16686,7 +16699,7 @@ function AskGPT:buildDictionaryBypassActionMenu()
       text = action_text,
       checked_func = function()
         local f = self_ref.settings:readSetting("features") or {}
-        local current = f.dictionary_bypass_action or "dictionary"
+        local current = f.dictionary_bypass_action or "quick_define"
         return current == action_id
       end,
       radio = true,

@@ -1204,7 +1204,7 @@ local SettingsSchema = {
                     type = "submenu",
                     text_func = function(plugin)
                         local f = plugin.settings:readSetting("features") or {}
-                        local action_id = f.dictionary_bypass_action or "dictionary"
+                        local action_id = f.dictionary_bypass_action or "quick_define"
                         -- Try to get action name
                         local Actions = require("prompts/actions")
                         local action = Actions.getById(action_id)
