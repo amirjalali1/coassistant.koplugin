@@ -15157,6 +15157,32 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
     end,
   }
 
+  button_defs["quick_answer"] = {
+    text = (function()
+      -- Quick GLOBAL toggle of the Quick Answer DEFAULT for new chats (web_search
+      -- convention — the scope-aware picker stays in Book Settings / the ⚡ hold
+      -- menu). Label shows the EFFECTIVE state, "(book)" when an override masks it.
+      local BookSettings = require("koassistant_book_settings")
+      local doc_settings = has_document and self.ui.doc_settings or nil
+      local label = BookSettings.resolveQuickAnswerDefault(doc_settings, features)
+        and _("On") or _("Off")
+      if doc_settings and doc_settings:readSetting(BookSettings.KEY_QUICK_ANSWER) ~= nil then
+        label = label .. _(" (book)")
+      end
+      return E("\u{26A1}", T(_("Quick Answer: %1"), label))
+    end)(),
+    callback = function()
+      local f = self_ref.settings:readSetting("features") or {}
+      f.quick_answer_default = not f.quick_answer_default
+      self_ref.settings:saveSetting("features", f)
+      self_ref.settings:flush()
+      self_ref:updateConfigFromSettings()
+      opening_subdialog = true
+      UIManager:close(dialog)
+      reopenQuickSettings()
+    end,
+  }
+
   button_defs["web_search"] = {
     text = (function()
       -- Quick GLOBAL toggle (maintainer decision 2026-07-11 — the scope-aware picker

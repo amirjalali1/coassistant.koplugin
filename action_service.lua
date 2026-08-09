@@ -1500,26 +1500,60 @@ function ActionService:getQsItemsOrder()
         return copy
     end
     local processed = processOrderedList(saved, Constants.QS_ITEMS_DEFAULT_ORDER)
-    -- Normalization: text_extraction lives right after dictionary_language (maintainer
-    -- 2026-07-11 QS layout; replaces the old before-chat_history relocation, whose
-    -- append-at-end case this subsumes). Fires only when text_extraction sits before
-    -- dictionary_language (pre-move saved orders) or after chat_history (the old
-    -- appended-at-end placement) — a manual position between the two survives.
-    local te_idx, dl_idx, ch_idx
-    for i, id in ipairs(processed) do
-        if id == "text_extraction" then te_idx = i end
-        if id == "dictionary_language" then dl_idx = i end
-        if id == "chat_history" then ch_idx = i end
-    end
-    if te_idx and dl_idx and (te_idx < dl_idx or (ch_idx and te_idx > ch_idx)) then
-        table.remove(processed, te_idx)
-        -- Re-find dictionary_language after removal (index may have shifted)
+    -- 2026-08-09 QS layout: … Web Search · Book Tools · Text Extraction · Quick
+    -- Answer (replaces the 2026-07-11 after-dictionary_language home for
+    -- text_extraction). ONE-TIME relocations, gated by features._qs_layout_v2
+    -- (registry internal bucket): with text_extraction moved out,
+    -- dictionary_language and chat_history sit adjacent, so its retired slot (right
+    -- after dictionary_language) is indistinguishable from a deliberate manual
+    -- return to it — a standing positional rule (the previous approach here) would
+    -- bounce that placement forever. Under the marker every later position is
+    -- manual and survives.
+    local f = self.settings:readSetting("features") or {}
+    if not f._qs_layout_v2 then
+        -- quick_answer: processOrderedList APPENDS ids a saved order has never
+        -- seen, so pre-add orders get it at the tail — move it after book_tools.
+        -- Runs first; the text_extraction rule places relative to quick_answer.
+        local qa_idx, bt_idx
         for i, id in ipairs(processed) do
-            if id == "dictionary_language" then
-                table.insert(processed, i + 1, "text_extraction")
-                break
+            if id == "quick_answer" then qa_idx = i end
+            if id == "book_tools" then bt_idx = i end
+        end
+        if qa_idx and bt_idx and qa_idx ~= bt_idx + 1 then
+            table.remove(processed, qa_idx)
+            -- Re-find book_tools after removal (index may have shifted)
+            for i, id in ipairs(processed) do
+                if id == "book_tools" then
+                    table.insert(processed, i + 1, "quick_answer")
+                    break
+                end
             end
         end
+        -- text_extraction: rescue from the retired positions (after
+        -- dictionary_language, pre-2026-07-11 spots before it, or the old
+        -- appended-at-end placement past chat_history) to right before
+        -- quick_answer.
+        local te_idx, dl_idx, ch_idx
+        qa_idx = nil -- re-find; the block above may have moved it
+        for i, id in ipairs(processed) do
+            if id == "text_extraction" then te_idx = i end
+            if id == "dictionary_language" then dl_idx = i end
+            if id == "chat_history" then ch_idx = i end
+            if id == "quick_answer" then qa_idx = i end
+        end
+        if te_idx and dl_idx and qa_idx and te_idx ~= qa_idx - 1
+            and (te_idx == dl_idx + 1 or te_idx < dl_idx or (ch_idx and te_idx > ch_idx)) then
+            table.remove(processed, te_idx)
+            -- Re-find quick_answer after removal (index may have shifted)
+            for i, id in ipairs(processed) do
+                if id == "quick_answer" then
+                    table.insert(processed, i, "text_extraction")
+                    break
+                end
+            end
+        end
+        f._qs_layout_v2 = true
+        self.settings:saveSetting("features", f)
     end
     self.settings:saveSetting("qs_items_order", processed)
     return processed

@@ -113,6 +113,7 @@ Registry.SETTINGS_SUBKEYS = {
         "_dict_bypass_default_migrated",
         "_session_chips_registry_v1", "_model_switch_notice",
         "_quiz_chapter_level_reset", "_language_prompt_shown",
+        "_qs_layout_v2",
         "setup_wizard_completed",                            -- top-level (see TOPLEVEL_SUBKEYS)
     },
 }
