@@ -753,6 +753,22 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
           }})
         end
         table.insert(btn_rows, {{
+          text = _("Book overview…"),
+          callback = function()
+            UIManager:close(self_ref._cache_selector)
+            if fb_menu then UIManager:close(fb_menu) end
+            require("koassistant_book_page").show({
+              file = file,
+              plugin = self_ref,
+              ui = self_ref.ui,
+              title = title,
+              author = authors,
+              enable_emoji = configuration and configuration.features
+                  and configuration.features.enable_emoji_icons == true,
+            })
+          end,
+        }})
+        table.insert(btn_rows, {{
           text = _("Cancel"),
           callback = function()
             UIManager:close(self_ref._cache_selector)

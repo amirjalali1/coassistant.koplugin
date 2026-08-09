@@ -8830,6 +8830,22 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             }})
                         end
                         table.insert(btn_rows, {{
+                            text = _("Book overview…"),
+                            callback = function()
+                                UIManager:close(plugin._cache_selector)
+                                UIManager:close(input_dialog)
+                                plugin.current_input_dialog = nil
+                                require("koassistant_book_page").show({
+                                    file = artifact_file,
+                                    plugin = plugin,
+                                    ui = ui_instance,
+                                    title = book_metadata and book_metadata.title,
+                                    author = book_metadata and book_metadata.author,
+                                    enable_emoji = enable_emoji,
+                                })
+                            end,
+                        }})
+                        table.insert(btn_rows, {{
                             text = _("Cancel"),
                             callback = function()
                                 UIManager:close(plugin._cache_selector)

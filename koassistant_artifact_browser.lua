@@ -449,6 +449,19 @@ function ArtifactBrowser:showArtifactSelector(doc_path, doc_title, opts)
 
     if not select_mode then
         table.insert(buttons, {{
+            text = _("Book overview…"),
+            callback = function()
+                UIManager:close(self_ref._cache_selector)
+                require("koassistant_book_page").show({
+                    file = doc_path,
+                    plugin = AskGPT,
+                    ui = AskGPT.ui,
+                    title = doc_title,
+                    enable_emoji = opts and opts.enable_emoji,
+                })
+            end,
+        }})
+        table.insert(buttons, {{
             text = _("Open Book"),
             callback = function()
                 UIManager:close(self_ref._cache_selector)

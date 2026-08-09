@@ -1041,6 +1041,9 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
     if not metadata.checkpoint and metadata.book_file and metadata.plugin then
         self._level_up = true
         table.insert(self.menu.paths, true)
+        -- Menu:init already evaluated the arrow with empty paths — re-evaluate,
+        -- or the arrow stays dead until the first forward/back navigation
+        self.menu:updatePageInfo()
     else
         self._level_up = nil
     end
@@ -2202,13 +2205,18 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
     -- those is the separate "edit/delete X-Ray entries" question. Undo is
     -- LOCAL: a fold that already copied this forward is not rewritten, exactly
     -- like any other later edit.
+    -- PLACEMENT (2026-08-09 maintainer: a full-width row on every background-
+    -- carrying character "is a bit much"): a compact slot on the nav bar (the
+    -- last row, next to Chat about this) instead of a row of its own — the top
+    -- row is already full on exactly these entries. The confirm carries the
+    -- full explanation, so the short label is enough.
     if not self.scope and not self.metadata.checkpoint and self.metadata.book_file
         and type(item) == "table" and type(item.background) == "table"
         and #item.background > 0 then
         local demote_name = XrayParser.getItemName(item, category_key)
         if type(demote_name) == "string" and demote_name ~= "" then
-            table.insert(buttons_rows, {{
-                text = _("Move back to carried list"),
+            table.insert(row, {
+                text = "⇤ " .. _("Carried"),
                 callback = function()
                     local ConfirmBox = require("ui/widget/confirmbox")
                     UIManager:show(ConfirmBox:new{
@@ -2229,7 +2237,7 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
                         end,
                     })
                 end,
-            }})
+            })
         end
     end
 

@@ -2396,6 +2396,24 @@ function ChatGPTViewer:init()
             }})
           end
           table.insert(art_buttons, {{
+            text = _("Book overview…"),
+            callback = function()
+              UIManager:close(self._artifacts_dialog)
+              self:onClose()
+              if self._plugin then
+                require("koassistant_book_page").show({
+                  file = self._artifact_file,
+                  plugin = self._plugin,
+                  ui = self._plugin.ui,
+                  title = self._artifact_book_title,
+                  author = self._artifact_book_author,
+                  enable_emoji = self.configuration and self.configuration.features
+                      and self.configuration.features.enable_emoji_icons == true,
+                })
+              end
+            end,
+          }})
+          table.insert(art_buttons, {{
             text = _("Cancel"),
             callback = function() UIManager:close(self._artifacts_dialog) end,
           }})
