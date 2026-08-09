@@ -79,7 +79,7 @@ local ARTIFACT_EMOJI = {
     recap = "⏪",
     book_info = "ℹ️",
     analyze_highlights = "📝",
-    generate_quiz = "❓",
+    quiz = "❓",
 }
 
 local function artifactEmoji(cache)
@@ -177,10 +177,11 @@ local function buildItems(ctx)
         end
         -- Quiz opens its ACTION popup when the book is open (View/Update/New
         -- Quiz — the quiz viewer has no redo controls, unlike the artifact
-        -- viewers); a closed book can't quiz, so it falls through to viewing
+        -- viewers); a closed book can't quiz, so it falls through to viewing.
+        -- The action id AND cache key are "quiz" (prompts/actions.lua:1637)
         local row_callback
-        if cache.key == "generate_quiz" and ctx.is_open_book then
-            row_callback = function() plugin:executeBookLevelAction("generate_quiz") end
+        if cache.key == "quiz" and ctx.is_open_book then
+            row_callback = function() plugin:executeBookLevelAction("quiz") end
         else
             row_callback = function() openArtifactRow(cache, ctx) end
         end
