@@ -92,6 +92,7 @@ Registry.SETTINGS_SUBKEYS = {
         "custom_providers", "custom_models", "provider_default_models",
         "model_explicit",                                   -- which providers have a deliberate model pick
         "tier_overrides",                                   -- tier GUI placements (docs/tier_gui_plan.md)
+        "global_tier_models",                               -- global tier pins (tier GUI phase 2)
     },
     languages = {
         "translation_language", "dictionary_language",

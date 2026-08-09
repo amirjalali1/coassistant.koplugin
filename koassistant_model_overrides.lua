@@ -32,6 +32,39 @@ function ModelOverrides.setGuiTiers(tbl)
     ModelOverrides._gui_tiers = type(tbl) == "table" and tbl or nil
 end
 
+-- Global tier pins (tier GUI phase 2): features.global_tier_models — tier →
+-- {provider, model}. A usable pin re-points a tier-invoking request at that
+-- provider+model regardless of the active provider; same push contract as
+-- _gui_tiers. The key checker is a main.lua closure (isProviderConfigured, so
+-- GUI-entered keys count); nil checker (tests / not yet pushed) treats pins as
+-- usable. Consulted per walk step by ModelLists.resolveTierTarget.
+ModelOverrides._global_tier_pins = nil
+ModelOverrides._key_checker = nil
+
+function ModelOverrides.setGlobalTierPins(tbl)
+    ModelOverrides._global_tier_pins = type(tbl) == "table" and tbl or nil
+end
+
+function ModelOverrides.setKeyChecker(fn)
+    ModelOverrides._key_checker = type(fn) == "function" and fn or nil
+end
+
+--- Usable global pin for a tier: shape-checked, then key-checked. A pin whose
+--- provider has no usable key is invisible (the ladder applies) — a tier hint
+--- must never fail a request over a revoked key.
+--- @return string|nil provider, string|nil model
+function ModelOverrides.globalTierPin(tier)
+    local pins = ModelOverrides._global_tier_pins
+    local p = type(pins) == "table" and pins[tier] or nil
+    if type(p) ~= "table" then return nil end
+    if type(p.provider) ~= "string" or p.provider == "" then return nil end
+    if type(p.model) ~= "string" or p.model == "" then return nil end
+    if ModelOverrides._key_checker and not ModelOverrides._key_checker(p.provider) then
+        return nil
+    end
+    return p.provider, p.model
+end
+
 local function prefixMatch(model, pattern)
     if not model or not pattern then return false end
     return model == pattern or model:match("^" .. pattern:gsub("%-", "%%-")) ~= nil

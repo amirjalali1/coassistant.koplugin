@@ -272,6 +272,70 @@ TestRunner.assert(ModelLists.getTierForModel("anthropic", "claude-sonnet-5") == 
     "model in two tiers labels as the higher one (TIER_ORDER walk)")
 ModelOverrides.setGuiTiers(nil)
 
+print("== global tier pins (resolveTierTarget, tier GUI phase 2) ==")
+
+-- No pins: provider passthrough, same model as the ladder resolver
+local p, m = ModelLists.resolveTierTarget("anthropic", "fast")
+TestRunner.assert(p == "anthropic" and m == ModelLists.getModelForTier("anthropic", "fast", true),
+    "no pins: resolveTierTarget == same-provider ladder resolution")
+
+-- A pin re-points the tier anywhere (provider + model)
+ModelOverrides.setGlobalTierPins({ fast = { provider = "groq", model = "llama-3.1-8b-instant" } })
+p, m = ModelLists.resolveTierTarget("anthropic", "fast")
+TestRunner.assert(p == "groq" and m == "llama-3.1-8b-instant",
+    "fast pin wins over the active provider's ladder")
+p, m = ModelLists.resolveTierTarget("anthropic", "flagship")
+TestRunner.assert(p == "anthropic",
+    "unpinned tier stays on the active provider")
+
+-- Walk order: each STEP consults pin then ladder — an ultrafast LADDER hit
+-- beats a fast PIN in the fastest walk (ultrafast step resolves first)
+p, m = ModelLists.resolveTierTarget("anthropic", "fastest")
+TestRunner.assert(p == "anthropic" and m == "claude-haiku-4-5-20251001",
+    "fastest: anthropic's own ultrafast beats a later-step fast pin")
+ModelOverrides.setGlobalTierPins({ ultrafast = { provider = "groq", model = "llama-3.1-8b-instant" } })
+p, m = ModelLists.resolveTierTarget("anthropic", "fastest")
+TestRunner.assert(p == "groq",
+    "fastest: an ultrafast pin wins the first step")
+
+-- Key checker gates pins (revoked key → pin invisible, ladder applies)
+ModelOverrides.setKeyChecker(function(pid) return pid ~= "groq" end)
+p, m = ModelLists.resolveTierTarget("anthropic", "fastest")
+TestRunner.assert(p == "anthropic" and m == "claude-haiku-4-5-20251001",
+    "unusable pin is invisible — ladder fallback")
+ModelOverrides.setKeyChecker(nil)
+
+-- Named-tier descend consults pins at descended steps: a provider with no
+-- ladder at all still resolves through an ultrafast pin on a fast request
+p, m = ModelLists.resolveTierTarget("custom_nope", "fast")
+TestRunner.assert(p == "groq",
+    "descend from fast reaches the ultrafast pin on a ladder-less provider")
+
+-- Frontier pin: never consulted by fastest, honored on explicit request
+ModelOverrides.setGlobalTierPins({ frontier = { provider = "anthropic", model = "claude-fable-5" } })
+p, m = ModelLists.resolveTierTarget("anthropic", "fastest")
+TestRunner.assert(m ~= "claude-fable-5",
+    "fastest never consults a frontier pin")
+p, m = ModelLists.resolveTierTarget("openai", "frontier")
+TestRunner.assert(p == "anthropic" and m == "claude-fable-5",
+    "explicit frontier request honors the frontier pin")
+
+-- Invalid pin shapes are ignored; strictness matches resolveTierModel
+ModelOverrides.setGlobalTierPins({ fast = { provider = "", model = "x" }, ultrafast = "junk" })
+p, m = ModelLists.resolveTierTarget("anthropic", "fast")
+TestRunner.assert(p == "anthropic",
+    "malformed pins are invisible")
+TestRunner.assert(ModelLists.resolveTierTarget("anthropic", "none") == nil,
+    "'none' sentinel resolves to nothing (strict, like resolveTierModel)")
+
+-- The ladder-only resolvers never see pins
+ModelOverrides.setGlobalTierPins({ ultrafast = { provider = "groq", model = "llama-3.1-8b-instant" } })
+TestRunner.assert(ModelLists.resolveTierModel("anthropic", "fastest") == "claude-haiku-4-5-20251001",
+    "resolveTierModel stays ladder-only (per-provider GUI default rows depend on it)")
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "ultrafast", false) == "claude-haiku-4-5-20251001",
+    "getModelForTier stays ladder-only")
+ModelOverrides.setGlobalTierPins(nil)
+
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))
 return TestRunner.failed == 0

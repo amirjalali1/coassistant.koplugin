@@ -863,6 +863,49 @@ function ModelLists.resolveTierModel(provider, tier)
     return ModelLists.getModelForTier(provider, tier, true)
 end
 
+-- Global-aware tier resolution (tier GUI phase 2, docs/tier_gui_plan.md): like
+-- resolveTierModel, but each step of the walk consults the GLOBAL tier pin
+-- first (ModelOverrides.globalTierPin — a usable pin names provider+model
+-- regardless of the active provider), then the active provider's own ladder.
+-- Returns provider, model — the provider differs from the input when a pin
+-- fired; callers dispatch cross-provider via the model-override rebase (the ⚡
+-- session-pick machinery). "fastest" still never touches frontier; named tiers
+-- stay strict (garbage/sentinels resolve to nothing, same as resolveTierModel).
+-- resolveTierModel itself stays ladder-only — it answers "what is THIS
+-- provider's tier model", which the tier GUI's default rows depend on.
+-- @return string|nil provider, string|nil model
+function ModelLists.resolveTierTarget(provider, tier)
+    if not provider or not tier then return nil end
+    local ModelOverrides = require("koassistant_model_overrides")
+    local function step(t)
+        local pp, pm = ModelOverrides.globalTierPin(t)
+        if pp then return pp, pm end
+        local m = lookupTier(provider, t)
+        if m then return provider, m end
+        return nil
+    end
+    if tier == "fastest" then
+        for _idx, t in ipairs({ "ultrafast", "fast", "standard", "flagship" }) do
+            local p2, m2 = step(t)
+            if p2 then return p2, m2 end
+        end
+        return nil
+    end
+    local start_idx
+    for i, t in ipairs(TIER_ORDER) do
+        if t == tier then
+            start_idx = i
+            break
+        end
+    end
+    if not start_idx then return nil end
+    for i = start_idx, #TIER_ORDER do
+        local p2, m2 = step(TIER_ORDER[i])
+        if p2 then return p2, m2 end
+    end
+    return nil
+end
+
 -- Get the tier for a given model
 -- @param provider string - Provider name
 -- @param model_id string - Model ID

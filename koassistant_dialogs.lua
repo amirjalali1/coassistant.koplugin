@@ -286,15 +286,16 @@ local function resolveQuickPresetModel(features, provider)
         return nil
     end
     if mode == "tier" then
-        local m = MLists.getModelForTier(provider, features.quick_preset_tier or "fast", true)
-        if m then return { provider = provider, model = m } end
+        local p2, m = MLists.resolveTierTarget(provider, features.quick_preset_tier or "fast")
+        if m then return { provider = p2, model = m } end
         return nil
     end
-    -- "fastest": shared walk (ModelLists.resolveTierModel — also the 18e
-    -- per-action tier resolver; without a tier placement → nil → keep the
-    -- current model).
-    local m = MLists.resolveTierModel(provider, "fastest")
-    if m then return { provider = provider, model = m } end
+    -- "fastest": shared walk (ModelLists.resolveTierTarget — also the 18e
+    -- per-action tier resolver; global tier pins consulted per step, so the
+    -- returned provider may differ from the active one; without any placement
+    -- → nil → keep the current model).
+    local p2, m = MLists.resolveTierTarget(provider, "fastest")
+    if m then return { provider = p2, model = m } end
     return nil
 end
 
@@ -321,6 +322,15 @@ local function effectiveDispatchProvider(features, action, base_provider)
     if quick then
         local preset = resolveQuickPresetModel(features, base_provider)
         if preset and preset.provider then return preset.provider end
+    end
+    -- Per-action tier hint (weakest rung): a usable GLOBAL tier pin re-points
+    -- the dispatch provider (tier GUI phase 2) — mirror the bake's resolution
+    -- with the same guards. Ladder hits return the base provider unchanged.
+    if features.use_action_tiers ~= false and action and action.model_tier
+            and not action.provider and not action.model then
+        local p2 = require("koassistant_model_lists")
+            .resolveTierTarget(base_provider, action.model_tier)
+        if p2 then return p2 end
     end
     return base_provider
 end
@@ -394,20 +404,21 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
     end
     -- Per-action model tier (item 18e, on unless disabled via Advanced → Faster
     -- Models for Quick Actions): actions carrying a model_tier hint switch to a
-    -- faster model of the SAME provider — model only, prompt/reasoning unchanged.
-    -- Weakest rung of the model precedence: action provider/model pins, the ⚡
-    -- session pick, and the Quick preset model all win; the hint fills in only
-    -- when nothing else chose. No tier placement for the provider → nil →
-    -- current model kept (effectiveDispatchProvider needs no mirror: the
-    -- provider never changes). Default-true check pattern (~= false).
+    -- faster model — the active provider's ladder pick, or a GLOBAL tier pin's
+    -- provider+model (tier GUI phase 2; effectiveDispatchProvider mirrors this
+    -- so extraction trust is judged against the pin's provider). Weakest rung
+    -- of the model precedence: action provider/model pins, the ⚡ session pick,
+    -- and the Quick preset model all win; the hint fills in only when nothing
+    -- else chose. No placement anywhere → nil → current model kept.
+    -- Default-true check pattern (~= false).
     if not model_override and features.use_action_tiers ~= false
             and action and action.model_tier
             and not action.provider and not action.model then
         local tier_provider = config.provider or config.default_provider or "anthropic"
-        local tier_model = require("koassistant_model_lists")
-            .resolveTierModel(tier_provider, action.model_tier)
+        local target_provider, tier_model = require("koassistant_model_lists")
+            .resolveTierTarget(tier_provider, action.model_tier)
         if tier_model then
-            model_override = { provider = tier_provider, model = tier_model }
+            model_override = { provider = target_provider, model = tier_model }
             -- The hint belongs to THIS action, but the bake below writes the
             -- resolved model onto the dispatch config — which becomes the viewer's
             -- config. Switching to an action with no hint re-dispatches from it and
@@ -416,12 +427,21 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
             -- field was unset (nil cannot be stored as "I stashed nothing"). The
             -- provider is recorded too: the stash is only valid for it — restoring
             -- provider P's model onto a config whose next action pinned provider Q
-            -- would send a foreign model id.
+            -- would send a foreign model id. (_tier_model_prev_ps is the bucket the
+            -- bake clobbers below — [target_provider], not [tier_provider].)
             features._tier_model_prev = config.model or false
             features._tier_model_prev_ps = (config.provider_settings
-                and config.provider_settings[tier_provider]
-                and config.provider_settings[tier_provider].model) or false
-            features._tier_model_prev_provider = tier_provider
+                and config.provider_settings[target_provider]
+                and config.provider_settings[target_provider].model) or false
+            features._tier_model_prev_provider = target_provider
+            if target_provider ~= tier_provider then
+                -- A global pin moved the WHOLE dispatch to another provider.
+                -- Record the original so the next non-hinted action comes home
+                -- (the model stash alone can't: its provider guard would see a
+                -- foreign provider and drop it, stranding the chat on the pin).
+                features._tier_prev_provider = config.provider or false
+                features._tier_installed_provider = target_provider
+            end
         end
     end
     -- One-shot provider/model override — applied BEFORE every provider-dependent
@@ -3253,16 +3273,36 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         if tf and tf._tier_model_prev ~= nil then
             local prev, prev_ps = tf._tier_model_prev, tf._tier_model_prev_ps
             local prev_prov = tf._tier_model_prev_provider
+            local orig_provider = tf._tier_prev_provider
+            local installed = tf._tier_installed_provider
             tf._tier_model_prev, tf._tier_model_prev_ps = nil, nil
             tf._tier_model_prev_provider = nil
+            tf._tier_prev_provider, tf._tier_installed_provider = nil, nil
             -- The stash is only valid for the provider it was made under. If THIS
             -- action pinned a different provider (createTempConfig already applied
             -- it), the stashed model is a foreign id — drop the stash, the pinned
             -- provider's own defaults apply. nil prev_prov = pre-guard stash from
             -- a live config; same-provider was the only shape then, so restore.
-            if prev_prov == nil or prev_prov == temp_config.provider then
+            local valid
+            if orig_provider ~= nil then
+                -- Cross-provider stash (a GLOBAL tier pin moved the dispatch):
+                -- valid only while the config still sits on the installed provider
+                -- AND this action didn't pin its own (a pin — even to the same
+                -- provider — wins; restoring would clobber it).
+                valid = temp_config.provider == installed
+                    and not (prompt and prompt.provider)
+            else
+                valid = prev_prov == nil or prev_prov == temp_config.provider
+            end
+            if valid then
+                if orig_provider ~= nil then
+                    temp_config.provider = (orig_provider ~= false) and orig_provider or nil
+                end
                 temp_config.model = (prev ~= false) and prev or nil
-                local prov = temp_config.provider
+                -- Restore into the bucket the bake clobbered (prev_prov = the
+                -- provider the stash was made under — equals temp_config.provider
+                -- in the same-provider shape, the PIN provider in the cross shape).
+                local prov = prev_prov or temp_config.provider
                 local ps_src = prov and temp_config.provider_settings
                     and temp_config.provider_settings[prov]
                 if ps_src then
@@ -10536,4 +10576,7 @@ return {
     -- Exported for runtime self-require from the input dialog's onPromptComplete
     -- (same 60-upvalue cap)
     attachRerunContext = attachRerunContext,
+    -- Exported for main.lua's global tier pins screen (tier GUI phase 2) — the
+    -- same key-filtered provider→model picker the ⚡ menu uses
+    pickProviderModel = pickProviderModel,
 }

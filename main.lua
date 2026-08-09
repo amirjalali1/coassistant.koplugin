@@ -2041,11 +2041,22 @@ function AskGPT:updateConfigFromSettings()
   configuration.features.minimal_buttons = nil
   configuration.features.is_full_page_translate = nil  -- Only set by translateCurrentPage
 
-  -- Push GUI tier placements into the pure override layer (tier GUI,
-  -- docs/tier_gui_plan.md). ModelOverrides never reads settings itself; this
-  -- runs on every request path in both plugin instances, so cross-instance
-  -- staleness is covered by construction.
-  require("koassistant_model_overrides").setGuiTiers(features.tier_overrides)
+  -- Push GUI tier placements + global tier pins into the pure override layer
+  -- (tier GUI, docs/tier_gui_plan.md). ModelOverrides never reads settings
+  -- itself; this runs on every request path in both plugin instances, so
+  -- cross-instance staleness is covered by construction. The key checker makes
+  -- an unusable pin invisible (resolution falls back to the active provider's
+  -- ladder) — GUI-entered keys count via isProviderConfigured.
+  do
+    local MO = require("koassistant_model_overrides")
+    MO.setGuiTiers(features.tier_overrides)
+    MO.setGlobalTierPins(features.global_tier_models)
+    local self_ref = self
+    MO.setKeyChecker(function(provider_id)
+      return self_ref:isProviderConfigured(provider_id,
+        self_ref.getCustomProvider and self_ref:getCustomProvider(provider_id) or nil)
+    end)
+  end
 
   -- Log the current configuration for debugging
   local config_parts = {
@@ -2143,6 +2154,31 @@ function AskGPT:hasTierOverrides(provider)
   local features = self.settings:readSetting("features") or {}
   local map = features.tier_overrides and features.tier_overrides[provider]
   return type(map) == "table" and next(map) ~= nil
+end
+
+-- Global tier pins (tier GUI phase 2): features.global_tier_models[tier] =
+-- {provider, model}. nil pin = "Follow active provider" (the per-provider
+-- ladder applies).
+function AskGPT:getGlobalTierPin(tier)
+  local features = self.settings:readSetting("features") or {}
+  local p = features.global_tier_models and features.global_tier_models[tier]
+  if type(p) == "table" and type(p.provider) == "string" and p.provider ~= ""
+      and type(p.model) == "string" and p.model ~= "" then
+    return p
+  end
+  return nil
+end
+
+function AskGPT:setGlobalTierPin(tier, pin)
+  local features = self.settings:readSetting("features") or {}
+  features.global_tier_models = features.global_tier_models or {}
+  features.global_tier_models[tier] = pin
+  if next(features.global_tier_models) == nil then
+    features.global_tier_models = nil
+  end
+  self.settings:saveSetting("features", features)
+  self.settings:flush()
+  self:updateConfigFromSettings()  -- pushes the new pins into ModelOverrides
 end
 
 -- Helper: Save a custom model for a provider
@@ -4007,6 +4043,23 @@ function AskGPT:buildTierMenu(provider)
     { text = _("Speed ladder for action hints and Quick Answer. Never switches provider."),
       enabled = false },
   }
+  -- Masking marker (tier GUI phase 2): global pins outrank this ladder for
+  -- tier-invoking requests — say so instead of letting the rows look dead.
+  do
+    local pinned = {}
+    for _idx, tier in ipairs(tiers) do
+      if self_ref:getGlobalTierPin(tier) then
+        pinned[#pinned + 1] = tier_labels[tier]
+      end
+    end
+    if #pinned > 0 then
+      table.insert(items, {
+        text = T(_("Overridden by global pins: %1 (Settings › Advanced › Tier Models)"),
+          table.concat(pinned, ", ")),
+        enabled = false,
+      })
+    end
+  end
   for _idx, tier in ipairs(tiers) do
     items[#items + 1] = {
       text_func = function()
@@ -4035,6 +4088,84 @@ function AskGPT:buildTierMenu(provider)
         text = _("Tier customizations cleared"),
         timeout = 1.5,
       })
+    end,
+  }
+  return items
+end
+
+-- Global tier pins screen (tier GUI phase 2, docs/tier_gui_plan.md; schema
+-- callback "buildGlobalTierMenu"): each slot either follows the active
+-- provider's ladder (default) or pins ONE provider+model that any
+-- tier-invoking request (action model_tier hints, the ⚡ fastest walk)
+-- switches to — for that request only, via the model-override rebase. Normal
+-- chats, explicit picks and action pins are never affected. A pin whose
+-- provider loses its key silently falls back to the ladder.
+function AskGPT:buildGlobalTierMenu()
+  local self_ref = self
+  local tiers = { "frontier", "flagship", "standard", "fast", "ultrafast" }
+  local tier_labels = {
+    frontier = _("Frontier"), flagship = _("Flagship"), standard = _("Standard"),
+    fast = _("Fast"), ultrafast = _("Ultrafast"),
+  }
+  local items = {
+    { text = _("Applies only when an action or Quick Answer asks for a speed tier — overrides the selected provider and model for that request only."),
+      enabled = false },
+  }
+  for _idx, tier in ipairs(tiers) do
+    items[#items + 1] = {
+      text_func = function()
+        local pin = self_ref:getGlobalTierPin(tier)
+        if pin then
+          return T(_("%1: %2 · %3"), tier_labels[tier], pin.provider, pin.model)
+        end
+        return T(_("%1: Follow active provider"), tier_labels[tier])
+      end,
+      keep_menu_open = true,
+      callback = function(touchmenu_instance)
+        local function refresh()
+          self_ref:refreshTouchMenu(touchmenu_instance, function()
+            return self_ref:buildGlobalTierMenu()
+          end)
+        end
+        require("koassistant_dialogs").pickProviderModel({
+          plugin = self_ref,
+          current = self_ref:getGlobalTierPin(tier),
+          top_row = {
+            text = _("Follow active provider (default)"),
+            callback = function()
+              self_ref:setGlobalTierPin(tier, nil)
+              refresh()
+            end,
+          },
+          on_pick = function(provider_id, model_name)
+            self_ref:setGlobalTierPin(tier, { provider = provider_id, model = model_name })
+            refresh()
+          end,
+        })
+      end,
+    }
+  end
+  items[#items + 1] = {
+    text = _("Clear all pins"),
+    keep_menu_open = true,
+    enabled_func = function()
+      local features = self.settings:readSetting("features") or {}
+      return type(features.global_tier_models) == "table"
+        and next(features.global_tier_models) ~= nil
+    end,
+    callback = function(touchmenu_instance)
+      local features = self.settings:readSetting("features") or {}
+      features.global_tier_models = nil
+      self.settings:saveSetting("features", features)
+      self.settings:flush()
+      self:updateConfigFromSettings()
+      UIManager:show(Notification:new{
+        text = _("Global tier pins cleared"),
+        timeout = 1.5,
+      })
+      self_ref:refreshTouchMenu(touchmenu_instance, function()
+        return self_ref:buildGlobalTierMenu()
+      end)
     end,
   }
   return items

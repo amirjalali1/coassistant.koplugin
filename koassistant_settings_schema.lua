@@ -2295,6 +2295,16 @@ local SettingsSchema = {
                     path = "features.use_action_tiers",
                     default = true,
                     help_text = _("Actions that declare a speed tier (Translate and Quick Define by default; configurable per action in the action editor) use a faster model from your current provider for that request. Only the model changes — the prompt and settings stay the same. Providers without tier data keep the current model. Turn off to always use your configured model."),
+                },
+                -- Global tier pins (tier GUI phase 2, docs/tier_gui_plan.md):
+                -- each slot follows the active provider's ladder by default, or
+                -- pins one provider+model that tier-invoking requests switch to
+                -- for that request only. Screen built in main.lua.
+                {
+                    id = "global_tier_pins",
+                    type = "submenu",
+                    text = _("Tier Models (Global)"),
+                    callback = "buildGlobalTierMenu",
                     separator = true,
                 },
                 -- Web Search submenu
