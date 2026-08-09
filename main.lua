@@ -6366,6 +6366,8 @@ function AskGPT:showCacheViewer(cache_info)
           used_reasoning = cache_info.data.used_reasoning,
           web_search_used = cache_info.data.web_search_used,
           merged_from_sections = cache_info.data.merged_from_sections,
+          merged_from_books = cache_info.data.merged_from_books,
+          merged_from = cache_info.data.merged_from,
           info_popup_text = info_popup_text,
           -- Archived-version view: browser goes read-only (no update/delete rows,
           -- no nested version history), title says "X-Ray Version". Round 24:

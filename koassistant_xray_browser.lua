@@ -1665,6 +1665,10 @@ function XrayBrowser:reloadLiveMain(file)
         XrayParser.mergeUserAliases(data, user_aliases)
     end
     self.xray_data = data
+    -- The reload usually follows a merge — the fold ledger may have grown, and
+    -- Info reads metadata, not the disk entry
+    self.metadata.merged_from = entry.merged_from
+    self.metadata.merged_from_books = entry.merged_from_books
     if #self.nav_stack == 0 then
         self.menu:switchItemTable(self:buildMainTitle(), self:buildCategoryItems(), -1)
     end
@@ -4341,6 +4345,8 @@ function XrayBrowser:_openOtherXrayAtItem(group, result)
         plugin = self.metadata.plugin,
         progress_decimal = ce.progress_decimal,
         full_document = ce.full_document,
+        merged_from_books = ce.merged_from_books,
+        merged_from = ce.merged_from,
         scope = scope,
         _cleanup_widgets = self._cleanup_widgets,  -- preserve across X-Ray swaps
     }
@@ -5121,10 +5127,28 @@ function XrayBrowser:showOptions()
         table.insert(info_parts, _("Merged from:") .. " "
             .. T(_("%1 section X-Rays"), self.metadata.merged_from_sections))
     end
-    -- Cross-book provenance (item 43): accumulated source-book titles
-    if self.metadata.merged_from_books and self.metadata.merged_from_books ~= "" then
-        table.insert(info_parts, _("Includes background from:") .. " "
-            .. self.metadata.merged_from_books)
+    -- Cross-book provenance (item 43 → round 31 ledger): one line per source,
+    -- and every source that recorded a version is checked against its book's
+    -- CURRENT X-Ray — one cache read per file-keyed source, only at Info-tap
+    -- time — so "folded" and "folded but changed since" read differently here
+    -- too, not just in the fold confirms. Title-only records (legacy or
+    -- transitively carried) make no claim.
+    local prov_ledger = require("koassistant_xray_merge").ledgerOf(self.metadata)
+    if #prov_ledger > 0 then
+        local ProvActionCache = require("koassistant_action_cache")
+        table.insert(info_parts, _("Includes background from:"))
+        for _idx, rec in ipairs(prov_ledger) do
+            local line = "  • " .. rec.title
+            if rec.file and rec.source_ts then
+                local src = ProvActionCache.getXrayCache(rec.file)
+                local src_ts = src and tonumber(src.timestamp)
+                if src_ts then
+                    line = line .. " — " .. (src_ts > tonumber(rec.source_ts)
+                        and _("changed since the fold") or _("up to date"))
+                end
+            end
+            table.insert(info_parts, line)
+        end
     end
     -- Ladder provenance (device round 2): derived from disk truth at tap time —
     -- no cache fields involved, so it stays honest across ladder deletion and

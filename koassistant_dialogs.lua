@@ -9448,6 +9448,8 @@ local function openXrayBrowserFromCache(ui, data, cached, config, plugin, book_m
         full_document = cached.full_document,
         previous_progress = cached.previous_progress_decimal and
             (math.floor(cached.previous_progress_decimal * 100 + 0.5) .. "%"),
+        merged_from_books = cached.merged_from_books,
+        merged_from = cached.merged_from,
         cache_metadata = {
             cache_type = "xray",
             book_title = book_title,
@@ -10074,6 +10076,8 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
                             full_document = xray_cache.full_document,
                             previous_progress = xray_cache.previous_progress_decimal and
                                 (math.floor(xray_cache.previous_progress_decimal * 100 + 0.5) .. "%"),
+                            merged_from_books = xray_cache.merged_from_books,
+                            merged_from = xray_cache.merged_from,
                             cache_metadata = {
                                 cache_type = "xray",
                                 book_title = book_title,
