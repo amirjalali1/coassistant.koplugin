@@ -2367,10 +2367,20 @@ function PromptsManager:getModelTierDisplayText(state)
     }
     -- Hand-edited values outside the picker's set (custom_actions.lua) must not
     -- display as "None" while the hint is actually live — show them verbatim.
+    local label
     if state.model_tier and not labels[state.model_tier] then
-        return state.model_tier
+        label = state.model_tier
+    else
+        label = labels[state.model_tier]
     end
-    return labels[state.model_tier] or _("None")
+    if not label then return _("None") end
+    -- Precedence made visible (maintainer 2026-08-09): a concrete model pin
+    -- always beats the tier hint — say so, instead of two live-looking rows
+    -- silently fighting.
+    if state.model then
+        return T(_("%1 (unused — model set)"), label)
+    end
+    return label
 end
 
 -- Model tier selector (item 18e): a speed hint — the action uses a faster model
