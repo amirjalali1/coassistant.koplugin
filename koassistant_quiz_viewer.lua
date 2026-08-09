@@ -646,23 +646,40 @@ function QuizViewer:_buildResultText()
         -- letters are assigned by the plugin (QuizParser.balanceAnswers), so unlike
         -- before they cannot be cross-referenced against the cached model JSON --
         -- "Correct: C" alone no longer identifies anything outside this file.
-        if q.type == "multiple_choice" and type(q.options) == "table" then
-            for _li, letter in ipairs({ "A", "B", "C", "D" }) do
-                local opt = q.options[letter]
-                if opt then
-                    local picked = self.answers[idx] == letter
-                    local is_correct = q.correct == letter
-                    local marker = ""
-                    if picked and is_correct then
-                        marker = _(" (your answer, correct)")
-                    elseif picked then
-                        marker = _(" (your answer)")
-                    elseif is_correct and self.revealed[idx] then
-                        -- Only once revealed: an unanswered question must not be
-                        -- spoiled by its own export.
-                        marker = _(" (correct)")
+        if q.type == "multiple_choice" then
+            if type(q.options) == "table" then
+                for _li, letter in ipairs({ "A", "B", "C", "D" }) do
+                    local opt = q.options[letter]
+                    if opt then
+                        local picked = self.answers[idx] == letter
+                        local is_correct = q.correct == letter
+                        local marker = ""
+                        if picked and is_correct then
+                            marker = _(" (your answer, correct)")
+                        elseif picked then
+                            marker = _(" (your answer)")
+                        elseif is_correct and self.revealed[idx] then
+                            -- Only once revealed: an unanswered question must not be
+                            -- spoiled by its own export.
+                            marker = _(" (correct)")
+                        end
+                        table.insert(lines, T("- %1) %2%3", letter, opt, marker))
                     end
-                    table.insert(lines, T("- %1) %2%3", letter, opt, marker))
+                end
+            end
+        elseif self.revealed[idx] then
+            -- Short answer / essay: the reveal content, same slot and same spoiler
+            -- gate as the options above. Labels are the viewer's own, so no new
+            -- translatable strings enter the catalogue.
+            if q.model_answer and q.model_answer ~= "" then
+                table.insert(lines, T("**%1** %2", _("Model answer:"), q.model_answer))
+            end
+            if type(q.key_points) == "table" and #q.key_points > 0 then
+                table.insert(lines, "**" .. (q.type == "essay"
+                    and _("Key points a good answer should cover:")
+                    or _("Key points:")) .. "**")
+                for _ki, kp in ipairs(q.key_points) do
+                    table.insert(lines, T("- %1", kp))
                 end
             end
         end
