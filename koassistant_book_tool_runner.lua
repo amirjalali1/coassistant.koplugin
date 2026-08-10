@@ -284,6 +284,85 @@ local function resolveReadingScope(config, ui)
     return posture.protected and "current" or "full"
 end
 
+-- Live spoiler line (spoiler_posture_plan.md C4 REVISED 2026-08-11, PROVISIONAL —
+-- maintainer wants this model revisited): protection rides each SEND as one
+-- instruction line appended to the outgoing user message, computed from the
+-- posture and reading position AT THAT MOMENT — never baked into the system
+-- prompt (which stays stable for provider prefix caches) and never written into
+-- MessageHistory (wire-time copy: transcript, saves and exports stay clean, and
+-- lines never accumulate across replies). A running chat therefore follows the
+-- reader: read on and the boundary moves with you; toggle protection and the next
+-- reply obeys. Gated on features._spoiler_live, set only by
+-- buildUnifiedRequestConfig for book/highlight chats whose action doesn't
+-- skip_spoiler (and restored across resume via control_state) — headless,
+-- background and merge traffic never carries it.
+local function liveSpoilerLine(cfg, ui)
+    local features = cfg and cfg.features or {}
+    if features._spoiler_live ~= true then return nil end
+    local book_file = features.book_metadata and features.book_metadata.file
+    local book_open = ui and ui.document
+        and (not book_file or ui.document.file == book_file) or false
+    local ds
+    if book_open then
+        ds = ui.doc_settings
+    elseif book_file then
+        ds = require("koassistant_doc_settings").resolve(book_file, ui)
+    end
+    local posture = BookSettings.resolveSpoilerPosture(ds, features,
+        { session = features._spoiler_free_active })
+    if not posture.protected then return nil end
+    local progress
+    if book_open then
+        local rp = require("koassistant_context_extractor"):new(ui):getReadingProgress()
+        progress = rp and rp.formatted
+    elseif ds and ds.readSetting then
+        -- Closed book: the sidecar position is current by definition (nothing can
+        -- advance while the book isn't being read).
+        local pf = ds:readSetting("percent_finished")
+        if type(pf) == "number" and pf > 0 then
+            progress = string.format("%d%%", math.floor(pf * 100 + 0.5))
+        end
+    end
+    local Templates = require("prompts/templates")
+    if not progress or progress == "" or progress == "0%" then
+        return Templates.SPOILER_FREE_NUDGE_NO_PROGRESS
+    end
+    return (Templates.SPOILER_FREE_NUDGE:gsub("{reading_progress}",
+        function() return progress end))
+end
+
+-- Pure decoration half, exposed for unit tests: append `line` to the request's
+-- outgoing turn, on a COPIED array — the originals are MessageHistory's live
+-- tables and must never mutate. The turn is the last non-context user message
+-- (replies); first requests carry only is_context user messages (the consolidated
+-- context+question, then any attachments), so the fallback is the last user
+-- message, period — the line lands at the end of the request either way.
+-- `in_prompt` marks an action whose prompt resolved {spoiler_free_nudge} in
+-- place: its FIRST request (no assistant turn yet) already carries the
+-- instruction (the never-both rule), while replies decorate normally.
+function BookToolRunner.decorateSpoilerMessages(messages, line, in_prompt)
+    if not line or type(messages) ~= "table" then return messages end
+    local target, fallback, has_assistant
+    for i, m in ipairs(messages) do
+        if m.role == "user" then
+            if m.is_context then fallback = i else target = i end
+        elseif m.role == "assistant" then
+            has_assistant = true
+        end
+    end
+    target = target or fallback
+    if not target then return messages end
+    if in_prompt and not has_assistant then return messages end
+    local out = {}
+    for i, m in ipairs(messages) do out[i] = m end
+    local copy = {}
+    for k, v in pairs(out[target]) do copy[k] = v end
+    local content = copy.content
+    copy.content = (content and content ~= "") and (content .. "\n\n" .. line) or line
+    out[target] = copy
+    return out
+end
+
 local function summarizeToolCall(call, result)
     local name = call and call.name or "tool"
     result = result or {}
@@ -678,17 +757,23 @@ function BookToolRunner.queryWith(query_fn, messages, cfg, callback, plugin, ui)
         end
         return callback(success, answer, err, ...)
     end
+    -- Live spoiler line: decorate a COPY per attempt — the ⚡ retry recursion above
+    -- re-enters with the caller's original array, so every attempt carries exactly
+    -- one line, current as of that send.
+    local send_messages = BookToolRunner.decorateSpoilerMessages(messages,
+        liveSpoilerLine(cfg, ui),
+        cfg and cfg.features and cfg.features._spoiler_in_prompt)
     if BookToolRunner.shouldUse(cfg, ui) then
         return BookToolRunner.run({
             query_fn = query_fn,
-            messages = messages,
+            messages = send_messages,
             config = cfg,
             settings = plugin and plugin.settings,
             ui = ui,
             on_complete = wrapped,
         })
     end
-    return query_fn(messages, cfg, wrapped, plugin and plugin.settings)
+    return query_fn(send_messages, cfg, wrapped, plugin and plugin.settings)
 end
 
 function BookToolRunner.run(params)

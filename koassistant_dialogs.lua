@@ -602,17 +602,41 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
         -- per-book override > global. skip_spoiler = true (artifact / translate /
         -- dictionary families, the mechanical merge actions) opts out, and only
         -- book/highlight-context requests resolve — posture is book-scoped. The
-        -- resolved boolean is written back so the tool reading clamp, the system
-        -- nudge below and this chat's replies all read one decision. Freeform
-        -- (action = nil) keeps the flag Send just wrote — already the session
-        -- layer of the same rule.
+        -- resolved boolean is written back so the tool reading clamp and this
+        -- chat's replies read one decision. Freeform (action = nil) keeps the
+        -- flag Send just wrote — already the session layer of the same rule.
+        -- C4 REVISED (2026-08-11, PROVISIONAL — plan §4.2): the nudge itself is
+        -- TURN-level and LIVE — BookToolRunner.queryWith appends it to each
+        -- protected send with the posture and position of that moment; it is
+        -- never baked into the system prompt or MessageHistory. This block only
+        -- marks eligibility: _spoiler_live = this chat participates in live
+        -- resolution at all; _spoiler_in_prompt = the action resolves
+        -- {spoiler_free_nudge} in place, so the first request must not get the
+        -- line too (never both — replies do).
+        local spoiler_excluded = features._spoiler_exclude == true
+        features._spoiler_exclude = nil  -- one-shot marker (launchArtifactChat)
+        features._spoiler_live = nil
+        features._spoiler_in_prompt = nil
+        if spoiler_excluded then
+            -- Artifact chat: EXPLICIT false — it must survive save/resume (the
+            -- restore's legacy book-chat default would otherwise re-enable it).
+            features._spoiler_live = false
+        elseif not (features.is_general_context or features.is_library_context
+                or (action and action.skip_spoiler == true)) then
+            features._spoiler_live = true
+        end
         if action then
-            if action.skip_spoiler == true
-                    or features.is_general_context or features.is_library_context then
-                features._spoiler_free_active = nil
-            else
+            if features._spoiler_live then
                 features._spoiler_free_active = BookSettings.resolveSpoilerPosture(
                     eff_ds, features, { session = features._spoiler_free_active }).protected
+                if (type(action.prompt) == "string"
+                        and action.prompt:find("{spoiler_free_nudge}", 1, true))
+                    or (type(action.update_prompt) == "string"
+                        and action.update_prompt:find("{spoiler_free_nudge}", 1, true)) then
+                    features._spoiler_in_prompt = true
+                end
+            else
+                features._spoiler_free_active = nil
             end
         end
     end
@@ -641,25 +665,6 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
         web_search_effective = true
     end
 
-    -- Spoiler nudge inputs (§3): an action whose prompt resolves {spoiler_free_nudge}
-    -- in place (wiki, custom actions) must not get the system append too — the house
-    -- both-channels rule (placeholder present = resolved in place, never both). B4:
-    -- highlight entries scrub book_metadata, which degraded the nudge to its weaker
-    -- no-progress variant on the most common protected surface — resolve the live
-    -- position from the open document instead ("0%" falls through to the
-    -- no-progress variant by construction).
-    local spoiler_in_prompt = action and (
-        (type(action.prompt) == "string"
-            and action.prompt:find("{spoiler_free_nudge}", 1, true))
-        or (type(action.update_prompt) == "string"
-            and action.update_prompt:find("{spoiler_free_nudge}", 1, true))) and true or nil
-    local nudge_progress = features.book_metadata and features.book_metadata.reading_progress
-    if features._spoiler_free_active and not nudge_progress
-            and plugin and plugin.ui and plugin.ui.document then
-        local prog = require("koassistant_context_extractor"):new(plugin.ui):getReadingProgress()
-        nudge_progress = prog and prog.formatted
-    end
-
     -- Build unified system prompt (works for all providers)
     local system_config = SystemPrompts.buildUnifiedSystem({
         -- Behavior resolution (priority: action override > action variant > global)
@@ -683,11 +688,9 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
         -- Research mode: resolved flag triggers academic nudge in system prompt
         -- (DOI auto-detection, per-book toggle, global setting, or action override)
         research_mode = features._research_mode_active,
-        -- Spoiler protection: inject the nudge into the system prompt — freeform chat
-        -- AND actions since §3 (the resolution above); suppressed when the action's
-        -- own prompt resolves the placeholder in place
-        spoiler_free = (features._spoiler_free_active and not spoiler_in_prompt) or nil,
-        reading_progress = nudge_progress,
+        -- Spoiler protection deliberately absent here (C4 revised): the nudge is
+        -- turn-level and live, appended per send in BookToolRunner.queryWith — a
+        -- system copy would freeze the percent for the life of the chat.
         -- Web search active → prose nudge (pre-search text is reader-visible)
         web_search = web_search_effective,
         -- Quick Answer posture → brevity nudge (session ⚡ chip / opted-in actions;
@@ -10546,12 +10549,15 @@ local function launchArtifactChat(user_question, artifact_content, artifact_type
     end
     configuration.features = configuration.features or {}
     configuration.features._research_mode_active = artifact_research or nil
-    -- Artifact chat is spoiler-free-excluded and passes action=nil, so the predefined-action
-    -- guard in buildUnifiedRequestConfig won't clear a leaked flag — clear it explicitly here so
-    -- a prior spoiler-free freeform chat can't inject the nudge into artifact chat. (audit G6)
+    -- Artifact chat is spoiler-excluded (chatting ABOUT an artifact that may span the
+    -- whole book — a position nudge would contradict the context itself): clear any
+    -- leaked chip value AND raise the one-shot _spoiler_exclude marker so the hub's
+    -- C4-revised block below marks this chat ineligible for the live turn-level
+    -- nudge (_spoiler_live stays nil for the chat's whole life, replies included).
     -- Same for the per-chat tools checkbox: artifact chat follows the global flag only.
     -- And the per-chat web toggle: artifact chat follows the per-book/global defaults.
     configuration.features._spoiler_free_active = nil
+    configuration.features._spoiler_exclude = true
     configuration.features._tools_active = nil
     configuration.features._web_search_active = nil
     -- Stale X-Ray-chat marker from a prior freeform send would mislabel this

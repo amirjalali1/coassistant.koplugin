@@ -425,25 +425,10 @@ function SystemPrompts.buildUnifiedSystem(config)
         end
     end
 
-    -- Append spoiler-free nudge when enabled (for freeform chat in book context)
-    local spoiler_nudge = nil
-    if config.spoiler_free and Templates then
-        local progress = config.reading_progress
-        if progress and progress ~= "" and progress ~= "0%" then
-            spoiler_nudge = Templates.SPOILER_FREE_NUDGE
-            -- Substitute {reading_progress} inside the nudge
-            spoiler_nudge = spoiler_nudge:gsub("{reading_progress}", function() return progress end)
-        else
-            spoiler_nudge = Templates.SPOILER_FREE_NUDGE_NO_PROGRESS
-        end
-        if spoiler_nudge then
-            if content then
-                content = content .. "\n\n" .. spoiler_nudge
-            else
-                content = spoiler_nudge
-            end
-        end
-    end
+    -- Spoiler protection is deliberately NOT a system-prompt layer (C4 revised
+    -- 2026-08-11): the nudge rides each protected send turn-level with the live
+    -- reading position (BookToolRunner.queryWith). A system copy would freeze the
+    -- percent for the life of the chat and bust provider prefix caches as it moved.
 
     return {
         text = content or "",
@@ -456,7 +441,6 @@ function SystemPrompts.buildUnifiedSystem(config)
             research = research_nudge,
             web_search = web_search_nudge,
             quick_answer = quick_answer_nudge,
-            spoiler = spoiler_nudge,
         },
     }
 end

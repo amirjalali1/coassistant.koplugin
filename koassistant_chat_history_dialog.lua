@@ -1619,10 +1619,13 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
     -- (chats saved without it follow the globals/posture, the old behavior). A
     -- stale _tools_active would silently override the tools posture both ways here;
     -- a stale _spoiler_free_active would clamp/unclamp the tool reading scope with
-    -- ANOTHER chat's chip (this chat's own value comes back via control_state —
-    -- spoiler_posture_plan.md C4; the nudge rides the saved system prompt).
+    -- ANOTHER chat's chip (C4 revised: resumed chats carry no session pin — the
+    -- live turn-level nudge and the tool clamp re-resolve research/book/global at
+    -- each send); a stale _spoiler_live would drag another chat's ELIGIBILITY onto
+    -- this one (its own comes back from control_state / the book-chat default).
     config.features._tools_active = nil
     config.features._spoiler_free_active = nil
+    config.features._spoiler_live = nil
     config.features._web_search_active = nil
     -- Stale X-Ray-chat marker from a prior freeform send would mislabel this
     -- chat's reply Tools toggle "N/A (X-Ray)" AND silently suppress tools in
@@ -1683,11 +1686,21 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
         if cs.tools ~= nil then
             config.features._tools_active = cs.tools
         end
-        -- Spoiler protection (C4): reactivate the chat's session posture so reply
-        -- tool lookups keep the scope the chat was held to (or freed from).
-        if cs.spoiler_free ~= nil then
-            config.features._spoiler_free_active = cs.spoiler_free
+        -- Spoiler protection (C4 revised — live turn-level): restore ELIGIBILITY
+        -- only; posture and position resolve fresh at every send in
+        -- BookToolRunner.queryWith. An explicit false (artifact chat) restores as
+        -- false — the legacy fallback below must not overwrite it. The old
+        -- cs.spoiler_free value (one-day C4 v1) is deliberately ignored.
+        if cs.spoiler_live ~= nil then
+            config.features._spoiler_live = cs.spoiler_live == true
         end
+    end
+    -- C4 revised, legacy saves (no control_state, or one without the field): book
+    -- chats default to ELIGIBLE — protection must not fail open on a protected
+    -- book; a pre-revision artifact chat may regain the line on resume (accepted,
+    -- noted in the plan). document_path is the book-chat marker here.
+    if config.features._spoiler_live == nil and document_path then
+        config.features._spoiler_live = true
     end
 
     -- Restore system prompt metadata for debug display (if available from saved chat)

@@ -843,98 +843,25 @@ TestRunner:test("skip_domain + skip_language_instruction combined excludes both"
     TestRunner:assertEqual(result.components.domain, "Physics", "domain still present")
 end)
 
--- Test spoiler-free nudge in buildUnifiedSystem()
-TestRunner:suite("buildUnifiedSystem() spoiler-free")
+-- Spoiler protection left the system prompt entirely (C4 revised 2026-08-11):
+-- the nudge is turn-level and live, appended per send in BookToolRunner.queryWith
+-- (pinned in test_book_tool_runner.lua). The builder must IGNORE the old inputs —
+-- a system copy would freeze the reading position for the life of the chat.
+TestRunner:suite("buildUnifiedSystem() spoiler-free (retired layer)")
 
-TestRunner:test("spoiler nudge not present when spoiler_free=false", function()
-    local result = SystemPrompts.buildUnifiedSystem({
-        behavior_variant = "minimal",
-        spoiler_free = false,
-        reading_progress = "42%",
-    })
-    TestRunner:assertNil(result.components.spoiler, "no spoiler component")
-end)
-
-TestRunner:test("spoiler nudge not present when spoiler_free=nil", function()
-    local result = SystemPrompts.buildUnifiedSystem({
-        behavior_variant = "minimal",
-        reading_progress = "42%",
-    })
-    TestRunner:assertNil(result.components.spoiler, "no spoiler component")
-end)
-
-TestRunner:test("spoiler nudge with reading progress includes percentage", function()
+TestRunner:test("system prompt never carries the spoiler nudge", function()
     local result = SystemPrompts.buildUnifiedSystem({
         behavior_variant = "minimal",
         spoiler_free = true,
         reading_progress = "42%",
     })
-    TestRunner:assertNotNil(result.components.spoiler, "has spoiler component")
-    TestRunner:assertContains(result.components.spoiler, "42%", "contains reading progress")
-    TestRunner:assertContains(result.text, "42%", "progress in text")
-    -- Should NOT contain the raw placeholder
-    if result.components.spoiler:find("{reading_progress}", 1, true) then
-        error("spoiler nudge still contains raw {reading_progress} placeholder")
+    TestRunner:assertNil(result.components.spoiler, "no spoiler component")
+    if result.text:find("Do not reveal", 1, true) then
+        error("spoiler nudge text leaked into the system prompt")
     end
-end)
-
-TestRunner:test("spoiler nudge without progress uses no-progress variant", function()
-    local result = SystemPrompts.buildUnifiedSystem({
-        behavior_variant = "minimal",
-        spoiler_free = true,
-        -- no reading_progress
-    })
-    TestRunner:assertNotNil(result.components.spoiler, "has spoiler component")
-    TestRunner:assertContains(result.components.spoiler, "has not finished", "no-progress variant")
-end)
-
-TestRunner:test("spoiler nudge with 0% uses no-progress variant", function()
-    local result = SystemPrompts.buildUnifiedSystem({
-        behavior_variant = "minimal",
-        spoiler_free = true,
-        reading_progress = "0%",
-    })
-    TestRunner:assertNotNil(result.components.spoiler, "has spoiler component")
-    TestRunner:assertContains(result.components.spoiler, "has not finished", "0% triggers no-progress")
-end)
-
-TestRunner:test("spoiler nudge with empty string uses no-progress variant", function()
-    local result = SystemPrompts.buildUnifiedSystem({
-        behavior_variant = "minimal",
-        spoiler_free = true,
-        reading_progress = "",
-    })
-    TestRunner:assertNotNil(result.components.spoiler, "has spoiler component")
-    TestRunner:assertContains(result.components.spoiler, "has not finished", "empty triggers no-progress")
-end)
-
-TestRunner:test("spoiler nudge appended to text with behavior", function()
-    local result = SystemPrompts.buildUnifiedSystem({
-        behavior_variant = "minimal",
-        spoiler_free = true,
-        reading_progress = "75%",
-    })
-    -- Text should contain both behavior and spoiler nudge
-    TestRunner:assertContains(result.text, "75%", "spoiler in combined text")
-    TestRunner:assertNotNil(result.components.behavior, "behavior still present")
-end)
-
-TestRunner:test("spoiler nudge coexists with domain and research", function()
-    local result = SystemPrompts.buildUnifiedSystem({
-        behavior_variant = "minimal",
-        domain_context = "Science fiction",
-        -- research_mode is the resolved flag (DOI auto-detect / per-book / global /
-        -- action override are resolved upstream in buildUnifiedRequestConfig since
-        -- commit 8d2c6e8); the builder just renders it.
-        research_mode = true,
-        spoiler_free = true,
-        reading_progress = "60%",
-    })
-    TestRunner:assertNotNil(result.components.spoiler, "has spoiler")
-    TestRunner:assertNotNil(result.components.domain, "has domain")
-    TestRunner:assertNotNil(result.components.research, "has research")
-    TestRunner:assertContains(result.text, "Science fiction", "domain in text")
-    TestRunner:assertContains(result.text, "60%", "spoiler in text")
+    if result.text:find("42%", 1, true) then
+        error("reading progress leaked into the system prompt")
+    end
 end)
 
 TestRunner:suite("buildUnifiedSystem() web-search prose nudge")

@@ -366,11 +366,17 @@ function ChatHistoryManager.captureControlState(config)
     if f._tools_active ~= nil then
         cs.tools = f._tools_active == true
     end
-    -- Spoiler protection (spoiler_posture_plan.md C4): captured like the rest so a
-    -- resumed chat keeps its session posture — the reply-time tool reading clamp
-    -- reads this flag live (the nudge itself already rides the saved system prompt).
-    if f._spoiler_free_active ~= nil then
-        cs.spoiler_free = f._spoiler_free_active == true
+    -- Spoiler protection (spoiler_posture_plan.md C4 REVISED 2026-08-11,
+    -- PROVISIONAL): capture ELIGIBILITY, not the answer. The nudge is turn-level
+    -- and live — every send re-resolves posture and position — so a resumed chat
+    -- follows the book's CURRENT state (read on and the boundary moves; toggling
+    -- protection takes effect). Three-state from the hub: true = participates,
+    -- explicit false = artifact chat (must survive resume — the restore's legacy
+    -- book-chat default would otherwise re-enable it), nil = not applicable
+    -- (general/library/skip-action; captured as nothing, keeping bare configs at
+    -- "no control state").
+    if f._spoiler_live ~= nil then
+        cs.spoiler_live = f._spoiler_live == true
     end
     if next(cs) == nil then return nil end
     return cs

@@ -1159,4 +1159,56 @@ TestRunner:test("smartRetrievalAllowed: posture off is the master switch", funct
     TestRunner:assertEqual(why, "consent", "sessionEligible reasons pass through")
 end)
 
+-- decorateSpoilerMessages — live turn-level spoiler line (spoiler_posture_plan.md
+-- C4 REVISED 2026-08-11): the pure decoration half. The impure half (posture +
+-- live position) is the resolver pinned in test_book_settings.lua.
+
+local LINE = "The reader is currently at 42% of this book. Do not reveal beyond."
+
+TestRunner:test("nil line or no user message is a no-op (same table back)", function()
+    local msgs = { { role = "user", content = "q", is_context = false } }
+    TestRunner:assertEqual(BookToolRunner.decorateSpoilerMessages(msgs, nil), msgs,
+        "nil line returns the original array")
+    local no_user = { { role = "assistant", content = "a" } }
+    TestRunner:assertEqual(BookToolRunner.decorateSpoilerMessages(no_user, LINE), no_user,
+        "no user message returns the original array")
+end)
+
+TestRunner:test("reply request: line lands on the last non-context user message", function()
+    local q1 = { role = "user", content = "context+question", is_context = true }
+    local a1 = { role = "assistant", content = "answer" }
+    local q2 = { role = "user", content = "follow-up", is_context = false }
+    local msgs = { q1, a1, q2 }
+    local out = BookToolRunner.decorateSpoilerMessages(msgs, LINE)
+    TestRunner:assertEqual(out[3].content, "follow-up\n\n" .. LINE, "line appended to the reply")
+    TestRunner:assertEqual(out[1], q1, "earlier messages shared, not copied")
+    TestRunner:assertEqual(q2.content, "follow-up", "original reply table never mutates")
+    TestRunner:assertEqual(#msgs, 3, "original array untouched")
+end)
+
+TestRunner:test("first request: all-context messages fall back to the last user message", function()
+    -- Every chat's first request is [consolidated is_context (+ attachments is_context)]
+    local consolidated = { role = "user", content = "[Context]...[User Question] q", is_context = true }
+    local attach = { role = "user", content = "attachment block", is_context = true }
+    local out = BookToolRunner.decorateSpoilerMessages({ consolidated, attach }, LINE)
+    TestRunner:assertEqual(out[2].content, "attachment block\n\n" .. LINE,
+        "line lands at the end of the request (last user message)")
+    TestRunner:assertEqual(out[1], consolidated, "untargeted messages shared")
+    TestRunner:assertEqual(attach.content, "attachment block", "original never mutates")
+end)
+
+TestRunner:test("in_prompt skips the first request only (never both), replies decorate", function()
+    local first = { { role = "user", content = "prompt with resolved nudge", is_context = true } }
+    TestRunner:assertEqual(BookToolRunner.decorateSpoilerMessages(first, LINE, true), first,
+        "first request of a placeholder prompt is left alone")
+    local reply = {
+        { role = "user", content = "prompt with resolved nudge", is_context = true },
+        { role = "assistant", content = "answer" },
+        { role = "user", content = "follow-up" },
+    }
+    local out = BookToolRunner.decorateSpoilerMessages(reply, LINE, true)
+    TestRunner:assertEqual(out[3].content, "follow-up\n\n" .. LINE,
+        "replies of the same chat decorate normally")
+end)
+
 return TestRunner:summary()
