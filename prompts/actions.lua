@@ -28,6 +28,14 @@ local Constants = require("koassistant_constants")
 --   skip_background  - Per-book Background gate (book_background_plan.md §3), tri-state:
 --                      nil = follow skip_domain (default), true = never send it,
 --                      false = send it even when the domain is skipped (optional)
+--   skip_spoiler     - Spoiler-protection gate (spoiler_posture_plan.md §3), tri-state:
+--                      nil = apply the resolved posture (chip > research > book > global)
+--                      to book/highlight-context requests (default), true = never
+--                      (artifact/translate/dictionary families — the scope pick or the
+--                      prompt owns spoiler discipline), false = always (explicit opt-in;
+--                      mechanically same as nil today, reserved for future exclusions).
+--                      When protected, prompts carrying {spoiler_free_nudge} resolve it
+--                      in place; all others get the nudge appended to the system prompt
 --   include_book_context - Include book metadata with highlight context (optional)
 --   description      - Human-readable summary of what the action does (optional, shown in details view)
 --   enabled          - Default enabled state (default: true)
@@ -594,6 +602,8 @@ Structure the entry as:
 
 Write in an encyclopedic tone: factual, neutral, well-organized. Prioritize accuracy over comprehensiveness — it's better to cover fewer points confidently than to speculate.
 
+{spoiler_free_nudge}
+
 {conciseness_nudge} {hallucination_nudge}]],
         api_params = {
             temperature = 0.3,  -- Low temp for factual accuracy
@@ -1014,6 +1024,8 @@ end
 Actions.book = {
     book_info = {
         id = "book_info",
+        -- Artifact family: the scope pick / prompt owns spoiler discipline (§3)
+        skip_spoiler = true,
         reasoning_config = "off",  -- Straightforward recall doesn't benefit from reasoning
         doi_web_override = true,
         text = _("About"),
@@ -1116,6 +1128,7 @@ Do not use emojis. {hallucination_nudge}]],
     -- X-Ray: Structured book reference guide
     xray = {
         id = "xray",
+        skip_spoiler = true,
         enable_web_search = false,
         doi_web_override = true,  -- When DOI: follow global setting instead of forcing off
         text = _("X-Ray"),
@@ -1217,6 +1230,7 @@ CRITICAL: This must remain spoiler-free up to {reading_progress}. Output ONLY va
     -- X-Ray (Simple): Prose companion from AI knowledge (no text extraction)
     xray_simple = {
         id = "xray_simple",
+        skip_spoiler = true,
         doi_web_override = true,
         text = _("X-Ray (Simple)"),
         description = _("A prose companion guide from AI knowledge: characters, themes, settings, key terms. No text extraction needed. Uses reading progress to avoid spoilers. Highlights add personal context when shared."),
@@ -1307,6 +1321,7 @@ CRITICAL: Do not reveal ANYTHING beyond {reading_progress}. No foreshadowing, no
     -- Recap: Story summary for re-immersion
     recap = {
         id = "recap",
+        skip_spoiler = true,
         enable_web_search = false,
         text = _("Recap"),
         description = _("A 'Previously on...' refresher to help you get back into reading after time away. Covers recent events, active threads, and where you left off. Adapts to fiction or non-fiction. When highlights are shared, weaves in what you found notable. Updates incrementally as you read further."),
@@ -1392,6 +1407,7 @@ CRITICAL: No spoilers beyond {reading_progress}.]],
     -- Analyze My Notes: Insights from user's annotations and notebook
     analyze_highlights = {
         id = "analyze_highlights",
+        skip_spoiler = true,
         enable_web_search = false,
         doi_web_override = true,
         text = _("Analyze Notes"),
@@ -1489,6 +1505,7 @@ Aim for the most significant connections, not an exhaustive list. {conciseness_n
     -- Key Arguments: Thesis and argument analysis
     key_arguments = {
         id = "key_arguments",
+        skip_spoiler = true,
         enable_web_search = false,
         doi_web_override = true,
         text = _("Key Arguments"),
@@ -1542,6 +1559,7 @@ This is an overview, not an essay. {conciseness_nudge} {hallucination_nudge}
     -- Counterarguments: the adversarial sibling of Key Arguments — prosecutes instead of maps
     counterarguments = {
         id = "counterarguments",
+        skip_spoiler = true,
         -- enable_web_search omitted: follows the global setting (published critiques help when on)
         doi_web_override = true,
         text = _("Counterarguments"),
@@ -1588,6 +1606,7 @@ Adapt to the work's nature:
     -- Discussion Questions: Book club and classroom prompts
     discussion_questions = {
         id = "discussion_questions",
+        skip_spoiler = true,
         enable_web_search = false,
         text = _("Discussion Questions"),
         description = _("Generates 8-10 discussion questions spanning comprehension, analysis, interpretation, and personal connection. Good for book clubs or classroom use. Can target a specific section. Result is saved as an artifact."),
@@ -1635,6 +1654,7 @@ Note: These are general questions for the complete work. If the reader is mid-bo
     -- Quiz: Interactive comprehension quiz with structured JSON output, saved as artifact
     quiz = {
         id = "quiz",
+        skip_spoiler = true,
         enable_web_search = false,
         text = _("Quiz"),
         description = _("Interactive comprehension quiz with multiple choice, short answer, and essay questions. Answers one at a time with scoring. Result is saved as an artifact. Can be triggered automatically at chapter ends."),
@@ -1663,6 +1683,7 @@ Note: These are general questions for the complete work. If the reader is mid-bo
     -- Analyze Full Document: Complete document analysis for short content
     analyze_full_document = {
         id = "analyze_full_document",
+        skip_spoiler = true,
         enable_web_search = false,
         doi_web_override = true,
         text = _("Document Analysis"),
@@ -1697,6 +1718,7 @@ Provide analysis appropriate to this document's type and purpose. Address what's
     -- Used as "Document summary" source by source_selection actions
     summarize_full_document = {
         id = "summarize_full_document",
+        skip_spoiler = true,
         enable_web_search = false,
         doi_web_override = true,
         text = _("Document Summary"),
@@ -1723,6 +1745,7 @@ Provide a comprehensive summary capturing the essential content. Cover the entir
     -- Extract Key Insights: Actionable takeaways worth remembering
     extract_insights = {
         id = "extract_insights",
+        skip_spoiler = true,
         enable_web_search = false,
         doi_web_override = true,
         text = _("Extract Key Insights"),
@@ -1761,6 +1784,7 @@ Adapt to the work — a novel's insights look different from a research paper's 
     -- Reading Guide: Spoiler-free guide for upcoming content
     reading_guide = {
         id = "reading_guide",
+        skip_spoiler = true,
         text = _("Reading Guide"),
         description = _("A spoiler-free guide to what's ahead: themes developing, questions worth holding, patterns to notice. Uses your reading position to stay safe. Can target a specific section."),
         context = "book",
@@ -2054,6 +2078,8 @@ Focus on the top 3-5 most significant global news stories. Keep it concise and f
 Actions.special = {
     translate = {
         id = "translate",
+        -- Translate/dictionary family: spoiler posture is structurally irrelevant (§3)
+        skip_spoiler = true,
         enable_web_search = false,
         text = _("Translate"),
         description = _("Translates the selected text into your configured translation language. This action also controls the Translate Current Page function."),
@@ -2074,6 +2100,7 @@ Actions.special = {
     },
     quick_define = {
         id = "quick_define",
+        skip_spoiler = true,
         enable_web_search = false,
         text = _("Quick Define"),
         description = _("A brief, one-line dictionary definition of the selected word in your dictionary language."),
@@ -2105,6 +2132,7 @@ One line only. No etymology, no synonyms. No headers.]],
     },
     dictionary = {
         id = "dictionary",
+        skip_spoiler = true,
         enable_web_search = false,
         text = _("Dictionary"),
         description = _("Full dictionary entry with pronunciation, definitions, etymology, and synonyms."),
@@ -2138,6 +2166,7 @@ All labels and explanations in {dictionary_language}. Inline bold labels, no hea
     },
     deep = {
         id = "dictionary_deep",
+        skip_spoiler = true,
         text = _("Deep Analysis"),
         description = _("Deep linguistic analysis covering morphology, word family, etymology, cognates, and cross-language borrowings. Adapts to the word's language family (Semitic roots, Indo-European stems, etc.)."),
         context = "highlight",  -- Only for highlighted text

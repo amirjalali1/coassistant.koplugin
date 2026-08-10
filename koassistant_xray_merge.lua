@@ -1516,6 +1516,7 @@ function XrayMerge.execute(opts)
         prompt = prompt_text,
         storage_key = "__SKIP__",
         enable_web_search = false,
+        skip_spoiler = true,  -- mechanical JSON merge; a posture nudge could drop entries
         reasoning_config = "off",  -- xray-action parity (T2): structural JSON merge, no reasoning
         api_params = XrayMerge.API_PARAMS,
         builtin = true,
@@ -2107,6 +2108,7 @@ function XrayMerge.executeCrossBook(opts)
         prompt = prompt_text,
         storage_key = "__SKIP__",
         enable_web_search = false,
+        skip_spoiler = true,  -- mechanical JSON merge; a posture nudge could drop entries
         -- No reasoning pin (series-identity round, 2026-08-06): cross-book
         -- entity resolution is a judgment task — the extraction action's
         -- latency "off" would run it at the floor (Gemini 3.x can't disable,

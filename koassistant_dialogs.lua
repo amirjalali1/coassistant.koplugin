@@ -493,26 +493,24 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
         features._tools_active = false
     end
 
-    -- Spoiler-free is a freeform-Send-only session flag; predefined actions (Summarize, X-Ray,
-    -- …) are excluded by design. It persists on the shared configuration (main.lua keeps
-    -- underscore keys across disk sync) and gets copied into temp_config, so a prior spoiler-free
-    -- chat would leak the nudge into the next predefined action. Clear it for any predefined
-    -- action (action ~= nil); freeform Send passes action=nil and keeps the flag it just set.
-    -- (audit v0.20.0 finding G6) The per-chat tools checkbox (_tools_active) is cleared for
-    -- the same reason — and set to EXPLICIT false, not nil (2026-07-11, with the auto
-    -- posture default): this config rides into the action's chat viewer and its replies
-    -- (addMessage → queryWith), and a nil would fall through to the posture there, so an
-    -- "auto" posture would fire gather rounds on replies to translate/X-Ray/etc. chats.
+    -- The per-chat tools checkbox (_tools_active) is cleared for predefined actions —
+    -- and set to EXPLICIT false, not nil (2026-07-11, with the auto posture default):
+    -- this config rides into the action's chat viewer and its replies (addMessage →
+    -- queryWith), and a nil would fall through to the posture there, so an "auto"
+    -- posture would fire gather rounds on replies to translate/X-Ray/etc. chats.
     -- Actions engage tools ONLY via their explicit smart-retrieval source; their chats
     -- stay tools-free. Freeform Send passes action=nil and keeps the flag it just set.
+    -- (Spoiler protection no longer gets the audit-G6 blanket clear here: since
+    -- spoiler_posture_plan.md §3 the flag is RESOLVED per action — chip > research >
+    -- book > global, skip_spoiler opts out — in the eff_ds block below, where the
+    -- book's DocSettings are in scope. The per-chat web toggle is likewise not
+    -- cleared: it applies to nil-flag actions launched from the dialog too —
+    -- maintainer 2026-07-12, the action buttons' 🌐 indicator follows the chip.
+    -- Forced action flags still win in the chain below; the dialog sets both
+    -- just-in-time and this function's bake consumes them, so other entry points
+    -- never see a stale value.)
     if action then
-        features._spoiler_free_active = nil
         features._tools_active = false
-        -- (The per-chat web toggle is NOT cleared here: unlike spoiler/tools, it applies
-        -- to nil-flag actions launched from the dialog too — maintainer 2026-07-12, the
-        -- action buttons' 🌐 indicator follows the chip. Forced action flags still win
-        -- in the chain below; the dialog sets it just-in-time and this function's bake
-        -- consumes it, so other entry points never see a stale value.)
     end
 
     -- Per-book MAIN response-language override (Book Settings ▸ Languages ▸ AI response
@@ -596,6 +594,27 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
                 and not features.is_general_context and not features.is_library_context then
             book_background = BookSettings.getBackground(eff_ds)
         end
+
+        -- Spoiler protection reach into actions (spoiler_posture_plan.md §3 + C1):
+        -- the old audit-G6 blanket clear becomes the REQUEST-layer resolution —
+        -- session chip (rode in as _spoiler_free_active from the dialog's
+        -- just-in-time set; nil for direct entries, which scrub) > research >
+        -- per-book override > global. skip_spoiler = true (artifact / translate /
+        -- dictionary families, the mechanical merge actions) opts out, and only
+        -- book/highlight-context requests resolve — posture is book-scoped. The
+        -- resolved boolean is written back so the tool reading clamp, the system
+        -- nudge below and this chat's replies all read one decision. Freeform
+        -- (action = nil) keeps the flag Send just wrote — already the session
+        -- layer of the same rule.
+        if action then
+            if action.skip_spoiler == true
+                    or features.is_general_context or features.is_library_context then
+                features._spoiler_free_active = nil
+            else
+                features._spoiler_free_active = BookSettings.resolveSpoilerPosture(
+                    eff_ds, features, { session = features._spoiler_free_active }).protected
+            end
+        end
     end
 
     -- ⚡ quick-answer retry eligibility (S3): the stream window offers a quick retry only
@@ -622,6 +641,25 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
         web_search_effective = true
     end
 
+    -- Spoiler nudge inputs (§3): an action whose prompt resolves {spoiler_free_nudge}
+    -- in place (wiki, custom actions) must not get the system append too — the house
+    -- both-channels rule (placeholder present = resolved in place, never both). B4:
+    -- highlight entries scrub book_metadata, which degraded the nudge to its weaker
+    -- no-progress variant on the most common protected surface — resolve the live
+    -- position from the open document instead ("0%" falls through to the
+    -- no-progress variant by construction).
+    local spoiler_in_prompt = action and (
+        (type(action.prompt) == "string"
+            and action.prompt:find("{spoiler_free_nudge}", 1, true))
+        or (type(action.update_prompt) == "string"
+            and action.update_prompt:find("{spoiler_free_nudge}", 1, true))) and true or nil
+    local nudge_progress = features.book_metadata and features.book_metadata.reading_progress
+    if features._spoiler_free_active and not nudge_progress
+            and plugin and plugin.ui and plugin.ui.document then
+        local prog = require("koassistant_context_extractor"):new(plugin.ui):getReadingProgress()
+        nudge_progress = prog and prog.formatted
+    end
+
     -- Build unified system prompt (works for all providers)
     local system_config = SystemPrompts.buildUnifiedSystem({
         -- Behavior resolution (priority: action override > action variant > global)
@@ -645,9 +683,11 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
         -- Research mode: resolved flag triggers academic nudge in system prompt
         -- (DOI auto-detection, per-book toggle, global setting, or action override)
         research_mode = features._research_mode_active,
-        -- Spoiler-free mode: inject nudge into system prompt for freeform chat
-        spoiler_free = features._spoiler_free_active,
-        reading_progress = features.book_metadata and features.book_metadata.reading_progress,
+        -- Spoiler protection: inject the nudge into the system prompt — freeform chat
+        -- AND actions since §3 (the resolution above); suppressed when the action's
+        -- own prompt resolves the placeholder in place
+        spoiler_free = (features._spoiler_free_active and not spoiler_in_prompt) or nil,
+        reading_progress = nudge_progress,
         -- Web search active → prose nudge (pre-search text is reader-visible)
         web_search = web_search_effective,
         -- Quick Answer posture → brevity nudge (session ⚡ chip / opted-in actions;
@@ -4611,6 +4651,29 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         message_data.web_search_active = config.features and config.features.enable_web_search == true
     end
 
+    -- Spoiler protection, message side (spoiler_posture_plan.md §3, B3/B4): resolve
+    -- the request-layer posture for this action so prompts carrying
+    -- {spoiler_free_nudge} (wiki, custom actions) resolve it in place. Same rule as
+    -- the system-side bake in buildUnifiedRequestConfig — session chip (the copy that
+    -- rode into temp_config at dispatch; direct/headless entries carry none) >
+    -- research > book > global; skip_spoiler = true opts out; book/highlight
+    -- contexts only. B4: prefer the live position over the (possibly scrubbed)
+    -- metadata table so the nudge keeps its progress-bounded variant.
+    if context ~= "general" and context ~= "library"
+            and not (prompt and prompt.skip_spoiler == true) then
+        local sp = BookSettings.resolveSpoilerPosture(per_book_ds, config.features,
+            { session = temp_config.features and temp_config.features._spoiler_free_active })
+        if sp.protected then
+            message_data.spoiler_free = true
+            if not message_data.reading_progress then
+                message_data.reading_progress =
+                    (message_data.book_metadata and message_data.book_metadata.reading_progress)
+                    or (ui and ui.document and require("koassistant_context_extractor")
+                        :new(ui):getReadingProgress().formatted)
+            end
+        end
+    end
+
     -- Build and add the consolidated message
     -- System prompt and domain are now in config.system (unified approach)
     local consolidated_message = buildConsolidatedMessage(prompt, context, message_data, nil, nil, true)
@@ -6443,10 +6506,12 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             end
         end
 
-        -- The CURRENT spoiler chip governs this launch's smart-retrieval reading scope
-        -- (resolveReadingScope reads the flag; without this, a stale value from an
-        -- earlier chat's Send would apply). The system-prompt nudge stays action-free —
-        -- G6 clears the flag on the action's temp config.
+        -- The CURRENT spoiler chip governs this action launch (spoiler_posture_plan.md
+        -- §3 + C1): the smart-retrieval gather's reading scope reads the flag directly,
+        -- and buildUnifiedRequestConfig folds it in as the SESSION layer of the
+        -- per-action posture resolution (chip > research > book > global;
+        -- skip_spoiler actions ignore it). Set just-in-time so a stale value from an
+        -- earlier chat's Send never applies.
         configuration.features = configuration.features or {}
         configuration.features._spoiler_free_active = session_spoiler_free == true
 
@@ -10343,6 +10408,14 @@ end
 --- @param book_metadata table Book title/author metadata
 --- @param on_result function Callback: on_result(result_text, metadata) or on_result(nil, error_string)
 executeActionForResult = function(action, highlighted_text, ui, configuration, plugin, book_metadata, on_result)
+    -- Headless one-shot execution has no session chip: clear any spoiler session
+    -- residue a prior chat's Send left on this (possibly shared) config, so the §3
+    -- resolution falls through to research/book/global. The X-Ray browser's wiki
+    -- call rides the shared configuration, where an X-Ray chat's explicit
+    -- true/false would otherwise pose as this request's session layer.
+    if configuration and configuration.features then
+        configuration.features._spoiler_free_active = nil
+    end
     handlePredefinedPrompt(action, highlighted_text, ui, configuration, nil, plugin, nil, function(history, temp_config_or_error)
         if history then
             local messages = history:getMessages()

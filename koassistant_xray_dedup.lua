@@ -533,6 +533,7 @@ local function runAiMerge(opts, state, pair, keep_side, on_finished)
         prompt = prompt_text,
         storage_key = "__SKIP__",
         enable_web_search = false,
+        skip_spoiler = true,  -- mechanical two-description rewrite; no posture nudge
         reasoning_config = "off",  -- a two-description rewrite needs no reasoning
         api_params = XrayDedup.API_PARAMS,
         builtin = true,
