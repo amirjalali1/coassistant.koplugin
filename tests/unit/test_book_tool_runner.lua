@@ -1174,27 +1174,33 @@ TestRunner:test("nil line or no user message is a no-op (same table back)", func
         "no user message returns the original array")
 end)
 
-TestRunner:test("reply request: line lands on the last non-context user message", function()
+TestRunner:test("line rides as its OWN final user message; history untouched", function()
     local q1 = { role = "user", content = "context+question", is_context = true }
     local a1 = { role = "assistant", content = "answer" }
     local q2 = { role = "user", content = "follow-up", is_context = false }
     local msgs = { q1, a1, q2 }
     local out = BookToolRunner.decorateSpoilerMessages(msgs, LINE)
-    TestRunner:assertEqual(out[3].content, "follow-up\n\n" .. LINE, "line appended to the reply")
-    TestRunner:assertEqual(out[1], q1, "earlier messages shared, not copied")
-    TestRunner:assertEqual(q2.content, "follow-up", "original reply table never mutates")
+    TestRunner:assertEqual(#out, 4, "one message appended")
+    TestRunner:assertEqual(out[4].content, LINE, "the line is the final message")
+    TestRunner:assertEqual(out[4].role, "user", "line rides the user role")
+    TestRunner:assertTrue(out[4].is_context == true, "line is scaffolding, not the user's words")
+    -- Prefix-cache invariant: every stored message is the SAME table, byte-identical
+    -- across requests — only the line itself is ever uncached.
+    TestRunner:assertEqual(out[1], q1, "history messages shared, not copied")
+    TestRunner:assertEqual(out[3], q2, "the outgoing turn is not rewritten either")
+    TestRunner:assertEqual(q2.content, "follow-up", "originals never mutate")
     TestRunner:assertEqual(#msgs, 3, "original array untouched")
 end)
 
-TestRunner:test("first request: all-context messages fall back to the last user message", function()
+TestRunner:test("first request (all-context messages, attachments last) decorates at the end", function()
     -- Every chat's first request is [consolidated is_context (+ attachments is_context)]
     local consolidated = { role = "user", content = "[Context]...[User Question] q", is_context = true }
     local attach = { role = "user", content = "attachment block", is_context = true }
     local out = BookToolRunner.decorateSpoilerMessages({ consolidated, attach }, LINE)
-    TestRunner:assertEqual(out[2].content, "attachment block\n\n" .. LINE,
-        "line lands at the end of the request (last user message)")
-    TestRunner:assertEqual(out[1], consolidated, "untargeted messages shared")
-    TestRunner:assertEqual(attach.content, "attachment block", "original never mutates")
+    TestRunner:assertEqual(#out, 3, "line appended after the attachments")
+    TestRunner:assertEqual(out[3].content, LINE, "line is the final message")
+    TestRunner:assertEqual(out[1], consolidated, "consolidated message shared")
+    TestRunner:assertEqual(out[2], attach, "attachment message shared")
 end)
 
 TestRunner:test("in_prompt skips the first request only (never both), replies decorate", function()
@@ -1207,8 +1213,8 @@ TestRunner:test("in_prompt skips the first request only (never both), replies de
         { role = "user", content = "follow-up" },
     }
     local out = BookToolRunner.decorateSpoilerMessages(reply, LINE, true)
-    TestRunner:assertEqual(out[3].content, "follow-up\n\n" .. LINE,
-        "replies of the same chat decorate normally")
+    TestRunner:assertEqual(#out, 4, "reply of the same chat decorates")
+    TestRunner:assertEqual(out[4].content, LINE, "line is the final message")
 end)
 
 return TestRunner:summary()

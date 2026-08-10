@@ -286,7 +286,7 @@ end
 
 -- Live spoiler line (spoiler_posture_plan.md C4 REVISED 2026-08-11, PROVISIONAL —
 -- maintainer wants this model revisited): protection rides each SEND as one
--- instruction line appended to the outgoing user message, computed from the
+-- instruction line, appended as its OWN final user message and computed from the
 -- posture and reading position AT THAT MOMENT — never baked into the system
 -- prompt (which stays stable for provider prefix caches) and never written into
 -- MessageHistory (wire-time copy: transcript, saves and exports stay clean, and
@@ -331,35 +331,36 @@ local function liveSpoilerLine(cfg, ui)
         function() return progress end))
 end
 
--- Pure decoration half, exposed for unit tests: append `line` to the request's
--- outgoing turn, on a COPIED array — the originals are MessageHistory's live
--- tables and must never mutate. The turn is the last non-context user message
--- (replies); first requests carry only is_context user messages (the consolidated
--- context+question, then any attachments), so the fallback is the last user
--- message, period — the line lands at the end of the request either way.
--- `in_prompt` marks an action whose prompt resolved {spoiler_free_nudge} in
--- place: its FIRST request (no assistant turn yet) already carries the
--- instruction (the never-both rule), while replies decorate normally.
+-- Pure decoration half, exposed for unit tests: append `line` as its OWN user
+-- message at the END of a COPIED array — the originals are MessageHistory's live
+-- tables and must never mutate. Own-message rather than glued into the user's
+-- text, for two reasons. Caching: automatic prefix caches (OpenAI/Gemini/
+-- DeepSeek) key on byte-identical history — with a standalone line every stored
+-- message repeats exactly across requests and only the line's own tokens are
+-- ever uncached, whereas gluing into the last user message makes that message's
+-- CLEAN form (what the next request replays from history) a guaranteed miss.
+-- Anthropic's cache breakpoints sit on the system block only, so message shape
+-- is cache-neutral there. Separation: the user's words are never rewritten, and
+-- the model reads the line as standalone scaffolding — the same wire shape the
+-- Attach chip already ships on every provider (consecutive user messages are
+-- established). `in_prompt` marks an action whose prompt resolved
+-- {spoiler_free_nudge} in place: its FIRST request (no assistant turn yet)
+-- already carries the instruction (the never-both rule), replies decorate.
 function BookToolRunner.decorateSpoilerMessages(messages, line, in_prompt)
     if not line or type(messages) ~= "table" then return messages end
-    local target, fallback, has_assistant
-    for i, m in ipairs(messages) do
+    local has_user, has_assistant
+    for _i, m in ipairs(messages) do
         if m.role == "user" then
-            if m.is_context then fallback = i else target = i end
+            has_user = true
         elseif m.role == "assistant" then
             has_assistant = true
         end
     end
-    target = target or fallback
-    if not target then return messages end
+    if not has_user then return messages end
     if in_prompt and not has_assistant then return messages end
     local out = {}
     for i, m in ipairs(messages) do out[i] = m end
-    local copy = {}
-    for k, v in pairs(out[target]) do copy[k] = v end
-    local content = copy.content
-    copy.content = (content and content ~= "") and (content .. "\n\n" .. line) or line
-    out[target] = copy
+    table.insert(out, { role = "user", content = line, is_context = true })
     return out
 end
 
