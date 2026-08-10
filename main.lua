@@ -7193,6 +7193,27 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
           },
         }
       end
+      -- C3 (spoiler_posture_plan.md §4.2): explicit scope selection under spoiler
+      -- protection is CONSENT, confirmed once — the three unread-capable rows
+      -- (Full document, Pick section…, Pick section range…) all show the same
+      -- one-line confirm instead of the old mix (range refused outright, the
+      -- other two never checked). Bounded rows (read-so-far, from-section,
+      -- chapter-so-far) never confirm. Cancel returns to the popup unchanged.
+      local scope_spoiler_free = require("koassistant_book_settings").resolveSpoilerFree(
+          self_ref.ui.doc_settings, features)
+      local function confirmUnreadScope(covers_unread, proceed)
+        if scope_spoiler_free and covers_unread then
+          local ConfirmBox = require("ui/widget/confirmbox")
+          UIManager:show(ConfirmBox:new{
+            text = _("This covers parts you haven't read yet."),
+            ok_text = _("Continue"),
+            ok_callback = proceed,
+            cancel_callback = function() buildAndShow() end,
+          })
+        else
+          proceed()
+        end
+      end
       local scope_table = RadioButtonTable:new{
         radio_buttons = scope_radio_buttons,
         width = content_width,
@@ -7206,20 +7227,26 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
           if btn_entry.provider == "full" then
             if state.scope == "full" then return end
             UIManager:close(current_dialog)
-            state.scope = "full"
-            state.section_entry = nil
-            state.section_label = nil
-            if state.source == "section_summary" then
-              -- "section_summary" not valid for full scope — try "summary" if action supports it
-              if action.use_summary_cache == true and (getSummaryAvailable() or text_extraction_enabled) then
-                state.source = "summary"
-              else
-                state.source = text_extraction_enabled and "full_text" or "ai_knowledge"
-              end
-            elseif state.source == "summary" and not getSummaryAvailable() then
-              state.source = text_extraction_enabled and "full_text" or "ai_knowledge"
-            end
-            buildAndShow()
+            -- Whole document under protection covers unread text — unless this is a
+            -- to-position action, whose "full" already stops at the reading position.
+            confirmUnreadScope(
+              not is_to_position and reading_progress and reading_progress.decimal < 1,
+              function()
+                state.scope = "full"
+                state.section_entry = nil
+                state.section_label = nil
+                if state.source == "section_summary" then
+                  -- "section_summary" not valid for full scope — try "summary" if action supports it
+                  if action.use_summary_cache == true and (getSummaryAvailable() or text_extraction_enabled) then
+                    state.source = "summary"
+                  else
+                    state.source = text_extraction_enabled and "full_text" or "ai_knowledge"
+                  end
+                elseif state.source == "summary" and not getSummaryAvailable() then
+                  state.source = text_extraction_enabled and "full_text" or "ai_knowledge"
+                end
+                buildAndShow()
+              end)
           elseif btn_entry.provider == "read_so_far" then
             if state.scope == "read_so_far" then return end
             UIManager:close(current_dialog)
@@ -7292,8 +7319,8 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
             })
           elseif btn_entry.provider == "range" then
             -- Custom range (phase 4): two sequential TOC picks — start section, then end
-            -- section. Spoiler posture REJECTS spans touching unread text (popup policy:
-            -- teach, don't clamp — the chip's freeform equivalent clamps instead).
+            -- section. A span touching unread text gets the C3 consent confirm (the old
+            -- policy refused it outright; explicit scope selection is consent now).
             UIManager:close(current_dialog)
             local function rangeSectionLabel(entry)
               local lbl = entry.title or ""
@@ -7305,19 +7332,9 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
               end
               return lbl
             end
-            local range_spoiler_free = require("koassistant_book_settings").resolveSpoilerFree(
-                self_ref.ui.doc_settings, features)
             self_ref:_showSectionPicker(action, {
               title = _("Range start: which section?"),
               on_select = function(start_entry)
-                if range_spoiler_free and start_entry.start_page > chapter.current_page then
-                  UIManager:show(InfoMessage:new{
-                    text = _("That section is beyond your current position (spoiler-free is on)."),
-                    timeout = 3,
-                  })
-                  buildAndShow()
-                  return
-                end
                 self_ref:_showSectionPicker(action, {
                   title = _("Range end: which section?"),
                   on_select = function(end_entry)
@@ -7326,24 +7343,26 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
                         text = _("The end section comes before the start section."),
                         timeout = 3,
                       })
-                    elseif range_spoiler_free and end_entry.end_page > chapter.current_page then
-                      UIManager:show(InfoMessage:new{
-                        text = _("That range extends beyond your current position (spoiler-free is on)."),
-                        timeout = 3,
-                      })
-                    else
-                      state.scope = "range"
-                      state.section_entry = {
-                        start_page = start_entry.start_page,
-                        end_page = end_entry.end_page,
-                        title = rangeSectionLabel(start_entry) .. " – " .. rangeSectionLabel(end_entry),
-                      }
-                      state.section_label = state.section_entry.title
-                      -- Extracted text or AI knowledge only (no summary matches a
-                      -- two-section span).
-                      state.source = text_extraction_enabled and "full_text" or "ai_knowledge"
+                      buildAndShow()
+                      return
                     end
-                    buildAndShow()
+                    -- One check on the END bound covers a beyond-position start too
+                    -- (end_page >= start_page by the order check above).
+                    confirmUnreadScope(
+                      chapter.current_page and end_entry.end_page > chapter.current_page,
+                      function()
+                        state.scope = "range"
+                        state.section_entry = {
+                          start_page = start_entry.start_page,
+                          end_page = end_entry.end_page,
+                          title = rangeSectionLabel(start_entry) .. " – " .. rangeSectionLabel(end_entry),
+                        }
+                        state.section_label = state.section_entry.title
+                        -- Extracted text or AI knowledge only (no summary matches a
+                        -- two-section span).
+                        state.source = text_extraction_enabled and "full_text" or "ai_knowledge"
+                        buildAndShow()
+                      end)
                   end,
                 })
               end,
@@ -7353,26 +7372,18 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
             self_ref:_showSectionPicker(action, {
               title = T(_("Select Section for %1"), action_name),
               on_select = function(entry)
-                if opts.for_highlight then
-                  -- Highlight scope: no naming needed, just set the section
-                  state.scope = "section"
-                  state.section_entry = entry
-                  state.section_label = entry.title or ""
-                  if state.source == "section_summary" then
-                    -- Check if new section already has a summary
-                    local _has, _ts, is_sec = getSummaryAvailable()
-                    if is_sec then state.source = "summary" end
-                  elseif state.source == "summary" and not getSummaryAvailable() then
-                    state.source = text_extraction_enabled and "full_text" or "ai_knowledge"
-                  end
-                  buildAndShow()
-                else
-                  -- Book scope: name the section now (shows in popup before Run)
-                  self_ref:_showSectionNameInput(action, action_id, entry, {
-                    on_confirm = function(label)
+                -- C3: a section past the reading position was never checked here —
+                -- same consent confirm as the other unread-capable rows (only when
+                -- a position is known; the chapter block skips highlight scope).
+                confirmUnreadScope(
+                  chapter.current_page and entry.end_page
+                    and entry.end_page > chapter.current_page,
+                  function()
+                    if opts.for_highlight then
+                      -- Highlight scope: no naming needed, just set the section
                       state.scope = "section"
                       state.section_entry = entry
-                      state.section_label = label
+                      state.section_label = entry.title or ""
                       if state.source == "section_summary" then
                         -- Check if new section already has a summary
                         local _has, _ts, is_sec = getSummaryAvailable()
@@ -7381,9 +7392,25 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
                         state.source = text_extraction_enabled and "full_text" or "ai_knowledge"
                       end
                       buildAndShow()
-                    end,
-                  })
-                end
+                    else
+                      -- Book scope: name the section now (shows in popup before Run)
+                      self_ref:_showSectionNameInput(action, action_id, entry, {
+                        on_confirm = function(label)
+                          state.scope = "section"
+                          state.section_entry = entry
+                          state.section_label = label
+                          if state.source == "section_summary" then
+                            -- Check if new section already has a summary
+                            local _has, _ts, is_sec = getSummaryAvailable()
+                            if is_sec then state.source = "summary" end
+                          elseif state.source == "summary" and not getSummaryAvailable() then
+                            state.source = text_extraction_enabled and "full_text" or "ai_knowledge"
+                          end
+                          buildAndShow()
+                        end,
+                      })
+                    end
+                  end)
               end,
             })
           end

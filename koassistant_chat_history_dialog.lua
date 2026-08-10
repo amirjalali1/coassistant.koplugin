@@ -1616,10 +1616,11 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
     -- Shared-table hygiene: clear per-chat Send transients that persist on the
     -- shared module-level configuration (underscore keys survive disk sync) —
     -- the resumed chat's OWN state is restored from chat.control_state below
-    -- (chats saved without it follow the globals, the old behavior). A
+    -- (chats saved without it follow the globals/posture, the old behavior). A
     -- stale _tools_active would silently override the tools posture both ways here;
-    -- a stale _spoiler_free_active would leak the nudge AND clamp/unclamp the tool
-    -- reading scope (history resume is spoiler-excluded by design — audit G6 family).
+    -- a stale _spoiler_free_active would clamp/unclamp the tool reading scope with
+    -- ANOTHER chat's chip (this chat's own value comes back via control_state —
+    -- spoiler_posture_plan.md C4; the nudge rides the saved system prompt).
     config.features._tools_active = nil
     config.features._spoiler_free_active = nil
     config.features._web_search_active = nil
@@ -1681,6 +1682,11 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
         end
         if cs.tools ~= nil then
             config.features._tools_active = cs.tools
+        end
+        -- Spoiler protection (C4): reactivate the chat's session posture so reply
+        -- tool lookups keep the scope the chat was held to (or freed from).
+        if cs.spoiler_free ~= nil then
+            config.features._spoiler_free_active = cs.spoiler_free
         end
     end
 

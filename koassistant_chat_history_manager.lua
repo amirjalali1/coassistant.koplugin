@@ -366,6 +366,12 @@ function ChatHistoryManager.captureControlState(config)
     if f._tools_active ~= nil then
         cs.tools = f._tools_active == true
     end
+    -- Spoiler protection (spoiler_posture_plan.md C4): captured like the rest so a
+    -- resumed chat keeps its session posture — the reply-time tool reading clamp
+    -- reads this flag live (the nudge itself already rides the saved system prompt).
+    if f._spoiler_free_active ~= nil then
+        cs.spoiler_free = f._spoiler_free_active == true
+    end
     if next(cs) == nil then return nil end
     return cs
 end

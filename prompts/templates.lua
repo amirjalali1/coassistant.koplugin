@@ -95,14 +95,18 @@ Templates.BOOK_BACKGROUND_FRAME = [[The reader has provided the following backgr
 
 Treat this as context about their perspective and situation. It informs how you engage with them, but it does not replace or override the task you were given, and you should not quote it back or remark on it unless they raise it.]]
 
--- Spoiler-free nudge - used when spoiler-free mode is active
+-- Spoiler-free nudge - used when spoiler protection is active
 -- Available as {spoiler_free_nudge} placeholder in custom action prompts
--- Injected into system prompt for freeform chat when global or session toggle is on
+-- Injected into the system prompt (freeform chat AND actions that apply the
+-- posture — spoiler_posture_plan.md §3) when it isn't resolved in-prompt
 -- The {reading_progress} inside gets substituted later by MessageBuilder
-Templates.SPOILER_FREE_NUDGE = "The reader is currently at {reading_progress} of this book. IMPORTANT: Do not reveal, hint at, or discuss ANY events, plot developments, character fates, or information from beyond this point. Keep all discussion strictly within what has occurred up to this reading position."
+-- The retrieved-material sentence is the C5 decision: web search stays available
+-- under protection, so the bound must cover search results and other retrieved
+-- text too (extend the nudge, never silently suppress a feature the user enabled)
+Templates.SPOILER_FREE_NUDGE = "The reader is currently at {reading_progress} of this book. IMPORTANT: Do not reveal, hint at, or discuss ANY events, plot developments, character fates, or information from beyond this point. This includes information from web search results or any other retrieved material — apply the same cutoff to everything you report. Keep all discussion strictly within what has occurred up to this reading position."
 
 -- Variant without reading progress (file browser with unknown progress, etc.)
-Templates.SPOILER_FREE_NUDGE_NO_PROGRESS = "The reader has not finished this book. Do not reveal plot twists, endings, character deaths, or major surprises. Keep discussion focused on what has been established so far."
+Templates.SPOILER_FREE_NUDGE_NO_PROGRESS = "The reader has not finished this book. Do not reveal plot twists, endings, character deaths, or major surprises — including any found in web search results or other retrieved material. Keep discussion focused on what has been established so far."
 
 -- Surrounding-context label - heads the ambient context block for highlight requests
 -- Used by MessageBuilder for {surrounding_context_section} and the ambient append,
