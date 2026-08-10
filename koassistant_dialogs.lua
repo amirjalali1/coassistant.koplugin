@@ -6247,16 +6247,14 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
     local book_domain_id = getBookDomain(doc_settings)
     local book_research_id = getBookResearchMode(doc_settings)
 
-    -- Initialize session spoiler-free: per-book override > global default.
-    -- Skipped when restored from a refresh (the user's session choice is preserved).
+    -- Initialize session spoiler-free from the resolved posture (request layer:
+    -- research mode > per-book override > global — spoiler_posture_plan.md §2, so
+    -- an actively researched book seeds unchecked; tapping the chip back on is the
+    -- session override and wins). Skipped when restored from a refresh (the user's
+    -- session choice is preserved).
     if session_spoiler_free == nil then
-        local book_spoiler = doc_settings and doc_settings:readSetting("koassistant_book_spoiler_free")
-        if book_spoiler ~= nil then
-            session_spoiler_free = book_spoiler
-        else
-            session_spoiler_free = configuration and configuration.features
-                and configuration.features.spoiler_free_chat == true
-        end
+        session_spoiler_free = require("koassistant_book_settings").resolveSpoilerFree(
+            doc_settings, configuration and configuration.features)
     end
 
     -- Initialize the session "Book tools" toggle (D1): effective posture sets the default

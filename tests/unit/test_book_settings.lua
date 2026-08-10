@@ -223,6 +223,26 @@ TestRunner:test("nil doc_settings follows global", function()
     TestRunner:assertEqual(BookSettings.resolveSpoilerFree(nil, { spoiler_free_chat = true }), true)
     TestRunner:assertEqual(BookSettings.resolveSpoilerFree(nil, {}), false)
 end)
+TestRunner:test("research mode disables protection (the §2 unification consequence)", function()
+    -- The request layer now consults research like the X-Ray posture always did:
+    -- the chat nudge and the tool reading clamp stand down for a researched book.
+    TestRunner:assertEqual(
+        BookSettings.resolveSpoilerFree(
+            makeDocSettings({ koassistant_book_research_mode = true }),
+            { spoiler_free_chat = true }),
+        false)
+    -- ... even over an explicit per-book spoiler override (the 50(g) rule)
+    TestRunner:assertEqual(
+        BookSettings.resolveSpoilerFree(
+            makeDocSettings({ [KSF] = true, koassistant_book_research_mode = true }), {}),
+        false)
+    -- Escape hatch: book research OFF re-enables the spoiler layers
+    TestRunner:assertEqual(
+        BookSettings.resolveSpoilerFree(
+            makeDocSettings({ [KSF] = true, koassistant_book_research_mode = false }),
+            { research_mode = true }),
+        true)
+end)
 
 TestRunner:suite("book-info level gates the [Context] auto-block")
 
@@ -1098,6 +1118,62 @@ TestRunner:test("resolveXrayPosture: research beats even an explicit per-book sp
         koassistant_book_research_mode = false,
     }), { research_mode = true })
     TestRunner:assertEqual(posture, "track", "book research=false falls through to the spoiler layers")
+end)
+
+TestRunner:suite("resolveSpoilerPosture (spoiler_posture_plan.md §2 — one resolver, two layers)")
+
+TestRunner:test("request layer: session chip beats everything, both ways", function()
+    local p = BookSettings.resolveSpoilerPosture(
+        fakeDocSettings({ koassistant_book_spoiler_free = true }),
+        { spoiler_free_chat = true }, { session = false })
+    TestRunner:assertEqual(p.protected, false, "chip off un-protects over book+global on")
+    TestRunner:assertEqual(p.reason, "session")
+    TestRunner:assertEqual(p.layer, "request", "request is the default layer")
+    p = BookSettings.resolveSpoilerPosture(
+        fakeDocSettings({ koassistant_book_research_mode = true }), {}, { session = true })
+    TestRunner:assertEqual(p.protected, true,
+        "chip on protects even over research — an explicit per-chat ask")
+    TestRunner:assertEqual(p.reason, "session")
+end)
+
+TestRunner:test("mechanical layer ignores the session chip by design", function()
+    -- A per-chat toggle must never silently reinstall a different X-Ray version.
+    local p = BookSettings.resolveSpoilerPosture(
+        fakeDocSettings({}), { spoiler_free_chat = true },
+        { layer = "mechanical", session = false })
+    TestRunner:assertEqual(p.protected, true, "global protection holds; chip not consulted")
+    TestRunner:assertEqual(p.reason, "global")
+    TestRunner:assertEqual(p.layer, "mechanical")
+end)
+
+TestRunner:test("research > book > global; book research OFF is the escape hatch", function()
+    local p = BookSettings.resolveSpoilerPosture(fakeDocSettings({
+        koassistant_book_spoiler_free = true,
+        koassistant_book_research_mode = true,
+    }), {})
+    TestRunner:assertEqual(p.protected, false, "research disables outright, even over book spoiler on")
+    TestRunner:assertEqual(p.reason, "research")
+    p = BookSettings.resolveSpoilerPosture(
+        fakeDocSettings({ koassistant_book_spoiler_free = false }), { spoiler_free_chat = true })
+    TestRunner:assertEqual(p.protected, false, "book off beats global on")
+    TestRunner:assertEqual(p.reason, "book")
+    p = BookSettings.resolveSpoilerPosture(
+        fakeDocSettings({ koassistant_book_research_mode = false }),
+        { research_mode = true, spoiler_free_chat = true })
+    TestRunner:assertEqual(p.protected, true, "book research OFF re-enables the global spoiler layer")
+    TestRunner:assertEqual(p.reason, "global")
+end)
+
+TestRunner:test("explicit global vs nothing-set stay distinct (the §4.3 flip seam)", function()
+    local p = BookSettings.resolveSpoilerPosture(fakeDocSettings({}), { spoiler_free_chat = false })
+    TestRunner:assertEqual(p.protected, false)
+    TestRunner:assertEqual(p.reason, "global", "explicit false is a global decision")
+    p = BookSettings.resolveSpoilerPosture(fakeDocSettings({}), {})
+    TestRunner:assertEqual(p.protected, false, "schema default: protection off (pre-flip)")
+    TestRunner:assertEqual(p.reason, "default", "nothing set anywhere = the flippable branch")
+    p = BookSettings.resolveSpoilerPosture(nil, nil)
+    TestRunner:assertEqual(p.protected, false, "no ds, no features")
+    TestRunner:assertEqual(p.reason, "default")
 end)
 
 print("")

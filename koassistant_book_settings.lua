@@ -45,41 +45,74 @@ function BookSettings.resolveBookInfoLevel(doc_settings, features)
     return (features and features.book_info_in_chat) or "basic"
 end
 
---- Resolve effective spoiler-free state for a book: per-book override (true/false) wins,
--- else follow the global spoiler_free_chat setting. (Session toggle is the caller's concern.)
--- @return boolean
-function BookSettings.resolveSpoilerFree(doc_settings, features)
-    local per_book = doc_settings and doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE)
-    if per_book ~= nil then return per_book == true end
-    return (features and features.spoiler_free_chat) == true
+--- THE spoiler-posture resolver (Track 36 / spoiler_posture_plan.md §2): one
+-- rule, two layers. Request layer (prompts, tool reading clamps, scope
+-- checks): session chip > research mode > per-book override > global.
+-- Mechanical layer (X-Ray installs/promotion): the same MINUS the session
+-- chip — by design a per-chat toggle must never silently reinstall a
+-- different X-Ray version for the book, so opts.session is ignored there.
+-- Research mode (book override > global; the 50(g) rule, device-confirmed
+-- 2026-08-05) disables spoiler protection OUTRIGHT for the whole book — even
+-- over an explicit per-book spoiler override; escape hatch = per-book
+-- research OFF, which re-enables the spoiler layers. DOI auto-detected
+-- research is deliberately NOT consulted (a request-time signal, not a
+-- standing setting).
+-- @param doc_settings table|nil The book's DocSettings (live instance for open books)
+-- @param features table|nil
+-- @param opts table|nil { layer = "request" (default) | "mechanical",
+--   session = true|false|nil — the Spoiler chip's per-chat value, if the
+--   call site has one }
+-- @return table { protected = boolean, reason = "session"|"research"|"book"|
+--   "global"|"default", layer = the resolved layer }. "default" = nothing set
+--   anywhere (the schema default) — kept distinct from an explicit global
+--   value so the planned default flip (§4.3) changes exactly one branch.
+function BookSettings.resolveSpoilerPosture(doc_settings, features, opts)
+    opts = opts or {}
+    local layer = opts.layer == "mechanical" and "mechanical" or "request"
+    if layer == "request" and opts.session ~= nil then
+        return { protected = opts.session == true, reason = "session", layer = layer }
+    end
+    local research = doc_settings and doc_settings:readSetting(BookSettings.KEY_RESEARCH)
+    if research == nil then research = (features and features.research_mode) == true end
+    if research == true then
+        return { protected = false, reason = "research", layer = layer }
+    end
+    local book = doc_settings and doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE)
+    if book ~= nil then
+        return { protected = book == true, reason = "book", layer = layer }
+    end
+    local global = features and features.spoiler_free_chat
+    if global ~= nil then
+        return { protected = global == true, reason = "global", layer = layer }
+    end
+    return { protected = false, reason = "default", layer = layer }
 end
 
---- The ONE spoiler-posture rule for the X-Ray version machinery (xray_ecosystem_plan.md
--- 50(f)+(g); Track-36-lite — the X-Ray slice of the posture unification, full Track 36
--- stays open). Layering:
---   research mode (book > global) — ACTIVE RESEARCH DISABLES SPOILER GATING for
---   the whole book, even over an explicit per-book spoiler override (the 50(g)
---   rule, confirmed on device 2026-08-05; escape hatch = per-book research OFF,
---   which re-enables the spoiler layers)
---   > per-book spoiler override (wins both ways over the global)
---   > global spoiler_free_chat.
--- Session/per-chat toggles are deliberately NOT consulted (posture is a
--- persisted-settings decision that outlives any one request), and neither is
--- DOI auto-detected research (a request-time signal, not a standing setting).
+--- Effective spoiler protection for a book — the REQUEST layer of
+-- resolveSpoilerPosture without a session value (the Spoiler chip stays the
+-- caller's concern at sites that carry one). Research mode disables
+-- protection here too — the §2 unification consequence: the chat nudge and
+-- the tool reading clamp now follow the same rule as X-Ray posture.
+-- @return boolean
+function BookSettings.resolveSpoilerFree(doc_settings, features)
+    return BookSettings.resolveSpoilerPosture(doc_settings, features).protected
+end
+
+--- The X-Ray version machinery's view of the posture (xray_ecosystem_plan.md
+-- 50(f)+(g)) — the MECHANICAL layer of resolveSpoilerPosture: session/per-chat
+-- toggles are never consulted (posture is a persisted-settings decision that
+-- outlives any one request).
 -- @param doc_settings table|nil The book's DocSettings (live instance for open books)
 -- @param features table|nil
 -- @return string posture "track" (promotion follows the reading position) |
 --   "full" (the newest built version installs as soon as it is ready)
--- @return string reason "research" | "book" | "global"
+-- @return string reason "research" | "book" | "global" (the resolver's
+--   "default" collapses into "global" — callers only label layers, and
+--   nothing-set IS the global state)
 function BookSettings.resolveXrayPosture(doc_settings, features)
-    local research = doc_settings and doc_settings:readSetting(BookSettings.KEY_RESEARCH)
-    if research == nil then research = (features and features.research_mode) == true end
-    if research == true then return "full", "research" end
-    local book = doc_settings and doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE)
-    if book == true then return "track", "book" end
-    if book == false then return "full", "book" end
-    if (features and features.spoiler_free_chat) == true then return "track", "global" end
-    return "full", "global"
+    local p = BookSettings.resolveSpoilerPosture(doc_settings, features, { layer = "mechanical" })
+    local reason = p.reason == "default" and "global" or p.reason
+    return p.protected and "track" or "full", reason
 end
 
 -- Per-book AI Book Tools posture ("off" | "manual" | "auto" | nil = follow global).

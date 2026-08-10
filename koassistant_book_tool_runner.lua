@@ -272,19 +272,16 @@ local function buildToolSettings(features, reading_scope)
     }
 end
 
--- Resolve the tool reading scope from the spoiler-free policy: spoiler-free in effect
--- (session flag, or per-book/global setting) → "current" (clamp to reading position);
--- otherwise → "full" (whole document — research, non-fiction, finished books).
+-- Resolve the tool reading scope from the spoiler posture (request layer —
+-- spoiler_posture_plan.md §2): the Spoiler chip's per-chat value when present
+-- (true OR false, so unchecking un-clamps even while the global is on), else
+-- research mode > per-book override > global. Protected → "current" (clamp to
+-- reading position); otherwise → "full" (whole document).
 local function resolveReadingScope(config, ui)
     local features = config and config.features or {}
-    -- The session checkbox (set on the Send path) is authoritative when present — true OR
-    -- false — so unchecking it un-clamps (full scope) even while global spoiler-free is on.
-    if features._spoiler_free_active ~= nil then
-        return features._spoiler_free_active and "current" or "full"
-    end
-    local doc_settings = ui and ui.doc_settings
-    if BookSettings.resolveSpoilerFree(doc_settings, features) then return "current" end
-    return "full"
+    local posture = BookSettings.resolveSpoilerPosture(ui and ui.doc_settings, features,
+        { session = features._spoiler_free_active })
+    return posture.protected and "current" or "full"
 end
 
 local function summarizeToolCall(call, result)
