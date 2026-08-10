@@ -16676,6 +16676,13 @@ function AskGPT:_scrubContextFeatures(features)
   -- position, and an old context window could pass its fingerprint check.
   features.selection_data = nil
   features._selection_context_window = nil
+  -- The spoiler session chip is dialog-scoped: freeform Send (re)writes this flag
+  -- on the SHARED features table just-in-time, and nothing un-sets it after the
+  -- chat ends. resolveReadingScope treats any non-nil value as authoritative, so
+  -- left stale a direct-entry smart-retrieval gather would clamp (or un-clamp) its
+  -- reading scope from the LAST chat's chip instead of this book's posture
+  -- (spoiler_posture_plan B1).
+  features._spoiler_free_active = nil
 end
 
 function AskGPT:executeHighlightBypassAction(action, selected_text, highlight_instance)

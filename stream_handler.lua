@@ -897,6 +897,38 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
     -- Hidden streaming: build placeholder text with animated dots
     local hidden_animation = hidden_streaming and self:createWaitingAnimation()
     local hidden_animation_task = nil
+    -- B2 (spoiler_posture_plan): the hidden display is a STABLE header (label +
+    -- animated dots + note) with the reasoning transcript below it while reasoning
+    -- streams (round 26: reasoning is let through -- it is not the output the
+    -- hiding protects). Every writer composes this same shape, so repaints differ
+    -- only in the dots frame and newly arrived reasoning -- no more
+    -- placeholder/transcript alternation. The dots frame is owned by the 0.4s
+    -- animation timer ALONE; chunk-driven repaints reuse the current frame, so
+    -- the cadence stays steady no matter how chunks arrive.
+    local hidden_frame = "."
+    local function hiddenDisplay()
+        local text = hiddenPlaceholder(hidden_frame)
+        if in_reasoning_phase and #reasoning_buffer > 0 then
+            text = text .. "\n\n" .. table.concat(reasoning_buffer)
+        end
+        return text
+    end
+    -- Phase-transition blank (reasoning->answer, web->answer, first content):
+    -- swaps the visible buffer in normal mode. In hidden mode the header must
+    -- never blank -- the wipe showed as a flash until the next throttled repaint.
+    local function clearStreamDisplay()
+        if hidden_streaming and not hidden_output_visible then return end
+        streamDialog._input_widget:setText("", true)
+    end
+    -- First real content: stop the waiting animation -- except in hidden mode,
+    -- where the timer chain keeps running as the placeholder's single frame owner.
+    local function stopWaitingAnimation()
+        if hidden_streaming then return end
+        if animation_task then
+            UIManager:unschedule(animation_task)
+            animation_task = nil
+        end
+    end
 
     -- Throttled UI update function - batches multiple chunks into single display refresh
     local function scheduleUIUpdate()
@@ -913,16 +945,10 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                 end
                 local display
                 if hidden_streaming and not hidden_output_visible then
-                    -- Show placeholder instead of actual content. Round 26: the
-                    -- REASONING phase is let through — it is not the output the
-                    -- hiding protects (quiz answers, raw merge JSON), and an
-                    -- opaque animated wait was the complaint. Once real content
-                    -- starts, the placeholder takes over again.
-                    if in_reasoning_phase and #reasoning_buffer > 0 then
-                        display = table.concat(reasoning_buffer)
-                    else
-                        display = hiddenPlaceholder(hidden_animation and hidden_animation:getNextFrame())
-                    end
+                    -- Stable header with the reasoning transcript below it (B2,
+                    -- composed in hiddenDisplay); the dots frame is not advanced
+                    -- here -- the animation timer owns the cadence.
+                    display = hiddenDisplay()
                 else
                     -- During a web search, base the display on the answer so far rather
                     -- than the reasoning transcript — a search right after thinking shows
@@ -1063,7 +1089,7 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                     if hidden_output_visible then
                         display = in_reasoning_phase and table.concat(reasoning_buffer) or table.concat(result_buffer)
                     else
-                        display = hiddenPlaceholder(hidden_animation and hidden_animation:getNextFrame())
+                        display = hiddenDisplay()
                     end
                     iw:setText(display, true)
                     if hidden_output_visible and auto_scroll_active then
@@ -1166,19 +1192,25 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
     local animation = self:createWaitingAnimation()
     local function getWaitingText()
         if hidden_streaming and not hidden_output_visible then
-            return hiddenPlaceholder(hidden_animation:getNextFrame())
+            hidden_frame = hidden_animation:getNextFrame()
+            return hiddenDisplay()
         end
         return animation:getNextFrame()
     end
     streamDialog._input_widget:setText(getWaitingText(), true)
     local function updateAnimation()
-        if not first_content_received and not completed then
+        if completed then return end
+        if not first_content_received then
             streamDialog._input_widget:setText(getWaitingText(), true)
             animation_task = UIManager:scheduleIn(0.4, updateAnimation)
-        elseif hidden_streaming and not hidden_output_visible and not completed then
-            -- Keep animating the placeholder even after content arrives
-            streamDialog._input_widget:setText(
-                hiddenPlaceholder(hidden_animation:getNextFrame()), true)
+        elseif hidden_streaming then
+            -- Sole frame owner for the hidden placeholder (B2). Keep ticking even
+            -- while the output is revealed (Show pressed) so the dots resume
+            -- moving when the user hides it again; only paint when hidden.
+            hidden_frame = hidden_animation:getNextFrame()
+            if not hidden_output_visible then
+                streamDialog._input_widget:setText(hiddenDisplay(), true)
+            end
             animation_task = UIManager:scheduleIn(0.4, updateAnimation)
         end
     end
@@ -1419,12 +1451,9 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                                 -- Update UI with reasoning
                                 if not first_content_received then
                                     first_content_received = true
-                                    if animation_task then
-                                        UIManager:unschedule(animation_task)
-                                        animation_task = nil
-                                    end
+                                    stopWaitingAnimation()
                                     in_reasoning_phase = true
-                                    streamDialog._input_widget:setText("", true)
+                                    clearStreamDisplay()
                                     if auto_scroll_active then page_top_line = 1 end
                                 end
 
@@ -1445,10 +1474,7 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                                     web_search_used = true
                                     if not first_content_received then
                                         first_content_received = true
-                                        if animation_task then
-                                            UIManager:unschedule(animation_task)
-                                            animation_task = nil
-                                        end
+                                        stopWaitingAnimation()
                                     end
                                     -- Display-only status, rendered as a suffix by scheduleUIUpdate
                                     -- so throttled repaints keep it visible (never enters
@@ -1465,13 +1491,13 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                                         web_found_status = nil
                                         web_queries = {}
                                         web_current_query = nil
-                                        streamDialog._input_widget:setText("", true)
+                                        clearStreamDisplay()
                                         if auto_scroll_active then page_top_line = 1 end
                                     end
                                     if in_reasoning_phase then
                                         in_reasoning_phase = false
                                         -- Clear the reasoning display and show answer
-                                        streamDialog._input_widget:setText("", true)
+                                        clearStreamDisplay()
                                         if auto_scroll_active then page_top_line = 1 end
                                     end
 
@@ -1481,11 +1507,8 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                                     -- Update UI
                                     if not first_content_received then
                                         first_content_received = true
-                                        if animation_task then
-                                            UIManager:unschedule(animation_task)
-                                            animation_task = nil
-                                        end
-                                        streamDialog._input_widget:setText("", true)
+                                        stopWaitingAnimation()
+                                        clearStreamDisplay()
                                         if auto_scroll_active then page_top_line = 1 end
                                     end
 
@@ -1569,12 +1592,9 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
 
                                     if not first_content_received then
                                         first_content_received = true
-                                        if animation_task then
-                                            UIManager:unschedule(animation_task)
-                                            animation_task = nil
-                                        end
+                                        stopWaitingAnimation()
                                         in_reasoning_phase = true
-                                        streamDialog._input_widget:setText("", true)
+                                        clearStreamDisplay()
                                         if auto_scroll_active then page_top_line = 1 end
                                     end
 
@@ -1585,7 +1605,7 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                                 if type(content) == "string" and #content > 0 then
                                     if in_reasoning_phase then
                                         in_reasoning_phase = false
-                                        streamDialog._input_widget:setText("", true)
+                                        clearStreamDisplay()
                                         if auto_scroll_active then page_top_line = 1 end
                                     end
 
@@ -1594,11 +1614,8 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
 
                                     if not first_content_received then
                                         first_content_received = true
-                                        if animation_task then
-                                            UIManager:unschedule(animation_task)
-                                            animation_task = nil
-                                        end
-                                        streamDialog._input_widget:setText("", true)
+                                        stopWaitingAnimation()
+                                        clearStreamDisplay()
                                         if auto_scroll_active then page_top_line = 1 end
                                     end
 
