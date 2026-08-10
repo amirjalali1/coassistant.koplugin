@@ -251,6 +251,56 @@ TestRunner:test("every settings/data koassistant_* literal is registered", funct
         "unregistered storage literals found: " .. table.concat(missing, ", "))
 end)
 
+-- One-time migration stamps: every `features._x = true` stamp written by the
+-- upgrade chain must be in SETTINGS_SUBKEYS.internal, or Reset Settings / Fresh
+-- Start delete it and the migration re-fires against a post-migration table.
+-- Caught live 2026-08-10: _xray_auto_v2_migrated + _xray_auto_legacy_optin were
+-- unregistered, silently destroying the never-re-derivable legacy grant.
+-- Scan: assignments of stamp-suffixed keys (= true) on settings receivers
+-- (`features` in main.lua/migrations, `f` in action_service, `new_features` in
+-- settings_schema). `history.` etc. are non-settings receivers, ignored.
+local function scanMigrationStamps(plugin_dir)
+    local cmd = string.format(
+        'grep -rhE "(migrated|_v[0-9]+|optin|_shown|_reset|_completed)[_a-z0-9]*[[:space:]]*=[[:space:]]*true" '
+        .. '--include="*.lua" --exclude-dir=tests %q 2>/dev/null',
+        plugin_dir)
+    local handle = io.popen(cmd)
+    if not handle then return {} end
+    local out = handle:read("*a") or ""
+    handle:close()
+    local found = {}
+    for line in out:gmatch("[^\n]+") do
+        local receiver, key = line:match("([%a_][%w_]*)%.([%a_][%w_]*)%s*=%s*true")
+        if key and (receiver == "features" or receiver == "new_features" or receiver == "f") then
+            found[key] = true
+        end
+    end
+    return found
+end
+
+TestRunner:test("every one-time migration stamp is in the internal bucket", function()
+    local internal = {}
+    for _idx, key in ipairs(Registry.SETTINGS_SUBKEYS.internal) do
+        internal[key] = true
+    end
+
+    local found = scanMigrationStamps(PLUGIN_DIR)
+    local count = 0
+    local missing = {}
+    for key in pairs(found) do
+        count = count + 1
+        if not internal[key] then missing[#missing + 1] = key end
+    end
+    table.sort(missing)
+
+    -- Guard against a broken grep silently passing the test (18 stamps today).
+    TestRunner:assertTrue(count >= 15,
+        "stamp scan found too few stamps (" .. count .. ") — grep likely failed")
+    TestRunner:assertTrue(#missing == 0,
+        "migration stamps missing from SETTINGS_SUBKEYS.internal (resets would delete them): "
+        .. table.concat(missing, ", "))
+end)
+
 --------------------------------------------------------------------------------
 TestRunner:suite("Settings sub-key categories")
 
@@ -298,6 +348,10 @@ TestRunner:test("settingsResetPreserve keeps credentials/assets/languages/prefer
         "features.primary_language",  -- languages preserved
         "features.selected_behavior", "features.gesture_actions",  -- preferences preserved
         "features._reasoning_v2_migrated",  -- bug fix: reasoning flags survive resets
+        -- release_prep_v0.21 C0: the xray_auto stamps were missing from the internal
+        -- bucket — resets deleted the one-way legacy grant (never re-derivable).
+        "features._xray_auto_v2_migrated",
+        "features._xray_auto_legacy_optin",
     }) do
         TestRunner:assertTrue(listContains(p, key), "Reset Settings must preserve " .. key)
     end
@@ -328,6 +382,9 @@ TestRunner:test("freshStartPreserve is clean-slate: wipes custom assets + prefer
     TestRunner:assertTrue(listContains(p, "features.primary_language"), "Fresh Start keeps languages")
     TestRunner:assertTrue(listContains(p, "features._reasoning_v2_migrated"),
         "Fresh Start must preserve reasoning migration flags (bug fix)")
+    TestRunner:assertTrue(listContains(p, "features._xray_auto_legacy_optin"),
+        "Fresh Start must preserve the legacy auto-X-Ray grant (one-way, never re-derivable; "
+        .. "per-book boolean opt-ins in sidecars survive Fresh Start and key on it)")
 end)
 
 TestRunner:test("resetEntries(fresh_start) clears only internal data-dir cruft", function()

@@ -36,6 +36,14 @@ ul, ol { margin: 0.3em 0; padding-left: 1.5em; }
 .answer-key { margin-top: 0.8em; padding-top: 0.5em; border-top: 1px solid #999; }
 ]]
 
+-- Model output is interpolated into the question HTML below; escape it so a
+-- stray `<`/`&` in an option/answer can't be swallowed as markup by MuPDF
+-- (audit v0.20.0 MEDIUM). The question text itself renders through MD() —
+-- markdown is the intended path there; this escape is for the plain-text slots.
+local function htmlEscape(s)
+    return (tostring(s):gsub("[&<>]", { ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;" }))
+end
+
 local QuizViewer = InputContainer:extend{
     quiz_data = nil,      -- parsed quiz data from QuizParser
     opts = nil,           -- { title, chapter, book_author, on_save_notebook, on_save_state }
@@ -197,11 +205,13 @@ function QuizViewer:_buildQuestionHTML(q, idx)
         short_answer = _("Short Answer"),
         essay = _("Discussion"),
     }
-    table.insert(parts, "<h3>" .. (type_labels[q.type] or q.type) .. "</h3>")
+    table.insert(parts, "<h3>" .. (type_labels[q.type] or htmlEscape(q.type)) .. "</h3>")
 
-    -- Question text
-    local q_html = MD(q.question, {}) or q.question
-    table.insert(parts, q_html)
+    -- Question text. MD() throws on some malformed model output (unterminated
+    -- code fence, see Technical Limitations) — fall back to escaped plain text
+    -- instead of taking the whole viewer down.
+    local md_ok, q_html = pcall(MD, q.question, {})
+    table.insert(parts, (md_ok and q_html) or htmlEscape(q.question))
 
     -- MC: show options
     if q.type == "multiple_choice" and q.options then
@@ -209,7 +219,7 @@ function QuizViewer:_buildQuestionHTML(q, idx)
         for _li, letter in ipairs({"A", "B", "C", "D"}) do
             if q.options[letter] then
                 local prefix = letter .. ") "
-                local opt_text = q.options[letter]
+                local opt_text = htmlEscape(q.options[letter])
 
                 -- Highlight selected answer after reveal (monochrome e-ink friendly)
                 if self.revealed[idx] then
@@ -236,18 +246,18 @@ function QuizViewer:_buildQuestionHTML(q, idx)
     if self.revealed[idx] then
         table.insert(parts, '<div class="answer-key">')
         if q.type == "multiple_choice" then
-            table.insert(parts, "<p><b>" .. _("Correct answer: ") .. (q.correct or "?") .. "</b></p>")
+            table.insert(parts, "<p><b>" .. _("Correct answer: ") .. htmlEscape(q.correct or "?") .. "</b></p>")
             if q.explanation and q.explanation ~= "" then
-                table.insert(parts, "<p>" .. q.explanation .. "</p>")
+                table.insert(parts, "<p>" .. htmlEscape(q.explanation) .. "</p>")
             end
         elseif q.type == "short_answer" then
             if q.model_answer and q.model_answer ~= "" then
-                table.insert(parts, "<p><b>" .. _("Model answer:") .. "</b> " .. q.model_answer .. "</p>")
+                table.insert(parts, "<p><b>" .. _("Model answer:") .. "</b> " .. htmlEscape(q.model_answer) .. "</p>")
             end
             if q.key_points and #q.key_points > 0 then
                 table.insert(parts, "<p><b>" .. _("Key points:") .. "</b></p><ul>")
                 for _ki, kp in ipairs(q.key_points) do
-                    table.insert(parts, "<li>" .. kp .. "</li>")
+                    table.insert(parts, "<li>" .. htmlEscape(kp) .. "</li>")
                 end
                 table.insert(parts, "</ul>")
             end
@@ -255,7 +265,7 @@ function QuizViewer:_buildQuestionHTML(q, idx)
             if q.key_points and #q.key_points > 0 then
                 table.insert(parts, "<p><b>" .. _("Key points a good answer should cover:") .. "</b></p><ul>")
                 for _ki, kp in ipairs(q.key_points) do
-                    table.insert(parts, "<li>" .. kp .. "</li>")
+                    table.insert(parts, "<li>" .. htmlEscape(kp) .. "</li>")
                 end
                 table.insert(parts, "</ul>")
             end
