@@ -433,7 +433,7 @@ function AskGPT:init()
         end)
       end
     end
-    -- Auto-reopen the Book Overview after "Open Book" on its closed-book view
+    -- Auto-reopen the Book Hub after "Open Book" on its closed-book view
     -- (same pattern as the X-Ray browser reopen above)
     local BookPageReopen = require("koassistant_book_page")
     if BookPageReopen._pending_reopen then
@@ -702,32 +702,9 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
         for _idx, cache in ipairs(caches) do
           local display = cache.name
           if not cache.is_pinned_group and not cache.is_section_group and not cache.is_wiki_group then
-            -- Format with metadata: "X-Ray (65%, today)"
-            local meta_parts = {}
-            if cache.data then
-              if cache.data.progress_decimal and cache.data.progress_decimal < 1.0 then
-                local pct = math.floor(cache.data.progress_decimal * 100 + 0.5)
-                table.insert(meta_parts, pct .. "%")
-              end
-              if cache.data.timestamp then
-                local now = os.time()
-                local today_t = os.date("*t", now)
-                today_t.hour, today_t.min, today_t.sec = 0, 0, 0
-                local cached_t = os.date("*t", cache.data.timestamp)
-                cached_t.hour, cached_t.min, cached_t.sec = 0, 0, 0
-                local days = math.floor((os.time(today_t) - os.time(cached_t)) / 86400)
-                if days == 0 then
-                  table.insert(meta_parts, _("today"))
-                elseif days < 30 then
-                  table.insert(meta_parts, string.format(_("%dd ago"), days))
-                else
-                  table.insert(meta_parts, string.format(_("%dm ago"), math.floor(days / 30)))
-                end
-              end
-            end
-            if #meta_parts > 0 then
-              display = display .. " (" .. table.concat(meta_parts, ", ") .. ")"
-            end
+            -- Shared meta (A4 parity): "X-Ray (65%, today)", percent always
+            local meta = Constants.formatArtifactMeta(cache.data)
+            if meta then display = display .. " (" .. meta .. ")" end
           end
           table.insert(btn_rows, {{
             text = display,
@@ -806,7 +783,7 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
     })
   end
 
-  -- Book Overview (KOA) button — the book's home page (before Book Settings,
+  -- Book Hub (KOA) button — the book's home page (before Book Settings,
   -- maintainer 2026-08-09)
   table.insert(buttons, {
     text = require("koassistant_book_page").pageName() .. " (KOA)",
@@ -1420,6 +1397,16 @@ function AskGPT:onDispatcherRegisterActions()
     category = "none",
     event = "KOAssistantBookChat",
     title = _("KOAssistant: Book Chat/Action"),
+    general = false,  -- Requires open book
+    reader = true,
+  })
+
+  -- Register Book Hub action (A4 — gesture-assignable like its peer
+  -- destinations; internal ids keep book_overview)
+  Dispatcher:registerAction("koassistant_book_overview", {
+    category = "none",
+    event = "KOAssistantBookOverview",
+    title = _("KOAssistant: Book Hub"),
     general = false,  -- Requires open book
     reader = true,
   })
@@ -5671,23 +5658,12 @@ function AskGPT:viewCache(parent_dialog)
   local self_ref = self
   local buttons = {}
   for _idx, cache in ipairs(caches) do
-    -- Format with metadata: "X-Ray (65%, today)" or pinned indicator
+    -- Format with metadata: "X-Ray (65%, today)" or pinned indicator —
+    -- shared meta (A4 parity), percent always when tracked
     local display = cache.name
     if not cache.is_pinned_group and not cache.is_section_group and not cache.is_wiki_group then
-      local meta_parts = {}
-      if cache.data then
-        if cache.data.progress_decimal and cache.data.progress_decimal < 1.0 then
-          local pct = math.floor(cache.data.progress_decimal * 100 + 0.5)
-          table.insert(meta_parts, pct .. "%")
-        end
-        if cache.data.timestamp then
-          local relative = formatRelativeTime(cache.data.timestamp)
-          if relative ~= "" then table.insert(meta_parts, relative) end
-        end
-      end
-      if #meta_parts > 0 then
-        display = display .. " (" .. table.concat(meta_parts, ", ") .. ")"
-      end
+      local meta = Constants.formatArtifactMeta(cache.data)
+      if meta then display = display .. " (" .. meta .. ")" end
     end
     table.insert(buttons, {{
       text = display,
@@ -5814,8 +5790,10 @@ function AskGPT:_inBookGroup(file)
   return file ~= nil and #require("koassistant_book_groups").groupsFor(file) > 0
 end
 
---- Book Overview entry for registry-driven surfaces (QA panel utility
---- "book_overview"; reader mode, so the open book is the target)
+--- Book Hub entry for registry-driven surfaces (QA panel utility
+--- "book_overview" — internal id unchanged by the A4 rename; also the
+--- main-menu row and the Dispatcher gesture action; reader mode, so the
+--- open book is the target)
 function AskGPT:onKOAssistantBookOverview()
   local file = self.ui and self.ui.document and self.ui.document.file
   if not file then return true end
@@ -5848,7 +5826,8 @@ end
 --- Book-group members popup (item 46) — THE group-navigation idiom: one
 --- ordered list of the group's books (current one marked), replacing the old
 --- prev/next pair. What a tap opens depends on mode:
----   "artifacts" — that book's View-artifacts selector (grayed "(no artifacts)")
+---   "artifacts" — that book's Book Hub page (never empty — chrome rows at
+---                 minimum, so no disabled rows in this mode; A4)
 ---   "xray"      — that book's live X-Ray (grayed "(no X-Ray)")
 --- @param file string The current book (its groups are listed)
 --- @param mode string "artifacts" | "xray"
@@ -5874,6 +5853,7 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
     for i, path in ipairs(group.books) do
       local captured = path
       local title = BookGroups.displayTitle(captured, self.ui)
+      local raw_title = title  -- undecorated, for the member's Book Hub header
       -- A3: mark missing files here too (the group screen already does) —
       -- rows with content stay tappable, sidecars outlive moved books
       if not BookGroups.fileExists(captured) then
@@ -5930,16 +5910,20 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
           title = title .. " " .. _("(no X-Ray)")
         end
       else
-        local ok, arts = pcall(ActionCache.getAvailableArtifactsWithPinned, captured)
-        if ok and type(arts) == "table" and #arts > 0 then
-          cb = function()
-            UIManager:close(dialog)
-            if opts and opts.before_open then opts.before_open() end
-            local ArtifactBrowser = require("koassistant_artifact_browser")
-            ArtifactBrowser:showArtifactSelector(captured)
-          end
-        else
-          title = title .. " " .. _("(no artifacts)")
+        -- A4: a member row opens the member's Book Hub — every book has one
+        -- (chrome rows at minimum), so the old artifact gate, its disabled
+        -- "(no artifacts)" rows and the bare 1-arg selector call all retire
+        cb = function()
+          UIManager:close(dialog)
+          if opts and opts.before_open then opts.before_open() end
+          require("koassistant_book_page").show({
+            file = captured,
+            plugin = self_ref,
+            ui = self_ref.ui,
+            title = raw_title,
+            enable_emoji = configuration and configuration.features
+                and configuration.features.enable_emoji_icons == true,
+          })
         end
       end
       rows[#rows + 1] = {{
@@ -5969,11 +5953,11 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
       end,
     }}
   end
-  -- Round 29 (audit): every row here is a NAVIGATION target, and a row is
-  -- disabled when its book has nothing to navigate to — so a fresh group (one
-  -- book, or siblings with no artifacts yet) rendered a popup with nothing
-  -- tappable and no way onward. Always offer the manager, which is where
-  -- adding, reordering and the series/project switch live.
+  -- Round 29 (audit): every row here is a NAVIGATION target, and in xray mode
+  -- a row is disabled when its book has no X-Ray — so a fresh group could
+  -- render a popup with nothing tappable and no way onward. Always offer the
+  -- manager, which is where adding, reordering and the series/project switch
+  -- live. (Artifacts mode stopped disabling rows with the A4 Book Hub swap.)
   rows[#rows + 1] = {{
     text = _("Manage groups…"),
     callback = function()
@@ -6600,10 +6584,11 @@ function AskGPT:showCacheActionPopup(action, action_id, on_update, opts)
   local action_name = action.text or action_id
 
   -- View detail: cached progress + relative time, e.g. "View X-Ray (29%, today)"
+  -- (percent always when tracked — A4 parity with the Book Hub rows)
   local view_detail = ""
   if cached.progress_decimal or cached.timestamp then
     local parts = {}
-    if cached.progress_decimal and cached.progress_decimal < 1.0 then
+    if cached.progress_decimal then
       table.insert(parts, math.floor(cached.progress_decimal * 100 + 0.5) .. "%")
     end
     local rel_time = formatRelativeTime(cached.timestamp)
@@ -6819,7 +6804,7 @@ function AskGPT:_showAnalyzeNotesScopePopup(action, action_id, on_update, cached
     local parts = {}
     if cached_entry.intro then
       table.insert(parts, _("introduction"))
-    elseif cached_entry.progress_decimal and cached_entry.progress_decimal < 1.0 then
+    elseif cached_entry.progress_decimal then
       table.insert(parts, math.floor(cached_entry.progress_decimal * 100 + 0.5) .. "%")
     end
     local rel_time = formatRelativeTime(cached_entry.timestamp)
@@ -8167,7 +8152,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     if cached_entry.intro then
       -- Round 20: a live intro is premise-only coverage, not "0%"
       table.insert(parts, _("introduction"))
-    elseif cached_entry.progress_decimal and cached_entry.progress_decimal < 1.0 then
+    elseif cached_entry.progress_decimal then
       table.insert(parts, math.floor(cached_entry.progress_decimal * 100 + 0.5) .. "%")
     end
     local rel_time = formatRelativeTime(cached_entry.timestamp)
@@ -13474,7 +13459,7 @@ function AskGPT:executeBookLevelAction(action_id)
         local parts = {}
         if cached.intro then
           table.insert(parts, _("introduction"))
-        elseif cached.progress_decimal and cached.progress_decimal < 1.0 then
+        elseif cached.progress_decimal then
           table.insert(parts, math.floor(cached.progress_decimal * 100 + 0.5) .. "%")
         end
         local rel_time = formatRelativeTime(cached.timestamp)

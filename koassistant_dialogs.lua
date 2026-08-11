@@ -5753,35 +5753,12 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
 end
 
 --- Format artifact metadata for popup display (e.g., "X-Ray (100%, today)")
+--- Shared meta (A4 parity with the Book Hub rows): percent always when tracked
 --- @param cache table Artifact cache entry with name, data.progress_decimal, data.timestamp
 --- @return string Formatted display text
 local function formatArtifactDisplayText(cache)
-    local parts = {}
-    if cache.data then
-        if cache.data.progress_decimal and cache.data.progress_decimal < 1.0 then
-            local pct = math.floor(cache.data.progress_decimal * 100 + 0.5)
-            table.insert(parts, pct .. "%")
-        end
-        if cache.data.timestamp then
-            local now = os.time()
-            local today_t = os.date("*t", now)
-            today_t.hour, today_t.min, today_t.sec = 0, 0, 0
-            local cached_t = os.date("*t", cache.data.timestamp)
-            cached_t.hour, cached_t.min, cached_t.sec = 0, 0, 0
-            local days = math.floor((os.time(today_t) - os.time(cached_t)) / 86400)
-            if days == 0 then
-                table.insert(parts, _("today"))
-            elseif days < 30 then
-                table.insert(parts, string.format(_("%dd ago"), days))
-            else
-                local months = math.floor(days / 30)
-                table.insert(parts, string.format(_("%dm ago"), months))
-            end
-        end
-    end
-    if #parts > 0 then
-        return cache.name .. " (" .. table.concat(parts, ", ") .. ")"
-    end
+    local meta = Constants.formatArtifactMeta(cache.data)
+    if meta then return cache.name .. " (" .. meta .. ")" end
     return cache.name
 end
 
@@ -6692,7 +6669,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 local view_detail = ""
                 if cached.progress_decimal or cached.timestamp then
                     local parts = {}
-                    if cached.progress_decimal and cached.progress_decimal < 1.0 then
+                    if cached.progress_decimal then
                         table.insert(parts, math.floor(cached.progress_decimal * 100 + 0.5) .. "%")
                     end
                     if cached.timestamp then

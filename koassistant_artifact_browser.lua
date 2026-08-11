@@ -349,12 +349,11 @@ function ArtifactBrowser:showArtifactSelector(doc_path, doc_title, opts)
     for _idx, artifact in ipairs(all_artifacts) do
         local captured = artifact
         local display_name = captured.name
-        local ts = captured.data and captured.data.timestamp
-        if ts then
-            local rel = Constants.formatRelativeTime(ts)
-            if rel ~= "" then
-                display_name = display_name .. " · " .. rel
-            end
+        -- Shared meta (A4 parity with the Book Hub rows and the View-Artifacts
+        -- popups): percent always when tracked + compact age
+        local meta = Constants.formatArtifactMeta(captured.data)
+        if meta then
+            display_name = display_name .. " (" .. meta .. ")"
         end
         -- Select mode: image rows aren't text, and archived X-Ray versions are a
         -- management surface (attach the live X-Ray artifact instead) — skip both

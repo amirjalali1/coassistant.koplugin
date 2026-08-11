@@ -1,11 +1,14 @@
 --[[--
-Book page ("Book overview", book page round 2026-08-09): one full-screen view
-of everything the plugin holds for ONE book — the artifact rows the View
+Book page ("Book Hub" — renamed from "Book Overview" with A4's shape work
+2026-08-11; internal ids/settings keys keep book_overview): one full-screen
+view of everything the plugin holds for ONE book — the artifact rows the View
 Artifacts popup shows (same destinations), plus chats, notebook, group
 membership and book settings. Strictly a VIEW over existing stores: nothing is
 generated here, nothing is stored here, and the popups stay the fast path.
+Book-level operations (refresh index / export all / delete all / browse all
+books) live behind the title-bar hamburger, the X-Ray browser's idiom.
 
-Entry points (EVERY View-Artifacts surface carries a "Book overview…" row):
+Entry points (EVERY View-Artifacts surface carries a "Book Hub…" row):
 the open-book View Artifacts popup, the file-browser long-press popup, the
 input dialog's View Artifacts popup, the artifact browser's per-book selector,
 the response viewer's Artifacts popup — plus the X-Ray browser's bottom-left
@@ -28,35 +31,18 @@ local _ = require("koassistant_gettext")
 
 local BookPage = {}
 
---- The page's user-facing name, in ONE place — a wholesale rename is expected
---- (maintainer 2026-08-09), so entry points must call these rather than
---- hardcode. Two strings can't reach here (would cycle the require graph) and
---- must be renamed alongside: Constants.getQuickActionUtilityText's
+--- The page's user-facing name, in ONE place (renamed "Book Overview" →
+--- "Book Hub", A4 2026-08-11) — entry points must call these rather than
+--- hardcode. One string can't reach here (would cycle the require graph) and
+--- is renamed alongside: Constants.getQuickActionUtilityText's
 --- book_overview entry, and nothing else.
 function BookPage.pageName()
-    return _("Book Overview")
+    return _("Book Hub")
 end
 
 --- Entry-row form used by the View-Artifacts popups
 function BookPage.entryLabel()
-    return _("Book overview…")
-end
-
---- Same compact age the View Artifacts popup shows next to artifact names
-local function relativeDate(ts)
-    ts = tonumber(ts)
-    if not ts then return nil end
-    local today_t = os.date("*t", os.time())
-    today_t.hour, today_t.min, today_t.sec = 0, 0, 0
-    local then_t = os.date("*t", ts)
-    then_t.hour, then_t.min, then_t.sec = 0, 0, 0
-    local days = math.floor((os.time(today_t) - os.time(then_t)) / 86400)
-    if days <= 0 then
-        return _("today")
-    elseif days < 30 then
-        return T(_("%1d ago"), days)
-    end
-    return os.date("%Y-%m-%d", ts)
+    return _("Book Hub…")
 end
 
 function BookPage.close()
@@ -162,18 +148,11 @@ local function buildItems(ctx)
             cache.file = cache.file or file
         end
         local mandatory
-        if cache.data and not cache.is_pinned_group and not cache.is_section_group
+        if not cache.is_pinned_group and not cache.is_section_group
             and not cache.is_wiki_group then
-            local parts = {}
-            -- Percent shown ALWAYS when tracked (maintainer 2026-08-09), 100%
-            -- included — position-irrelevant artifacts store 1.0 and read as
-            -- covering the whole book, which is what they do
-            if cache.data.progress_decimal then
-                parts[#parts + 1] = math.floor(cache.data.progress_decimal * 100 + 0.5) .. "%"
-            end
-            local age = relativeDate(cache.data.timestamp)
-            if age then parts[#parts + 1] = age end
-            if #parts > 0 then mandatory = table.concat(parts, " · ") end
+            -- ONE formatter with the View-Artifacts popups and the artifact
+            -- browser (A4 parity): percent always when tracked + compact age
+            mandatory = Constants.formatArtifactMeta(cache.data)
         end
         -- Quiz opens its ACTION popup when the book is open (View/Update/New
         -- Quiz — the quiz viewer has no redo controls, unlike the artifact
@@ -220,9 +199,10 @@ local function buildItems(ctx)
     -- Notebook (tap = view, hold = edit; opener offers creation when absent)
     local Notebook = require("koassistant_notebook")
     local nb_stats = Notebook.getStats(file)
+    local nb_rel = nb_stats and Constants.formatRelativeTime(nb_stats.modified) or ""
     items[#items + 1] = {
         text = Constants.getEmojiText("📓", _("Notebook"), ctx.enable_emoji),
-        mandatory = nb_stats and relativeDate(nb_stats.modified) or _("none"),
+        mandatory = nb_rel ~= "" and nb_rel or _("none"),
         callback = function() plugin:openNotebookForFile(file) end,
         hold_callback = function() plugin:openNotebookForFile(file, true) end,
     }
@@ -291,6 +271,136 @@ local function buildItems(ctx)
     return items
 end
 
+--- Export every top-level artifact to files in a chosen folder (A4 hamburger).
+--- Same per-artifact format/filenames as the viewer's Export button; sections,
+--- wiki entries and pinned items are not included (each has its own surface).
+local function exportAllArtifacts(ctx)
+    local ActionCache = require("koassistant_action_cache")
+    local Export = require("koassistant_export")
+    local InfoMessage = require("ui/widget/infomessage")
+    local caches = ActionCache.getAvailableArtifactsWithPinned(ctx.file)
+    local exportable = {}
+    for _idx, cache in ipairs(caches) do
+        if cache.data and type(cache.data.result) == "string" then
+            exportable[#exportable + 1] = cache
+        end
+    end
+    if #exportable == 0 then
+        UIManager:show(InfoMessage:new{ text = _("Nothing to export.") })
+        return
+    end
+    -- Default folder: same resolution as the viewer's export
+    local DataStorage = require("datastorage")
+    local features = ctx.plugin.settings and ctx.plugin.settings.data
+        and ctx.plugin.settings.data.features or {}
+    local dir_option = features.export_save_directory or "exports_folder"
+    local default_path
+    if dir_option == "custom" and features.export_custom_path and features.export_custom_path ~= "" then
+        default_path = features.export_custom_path
+    elseif dir_option == "exports_folder" or dir_option == "ask" then
+        default_path = DataStorage:getDataDir() .. "/koassistant_exports"
+    else
+        default_path = DataStorage:getDataDir()
+    end
+    local PathChooser = require("ui/widget/pathchooser")
+    UIManager:show(PathChooser:new{
+        title = _("Select export folder"),
+        path = default_path,
+        show_hidden = false,
+        select_directory = true,
+        select_file = false,
+        onConfirm = function(selected_path)
+            local n = 0
+            for _idx, cache in ipairs(exportable) do
+                local filename = Export.getCacheFilename(
+                    ctx.title, cache.name, cache.data.timestamp)
+                local formatted = Export.formatCacheContent(cache.data.result, {
+                    cache_type = cache.name,
+                    book_title = ctx.title,
+                    book_author = ctx.author,
+                    progress_decimal = cache.data.progress_decimal,
+                    model = cache.data.model,
+                    timestamp = cache.data.timestamp,
+                }, "markdown")
+                local ok = Export.saveToFile(formatted, selected_path .. "/" .. filename)
+                if ok then n = n + 1 end
+            end
+            UIManager:show(InfoMessage:new{
+                text = T(_("Exported %1 of %2 artifacts."), n, #exportable),
+            })
+        end,
+    })
+end
+
+--- Delete-all confirm (A4 hamburger). ActionCache.clearAll takes the X-Ray's
+--- checkpoint ring and version ladder with it by construction; chats,
+--- notebook, pinned items and generated images live in other stores.
+local function confirmDeleteAll(ctx)
+    local ConfirmBox = require("ui/widget/confirmbox")
+    local InfoMessage = require("ui/widget/infomessage")
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Delete ALL artifacts for \"%1\"?\n\nThis removes the X-Ray (with its archived versions and checkpoints), summaries, analyses, wiki entries and every other cached artifact. Chats, notebook, pinned items and generated images are kept.\n\nThis cannot be undone."), ctx.title),
+        ok_text = _("Delete"),
+        ok_callback = function()
+            require("koassistant_action_cache").clearAll(ctx.file)
+            BookPage._stale = true
+            UIManager:show(InfoMessage:new{ text = _("Artifacts deleted."), timeout = 2 })
+        end,
+    })
+end
+
+--- Title-bar hamburger (A4): book-level operations — the X-Ray browser's
+--- title_bar_left_icon idiom; the page was the only full-screen KOA surface
+--- without one
+local function showHamburger(ctx)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local InfoMessage = require("ui/widget/infomessage")
+    local dialog
+    dialog = ButtonDialog:new{
+        title = ctx.title,
+        buttons = {
+            {{
+                text = _("Refresh index"),
+                callback = function()
+                    UIManager:close(dialog)
+                    -- The heal-on-open trio (main.lua) — artifacts, notebook,
+                    -- pinned — then rebuild rows on the reveal repaint
+                    require("koassistant_action_cache").refreshIndex(ctx.file)
+                    require("koassistant_notebook").refreshIndexEntry(ctx.file)
+                    require("koassistant_pinned_manager").refreshIndex(ctx.file)
+                    BookPage._stale = true
+                    UIManager:show(InfoMessage:new{ text = _("Index refreshed."), timeout = 2 })
+                end,
+            }},
+            {{
+                text = _("Export all artifacts…"),
+                callback = function()
+                    UIManager:close(dialog)
+                    exportAllArtifacts(ctx)
+                end,
+            }},
+            {{
+                text = _("Browse all books…"),
+                callback = function()
+                    UIManager:close(dialog)
+                    -- Overlay, not replacement: closing the browser reveals
+                    -- the page again (stale rebuild keeps counts honest)
+                    BookPage._stale = true
+                    ctx.plugin:showArtifactBrowser()
+                end,
+            }},
+            {{
+                text = _("Delete all artifacts…"),
+                callback = function()
+                    UIManager:close(dialog)
+                    confirmDeleteAll(ctx)
+                end,
+            }},
+        },
+    }
+    UIManager:show(dialog)
+end
+
 --- Show the book page.
 --- @param opts table {
 ---   file = book path (required),
@@ -321,6 +431,10 @@ function BookPage.show(opts)
     BookPage._ctx = ctx
     BookPage._stale = nil
 
+    -- Popup-path parity (A4): every popup entry heals the artifact index on
+    -- open; artifacts discovered through this read-only view now do too
+    require("koassistant_action_cache").refreshIndex(file)
+
     BookPage._menu = Menu:new{
         title = title,
         subtitle = author and author ~= "" and author or nil,
@@ -332,6 +446,8 @@ function BookPage.show(opts)
         single_line = true,
         items_font_size = 18,
         items_mandatory_font_size = 14,
+        title_bar_left_icon = "appbar.menu",
+        onLeftButtonTap = function() showHamburger(ctx) end,
         -- NOTE: no close_callback — Menu fires it after EVERY item tap (same
         -- trap the X-Ray browser documents); cleanup via onCloseWidget below
         onMenuSelect = function(_menu, item)

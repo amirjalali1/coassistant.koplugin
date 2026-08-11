@@ -50,6 +50,18 @@ local SettingsSchema = {
             end,
         },
         {
+            -- A4: the open book's home page — peer destinations below all
+            -- have a main-menu row, this was the audit's discoverability find
+            id = "book_hub",
+            type = "action",
+            text = _("Book Hub"),
+            emoji = "📖",
+            callback = "onKOAssistantBookOverview",
+            visible_func = function(plugin)
+                return plugin.ui and plugin.ui.document ~= nil
+            end,
+        },
+        {
             id = "new_general_chat",
             type = "action",
             text = _("General Chat/Action"),

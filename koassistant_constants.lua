@@ -128,7 +128,7 @@ Constants.QUICK_ACTION_UTILITIES = {
     { id = "notebook",           callback = "onKOAssistantNotebook",            default = true },
     { id = "view_caches",        callback = "viewCache",                        default = true },  -- "View Artifacts": single button, opens cache picker
     { id = "book_group",         callback = "onKOAssistantBookGroup",           default = true },  -- "Group": only rendered when this book is IN a group (dynamic, like view_caches)
-    { id = "book_overview",      callback = "onKOAssistantBookOverview",        default = true },  -- the Book Overview page (before book_settings per maintainer; stored orders append it at tail — reorder via the manager)
+    { id = "book_overview",      callback = "onKOAssistantBookOverview",        default = true },  -- the Book Hub page (before book_settings per maintainer; stored orders append it at tail — reorder via the manager; id stays book_overview — settings keys never rename)
     { id = "book_settings",      callback = "onKOAssistantBookSettings",        default = true },  -- per-book settings (domain, research, AI title/author)
     { id = "ai_quick_settings",  callback = "onKOAssistantAISettings",          default = true },
 }
@@ -150,7 +150,7 @@ function Constants.getQuickActionUtilityText(id, _)
         book_group = _("Group"),
         -- Rename alongside BookPage.pageName()/entryLabel() (can't require
         -- book_page from here — cycle)
-        book_overview = _("Book Overview"),
+        book_overview = _("Book Hub"),
         ai_quick_settings = _("Quick Settings"),
         book_settings = _("Book Settings"),
     }
@@ -393,6 +393,25 @@ function Constants.formatRelativeTime(timestamp)
             end
         end
     end
+end
+
+--- Meta suffix shared by every artifact-row surface (Book Hub rows, the
+--- View-Artifacts popups, the artifact-browser selector): percent ALWAYS when
+--- tracked (2026-08-09 decision — position-irrelevant artifacts store 1.0 and
+--- honestly cover the whole book, 100% included) + compact age.
+--- @param data table|nil Cache entry data (progress_decimal, timestamp)
+--- @return string|nil e.g. "65%, today" — nil when there is nothing to show
+function Constants.formatArtifactMeta(data)
+    if type(data) ~= "table" then return nil end
+    local parts = {}
+    local p = tonumber(data.progress_decimal)
+    if p then
+        parts[#parts + 1] = math.floor(p * 100 + 0.5) .. "%"
+    end
+    local rel = Constants.formatRelativeTime(data.timestamp)
+    if rel ~= "" then parts[#parts + 1] = rel end
+    if #parts > 0 then return table.concat(parts, ", ") end
+    return nil
 end
 
 return Constants
