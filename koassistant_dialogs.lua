@@ -313,8 +313,10 @@ local function effectiveDispatchProvider(features, action, base_provider)
     features = features or {}
     -- The *_active consumables are set just-in-time at dispatch; before that point
     -- (freeform Send's scope-consent check) the same pending state lives in the
-    -- _session_* chip keys. Direct entries carry neither (handlePredefinedPrompt's
-    -- direct-entry guard nulls _session_* before extraction).
+    -- _session_* chip keys. Direct entries drop inherited chip state, then may
+    -- seed the quick consumable from the Quick Answer DEFAULT (accept-gated,
+    -- handlePredefinedPrompt's direct-entry guard) — covered here by the
+    -- _quick_answer_active read.
     local override = features._model_override_active or features._session_model
     if override and override.provider then return override.provider end
     local quick = features._quick_answer_active or features._session_quick_answer
@@ -3304,6 +3306,21 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             tf._session_quick_answer = nil
             tf._session_reasoning = nil
             tf._session_model = nil
+            -- Quick Answer DEFAULT reaches direct entries too (maintainer
+            -- 2026-08-11: "if quick mode global is on it should touch all
+            -- receptive requests regardless of entry point"). The dialog seeds
+            -- its ⚡ chip from this resolver at open; a direct launch has no
+            -- chip, so seed the request here — accept-gated, so only the
+            -- Explain-family opt-ins are receptive. Both keys go on the REQUEST
+            -- config: the consumable applies the preset at bake, the session
+            -- key greys the stream ⚡ (quick_already_active) and keeps replies
+            -- quick, exactly like a dialog-launched quick chat.
+            if prompt and prompt.accept_quick_answer == true
+                and require("koassistant_book_settings")
+                    .resolveQuickAnswerDefault(ui and ui.doc_settings, tf) then
+                tf._quick_answer_active = true
+                tf._session_quick_answer = true
+            end
         end
     end
     -- Minimal popup: consume its dispatch-scoped transients. The block further

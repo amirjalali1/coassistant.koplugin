@@ -320,13 +320,16 @@ function BookSettings.webEffortLabel(v)
 end
 
 -- Per-book ⚡ Quick Answer default (true | false | nil = follow global). Governs
--- only the chip's STARTING state on a fresh chat dialog (controls parity §8c.7 —
--- tools-posture-style default, decided 2026-07-20); the session chip wins once
--- touched, exactly like tools "auto".
+-- the chip's STARTING state on a fresh chat dialog (controls parity §8c.7 —
+-- tools-posture-style default, decided 2026-07-20; the session chip wins once
+-- touched, exactly like tools "auto") AND direct entries of accept_quick_answer
+-- actions (maintainer 2026-08-11: the default touches all receptive requests
+-- regardless of entry point — seeded in handlePredefinedPrompt's direct-entry
+-- guard).
 BookSettings.KEY_QUICK_ANSWER = "koassistant_book_quick_answer"
 
---- Resolve the ⚡ Quick Answer DEFAULT for a fresh chat dialog: per-book
--- override > global quick_answer_default (opt-in, schema default false).
+--- Resolve the ⚡ Quick Answer DEFAULT: per-book override > global
+-- quick_answer_default (opt-in, schema default false).
 -- @return boolean
 function BookSettings.resolveQuickAnswerDefault(doc_settings, features)
     local v = doc_settings and doc_settings:readSetting(BookSettings.KEY_QUICK_ANSWER)
