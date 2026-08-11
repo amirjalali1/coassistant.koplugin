@@ -17289,6 +17289,14 @@ function AskGPT:rerunSetupWizard()
   self:showSetupWizard()
 end
 
+-- Setup Wizard v2 dev entry (koassistant_setup_wizard.lua) — INERT for
+-- users until the release flip: the only route here is the debug-gated
+-- Settings > Advanced row. At release, checkSetupWizard/rerunSetupWizard
+-- switch to the new module and this row retires.
+function AskGPT:showSetupWizardDev()
+  require("koassistant_setup_wizard").showDevMenu(self)
+end
+
 -- Quick reset: Settings only
 function AskGPT:quickResetSettings()
   self:_resetFeatureSettingsInternal()

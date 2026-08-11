@@ -2742,6 +2742,16 @@ local SettingsSchema = {
                     text = _("Test Connection"),
                     callback = "testProviderConnection",
                 },
+                {
+                    -- Setup Wizard v2 (2026-08-11): INERT until the release
+                    -- flip — this debug-gated row is its ONLY entry; the old
+                    -- wizard still serves first-run and Re-run.
+                    id = "setup_wizard_dev",
+                    type = "action",
+                    text = _("Setup Wizard v2 (dev)"),
+                    callback = "showSetupWizardDev",
+                    depends_on = { id = "debug", value = true },
+                },
             },
         },
 

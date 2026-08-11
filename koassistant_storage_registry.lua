@@ -118,6 +118,14 @@ Registry.SETTINGS_SUBKEYS = {
         "_quiz_chapter_level_reset", "_language_prompt_shown",
         "_qs_layout_v2",
         "setup_wizard_completed",                            -- top-level (see TOPLEVEL_SUBKEYS)
+        -- Setup Wizard v2 (koassistant_setup_wizard.lua, 2026-08-11; inert
+        -- until the release flip). The two _wizard_*_install/_writes records
+        -- track what the wizard wrote into KOREADER-OWNED state (font file +
+        -- font_ui_fallbacks entry, gesture assignments) so uninstall/full
+        -- reset can undo precisely — the "full reset actually resets" audit
+        -- reads these; do not clear them while the installed state remains.
+        "_wizard_pretend_unconfigured", "_wizard_font_pending_confirm",
+        "_wizard_font_install", "_wizard_gesture_writes",
     },
 }
 
