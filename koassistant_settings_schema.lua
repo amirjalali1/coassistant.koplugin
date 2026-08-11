@@ -1988,6 +1988,17 @@ local SettingsSchema = {
                     end,
                 },
                 {
+                    -- A4 follow-up (2026-08-11): the Book Hub utility button gets
+                    -- the Notebook button's visibility-toggle shape; defaults for
+                    -- this section get a joint look later
+                    id = "show_book_hub_in_file_browser",
+                    type = "toggle",
+                    text = _("Show Book Hub button"),
+                    path = "features.show_book_hub_in_file_browser",
+                    default = true,
+                    help_text = _("Show 'Book Hub' button when long-pressing books in the file browser."),
+                },
+                {
                     id = "show_notebook_in_file_browser",
                     type = "toggle",
                     text = _("Show Notebook button"),

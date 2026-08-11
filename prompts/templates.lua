@@ -174,6 +174,8 @@ Templates.book = {
 
 Avoid spoilers: do not reveal plot twists, endings, character deaths, or major surprises. Describe the premise and central tensions without spoiling their resolution.
 
+{spoiler_free_nudge}
+
 Adapt depth and focus to the type of work — a literary novel deserves attention to craft, a popular science book to clarity of explanation, a classic to historical context.
 
 Be substantive but not exhaustive. {hallucination_nudge}]],

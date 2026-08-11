@@ -1,10 +1,13 @@
 --[[--
 Book page ("Book Hub" — renamed from "Book Overview" with A4's shape work
 2026-08-11; internal ids/settings keys keep book_overview): one full-screen
-view of everything the plugin holds for ONE book — the artifact rows the View
-Artifacts popup shows (same destinations), plus chats, notebook, group
-membership and book settings. Strictly a VIEW over existing stores: nothing is
-generated here, nothing is stored here, and the popups stay the fast path.
+view of everything the plugin holds for ONE book — the TOP-LEVEL artifact rows
+the View Artifacts popup shows (same destinations; the versions group and
+section-scoped groups are filtered off the page — they stay reachable from the
+X-Ray browser, the action popups and the View-Artifacts popups), plus chats,
+notebook, group membership and book settings. Strictly a VIEW over existing
+stores: nothing is generated here, nothing is stored here, and the popups stay
+the fast path.
 Book-level operations (refresh index / export all / delete all / browse all
 books) live behind the title-bar hamburger, the X-Ray browser's idiom.
 
@@ -53,28 +56,13 @@ function BookPage.close()
     end
 end
 
--- Row emoji for artifact rows (2026-08-09 maintainer: specific where an
--- artifact has an obvious icon, the 📦 artifact box as the fallback).
--- Keys: doc-cache keys + per-action ids from getAvailableArtifactsWithPinned.
-local ARTIFACT_EMOJI = {
-    ["_xray_cache"] = "🩻",
-    ["_analyze_cache"] = "🔬",
-    ["_summary_cache"] = "📄",
-    xray = "🩻",
-    xray_simple = "🩻",
-    recap = "⏪",
-    book_info = "ℹ️",
-    analyze_highlights = "📝",
-    quiz = "❓",
-}
-
+-- Row emoji for artifact rows (2026-08-11 maintainer: the 📦 artifact box for
+-- ALL artifacts for now — the per-type map is parked until icons are
+-- reconsidered; pinned and images keep their system-wide identities).
 local function artifactEmoji(cache)
     if cache.is_pinned_group then return "📌" end
     if cache.is_image_group then return "🖼️" end
-    if cache.is_xray_versions_group then return "🕘" end
-    if cache.is_wiki_group then return "📖" end
-    if cache.is_section_xray_group then return "🩻" end
-    return ARTIFACT_EMOJI[cache.key] or "📦"
+    return "📦"
 end
 
 --- True when this row opens the full-screen X-Ray browser (showCacheViewer's
@@ -91,6 +79,9 @@ end
 --- One artifact row's destination — the same surface the View Artifacts popup
 --- opens for that row (main.lua viewCache and dialogs' openArtifact carry this
 --- same chain; the group-flag contract lives on getAvailableArtifactsWithPinned).
+--- The versions/section branches are currently unreachable (buildItems filters
+--- those groups off the page) but stay: the planned row-visibility settings
+--- re-open them, and the dispatch must keep covering the full contract.
 local function openArtifactRow(cache, ctx)
     local plugin, file = ctx.plugin, ctx.file
     local noop = function() end
@@ -140,35 +131,43 @@ local function buildItems(ctx)
     local caches = ActionCache.getAvailableArtifactsWithPinned(
         file, nil, ctx.is_open_book and ui.document or nil)
     for _idx, cache in ipairs(caches) do
-        -- File-browser convention: closed-book viewers need identity stamped
-        -- on the row (showCacheViewer prefers explicit over doc_props)
-        if not ctx.is_open_book and not cache.is_pinned_group then
-            cache.book_title = cache.book_title or ctx.title
-            cache.book_author = cache.book_author or ctx.author
-            cache.file = cache.file or file
+        -- Maintainer 2026-08-11: the page lists TOP-LEVEL artifacts only.
+        -- The X-Ray versions group lives in the X-Ray browser, section-scoped
+        -- groups (section X-Rays, section quizzes/summaries/analyses) in their
+        -- action popups and the artifact browser — the View-Artifacts popups
+        -- still list all of them, so nothing orphans. The planned hamburger
+        -- row-visibility settings are where this pruning gets revisited.
+        if not (cache.is_xray_versions_group or cache.is_section_xray_group
+                or cache.is_section_group) then
+            -- File-browser convention: closed-book viewers need identity stamped
+            -- on the row (showCacheViewer prefers explicit over doc_props)
+            if not ctx.is_open_book and not cache.is_pinned_group then
+                cache.book_title = cache.book_title or ctx.title
+                cache.book_author = cache.book_author or ctx.author
+                cache.file = cache.file or file
+            end
+            local mandatory
+            if not cache.is_pinned_group and not cache.is_wiki_group then
+                -- ONE formatter with the View-Artifacts popups and the artifact
+                -- browser (A4 parity): percent always when tracked + compact age
+                mandatory = Constants.formatArtifactMeta(cache.data)
+            end
+            -- Quiz opens its ACTION popup when the book is open (View/Update/New
+            -- Quiz — the quiz viewer has no redo controls, unlike the artifact
+            -- viewers); a closed book can't quiz, so it falls through to viewing.
+            -- The action id AND cache key are "quiz" (prompts/actions.lua:1637)
+            local row_callback
+            if cache.key == "quiz" and ctx.is_open_book then
+                row_callback = function() plugin:executeBookLevelAction("quiz") end
+            else
+                row_callback = function() openArtifactRow(cache, ctx) end
+            end
+            items[#items + 1] = {
+                text = Constants.getEmojiText(artifactEmoji(cache), cache.name, ctx.enable_emoji),
+                mandatory = mandatory,
+                callback = row_callback,
+            }
         end
-        local mandatory
-        if not cache.is_pinned_group and not cache.is_section_group
-            and not cache.is_wiki_group then
-            -- ONE formatter with the View-Artifacts popups and the artifact
-            -- browser (A4 parity): percent always when tracked + compact age
-            mandatory = Constants.formatArtifactMeta(cache.data)
-        end
-        -- Quiz opens its ACTION popup when the book is open (View/Update/New
-        -- Quiz — the quiz viewer has no redo controls, unlike the artifact
-        -- viewers); a closed book can't quiz, so it falls through to viewing.
-        -- The action id AND cache key are "quiz" (prompts/actions.lua:1637)
-        local row_callback
-        if cache.key == "quiz" and ctx.is_open_book then
-            row_callback = function() plugin:executeBookLevelAction("quiz") end
-        else
-            row_callback = function() openArtifactRow(cache, ctx) end
-        end
-        items[#items + 1] = {
-            text = Constants.getEmojiText(artifactEmoji(cache), cache.name, ctx.enable_emoji),
-            mandatory = mandatory,
-            callback = row_callback,
-        }
     end
 
     -- Book Chat/Action (established terminology + 💬, the QA panel's pair) —

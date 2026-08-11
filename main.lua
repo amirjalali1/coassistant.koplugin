@@ -784,26 +784,29 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
   end
 
   -- Book Hub (KOA) button — the book's home page (before Book Settings,
-  -- maintainer 2026-08-09)
-  table.insert(buttons, {
-    text = require("koassistant_book_page").pageName() .. " (KOA)",
-    callback = function()
-      local UIManager = require("ui/uimanager")
-      local current_dialog = UIManager:getTopmostVisibleWidget()
-      if current_dialog and current_dialog.close then
-        UIManager:close(current_dialog)
-      end
-      require("koassistant_book_page").show({
-        file = file,
-        plugin = self,
-        ui = self.ui,
-        title = title,
-        author = authors,
-        enable_emoji = configuration and configuration.features
-            and configuration.features.enable_emoji_icons == true,
-      })
-    end,
-  })
+  -- maintainer 2026-08-09); toggleable like the Notebook button since the A4
+  -- follow-up (Menus & Buttons ▸ File browser, default true)
+  if features.show_book_hub_in_file_browser ~= false then
+    table.insert(buttons, {
+      text = require("koassistant_book_page").pageName() .. " (KOA)",
+      callback = function()
+        local UIManager = require("ui/uimanager")
+        local current_dialog = UIManager:getTopmostVisibleWidget()
+        if current_dialog and current_dialog.close then
+          UIManager:close(current_dialog)
+        end
+        require("koassistant_book_page").show({
+          file = file,
+          plugin = self,
+          ui = self.ui,
+          title = title,
+          author = authors,
+          enable_emoji = configuration and configuration.features
+              and configuration.features.enable_emoji_icons == true,
+        })
+      end,
+    })
+  end
 
   -- Book Settings (KOA) button — per-book domain, research, AI title/author overrides
   table.insert(buttons, {
@@ -10673,6 +10676,8 @@ function AskGPT:_showXrayCheckpointList(opts)
       else
         title = title .. "\n" .. (p_reason == "research"
           and _("Research mode: the newest checkpoint installs as soon as it is built.")
+          or p_reason == "finished"
+          and _("Book finished: the newest checkpoint installs as soon as it is built.")
           or _("Spoiler protection is off: the newest checkpoint installs as soon as it is built."))
       end
     end

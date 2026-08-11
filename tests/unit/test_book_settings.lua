@@ -1167,6 +1167,37 @@ TestRunner:test("research > book > global; book research OFF is the escape hatch
     TestRunner:assertEqual(p.reason, "global")
 end)
 
+TestRunner:test("finished book stands protection down (2026-08-11)", function()
+    local p = BookSettings.resolveSpoilerPosture(fakeDocSettings({
+        summary = { status = "complete" },
+        koassistant_book_spoiler_free = true,
+    }), { spoiler_free_chat = true })
+    TestRunner:assertEqual(p.protected, false,
+        "finished disables outright, even over book+global spoiler on")
+    TestRunner:assertEqual(p.reason, "finished")
+    -- The session chip is an explicit per-chat ask — honored even when finished
+    p = BookSettings.resolveSpoilerPosture(
+        fakeDocSettings({ summary = { status = "complete" } }), {}, { session = true })
+    TestRunner:assertEqual(p.protected, true, "chip on protects over finished")
+    TestRunner:assertEqual(p.reason, "session")
+    -- Research sits above finished in the chain (both stand down; label order)
+    p = BookSettings.resolveSpoilerPosture(fakeDocSettings({
+        summary = { status = "complete" },
+        koassistant_book_research_mode = true,
+    }), {})
+    TestRunner:assertEqual(p.reason, "research")
+    -- Un-finishing restores whatever was stored
+    p = BookSettings.resolveSpoilerPosture(
+        fakeDocSettings({ summary = { status = "reading" } }), {})
+    TestRunner:assertEqual(p.protected, true, "a reading status changes nothing")
+    TestRunner:assertEqual(p.reason, "default")
+    -- Mechanical layer: finished flips the X-Ray posture to full
+    local posture, reason = BookSettings.resolveXrayPosture(
+        fakeDocSettings({ summary = { status = "complete" } }), {})
+    TestRunner:assertEqual(posture, "full")
+    TestRunner:assertEqual(reason, "finished")
+end)
+
 TestRunner:test("explicit global vs nothing-set stay distinct (the §4.3 flip seam)", function()
     local p = BookSettings.resolveSpoilerPosture(fakeDocSettings({}), { spoiler_free_chat = false })
     TestRunner:assertEqual(p.protected, false)

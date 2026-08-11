@@ -1024,8 +1024,9 @@ end
 Actions.book = {
     book_info = {
         id = "book_info",
-        -- Artifact family: the scope pick / prompt owns spoiler discipline (§3)
-        skip_spoiler = true,
+        -- skip_spoiler nil (2026-08-11, was true): the wiki pattern — the template
+        -- carries {spoiler_free_nudge}, so a protected book gets the position-bounded
+        -- rule while the template's own no-twists baseline covers everyone else
         reasoning_config = "off",  -- Straightforward recall doesn't benefit from reasoning
         doi_web_override = true,
         text = _("About"),
@@ -1876,6 +1877,8 @@ Search for critical and reader responses, then summarize:
 **Controversy:** Any notable debates or divisive reactions (if applicable).
 
 Attribute opinions to their sources where possible. Distinguish between critical consensus and minority views.
+
+{spoiler_free_nudge}
 
 {conciseness_nudge} {hallucination_nudge}]],
         api_params = {

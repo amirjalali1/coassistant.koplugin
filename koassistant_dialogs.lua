@@ -629,8 +629,14 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
             if features._spoiler_live then
                 features._spoiler_free_active = BookSettings.resolveSpoilerPosture(
                     eff_ds, features, { session = features._spoiler_free_active }).protected
+                -- Template-based actions (book_info) carry the placeholder in
+                -- the resolved template, not action.prompt — consult it too
+                local tpl = type(action.template) == "string"
+                    and require("prompts.templates").get(action.template)
                 if (type(action.prompt) == "string"
                         and action.prompt:find("{spoiler_free_nudge}", 1, true))
+                    or (type(tpl) == "string"
+                        and tpl:find("{spoiler_free_nudge}", 1, true))
                     or (type(action.update_prompt) == "string"
                         and action.update_prompt:find("{spoiler_free_nudge}", 1, true)) then
                     features._spoiler_in_prompt = true

@@ -47,9 +47,9 @@ end
 
 --- THE spoiler-posture resolver (Track 36 / spoiler_posture_plan.md §2): one
 -- rule, two layers. Request layer (prompts, tool reading clamps, scope
--- checks): session chip > research mode > per-book override > global.
--- Mechanical layer (X-Ray installs/promotion): the same MINUS the session
--- chip — by design a per-chat toggle must never silently reinstall a
+-- checks): session chip > research mode > finished book > per-book override
+-- > global. Mechanical layer (X-Ray installs/promotion): the same MINUS the
+-- session chip — by design a per-chat toggle must never silently reinstall a
 -- different X-Ray version for the book, so opts.session is ignored there.
 -- Research mode (book override > global; the 50(g) rule, device-confirmed
 -- 2026-08-05) disables spoiler protection OUTRIGHT for the whole book — even
@@ -57,16 +57,24 @@ end
 -- research OFF, which re-enables the spoiler layers. DOI auto-detected
 -- research is deliberately NOT consulted (a request-time signal, not a
 -- standing setting).
+-- A book marked Finished (KOReader's summary.status == "complete") stands
+-- protection down the same way (maintainer 2026-08-11): there is nothing
+-- left to protect, so a re-reader can flip around without touching their
+-- spoiler settings. The stored settings stay untouched — un-finishing the
+-- book restores whatever was set. Like research this beats the per-book
+-- override (it is a factual signal, not a preference); the session chip
+-- still wins in the request layer (an explicit "No spoilers" tap is
+-- honored even on a finished book).
 -- @param doc_settings table|nil The book's DocSettings (live instance for open books)
 -- @param features table|nil
 -- @param opts table|nil { layer = "request" (default) | "mechanical",
 --   session = true|false|nil — the Spoiler chip's per-chat value, if the
 --   call site has one }
--- @return table { protected = boolean, reason = "session"|"research"|"book"|
---   "global"|"default", layer = the resolved layer }. "default" = nothing set
---   anywhere (the schema default: protection ON since the §4.3 flip) — kept
---   distinct from an explicit global value so the flip lives in exactly one
---   branch.
+-- @return table { protected = boolean, reason = "session"|"research"|
+--   "finished"|"book"|"global"|"default", layer = the resolved layer }.
+--   "default" = nothing set anywhere (the schema default: protection ON
+--   since the §4.3 flip) — kept distinct from an explicit global value so
+--   the flip lives in exactly one branch.
 function BookSettings.resolveSpoilerPosture(doc_settings, features, opts)
     opts = opts or {}
     local layer = opts.layer == "mechanical" and "mechanical" or "request"
@@ -77,6 +85,10 @@ function BookSettings.resolveSpoilerPosture(doc_settings, features, opts)
     if research == nil then research = (features and features.research_mode) == true end
     if research == true then
         return { protected = false, reason = "research", layer = layer }
+    end
+    local summary = doc_settings and doc_settings:readSetting("summary")
+    if summary and summary.status == "complete" then
+        return { protected = false, reason = "finished", layer = layer }
     end
     local book = doc_settings and doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE)
     if book ~= nil then
@@ -107,9 +119,9 @@ end
 -- @param features table|nil
 -- @return string posture "track" (promotion follows the reading position) |
 --   "full" (the newest built version installs as soon as it is ready)
--- @return string reason "research" | "book" | "global" (the resolver's
---   "default" collapses into "global" — callers only label layers, and
---   nothing-set IS the global state)
+-- @return string reason "research" | "finished" | "book" | "global" (the
+--   resolver's "default" collapses into "global" — callers only label
+--   layers, and nothing-set IS the global state)
 function BookSettings.resolveXrayPosture(doc_settings, features)
     local p = BookSettings.resolveSpoilerPosture(doc_settings, features, { layer = "mechanical" })
     local reason = p.reason == "default" and "global" or p.reason
@@ -1568,14 +1580,17 @@ function BookSettings.showSpoilerFree(opts)
         end,
     }})
 
-    -- §5 research labelling, never graying: research mode disables protection
-    -- outright (the resolver's top persisted layer) — say so while still
-    -- showing the stored state the rows edit.
+    -- §5 research labelling, never graying: research mode (and, since
+    -- 2026-08-11, the Finished status) disables protection outright — say so
+    -- while still showing the stored state the rows edit.
     local title = _("Spoiler Protection")
     local research = doc_settings and doc_settings:readSetting(BookSettings.KEY_RESEARCH)
     if research == nil then research = features.research_mode == true end
+    local summary = doc_settings and doc_settings:readSetting("summary")
     if research == true then
         title = title .. "\n" .. _("Research mode is on: protection is disabled while it stays on.")
+    elseif summary and summary.status == "complete" then
+        title = title .. "\n" .. _("This book is marked finished: protection is off while it stays finished.")
     end
     dialog = ButtonDialog:new{ title = title, buttons = buttons }
     UIManager:show(dialog)
@@ -1991,20 +2006,31 @@ function BookSettings.show(opts)
             showBoolSubPicker(BookSettings.KEY_RESEARCH,
                 _("Research mode (this book)"), features.research_mode == true)
         end })
-    -- §5 research labelling, never graying: when research mode disables
-    -- protection the row says so but keeps showing (and editing) the stored
-    -- state — graying would hide a value the user set.
+    -- §5 research labelling, never graying: when research mode or the
+    -- Finished status disables protection the row says so but keeps showing
+    -- (and editing) the stored state — graying would hide a value the user set.
     local research_active = doc_settings:readSetting(BookSettings.KEY_RESEARCH)
     if research_active == nil then research_active = features.research_mode == true end
-    local spoiler_row = research_active == true
-        and T(_("Spoiler protection: %1 (off: research mode)"), spoiler_label)
-        or T(_("Spoiler protection: %1"), spoiler_label)
+    local book_summary = doc_settings:readSetting("summary")
+    local finished_active = research_active ~= true
+        and book_summary and book_summary.status == "complete" or false
+    local spoiler_row
+    if research_active == true then
+        spoiler_row = T(_("Spoiler protection: %1 (off: research mode)"), spoiler_label)
+    elseif finished_active then
+        spoiler_row = T(_("Spoiler protection: %1 (off: book finished)"), spoiler_label)
+    else
+        spoiler_row = T(_("Spoiler protection: %1"), spoiler_label)
+    end
     addButton({ text = spoiler_row,
         callback = function()
             local sp_title = _("Spoiler protection (this book)")
             if research_active == true then
                 sp_title = sp_title .. "\n"
                     .. _("Research mode is on: protection is disabled while it stays on.")
+            elseif finished_active then
+                sp_title = sp_title .. "\n"
+                    .. _("This book is marked finished: protection is off while it stays finished.")
             end
             showBoolSubPicker(BookSettings.KEY_SPOILER_FREE,
                 sp_title, features.spoiler_free_chat ~= false)
