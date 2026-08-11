@@ -1419,11 +1419,23 @@ function BookSettings.showQuickAnswerDefault(opts)
         BookSettings.showQuickAnswerDefault({
             plugin = plugin, ui = ui, document_path = document_path,
             on_close = on_close, target_override = new_target,
+            preset_settings = opts.preset_settings,
         })
     end
     local function dot(active) return active and "● " or "○ " end
 
     local buttons = {}
+    -- ⚡ chip / reply-window hold (2026-08-11): the preset editor rides on top of
+    -- the default picker — one popup, Web/Tools-chip shape.
+    if opts.preset_settings then
+        table.insert(buttons, {{
+            text = _("Preset settings…"),
+            callback = function()
+                closeDialog()
+                opts.preset_settings()
+            end,
+        }})
+    end
     if doc_settings then
         table.insert(buttons, {
             {

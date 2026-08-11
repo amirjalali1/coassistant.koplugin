@@ -506,20 +506,21 @@ local SettingsSchema = {
                             help_text = _("Start new chats with the Quick Answer (⚡) button already on. You can still turn it off per chat: and override the default per book from Book Settings or the ⚡ button's menu."),
                         },
                         {
-                            id = "quick_preset_nudge",
-                            type = "toggle",
-                            text = _("Concise Answer Nudge"),
-                            path = "features.quick_preset_nudge",
-                            default = true,
-                            help_text = _("Ask for a short, direct reply (a few sentences, no preamble) while Quick Answer is on."),
-                        },
-                        {
-                            id = "quick_preset_nudge_strict",
-                            type = "toggle",
-                            text = _("Ultra-Brief Nudge"),
-                            path = "features.quick_preset_nudge_strict",
-                            default = false,
-                            help_text = _("Replace the standard nudge with a hard ceiling: at most 3 short sentences, one plain paragraph, never restate the question. Off by default; needs the Concise Answer Nudge to be on."),
+                            -- One 3-way control over the two stored keys
+                            -- (quick_preset_nudge default true, _strict default
+                            -- false — read patterns unchanged): the two nudge
+                            -- texts are mutually exclusive, so two toggles were
+                            -- misleading (maintainer 2026-08-11).
+                            id = "quick_preset_nudge_mode",
+                            type = "action",
+                            text_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                return T(_("Brevity nudge: %1"),
+                                    require("koassistant_dialogs").quickPresetNudgeLabel(f))
+                            end,
+                            help_text = _("How strongly Quick Answer asks for brevity: Standard requests a short, direct reply (a few sentences, no preamble); Ultra-brief enforces a hard ceiling (at most 3 short sentences, one plain paragraph, never restate the question); Off sends no brevity instruction."),
+                            callback = "showQuickPresetNudge",
+                            keep_menu_open = true,
                         },
                         {
                             id = "quick_preset_reasoning_off",

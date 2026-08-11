@@ -1089,13 +1089,61 @@ showQuickPresetModelMode = function(opts)
     UIManager:show(dialog)
 end
 
+-- Label for the two-key brevity-nudge state (quick_preset_nudge on/off +
+-- quick_preset_nudge_strict): ONE user-facing 3-way control, because the two
+-- texts are mutually exclusive (maintainer 2026-08-11). Storage stays the two
+-- keys — reads elsewhere are unchanged.
+local function quickPresetNudgeLabel(features)
+    local f = features or {}
+    if f.quick_preset_nudge == false then return _("Off") end
+    if f.quick_preset_nudge_strict == true then return _("Ultra-brief") end
+    return _("Standard")
+end
+
+-- Quick Answer preset: brevity-nudge picker — Standard (soft wording, default)
+-- / Ultra-brief (hard ceiling) / Off. Reachable from the preset editor AND
+-- main settings (schema action row → AskGPT:showQuickPresetNudge).
+-- opts = { plugin, on_close }
+local showQuickPresetNudge
+showQuickPresetNudge = function(opts)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local plugin = opts.plugin
+    local dialog
+    local function set(nudge, strict)
+        local f = plugin.settings:readSetting("features") or {}
+        f.quick_preset_nudge = nudge
+        f.quick_preset_nudge_strict = strict
+        plugin.settings:saveSetting("features", f)
+        plugin.settings:flush()
+        if plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
+        UIManager:close(dialog)
+        if opts.on_close then opts.on_close() end
+    end
+    local f = plugin.settings:readSetting("features") or {}
+    local cur = (f.quick_preset_nudge == false and "off")
+        or (f.quick_preset_nudge_strict == true and "strict") or "standard"
+    local function row(label, id, cb)
+        return {{ text = (cur == id and "● " or "○ ") .. label, callback = cb }}
+    end
+    dialog = ButtonDialog:new{
+        title = _("Quick Answer preset · brevity nudge"),
+        buttons = {
+            row(_("Standard (a few short sentences)"), "standard", function() set(true, nil) end),
+            row(_("Ultra-brief (3 sentences max)"), "strict", function() set(true, true) end),
+            row(_("Off"), "off", function() set(false, nil) end),
+            {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }},
+        },
+    }
+    UIManager:show(dialog)
+end
+
 -- Label for the quick_preset_behavior value (shared: preset editor row + the
 -- schema action row's text_func via Dialogs export).
 local function quickPresetBehaviorLabel(features)
     local qb = (features or {}).quick_preset_behavior
     if not qb or qb == "keep" then return _("Keep current") end
     if qb == "none" then return _("None") end
-    if qb == "mini_of_current" then return _("Mini of current") end
+    if qb == "mini_of_current" then return _("Mini of current style") end
     local SystemPrompts = require("prompts.system_prompts")
     local b = SystemPrompts.getBehaviorById(qb, (features or {}).custom_behaviors)
     return b and (b.display_name or b.name or qb) or T(_("%1 (missing)"), qb)
@@ -1167,7 +1215,7 @@ showQuickPresetBehavior = function(opts)
         title = _("Quick Answer preset · behavior"),
         buttons = {
             row(_("Keep current behavior"), qb == "keep", function() setMode(nil) end),
-            row(_("Mini version of current"), qb == "mini_of_current", function()
+            row(_("Mini version of current style"), qb == "mini_of_current", function()
                 setMode("mini_of_current")
             end),
             row(pinned
@@ -1187,7 +1235,8 @@ end
 -- Quick Answer preset editor — persistent GLOBAL settings for what the ⚡ tap
 -- applies (controls_parity_plan.md §2, maintainer 2026-07-19). Reachable from
 -- main settings (Chat & Export → Quick Answer Preset — schema is the source of
--- the defaults) and from the quick controls menu ("Preset settings…"). Rebuilds
+-- the defaults) and from the ⚡ chip / reply-window hold picker ("Preset
+-- settings…" row on the book/global default popup). Rebuilds
 -- itself per toggle so the marks stay fresh.
 -- opts = { plugin, on_close }
 local showQuickPresetEditor
@@ -1237,8 +1286,16 @@ showQuickPresetEditor = function(opts)
             if opts.on_close then opts.on_close() end
         end,
         buttons = {
-            toggleRow(_("Concise answer nudge"), "quick_preset_nudge"),
-            toggleRow(_("Ultra-brief nudge"), "quick_preset_nudge_strict", true),
+            {{
+                text = T(_("Brevity nudge: %1"), quickPresetNudgeLabel(f)),
+                callback = function()
+                    UIManager:close(dialog)
+                    showQuickPresetNudge({
+                        plugin = plugin,
+                        on_close = function() showQuickPresetEditor(opts) end,
+                    })
+                end,
+            }},
             toggleRow(_("Reasoning off"), "quick_preset_reasoning_off"),
             toggleRow(_("Web search off"), "quick_preset_web_off"),
             toggleRow(_("Book tools off"), "quick_preset_tools_off"),
@@ -1273,197 +1330,6 @@ showQuickPresetEditor = function(opts)
         },
     }
     UIManager:show(dialog)
-end
-
--- Quick controls menu (controls_parity_plan.md §2/§9 — #86): one-shot session
--- overrides for THIS chat only — the Quick Answer posture, a reasoning override,
--- and a provider/model override. State lives on opts.configuration.features
--- (_session_quick_answer / _session_reasoning / _session_model) — config-resident
--- like the Scope chip (60-upvalue cap), consumed at dispatch via the *_active
--- transients (see buildUnifiedRequestConfig). Module-level so the reply dialog
--- (parity slice (b)) can reuse it with its own opts — reply callers pass
--- chat_provider/chat_model so the provenance labels name the CHAT's baseline
--- instead of the global selection (the two can differ on a rebased chat), and
--- reply_mode = true, which makes the "off"/"follow"/"global" rows write
--- EXPLICIT counteract values ({follow=true} sentinels, explicit false) instead
--- of nil — a chat whose config was CREATED with these overrides baked in has
--- no nil-state to fall back to; clearing must actively re-resolve
--- (applyQuickReplyOverrides handles the sentinels).
--- opts = { configuration, plugin, ui, document_path, on_change, chat_provider,
---          chat_model, reply_mode } — ui/document_path feed the persistent
--- "Quick answer default…" picker (per-book target).
-local function showQuickControlsMenu(opts)
-    local ButtonDialog = require("ui/widget/buttondialog")
-    local configuration = opts.configuration
-    local plugin = opts.plugin
-    local on_change = opts.on_change or function() end
-    configuration.features = configuration.features or {}
-    local f = configuration.features
-
-    local menu
-
-    local function pickReasoning()
-        local sub
-        local so = f._session_reasoning
-        local function row(label, value, is_current)
-            return {{
-                text = (is_current and "● " or "○ ") .. label,
-                callback = function()
-                    f._session_reasoning = value
-                    UIManager:close(sub)
-                    on_change()
-                end,
-            }}
-        end
-        sub = ButtonDialog:new{
-            title = _("Reasoning · this chat only"),
-            buttons = {
-                row(_("Follow settings"), opts.reply_mode and { follow = true } or nil,
-                    so == nil or so.follow == true),
-                row(_("Off for this chat"), { force = "off" }, (so and so.force == "off") or false),
-                row(_("On for this chat"), { force = "on" }, (so and so.force == "on") or false),
-                {{ text = _("Cancel"), callback = function() UIManager:close(sub) end }},
-            },
-        }
-        UIManager:show(sub)
-    end
-
-    local qa_on = f._session_quick_answer == true
-    local so = f._session_reasoning
-    if so and so.follow then so = nil end  -- sentinel displays as "Follow settings"
-    local reasoning_label
-    if so == nil then
-        -- Reflect the preset's implied state so the menu doesn't claim "Follow
-        -- settings" while Quick Answer is forcing reasoning off.
-        if qa_on and f.quick_preset_reasoning_off ~= false then
-            reasoning_label = _("Off (Quick answer)")
-        else
-            reasoning_label = _("Follow settings")
-        end
-    elseif so.force == "off" then
-        reasoning_label = _("Off for this chat")
-    else
-        reasoning_label = _("On for this chat")
-    end
-    -- Model label carries PROVENANCE (maintainer 2026-07-19: "Default" was
-    -- confusing) — always show the model that would actually be used and why:
-    -- (this chat) session pick > (Quick preset) while ⚡ on > (global).
-    local active_provider = opts.chat_provider
-        or (plugin and plugin.getCurrentProvider and plugin:getCurrentProvider())
-        or configuration.provider or "anthropic"
-    -- Two distinct models in reply_mode (round-2 gate CONFIRMED-3): the CHAT's
-    -- baseline (what runs when nothing is picked) vs the CURRENT GLOBAL (what
-    -- the {follow=true} row actually pins). Conflating them mislabeled the
-    -- follow row on every rebased chat.
-    local current_global_model = (plugin and plugin.getCurrentModel and plugin:getCurrentModel())
-        or configuration.model or _("provider default")
-    local global_model = opts.chat_model or current_global_model
-    local model_label
-    local sm = f._session_model
-    local sm_follow = sm and sm.follow == true
-    if sm_follow then sm = nil end  -- sentinel displays as the global row
-    -- MUST mirror applyQuickReplyOverrides' model resolution: follow-sentinel
-    -- and ⚡-off both re-pin the CURRENT GLOBAL — label what will actually run.
-    local qa_off = f._session_quick_answer == false
-    if sm then
-        model_label = T(_("%1 (this chat)"), sm.model or sm.provider)
-    elseif opts.reply_mode and (sm_follow or qa_off) then
-        model_label = T(_("%1 (global)"), current_global_model)
-    else
-        local preset_pick = qa_on and resolveQuickPresetModel(f, active_provider) or nil
-        if preset_pick then
-            model_label = T(_("%1 (Quick preset)"), preset_pick.model)
-        elseif opts.reply_mode then
-            -- The chat's baked baseline — "(global)" would be wrong on a
-            -- rebased chat, and the reply menu only exists on live chats.
-            model_label = T(_("%1 (this chat)"), global_model)
-        else
-            model_label = T(_("%1 (global)"), global_model)
-        end
-    end
-    local buttons = {
-        {{
-            text = (qa_on and "✓ " or "") .. _("Quick answer (apply preset)"),
-            callback = function()
-                if opts.reply_mode then
-                    -- Explicit false: a chat CREATED under ⚡ has the quick
-                    -- posture baked — off must counteract, not just clear.
-                    f._session_quick_answer = not qa_on
-                else
-                    f._session_quick_answer = (not qa_on) or nil
-                end
-                UIManager:close(menu)
-                on_change()
-            end,
-        }},
-        {{
-            text = T(_("Reasoning: %1"), reasoning_label),
-            callback = function()
-                UIManager:close(menu)
-                pickReasoning()
-            end,
-        }},
-        {{
-            text = T(_("Model: %1"), model_label),
-            callback = function()
-                UIManager:close(menu)
-                pickProviderModel({
-                    plugin = plugin,
-                    current = sm,
-                    top_row = {
-                        -- reply_mode: an ACTION row naming its real pin target
-                        -- (the current global) — no radio marker, since the
-                        -- chat's baseline may differ from the global and the
-                        -- row CHANGES the chat rather than describing it.
-                        text = opts.reply_mode
-                            and T(_("Use global setting (%1)"), current_global_model)
-                            or ((sm == nil and "● " or "○ ")
-                                .. T(_("Global setting (%1)"), global_model)),
-                        callback = function()
-                            -- reply_mode: {follow=true} sentinel — an explicit
-                            -- "re-pin to the current global selection" (the
-                            -- chat's baked model has no nil-state to revert to)
-                            f._session_model = opts.reply_mode and { follow = true } or nil
-                            on_change()
-                        end,
-                    },
-                    on_pick = function(provider_id, model_name)
-                        f._session_model = { provider = provider_id, model = model_name }
-                        on_change()
-                    end,
-                })
-            end,
-        }},
-    }
-    if plugin and plugin.settings then
-        table.insert(buttons, {{
-            text = _("Quick answer default…"),
-            callback = function()
-                -- Persistent default (global / per-book): governs the ⚡ chip's
-                -- starting state on FRESH chat dialogs only — this chat's
-                -- session state is untouched (tools-posture parity, §8c.7).
-                UIManager:close(menu)
-                BookSettings.showQuickAnswerDefault({
-                    plugin = plugin, ui = opts.ui,
-                    document_path = opts.document_path,
-                    on_close = on_change,
-                })
-            end,
-        }})
-        table.insert(buttons, {{
-            text = _("Preset settings…"),
-            callback = function()
-                UIManager:close(menu)
-                showQuickPresetEditor({ plugin = plugin, on_close = on_change })
-            end,
-        }})
-    end
-    table.insert(buttons, {{ text = _("Close"), callback = function() UIManager:close(menu) end }})
-    menu = ButtonDialog:new{
-        title = _("Quick controls · this chat only"),
-        buttons = buttons,
-    }
-    UIManager:show(menu)
 end
 
 -- Every api_params key applyReasoningParams can emit, plus the decision record.
@@ -6003,7 +5869,7 @@ end
 
 -- Attach chip menu (attach_plan.md v1) — the type-picker + manage submenu, factored
 -- out of showChatGPTDialog so the reply dialog (chatgptviewer) can open the SAME menu
--- via a runtime require (the showQuickControlsMenu pattern; no load-time cycle). The
+-- via a runtime require (runtime self-require pattern; no load-time cycle). The
 -- staged list is MODULE-resident in koassistant_attachments; `on_change` re-renders
 -- whichever dialog opened the menu (the input dialog's refreshInputDialog, or the
 -- reply dialog's reopenWithDraft). Returns { open = typeMenuFn, manage = manageFn } so
@@ -7822,19 +7688,21 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             quick = function()
                 -- Quick chip (controls_parity_plan.md §2/§9 — #86): tap toggles the
                 -- Quick Answer posture for this chat (concise · reasoning off ·
-                -- web/tools off); hold opens the quick controls menu (one-shot
-                -- reasoning/model overrides). State is CONFIG-RESIDENT
-                -- (_session_quick_answer/_session_reasoning/_session_model —
-                -- 60-upvalue cap), consumed at dispatch via the *_active
-                -- transients; a fresh dialog open clears it (scope-chip lifecycle).
+                -- web/tools off); hold opens the book/global DEFAULT picker with a
+                -- "Preset settings…" row on top (Web/Tools-chip shape — the
+                -- one-shot session reasoning/model menu retired 2026-08-11,
+                -- maintainer: crowded, the preset covers it; on-the-fly picks
+                -- move to the future per-action hold callbacks). State is
+                -- CONFIG-RESIDENT (_session_quick_answer — 60-upvalue cap),
+                -- consumed at dispatch via the *_active transients; a fresh
+                -- dialog open clears it (scope-chip lifecycle).
                 local qf = configuration.features
                 local qa_on = qf._session_quick_answer == true
-                local has_override = qf._session_reasoning ~= nil or qf._session_model ~= nil
                 local label
                 if enable_emoji then
-                    label = "\u{26A1} " .. (qa_on and _("ON") or (has_override and _("SET") or _("OFF")))
+                    label = "\u{26A1} " .. (qa_on and _("ON") or _("OFF"))
                 else
-                    label = qa_on and _("Quick ON") or (has_override and _("Quick SET") or _("Quick"))
+                    label = qa_on and _("Quick ON") or _("Quick")
                 end
                 return {
                     text = label,
@@ -7843,18 +7711,30 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         refreshInputDialog()
                     end,
                     hold_callback = function()
-                        -- Runtime self-require on purpose: a direct file-local
-                        -- reference would add an upvalue to buildInputDialogButtons,
-                        -- which sits AT LuaJIT's 60-upvalue cap.
-                        -- Same book-subject gate as the Web chip: in general/library the
-                        -- menu's "Quick answer default…" must target Global only, not an
-                        -- unrelated open book (ui/document_path are used ONLY for that row).
-                        require("koassistant_dialogs").showQuickControlsMenu({
-                            configuration = configuration,
+                        -- Same book-subject gate as the Web chip: in general/library
+                        -- the picker targets Global only, never an unrelated open
+                        -- book. On close the chip re-seeds from the (possibly
+                        -- changed) default — spoiler/web-chip parity.
+                        BookSettings.showQuickAnswerDefault({
                             plugin = plugin,
                             ui = chips_book_or_highlight and ui_instance or nil,
                             document_path = chips_book_or_highlight and document_path or nil,
-                            on_change = function() refreshInputDialog() end,
+                            preset_settings = function()
+                                -- Runtime self-require: a direct file-local ref would
+                                -- add an upvalue to buildInputDialogButtons, which
+                                -- sits AT LuaJIT's 60-upvalue cap.
+                                require("koassistant_dialogs").showQuickPresetEditor({
+                                    plugin = plugin,
+                                })
+                            end,
+                            on_close = function()
+                                local qa_ds = chips_book_or_highlight and ui_instance
+                                    and ui_instance.doc_settings or nil
+                                configuration.features._session_quick_answer =
+                                    BookSettings.resolveQuickAnswerDefault(qa_ds,
+                                        configuration.features) and true or nil
+                                refreshInputDialog()
+                            end,
                         })
                     end,
                 }
@@ -8157,7 +8037,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 -- Inline require, NOT a file-local reference: the enclosing chip
                 -- closure sits at LuaJIT's 60-upvalue cap, and a direct reference
                 -- to showAttachMenu/attachChipLabel would add two upvalues and
-                -- break the whole-plugin load (same pattern as showQuickControlsMenu).
+                -- break the whole-plugin load (runtime self-require pattern).
                 local D = require("koassistant_dialogs")
                 local menu = D.showAttachMenu({
                     configuration = configuration,
@@ -10839,7 +10719,9 @@ return {
     launchArtifactChat = launchArtifactChat,
     -- Exported for runtime self-require from the quick chip's hold (60-upvalue
     -- cap) and for the reply-dialog reuse planned in parity slice (b).
-    showQuickControlsMenu = showQuickControlsMenu,
+    showQuickPresetEditor = showQuickPresetEditor,
+    showQuickPresetNudge = showQuickPresetNudge,
+    quickPresetNudgeLabel = quickPresetNudgeLabel,
     applyQuickReplyOverrides = applyQuickReplyOverrides,
     showAttachMenu = showAttachMenu,
     attachChipLabel = attachChipLabel,

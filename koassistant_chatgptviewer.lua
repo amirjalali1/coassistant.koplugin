@@ -3107,7 +3107,6 @@ function ChatGPTViewer:askAnotherQuestion()
     else
       label = qa_on and _("Quick ON") or (has_override and _("Quick SET") or _("Quick"))
     end
-    local orig = cfg_features._quick_reply_orig
     quick_btn = {
       text = label,
       font_bold = false,
@@ -3121,20 +3120,21 @@ function ChatGPTViewer:askAnotherQuestion()
         reopenWithDraft()
       end,
       hold_callback = function()
-        require("koassistant_dialogs").showQuickControlsMenu({
-          configuration = cfg,
-          plugin = self._plugin,
+        -- Book/global DEFAULT picker + "Preset settings…" row (Web/Tools-chip
+        -- shape). The one-shot session reasoning/model menu retired 2026-08-11
+        -- (maintainer: crowded, the preset covers it); the reply ⚡ TAP keeps
+        -- its per-chat toggle, and legacy chats with restored session
+        -- overrides still resolve via applyQuickReplyOverrides.
+        local plugin_ref = self._plugin
+        require("koassistant_book_settings").showQuickAnswerDefault({
+          plugin = plugin_ref,
           ui = self._ui,
           document_path = hold_document_path,
-          on_change = reopenWithDraft,
-          reply_mode = true,  -- clear-rows write counteract sentinels, not nil
-          -- Provenance labels should name the CHAT's baseline, not the
-          -- current global selection (they differ on rebased chats).
-          chat_provider = (orig and orig.provider) or cfg.provider,
-          chat_model = (orig and orig.model) or cfg.model
-            or (cfg.provider_settings and cfg.provider
-                and cfg.provider_settings[cfg.provider]
-                and cfg.provider_settings[cfg.provider].model),
+          preset_settings = function()
+            require("koassistant_dialogs").showQuickPresetEditor({
+              plugin = plugin_ref,
+            })
+          end,
         })
       end,
     }
@@ -3143,7 +3143,7 @@ function ChatGPTViewer:askAnotherQuestion()
   -- Attach chip (parity slice (b)): stage notebook/artifacts/chats/files/notes as
   -- context for this reply. Reuses the input dialog's menu + module-resident staged
   -- list via a runtime require of dialogs (no load-time cycle — the
-  -- showQuickControlsMenu pattern). Injected at reply dispatch (onAskQuestion) as its
+  -- runtime self-require pattern). Injected at reply dispatch (onAskQuestion) as its
   -- own is_context message. Present in every reply context (notebook row inside is
   -- book-gated). enable_emoji already resolved above.
   local attach_btn

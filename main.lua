@@ -2526,6 +2526,18 @@ function AskGPT:showQuickPresetBehavior(touchmenu_instance)
   })
 end
 
+-- Settings action row (Quick Answer Preset → Brevity nudge): same shape.
+function AskGPT:showQuickPresetNudge(touchmenu_instance)
+  require("koassistant_dialogs").showQuickPresetNudge({
+    plugin = self,
+    on_close = function()
+      if touchmenu_instance and touchmenu_instance.updateItems then
+        touchmenu_instance:updateItems()
+      end
+    end,
+  })
+end
+
 -- Helper: A provider is "configured" when a real API key resolves for it (GUI or
 -- apikeys.lua), or when it doesn't need one (ollama; custom providers with
 -- api_key_required = false). Mirrors the pre-flight gate in koassistant_gpt_query.
