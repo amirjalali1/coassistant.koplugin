@@ -673,10 +673,44 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
         web_search_effective = true
     end
 
+    -- Quick preset identity components (A6 close-out, 2026-08-11). Opt-in skips
+    -- (maintainer: "allow skipping domain and behavior and more, just not
+    -- default" — controls_parity §11's answer stands as the default: identity
+    -- layers are cached prefix, skipping buys no speed) + the §11 lever, now
+    -- default-on: swap the behavior to its mini sibling on quick sends (same
+    -- style family when one exists) so a verbose behavior stops fighting the
+    -- brevity nudge on fast models. Action pins win (matrix §10): a pinned
+    -- behavior/domain is never touched; Background is identity and stays.
+    local quick_behavior
+    if quick_answer then
+        if features.quick_preset_skip_domain == true
+            and not (action and action.domain) then
+            domain_context = nil
+        end
+        if not (action and (action.behavior_variant or action.behavior_override)) then
+            if features.quick_preset_skip_behavior == true then
+                quick_behavior = "none"
+            elseif features.quick_preset_behavior_mini ~= false then
+                local base = features.selected_behavior or "standard"
+                local candidate
+                if base == "full" or base == "standard" then
+                    candidate = "mini"
+                else
+                    candidate = base:gsub("_full$", "_mini"):gsub("_standard$", "_mini")
+                end
+                if candidate ~= base and SystemPrompts.getBehaviorById(
+                        candidate, features.custom_behaviors) then
+                    quick_behavior = candidate
+                end
+            end
+        end
+    end
+
     -- Build unified system prompt (works for all providers)
     local system_config = SystemPrompts.buildUnifiedSystem({
-        -- Behavior resolution (priority: action override > action variant > global)
-        behavior_variant = action and action.behavior_variant,
+        -- Behavior resolution (priority: action override > action variant >
+        -- quick preset swap/skip > global)
+        behavior_variant = (action and action.behavior_variant) or quick_behavior,
         behavior_override = action and action.behavior_override,
         global_variant = features.selected_behavior or "standard",
         custom_ai_behavior = features.custom_ai_behavior,  -- Legacy support (for migrated users)
@@ -1065,8 +1099,11 @@ showQuickPresetEditor = function(opts)
         showQuickPresetEditor(opts)
     end
     local f = plugin.settings:readSetting("features") or {}
-    local function toggleRow(label, key)
-        local on = f[key] ~= false
+    -- opt_in = keys whose schema default is FALSE (== true check pattern);
+    -- default rows keep the ~= false opt-out shape.
+    local function toggleRow(label, key, opt_in)
+        local on
+        if opt_in then on = f[key] == true else on = f[key] ~= false end
         return {{
             text = (on and "✓ " or "○ ") .. label,
             callback = function()
@@ -1098,6 +1135,9 @@ showQuickPresetEditor = function(opts)
             toggleRow(_("Reasoning off"), "quick_preset_reasoning_off"),
             toggleRow(_("Web search off"), "quick_preset_web_off"),
             toggleRow(_("Book tools off"), "quick_preset_tools_off"),
+            toggleRow(_("Mini behavior"), "quick_preset_behavior_mini"),
+            toggleRow(_("Skip domain lens"), "quick_preset_skip_domain", true),
+            toggleRow(_("Skip behavior"), "quick_preset_skip_behavior", true),
             {{
                 text = T(_("Model: %1"), model_mode_label),
                 callback = function()

@@ -61,7 +61,7 @@ Templates.CONCISENESS_NUDGE = "Be direct and concise. Don't restate or over-elab
 -- MessageBuilder selects the web-aware variant when web search is active for the request
 -- Quick Answer posture (controls_parity_plan.md §9.1): session chip, stronger than
 -- the standard conciseness nudge; appended to the system prompt for this chat only.
-Templates.QUICK_ANSWER_NUDGE = "The reader wants a QUICK answer right now: reply in a few short sentences (a short paragraph at most), no preamble, no headings or lists unless essential, no follow-up offers. Go deeper only if asked."
+Templates.QUICK_ANSWER_NUDGE = "The reader wants a QUICK answer right now: at most 3 short sentences, one plain paragraph. No preamble, no headings, no lists, never restate the question, no follow-up offers. Go deeper only if asked."
 
 Templates.HALLUCINATION_NUDGE = "If you don't recognize this or the content seems unclear, say so rather than guessing."
 Templates.HALLUCINATION_NUDGE_WEB = "If you don't recognize this or the content seems unclear, search the web to verify. If you still can't confirm, say so rather than guessing."
