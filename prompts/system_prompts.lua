@@ -413,11 +413,16 @@ function SystemPrompts.buildUnifiedSystem(config)
     end
 
     -- Append Quick Answer posture nudge (controls parity — session ⚡ chip; also
-    -- reaches predefined actions that opt in via accept_quick_answer)
+    -- reaches predefined actions that opt in via accept_quick_answer).
+    -- quick_answer arrives as true (standard nudge) or "strict"
+    -- (quick_preset_nudge_strict — the opt-in ultra-brief ceiling replaces the
+    -- standard text).
     local quick_answer_nudge = nil
     if config.quick_answer
             and Templates and Templates.QUICK_ANSWER_NUDGE then
-        quick_answer_nudge = Templates.QUICK_ANSWER_NUDGE
+        quick_answer_nudge = (config.quick_answer == "strict"
+                and Templates.QUICK_ANSWER_NUDGE_STRICT)
+            or Templates.QUICK_ANSWER_NUDGE
         if content then
             content = content .. "\n\n" .. quick_answer_nudge
         else

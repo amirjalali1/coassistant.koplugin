@@ -673,24 +673,28 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
         web_search_effective = true
     end
 
-    -- Quick preset identity components (A6 close-out, 2026-08-11). Opt-in skips
-    -- (maintainer: "allow skipping domain and behavior and more, just not
-    -- default" — controls_parity §11's answer stands as the default: identity
-    -- layers are cached prefix, skipping buys no speed) + the §11 lever, now
-    -- default-on: swap the behavior to its mini sibling on quick sends (same
-    -- style family when one exists) so a verbose behavior stops fighting the
-    -- brevity nudge on fast models. Action pins win (matrix §10): a pinned
-    -- behavior/domain is never touched; Background is identity and stays.
+    -- Quick preset identity components (A6, picker rework 2026-08-11 —
+    -- maintainer: behavior component OFF by default; users may already run a
+    -- brief or None behavior, and identity layers are cached prefix so
+    -- skipping buys no speed — controls_parity §11). quick_preset_behavior:
+    -- nil/"keep" = leave the behavior alone (default) · "mini_of_current" =
+    -- the §11 lever, swap to the mini sibling family-aware · "none" = drop the
+    -- layer · any other value = pin that behavior id (the built-in terse is
+    -- the intended pick). quick_preset_skip_domain stays a separate opt-in.
+    -- Action pins win (matrix §10): a pinned behavior/domain is never touched;
+    -- Background is identity and always stays.
     local quick_behavior
     if quick_answer then
         if features.quick_preset_skip_domain == true
             and not (action and action.domain) then
             domain_context = nil
         end
-        if not (action and (action.behavior_variant or action.behavior_override)) then
-            if features.quick_preset_skip_behavior == true then
+        local qb = features.quick_preset_behavior
+        if qb and qb ~= "keep"
+            and not (action and (action.behavior_variant or action.behavior_override)) then
+            if qb == "none" then
                 quick_behavior = "none"
-            elseif features.quick_preset_behavior_mini ~= false then
+            elseif qb == "mini_of_current" then
                 local base = features.selected_behavior or "standard"
                 local candidate
                 if base == "full" or base == "standard" then
@@ -702,6 +706,10 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
                         candidate, features.custom_behaviors) then
                     quick_behavior = candidate
                 end
+            elseif SystemPrompts.getBehaviorById(qb, features.custom_behaviors) then
+                -- Pinned id: apply only while it still resolves — a renamed or
+                -- deleted behavior degrades to "keep", never to a broken layer.
+                quick_behavior = qb
             end
         end
     end
@@ -736,8 +744,11 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
         -- Web search active → prose nudge (pre-search text is reader-visible)
         web_search = web_search_effective,
         -- Quick Answer posture → brevity nudge (session ⚡ chip / opted-in actions;
-        -- preset component quick_preset_nudge, default on)
-        quick_answer = (quick_answer and features.quick_preset_nudge ~= false) and true or nil,
+        -- preset component quick_preset_nudge, default on; "strict" = the opt-in
+        -- ultra-brief ceiling replaces the standard text)
+        quick_answer = (quick_answer and features.quick_preset_nudge ~= false)
+            and ((features.quick_preset_nudge_strict == true) and "strict" or true)
+            or nil,
     })
 
     config.system = system_config
@@ -1078,6 +1089,101 @@ showQuickPresetModelMode = function(opts)
     UIManager:show(dialog)
 end
 
+-- Label for the quick_preset_behavior value (shared: preset editor row + the
+-- schema action row's text_func via Dialogs export).
+local function quickPresetBehaviorLabel(features)
+    local qb = (features or {}).quick_preset_behavior
+    if not qb or qb == "keep" then return _("Keep current") end
+    if qb == "none" then return _("None") end
+    if qb == "mini_of_current" then return _("Mini of current") end
+    local SystemPrompts = require("prompts.system_prompts")
+    local b = SystemPrompts.getBehaviorById(qb, (features or {}).custom_behaviors)
+    return b and (b.display_name or b.name or qb) or T(_("%1 (missing)"), qb)
+end
+
+-- Quick Answer preset: behavior component picker (A6 rework, maintainer
+-- 2026-08-11: off by default — "you can turn it on or select a behavior or
+-- None instead"). Keep current / Mini of current (§11 family swap) / a
+-- specific behavior (built-in terse is the intended pick; specialized
+-- action-pinned behaviors filtered out) / None. Persistent settings; reachable
+-- from the preset editor AND main settings (schema action row →
+-- AskGPT:showQuickPresetBehavior).
+-- opts = { plugin, on_close }
+local showQuickPresetBehavior
+showQuickPresetBehavior = function(opts)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local plugin = opts.plugin
+    local dialog
+    local function mutate(fn)
+        local f = plugin.settings:readSetting("features") or {}
+        fn(f)
+        plugin.settings:saveSetting("features", f)
+        plugin.settings:flush()
+        if plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
+    end
+    local function finish()
+        if opts.on_close then opts.on_close() end
+    end
+    local f = plugin.settings:readSetting("features") or {}
+    local qb = f.quick_preset_behavior or "keep"
+
+    local function setMode(value)
+        mutate(function(feats) feats.quick_preset_behavior = value end)
+        UIManager:close(dialog)
+        finish()
+    end
+
+    local function pickBehavior()
+        local SystemPrompts = require("prompts.system_prompts")
+        local behaviors = SystemPrompts.getSortedBehaviors(f.custom_behaviors) or {}
+        local sub
+        local buttons = {}
+        for _idx, b in ipairs(behaviors) do
+            if not b.specialized then
+                local bid = b.id
+                table.insert(buttons, {{
+                    text = (qb == bid and "● " or "○ ") .. (b.display_name or b.name or bid),
+                    callback = function()
+                        mutate(function(feats) feats.quick_preset_behavior = bid end)
+                        UIManager:close(sub)
+                        finish()
+                    end,
+                }})
+            end
+        end
+        table.insert(buttons, {{ text = _("Cancel"), callback = function() UIManager:close(sub) end }})
+        sub = ButtonDialog:new{
+            title = _("Quick Answer behavior · pick"),
+            buttons = buttons,
+        }
+        UIManager:show(sub)
+    end
+
+    local function row(label, is_current, cb)
+        return {{ text = (is_current and "● " or "○ ") .. label, callback = cb }}
+    end
+    local pinned = qb ~= "keep" and qb ~= "none" and qb ~= "mini_of_current"
+    dialog = ButtonDialog:new{
+        title = _("Quick Answer preset · behavior"),
+        buttons = {
+            row(_("Keep current behavior"), qb == "keep", function() setMode(nil) end),
+            row(_("Mini version of current"), qb == "mini_of_current", function()
+                setMode("mini_of_current")
+            end),
+            row(pinned
+                    and T(_("Behavior: %1 (change…)"), quickPresetBehaviorLabel(f))
+                    or _("A specific behavior…"),
+                pinned, function()
+                UIManager:close(dialog)
+                pickBehavior()
+            end),
+            row(_("None (no behavior layer)"), qb == "none", function() setMode("none") end),
+            {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }},
+        },
+    }
+    UIManager:show(dialog)
+end
+
 -- Quick Answer preset editor — persistent GLOBAL settings for what the ⚡ tap
 -- applies (controls_parity_plan.md §2, maintainer 2026-07-19). Reachable from
 -- main settings (Chat & Export → Quick Answer Preset — schema is the source of
@@ -1132,12 +1238,21 @@ showQuickPresetEditor = function(opts)
         end,
         buttons = {
             toggleRow(_("Concise answer nudge"), "quick_preset_nudge"),
+            toggleRow(_("Ultra-brief nudge"), "quick_preset_nudge_strict", true),
             toggleRow(_("Reasoning off"), "quick_preset_reasoning_off"),
             toggleRow(_("Web search off"), "quick_preset_web_off"),
             toggleRow(_("Book tools off"), "quick_preset_tools_off"),
-            toggleRow(_("Mini behavior"), "quick_preset_behavior_mini"),
             toggleRow(_("Skip domain lens"), "quick_preset_skip_domain", true),
-            toggleRow(_("Skip behavior"), "quick_preset_skip_behavior", true),
+            {{
+                text = T(_("Behavior: %1"), quickPresetBehaviorLabel(f)),
+                callback = function()
+                    UIManager:close(dialog)
+                    showQuickPresetBehavior({
+                        plugin = plugin,
+                        on_close = function() showQuickPresetEditor(opts) end,
+                    })
+                end,
+            }},
             {{
                 text = T(_("Model: %1"), model_mode_label),
                 callback = function()
@@ -10730,6 +10845,8 @@ return {
     attachChipLabel = attachChipLabel,
     -- Exported for the main-settings action row (AskGPT:showQuickPresetModelMode)
     showQuickPresetModelMode = showQuickPresetModelMode,
+    showQuickPresetBehavior = showQuickPresetBehavior,
+    quickPresetBehaviorLabel = quickPresetBehaviorLabel,
     -- Exported for runtime self-require from performSend's scope-consent check
     -- (60-upvalue cap — a direct file-local reference inside that closure breaks
     -- the whole-plugin load)

@@ -2513,6 +2513,19 @@ function AskGPT:showQuickPresetModelMode(touchmenu_instance)
   })
 end
 
+-- Settings action row (Quick Answer Preset → Behavior): same shape as the
+-- model-mode row above.
+function AskGPT:showQuickPresetBehavior(touchmenu_instance)
+  require("koassistant_dialogs").showQuickPresetBehavior({
+    plugin = self,
+    on_close = function()
+      if touchmenu_instance and touchmenu_instance.updateItems then
+        touchmenu_instance:updateItems()
+      end
+    end,
+  })
+end
+
 -- Helper: A provider is "configured" when a real API key resolves for it (GUI or
 -- apikeys.lua), or when it doesn't need one (ollama; custom providers with
 -- api_key_required = false). Mirrors the pre-flight gate in koassistant_gpt_query.

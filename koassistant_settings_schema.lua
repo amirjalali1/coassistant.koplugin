@@ -514,6 +514,14 @@ local SettingsSchema = {
                             help_text = _("Ask for a short, direct reply (a few sentences, no preamble) while Quick Answer is on."),
                         },
                         {
+                            id = "quick_preset_nudge_strict",
+                            type = "toggle",
+                            text = _("Ultra-Brief Nudge"),
+                            path = "features.quick_preset_nudge_strict",
+                            default = false,
+                            help_text = _("Replace the standard nudge with a hard ceiling: at most 3 short sentences, one plain paragraph, never restate the question. Off by default; needs the Concise Answer Nudge to be on."),
+                        },
+                        {
                             id = "quick_preset_reasoning_off",
                             type = "toggle",
                             text = _("Turn Reasoning Off"),
@@ -536,14 +544,6 @@ local SettingsSchema = {
                             default = true,
                         },
                         {
-                            id = "quick_preset_behavior_mini",
-                            type = "toggle",
-                            text = _("Use Mini Behavior"),
-                            path = "features.quick_preset_behavior_mini",
-                            default = true,
-                            help_text = _("Swap the AI behavior to its Mini variant while Quick Answer is on (stays in the same style family when one exists). Verbose behaviors fight the brevity nudge, especially on fast models. Actions that pin a behavior are unaffected."),
-                        },
-                        {
                             id = "quick_preset_skip_domain",
                             type = "toggle",
                             text = _("Skip Domain Lens"),
@@ -552,12 +552,16 @@ local SettingsSchema = {
                             help_text = _("Leave the selected domain lens out of Quick Answer chats. Off by default: the domain shapes identity rather than length, and costs almost nothing in speed."),
                         },
                         {
-                            id = "quick_preset_skip_behavior",
-                            type = "toggle",
-                            text = _("Skip Behavior Entirely"),
-                            path = "features.quick_preset_skip_behavior",
-                            default = false,
-                            help_text = _("Send Quick Answer chats with no behavior layer at all. Wins over Use Mini Behavior. Off by default."),
+                            id = "quick_preset_behavior",
+                            type = "action",
+                            text_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                return T(_("Behavior: %1"),
+                                    require("koassistant_dialogs").quickPresetBehaviorLabel(f))
+                            end,
+                            help_text = _("Optionally change the AI behavior while Quick Answer is on: keep the current one (default), swap to its Mini variant (same style family when one exists), pin a specific behavior (the built-in Terse suits Quick Answer), or send none at all. Actions that pin a behavior are unaffected."),
+                            callback = "showQuickPresetBehavior",
+                            keep_menu_open = true,
                             separator = true,
                         },
                         {
