@@ -44,6 +44,13 @@ local _ = require("koassistant_gettext")
 
 local XrayMerge = {}
 
+-- Group display name (A3): "?" is the store's unnamed placeholder — every
+-- user-visible group name here routes through the UI helper. Lazy require:
+-- the pure halves of this module stay loadable under mock_koreader.
+local function groupName(g)
+    return require("koassistant_book_groups_ui").displayName(g)
+end
+
 -- Mirrors the xray action's sampling shape (prompts/actions.lua): structural
 -- JSON work, large possible output.
 XrayMerge.API_PARAMS = { temperature = 0.5, max_tokens = 65536 }
@@ -2553,7 +2560,7 @@ function XrayMerge.preCreateFoldAsk(opts, proceed)
     local missing = XrayMerge.provenanceGap(earlier_titles,
         XrayMerge.ledgerOf(nearest_entry))
     local ask_text = T(_("\"%1\" (the previous book in %2) has an X-Ray. Fold its knowledge into this book's X-Ray once it is built? Recurring names then stay consistent across the series. The two X-Rays are sent, not the books."),
-        nearest_title, (group and group.name) or _("this group"))
+        nearest_title, (group and groupName(group)) or _("this group"))
     if #missing > 0 then
         ask_text = ask_text .. "\n"
             .. T(_("Note: it has not folded its own earlier book(s) in yet (%1), so their knowledge would not carry over."),
@@ -2709,7 +2716,7 @@ function XrayMerge.maybeNotePredecessorGap(opts)
     end
     UIManager:show(require("ui/widget/infomessage"):new{
         text = T(_("\"%1\" (the previous book in %2) has no X-Ray yet — build one there to carry its knowledge forward."),
-            BookGroups.displayTitle(nearest, opts.ui), (group and group.name) or _("this group")),
+            BookGroups.displayTitle(nearest, opts.ui), (group and groupName(group)) or _("this group")),
         timeout = 6,
     })
 end
@@ -2766,9 +2773,9 @@ function XrayMerge.startCrossBookFlow(opts)
                 local captured = g
                 grows[#grows + 1] = {{
                     text = BookGroups.isOrdered(captured)
-                        and T(_("%1 (book %2 of %3)"), captured.name,
+                        and T(_("%1 (book %2 of %3)"), groupName(captured),
                             BookGroups.positionOf(captured, opts.file) or 0, #captured.books)
-                        or T(_("%1 (%2 books)"), captured.name, #captured.books),
+                        or T(_("%1 (%2 books)"), groupName(captured), #captured.books),
                     align = "left",
                     callback = function()
                         UIManager:close(gdialog)
@@ -2855,8 +2862,8 @@ function XrayMerge.startCrossBookFlow(opts)
         if captured.group_name then
             -- An unordered group has no book numbers (round 27) — name it only
             row_label = row_label .. " · " .. (captured.group_pos
-                and T(_("%1, book %2"), captured.group_name, captured.group_pos)
-                or captured.group_name)
+                and T(_("%1, book %2"), groupName(captured.group_name), captured.group_pos)
+                or groupName(captured.group_name))
         end
         table.insert(captured.group_name and group_rows or other_rows, {{
             text = row_label,
@@ -2880,7 +2887,7 @@ function XrayMerge.startCrossBookFlow(opts)
                     .. "\n" .. _("Recurring characters, places, and concepts gain that book's background. This brings in everything its X-Ray covers, including its later events. The receiving X-Ray is archived first, so this can be undone from All versions.")
                 if captured.group_direction == "after" then
                     confirm_text = confirm_text .. "\n\n" .. T(_("Caution: \"%1\" comes LATER in %2 — its background includes events beyond this book."),
-                        captured.title, captured.group_name)
+                        captured.title, groupName(captured.group_name))
                 end
                 local confirm
                 confirm = ButtonDialog:new{
@@ -2996,7 +3003,7 @@ function XrayMerge.startCrossBookFlow(opts)
                     callback = function()
                         UIManager:close(picker)
                         local confirm_title = T(_("Fold %1 other book(s) of \"%2\" into this book's X-Ray?"),
-                                #mates, tgt_group.name)
+                                #mates, groupName(tgt_group))
                             .. "\n" .. _("Knowledge flows INTO this book only — the other books are not changed.")
                         -- Undo is per-STEP here, and every step archives the SAME
                         -- book: a long fan-in can push the pre-run version out of
@@ -3092,7 +3099,7 @@ function XrayMerge.startCrossBookFlow(opts)
                     elseif st ~= "none" then done_n = done_n + 1 end
                 end
                 local confirm_title = T(_("Bring %1 up to date: %2 merges, oldest first — each book's X-Ray folds into the next book's (1 into 2, 2 into 3, …)?"),
-                        predecessors[1].group_name, n_merges)
+                        groupName(predecessors[1].group_name), n_merges)
                     .. "\n" .. _("Every volume ends up carrying its predecessors' knowledge as labeled background. Each receiving X-Ray is archived first, so every step can be undone from that book's version list.")
                 if missing_n > 0 then
                     confirm_title = confirm_title .. "\n"
@@ -3175,7 +3182,7 @@ function XrayMerge.startCrossBookFlow(opts)
         -- Unordered groups (round 27) have no "earlier" at all: the absence is
         -- the design, not a gap to explain.
         rows[#rows + 1] = {{
-            text = T(_("No earlier book in %1 has an X-Ray yet"), tgt_group.name),
+            text = T(_("No earlier book in %1 has an X-Ray yet"), groupName(tgt_group)),
             enabled = false,
         }}
     end

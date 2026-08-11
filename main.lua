@@ -5859,6 +5859,7 @@ end
 ---   falls back one level at a time when it has neither)
 function AskGPT:_showGroupMembersPopup(file, mode, opts)
   local BookGroups = require("koassistant_book_groups")
+  local GroupsUI = require("koassistant_book_groups_ui")
   local list = BookGroups.groupsFor(file)
   if #list == 0 then return end
   local ButtonDialog = require("ui/widget/buttondialog")
@@ -5868,11 +5869,16 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
   local rows = {}
   for _g, group in ipairs(list) do
     if #list > 1 then
-      rows[#rows + 1] = {{ text = group.name, enabled = false }}
+      rows[#rows + 1] = {{ text = GroupsUI.displayName(group), enabled = false }}
     end
     for i, path in ipairs(group.books) do
       local captured = path
       local title = BookGroups.displayTitle(captured, self.ui)
+      -- A3: mark missing files here too (the group screen already does) —
+      -- rows with content stay tappable, sidecars outlive moved books
+      if not BookGroups.fileExists(captured) then
+        title = title .. " " .. _("(missing)")
+      end
       local cb
       if captured == file then
         title = title .. " " .. _("(this book)")
@@ -5944,6 +5950,25 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
       }}
     end
   end
+  -- A2 merge discoverability: fold group-mates into THIS book from group
+  -- navigation — the flow's picker leads with the chain/fan-in rows per kind.
+  -- Plain groups share nothing by design, so they get no row.
+  local mp_shares = false
+  for _g, group in ipairs(list) do
+    if BookGroups.sharesKnowledge(group) then mp_shares = true end
+  end
+  if mp_shares then
+    rows[#rows + 1] = {{
+      text = _("Merge / fold X-Rays…"),
+      callback = function()
+        UIManager:close(dialog)
+        -- before_open retires the browser this popup may sit over — the flow
+        -- calls it only when a merge actually starts (deferred, T11)
+        self_ref:_startCrossBookXrayFlow(file,
+          { close_browser = opts and opts.before_open })
+      end,
+    }}
+  end
   -- Round 29 (audit): every row here is a NAVIGATION target, and a row is
   -- disabled when its book has nothing to navigate to — so a fresh group (one
   -- book, or siblings with no artifacts yet) rendered a popup with nothing
@@ -5957,7 +5982,7 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
     end,
   }}
   dialog = ButtonDialog:new{
-    title = #list == 1 and T(_("Group: %1"), list[1].name) or _("Groups"),
+    title = #list == 1 and T(_("Group: %1"), GroupsUI.displayName(list[1])) or _("Groups"),
     buttons = rows,
   }
   UIManager:show(dialog)
@@ -6276,6 +6301,8 @@ function AskGPT:showCacheViewer(cache_info)
 
   -- Fallback: ChatGPTViewer for legacy markdown caches or non-xray caches
   local inline_prefix = buildInlineIndicators(cache_info.data, configuration)
+  local xr_delete_choice = (on_delete and cache_info.key == "_xray_cache" and file)
+      and require("koassistant_xray_rows").deleteChoice(file) or nil
   local viewer = ChatGPTViewer:new{
     title = title,
     text = inline_prefix and (inline_prefix .. cache_info.data.result) or cache_info.data.result,
@@ -6287,19 +6314,15 @@ function AskGPT:showCacheViewer(cache_info)
     on_regenerate = on_regenerate,
     on_delete = on_delete,
     -- Round 28: the X-Ray owns archived versions — deleting it asks whether
-    -- those go too (same choice as the X-Ray browser's own Delete). Only when
-    -- a ring actually exists; every other artifact keeps the plain confirm.
-    delete_options = (on_delete and cache_info.key == "_xray_cache" and file
-        and ActionCache.getXrayCheckpointCount(file) > 0) and {
-        { text = T(_("Delete X-Ray, keep %1 versions"),
-            ActionCache.getXrayCheckpointCount(file)), arg = true },
-        { text = T(_("Delete X-Ray and %1 versions"),
-            ActionCache.getXrayCheckpointCount(file)), arg = false },
+    -- those go too. A2: choice content shared with the browser hamburger
+    -- (koassistant_xray_rows.deleteChoice), which also adds the prepared-
+    -- checkpoints line this path previously lacked. Every other artifact
+    -- keeps the plain confirm.
+    delete_options = (xr_delete_choice and xr_delete_choice.two_way) and {
+        { text = xr_delete_choice.keep_text, arg = true },
+        { text = xr_delete_choice.drop_text, arg = false },
     } or nil,
-    delete_title = (on_delete and cache_info.key == "_xray_cache" and file
-        and ActionCache.getXrayCheckpointCount(file) > 0)
-        and T(_("Delete this X-Ray? Its %1 archived versions can be kept — they stay reachable under \"Archived X-Ray Versions\" in View Artifacts."),
-            ActionCache.getXrayCheckpointCount(file)) or nil,
+    delete_title = xr_delete_choice and xr_delete_choice.title or nil,
     _plugin = self,
     _ui = self.ui,
     _info_text = info_popup_text,
@@ -7961,6 +7984,17 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           end,
         }})
       end
+      -- A2: two or more section X-Rays can merge into a combined span even
+      -- with no main X-Ray — the flow's picker handles scope and consent
+      if nc_sx_count >= 2 then
+        table.insert(nc_sec_rows, {{
+          text = T(_("Merge section X-Rays (%1)…"), nc_sx_count),
+          callback = function()
+            UIManager:close(dialog)
+            self_ref:_startSectionXrayMergeFlow(sx_file, opts)
+          end,
+        }})
+      end
     end
     -- Version ladder from nothing (§6 slice 1): build the full rung set up front —
     -- reading then promotes rungs in for free, and every position has a
@@ -8149,15 +8183,6 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       view_detail = " (" .. table.concat(parts, ", ") .. ")"
     end
 
-    -- Round 24: the paid row is UPDATE-only. The old redo/rebuild-to-position
-    -- branches (T14 incl.) folded into the dual-mode creation chooser — a
-    -- below-coverage pick there is an explicit "from scratch" rebuild with
-    -- the archive confirm; the viewer keeps its own Redo.
-    local update_text = current_progress
-      and T(_("Update %1 (to %2)"), action_name, current_progress.formatted)
-    local update_case = current_progress
-      and current_progress.decimal > (cached_entry.progress_decimal or 0) + 0.01
-
     local ActionCache = require("koassistant_action_cache")
     local sx_file = (self.ui and self.ui.document and self.ui.document.file)
         or (opts and opts.file)
@@ -8245,51 +8270,25 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     end
     local XrayAuto = require("koassistant_xray_auto")
     local ladder_building = XrayAuto.ladderBuild()
-    -- Ladder awareness, hoisted (round 12): feeds the state header, the paid-row
-    -- demotion, and the free-update row. promotable = a prepared version ready to
-    -- install now (at-or-below reader, ahead of live); next_ahead = the nearest
-    -- prepared version past the reader.
-    -- 50(f): under the FULL posture (spoiler protection off / research) the
-    -- instant-update row offers the newest built rung even ahead of the reader
+    -- 50(f) posture + promotion hold: the state header wording below needs
+    -- them; the version rows themselves come from the SHARED builder (A2 —
+    -- koassistant_xray_rows.lua, one set of gates/labels/confirms with the
+    -- browser hamburger), which re-derives both for its own gating
     local xr_posture = self:_xrayPosture()
-    -- Device round 5: promotion hold — this book follows the position by the
-    -- reader's deliberate pick, even though the spoiler posture is FULL
     local xr_hold = false
     if xr_posture == "full" and doc and self.ui.document.file == sx_file
         and self.ui.doc_settings then
       xr_hold = require("koassistant_book_settings").xrayPromotionHold(self.ui.doc_settings)
     end
-    local promotable
-    if not ladder_building and current_progress and not cached_entry.full_document
-        and cached_entry.source_mode ~= "ai_knowledge" then
-      promotable = XrayAuto.pickPromotableRung(ladder_rungs,
-        cached_entry.progress_decimal, current_progress.decimal,
-        (xr_posture == "full" and not xr_hold) and { ahead_ok = true } or nil)
-    end
-    local next_ahead
-    if current_progress then
-      for _idx, r in ipairs(ladder_rungs) do
-        local p = tonumber(r.progress_decimal)
-        -- Ahead of the reader AND of the live coverage: a rung the live X-Ray
-        -- already covers is not "waiting to install" (device 2026-08-05: under
-        -- the full posture the newest rung IS installed — the header claimed
-        -- it would install "when you reach it")
-        if p and not r.full_document and p > current_progress.decimal + 0.005
-            and p > (tonumber(cached_entry.progress_decimal) or 0) + 0.005 then
-          if not next_ahead or p < next_ahead then next_ahead = p end
-        end
-      end
-    end
-    local spacing_now = (doc and not (doc.info and doc.info.has_pages))
-      and XrayAuto.ladderSpacingFor(doc:getPageCount()) or XrayAuto.LADDER_SPACING
-    -- Round-12 demotion, round-24 removal (maintainer: "Versions should just
-    -- be versions"): the paid to-position update never sits beside a free
-    -- competitor — with one ready now or landing within a spacing, the row is
-    -- DROPPED entirely (the creation chooser's extend mode covers it).
-    local demote_paid = update_case
-      and (promotable ~= nil
-        or (next_ahead ~= nil
-          and next_ahead - current_progress.decimal <= spacing_now + 0.005))
+    local vr = require("koassistant_xray_rows").versionRows({
+      plugin = self, file = sx_file, entry = cached_entry,
+      current_progress = current_progress,
+      on_update = on_update,
+      action = action, action_name = action_name,
+      list_opts = opts,
+      pre = function() UIManager:close(dialog) end,
+    })
+    local promotable, next_ahead = vr.promotable, vr.next_ahead
     if ladder_building then
       table.insert(buttons, {{
         text = ladder_building.total == 1
@@ -8317,129 +8316,22 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           UIManager:show(Notification:new{ text = _("Background update cancelled.") })
         end,
       }})
-    elseif update_case then
-      local paid_row = {{
-        text = update_text,
-        callback = function()
-          UIManager:close(dialog)
-          if self_ref:_checkRequirements(action) then return end
-          -- Round 14: every paid to-position update confirms. The cost step
-          -- carries the mid-ladder honesty lines (when checkpoints are around
-          -- — recomputed at tap time, disk may have moved) AND the background
-          -- choice (item-24 X-Ray slice).
-          local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?"),
-            current_progress.formatted)
-          if (ActionCache.highestXrayLadderProgress(ladder_rungs) or 0)
-              > (cached_entry.progress_decimal or 0) + 0.005 then
-            -- Decision support (device round 3): name the concrete free
-            -- alternative — a rung already at-or-below the reader beats the
-            -- paid call outright; otherwise say where the next one lands
-            confirm_text = confirm_text .. "\n"
-              .. _("Checkpoints are not touched: they still swap in for free as you read past them.")
-            local c_next, c_avail
-            for _idx, r in ipairs(ladder_rungs) do
-              local p = tonumber(r.progress_decimal)
-              if p and not r.full_document then
-                if p > current_progress.decimal + 0.005 then
-                  if not c_next or p < c_next then c_next = p end
-                elseif p > (cached_entry.progress_decimal or 0) + 0.005 then
-                  if not c_avail or p > c_avail then c_avail = p end
-                end
-              end
-            end
-            if c_avail then
-              confirm_text = confirm_text .. "\n" .. T(_("A free checkpoint at %1% is available right now (\"Update to %1%, instant\")."),
-                math.floor(c_avail * 100 + 0.5))
-            elseif c_next then
-              confirm_text = confirm_text .. "\n" .. T(_("The next free checkpoint arrives at %1%."),
-                math.floor(c_next * 100 + 0.5))
-            end
-          end
-          local ConfirmBox = require("ui/widget/confirmbox")
-          UIManager:show(ConfirmBox:new{
-            text = confirm_text,
-            ok_text = _("Update"),
-            ok_callback = function()
-              on_update()
-            end,
-            other_buttons = {{{
-              text = _("Update in background (keep reading)"),
-              callback = function()
-                self_ref:_fireXrayAutoUpdate({ manual = true })
-              end,
-            }}},
-          })
-        end,
-      }}
-      if not demote_paid then
-        table.insert(buttons, paid_row)
-      end
+    elseif vr.update then
+      table.insert(buttons, vr.update)
     end
-    -- Free local update from a prepared version (§6 slice 1). With round-24
-    -- the paid row is dropped whenever this row renders — free never sits
-    -- beside paid, and the paid path stays reachable through the creation
-    -- chooser's extend mode. Shown even while a background update is in
-    -- flight (device round 1 T6): promotion is local, and the completion
-    -- guard discards a stale flight write.
-    if promotable then
-      table.insert(buttons, {{
-        text = T(_("Update to %1%, instant"),
-          math.floor((tonumber(promotable.progress_decimal) or 0) * 100 + 0.5)),
-        callback = function()
-          UIManager:close(dialog)
-          if not self_ref:_fireXrayLadderPromotion({ manual = true }) then
-            -- Disk moved between drawing the row and tapping it
-            UIManager:show(InfoMessage:new{
-              text = _("Nothing to update from checkpoints: the X-Ray moved in the meantime."),
-              timeout = 3,
-            })
-          end
-        end,
-      }})
+    -- Free local update from a prepared version (§6 slice 1); shown even
+    -- while a background update is in flight (device round 1 T6)
+    if vr.instant then
+      table.insert(buttons, vr.instant)
     end
-    -- Free switch to a finished 1.0 rung (device round 2 gates): never offered
-    -- when the cache already covers the whole book. Round 24: the paid
-    -- "Update to 100%" row is GONE from the Versions group (maintainer:
-    -- versions only) — that path lives in the creation chooser's extend mode
-    -- (whole book, one request = update to 100%).
+    -- Free switch to a finished 1.0 rung + free exit from ahead-mode (both
+    -- from the shared builder; ladder_highest still feeds the resume gating)
     local ladder_highest = ActionCache.highestXrayLadderProgress(ladder_rungs)
-    local cache_complete = cached_entry.full_document
-        or (cached_entry.progress_decimal or 0) >= 0.995
-    if not cache_complete and (ladder_highest or 0) >= 0.995
-        and cached_entry.source_mode ~= "ai_knowledge" then
-      table.insert(c_ver_rows, {{
-        text = _("Switch to complete version (100%), instant"),
-        callback = function()
-          UIManager:close(dialog)
-          self_ref:_switchToCompleteXrayRung(opts)
-        end,
-      }})
+    if vr.switch_complete then
+      table.insert(c_ver_rows, vr.switch_complete)
     end
-    -- Free exit from ahead-mode (device round 3): live ahead of the reader +
-    -- a rung at-or-below the reader → switching back re-enters
-    -- position-tracking, promotion resumes naturally. Reversible both ways
-    -- while the ladder exists. Item 40 (maintainer): once CONVERTED TO THE
-    -- COMPLETE version (progress 1.0 — reached or opted in), it stays the
-    -- active one and earlier versions are no longer top-level promoted when
-    -- leafing back; they remain reachable via All versions. Non-complete
-    -- ahead installs (slice 2) keep the row. 50(f): hidden under the FULL
-    -- posture — promotion would re-install the newest rung on the next turn,
-    -- so the honest control there is the spoiler/research setting itself.
-    if current_progress and (xr_posture ~= "full" or xr_hold) and not cached_entry.full_document
-        and cached_entry.source_mode ~= "ai_knowledge"
-        and (cached_entry.progress_decimal or 0) < 0.995
-        and (cached_entry.progress_decimal or 0) > current_progress.decimal + 0.01 then
-      local back_rung = XrayAuto.pickPromotableRung(ladder_rungs, 0, current_progress.decimal)
-      if back_rung then
-        table.insert(c_ver_rows, {{
-          text = T(_("Switch back to your position (%1%), instant"),
-            math.floor((tonumber(back_rung.progress_decimal) or 0) * 100 + 0.5)),
-          callback = function()
-            UIManager:close(dialog)
-            self_ref:_switchBackToPositionRung(opts)
-          end,
-        }})
-      end
+    if vr.switch_back then
+      table.insert(c_ver_rows, vr.switch_back)
     end
     -- The cached-book authoring entry (round 23, item 30 — ONE surface): the
     -- dual-mode creation chooser, labeled by what it will actually do
@@ -8542,17 +8434,11 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           end,
         }})
       end
-      -- Archived pre-overwrite versions + ladder rungs (#73 browsable history).
-      -- "All", not "Previous": ladder rungs ahead of the reader are FUTURE
-      -- versions (device round 2 naming)
-      if #versions_all > 0 then
-        table.insert(c_ver_rows, {{
-          text = T(_("All versions (%1)…"), #versions_all),
-          callback = function()
-            UIManager:close(dialog)
-            self_ref:_showXrayCheckpointList(opts)
-          end,
-        }})
+      -- Archived pre-overwrite versions + ladder rungs (#73 browsable
+      -- history) — the shared builder's row ("All", not "Previous": rungs
+      -- ahead of the reader are FUTURE versions)
+      if vr.all_versions then
+        table.insert(c_ver_rows, vr.all_versions)
       end
     end
     -- P6 group rows (only non-empty groups render)
@@ -8562,6 +8448,37 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     addGroupRow(c_ver_rows,
       #versions_all > 0 and T(_("Versions (%1)…"), #versions_all) or _("Versions…"),
       _("Versions"))
+    -- A2 merge discoverability: the merge/fold story (sections → main,
+    -- cross-book fold incl. the series chain / project fan-in, dedup) was
+    -- reachable only via the browser hamburger — the popup gets the same
+    -- three entries behind one group row
+    local mf_rows = {}
+    if sx_file then
+      if c_sx_count > 0 then
+        table.insert(mf_rows, {{
+          text = T(_("Merge section X-Rays (%1)…"), c_sx_count),
+          callback = function()
+            UIManager:close(dialog)
+            self_ref:_startSectionXrayMergeFlow(sx_file, opts)
+          end,
+        }})
+      end
+      table.insert(mf_rows, {{
+        text = _("Merge from another book…"),
+        callback = function()
+          UIManager:close(dialog)
+          self_ref:_startCrossBookXrayFlow(sx_file, opts)
+        end,
+      }})
+      table.insert(mf_rows, {{
+        text = _("Find duplicate entities…"),
+        callback = function()
+          UIManager:close(dialog)
+          self_ref:_startXrayDedupFlow(sx_file, opts)
+        end,
+      }})
+    end
+    addGroupRow(mf_rows, _("Merge / fold…"), _("Merge / fold"))
     -- Per-book Automatic X-Ray (§7 P1): tri-state, universal — mirrored in
     -- Book Settings. Flowing docs only.
     local af = self.settings:readSetting("features") or {}
@@ -10362,15 +10279,7 @@ function AskGPT:_showSectionXrayList(opts)
     text = _("Merge section X-Rays…"),
     callback = function()
       UIManager:close(section_dialog)
-      self_ref:updateConfigFromSettings()
-      require("koassistant_xray_merge").startFlow({
-        file = file,
-        ui = self_ref.ui,
-        plugin = self_ref,
-        configuration = configuration,
-        title = opts and opts.book_title,
-        author = opts and opts.book_author,
-      })
+      self_ref:_startSectionXrayMergeFlow(file, opts)
     end,
   }})
 
@@ -10386,6 +10295,38 @@ function AskGPT:_showSectionXrayList(opts)
     buttons = buttons,
   }
   UIManager:show(section_dialog)
+end
+
+--- Merge/fold flow launchers (A2 merge discoverability): the X-Ray popup, the
+--- section popups, the group screen and the members popup reach the SAME
+--- flows the browser hamburger owns. The wrappers supply what those callers
+--- lack — the module configuration — and land the reader on the result
+--- (reopen_live). The flows re-read settings and disk truth themselves.
+--- opts: { book_title, book_author, close_browser } (all optional)
+function AskGPT:_startSectionXrayMergeFlow(file, opts)
+  require("koassistant_xray_merge").startFlow({
+    file = file, ui = self.ui, plugin = self, configuration = configuration,
+    title = opts and opts.book_title, author = opts and opts.book_author,
+    close_browser = opts and opts.close_browser,
+    reopen_live = true,
+  })
+end
+
+function AskGPT:_startCrossBookXrayFlow(file, opts)
+  require("koassistant_xray_merge").startCrossBookFlow({
+    file = file, ui = self.ui, plugin = self, configuration = configuration,
+    title = opts and opts.book_title, author = opts and opts.book_author,
+    close_browser = opts and opts.close_browser,
+    reopen_live = true,
+  })
+end
+
+function AskGPT:_startXrayDedupFlow(file, opts)
+  require("koassistant_xray_dedup").startFlow({
+    file = file, ui = self.ui, plugin = self, configuration = configuration,
+    title = opts and opts.book_title, author = opts and opts.book_author,
+    close_browser = opts and opts.close_browser,
+  })
 end
 
 --- Show options (rename/delete) for a section X-Ray.

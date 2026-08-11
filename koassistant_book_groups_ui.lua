@@ -19,11 +19,23 @@ local GroupsUI = {}
 
 local function groups() return require("koassistant_book_groups") end
 
+--- Display name for a group (A3): "?" is the store's unnamed placeholder
+--- (create("") — auto-named on first add), and it leaked as a bare "?" on
+--- every surface that read `group.name` raw. EVERY surface naming a group
+--- must route through this. Accepts a group table or a raw name string
+--- (orderCandidates annotations carry the raw name).
+function GroupsUI.displayName(g)
+    local name = (type(g) == "table") and g.name or g
+    if type(name) == "string" and name ~= "" and name ~= "?" then return name end
+    return _("(unnamed)")
+end
+local displayName = GroupsUI.displayName
+
 --- Book Settings row value: "None", "Name", or "Name +2".
 function GroupsUI.rowLabel(path)
     local list = groups().groupsFor(path)
     if #list == 0 then return _("None") end
-    local label = list[1].name
+    local label = displayName(list[1])
     if #list > 1 then label = label .. " +" .. (#list - 1) end
     return label
 end
@@ -61,11 +73,6 @@ local function promptName(title, initial, on_done, on_cancel, popts)
     dialog:onShowKeyboard()
 end
 
--- "?" is the store's unnamed placeholder (create("") — auto-named on first add)
-local function displayName(group)
-    return (group.name ~= "" and group.name ~= "?") and group.name or _("(unnamed)")
-end
-
 --- Short name for a group kind (round 30). Kept SHORT: three of these share
 --- one row with a ●/○ marker each.
 --- @param kind string
@@ -92,6 +99,101 @@ function GroupsUI.kindDescription(kind)
     return _("Order is the reading order — it drives merge suggestions, carried-over knowledge and previous/next navigation.")
 end
 
+-- Kind step at creation (A3): every new group used to be silently a SERIES,
+-- so the next X-Ray create offered sequence folds on e.g. an author
+-- collection — token-spending wrong offers. One 3-button step right after
+-- the name; tap-outside keeps the series default (what every pre-existing
+-- group is), and the group screen shown next carries the full sentence plus
+-- the kind switch, so a mis-pick is visible and fixable in place.
+local function promptKind(on_done)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local BookGroups = groups()
+    local dialog
+    local rows = {}
+    for _idx, k in ipairs({ BookGroups.KIND_SERIES, BookGroups.KIND_PROJECT,
+            BookGroups.KIND_PLAIN }) do
+        local captured = k
+        rows[#rows + 1] = {{
+            text = GroupsUI.kindLabel(captured),
+            callback = function()
+                UIManager:close(dialog)
+                on_done(captured)
+            end,
+        }}
+    end
+    dialog = ButtonDialog:new{
+        title = _("What kind of group?") .. "\n"
+            .. _("Series: reading order matters — knowledge carries forward.") .. "\n"
+            .. _("Project: same subject, no order — fold X-Rays on demand.") .. "\n"
+            .. _("Plain: just a list."),
+        buttons = rows,
+        tap_close_callback = function() on_done(BookGroups.KIND_SERIES) end,
+    }
+    UIManager:show(dialog)
+end
+
+-- Shared creation tail: kind step, then create — the kind is asked BEFORE
+-- the store write so a dismissed step still completes as a plain series
+-- create rather than leaving a half-configured group behind a closed dialog.
+local function createWithKind(name, after)
+    promptKind(function(kind)
+        local BookGroups = groups()
+        local group = BookGroups.create(name)
+        if kind ~= BookGroups.KIND_SERIES then
+            BookGroups.setKind(group.id, kind)
+        end
+        after(group)
+    end)
+end
+
+-- Fold target picker (A3 fan-in surfacing): a project group's fold needs ONE
+-- receiving book — the member picked here launches the cross-book picker,
+-- whose "Fold in the other books…" row is the fan-in.
+local function showFoldTargetPicker(group_id, opts)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local BookGroups = groups()
+    local group = BookGroups.byId(group_id)
+    if not group then return end
+    local ActionCache = require("koassistant_action_cache")
+    local XrayParser = require("koassistant_xray_parser")
+    local dialog
+    local rows = {}
+    local has_n = 0
+    for _idx, path in ipairs(group.books) do
+        local captured = path
+        local title = BookGroups.displayTitle(captured, opts.ui)
+        local ok, e = pcall(ActionCache.getXrayCache, captured)
+        local has = ok and e and e.result and XrayParser.isJSON(e.result) and true or false
+        if has then has_n = has_n + 1 end
+        rows[#rows + 1] = {{
+            text = has and title or (title .. " " .. _("(no X-Ray)")),
+            align = "left",
+            enabled = has,
+            callback = function()
+                UIManager:close(dialog)
+                opts.plugin:_startCrossBookXrayFlow(captured)
+            end,
+        }}
+    end
+    if has_n == 0 then
+        UIManager:show(require("ui/widget/infomessage"):new{
+            text = _("No book in this group has an X-Ray yet. Create one first."),
+            timeout = 4,
+        })
+        GroupsUI.showGroup(group_id, opts)
+        return
+    end
+    rows[#rows + 1] = {{ text = _("Cancel"), callback = function()
+        UIManager:close(dialog)
+        GroupsUI.showGroup(group_id, opts)
+    end }}
+    dialog = ButtonDialog:new{
+        title = _("Fold the group's X-Rays into which book?") .. "\n"
+            .. _("Knowledge flows INTO the book you pick — the others are not changed."),
+        buttons = rows,
+    }
+    UIManager:show(dialog)
+end
 
 --- Self-refreshing member move dialog (kenken QoL, #90: 30-book reordering).
 --- The arrow dialog PERSISTS across presses: each press moves the book,
@@ -371,14 +473,55 @@ function GroupsUI.showGroup(group_id, opts)
             end,
         }
     end
+    -- A2/A3: the fold surface the kind picker promises, right on the group
+    -- screen — series chain or project fan-in, via the cross-book picker (ONE
+    -- flow owns consent, skip-done accounting and the confirms). Plain groups
+    -- share nothing by design: no row (sharesKnowledge is the gate).
+    if #group.books > 1 and opts.plugin and opts.plugin._startCrossBookXrayFlow
+        and BookGroups.sharesKnowledge(group) then
+        actions[#actions + 1] = {
+            text = kind == BookGroups.KIND_PROJECT
+                and _("Fold X-Rays into one book…") or _("Merge series X-Rays…"),
+            callback = function()
+                UIManager:close(dialog)
+                if kind == BookGroups.KIND_PROJECT then
+                    showFoldTargetPicker(group_id, opts)
+                    return
+                end
+                -- Series: the chain runs oldest → newest, so launch the picker
+                -- from the LAST member with an X-Ray — its "Fold in earlier
+                -- books" row then covers the whole series
+                local ActionCache = require("koassistant_action_cache")
+                local XrayParser = require("koassistant_xray_parser")
+                local target
+                for _idx, p in ipairs(group.books) do
+                    local ok, e = pcall(ActionCache.getXrayCache, p)
+                    if ok and e and e.result and XrayParser.isJSON(e.result) then
+                        target = p
+                    end
+                end
+                if not target then
+                    UIManager:show(require("ui/widget/infomessage"):new{
+                        text = _("No book in this group has an X-Ray yet. Create one first."),
+                        timeout = 4,
+                    })
+                    GroupsUI.showGroup(group_id, opts)
+                    return
+                end
+                opts.plugin:_startCrossBookXrayFlow(target)
+            end,
+        }
+    end
     actions[#actions + 1] = {
         text = _("Rename…"),
         callback = function()
             UIManager:close(dialog)
-            promptName(_("Rename group"), group.name, function(name)
-                BookGroups.rename(group_id, name)
-                GroupsUI.showGroup(group_id, opts)
-            end, function() GroupsUI.showGroup(group_id, opts) end)
+            -- Prefill skips the "?" placeholder — nothing worth editing in it
+            promptName(_("Rename group"), group.name ~= "?" and group.name or "",
+                function(name)
+                    BookGroups.rename(group_id, name)
+                    GroupsUI.showGroup(group_id, opts)
+                end, function() GroupsUI.showGroup(group_id, opts) end)
         end,
     }
     actions[#actions + 1] = {
@@ -386,7 +529,7 @@ function GroupsUI.showGroup(group_id, opts)
         callback = function()
             local confirm
             confirm = ButtonDialog:new{
-                title = T(_("Delete the group \"%1\"?\nBooks and their artifacts are not touched — only the grouping is removed."), group.name),
+                title = T(_("Delete the group \"%1\"?\nBooks and their artifacts are not touched — only the grouping is removed."), displayName(group)),
                 buttons = {
                     {{ text = _("Delete"), callback = function()
                         UIManager:close(confirm)
@@ -456,11 +599,12 @@ function GroupsUI.showManager(opts)
         callback = function()
             UIManager:close(dialog)
             promptName(_("New group"), nil, function(name)
-                local group = groups().create(name)
-                GroupsUI.showGroup(group.id, {
-                    plugin = opts.plugin, ui = opts.ui,
-                    on_close = function() GroupsUI.showManager(opts) end,
-                })
+                createWithKind(name, function(group)
+                    GroupsUI.showGroup(group.id, {
+                        plugin = opts.plugin, ui = opts.ui,
+                        on_close = function() GroupsUI.showManager(opts) end,
+                    })
+                end)
             end, function() GroupsUI.showManager(opts) end,
             { allow_empty = true,
               description = _("You can leave this empty: the group takes the name of the first book you add.") })
@@ -475,12 +619,13 @@ function GroupsUI.showManager(opts)
             callback = function()
                 UIManager:close(dialog)
                 promptName(_("New group"), BookGroups.displayTitle(open_file, opts.ui), function(name)
-                    local group = groups().create(name)
-                    groups().addBook(group.id, open_file)
-                    GroupsUI.showGroup(group.id, {
-                        plugin = opts.plugin, ui = opts.ui,
-                        on_close = function() GroupsUI.showManager(opts) end,
-                    })
+                    createWithKind(name, function(group)
+                        groups().addBook(group.id, open_file)
+                        GroupsUI.showGroup(group.id, {
+                            plugin = opts.plugin, ui = opts.ui,
+                            on_close = function() GroupsUI.showManager(opts) end,
+                        })
+                    end)
                 end, function() GroupsUI.showManager(opts) end)
             end,
         }}
@@ -518,8 +663,8 @@ function GroupsUI.showBookRow(path, opts)
             -- Round 30: only a SERIES has a book number — saying "book 2 of 5"
             -- about a project or a plain list asserts an order that does not exist
             text = BookGroups.isOrdered(captured)
-                and T(_("In %1 (book %2 of %3)"), captured.name, pos, #captured.books)
-                or T(_("In %1 (%2 books)"), captured.name, #captured.books),
+                and T(_("In %1 (book %2 of %3)"), displayName(captured), pos, #captured.books)
+                or T(_("In %1 (%2 books)"), displayName(captured), #captured.books),
             align = "left",
             callback = function()
                 UIManager:close(dialog)
@@ -540,7 +685,7 @@ function GroupsUI.showBookRow(path, opts)
     for _idx, group in ipairs(joinable) do
         local captured = group
         rows[#rows + 1] = {{
-            text = T(_("Add to %1"), captured.name),
+            text = T(_("Add to %1"), displayName(captured)),
             align = "left",
             callback = function()
                 BookGroups.addBook(captured.id, path)
@@ -555,9 +700,10 @@ function GroupsUI.showBookRow(path, opts)
             -- Kenken QoL (#90): prefill with this book's title — deleting a
             -- few characters beats typing CJK on an e-reader keyboard
             promptName(_("New group"), BookGroups.displayTitle(path, opts.ui), function(name)
-                local group = groups().create(name)
-                groups().addBook(group.id, path)
-                GroupsUI.showBookRow(path, opts)
+                createWithKind(name, function(group)
+                    groups().addBook(group.id, path)
+                    GroupsUI.showBookRow(path, opts)
+                end)
             end, function() GroupsUI.showBookRow(path, opts) end)
         end,
     }}

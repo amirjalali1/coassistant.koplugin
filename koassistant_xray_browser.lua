@@ -5084,110 +5084,60 @@ function XrayBrowser:showOptions()
         end
     end
 
-    -- Update/authoring options — device round 2026-08-05 parity: ONE form row
-    -- ("Extend or rebuild…" → the popup's dual-mode creation chooser) replaces
-    -- the old bespoke redo/update-to-100 fire-rows; the quick paid
-    -- update-to-current keeps a direct row (with the mid-ladder confirm), and
-    -- the free complete-rung switch stays
-    if self.on_update then
-        local cached_dec = self.metadata.progress_decimal or 0
-        local current
-        if self.ui and not self.metadata.full_document and cached_dec < 0.995 then
-            local ContextExtractor = require("koassistant_context_extractor")
-            current = ContextExtractor:new(self.ui):getReadingProgress()
-        end
-        local current_dec = current and current.decimal
-
-        -- Ladder context for the round-6/7 parity gates (main live view only)
-        local uladder_highest = 0
-        local ulive_other_lineage = false
-        if not self.scope and not self.metadata.checkpoint and self.metadata.book_file then
-            local UpdCache = require("koassistant_action_cache")
-            uladder_highest = UpdCache.highestXrayLadderProgress(
-                UpdCache.getXrayLadder(self.metadata.book_file)) or 0
-            local ulive = UpdCache.getXrayCache(self.metadata.book_file)
-            ulive_other_lineage = (ulive and ulive.result
-                and (ulive.full_document or ulive.source_mode == "ai_knowledge")) or false
-        end
-
-        -- Quick paid update to the reading position. Round 14 (popup parity):
-        -- always confirms — mid-ladder honesty lines when checkpoints are
-        -- around, plus the background choice (open-book only)
-        if current_dec and current_dec > cached_dec + 0.01 then
-            table.insert(buttons, {{
-                text = T(_("Update X-Ray (to %1)"), current.formatted), align = "left",
-                callback = function()
-                    closeOptions()
-                    local fire = function()
-                        if self_ref.menu then UIManager:close(self_ref.menu) end
-                        self_ref.on_update()
-                    end
-                    local confirm_text = T(_("Update the X-Ray to exactly %1 with one API call?"),
-                        math.floor(current_dec * 100 + 0.5) .. "%")
-                    if uladder_highest > cached_dec + 0.005 then
-                        -- Decision support (round 9, popup parity): name the
-                        -- concrete free alternative
-                        confirm_text = confirm_text .. "\n"
-                            .. _("Checkpoints are not touched: they still swap in for free as you read past them.")
-                        local CbCache = require("koassistant_action_cache")
-                        local next_ahead, avail_now
-                        for _idx, r in ipairs(CbCache.getXrayLadder(self_ref.metadata.book_file)) do
-                            local p = tonumber(r.progress_decimal)
-                            if p and not r.full_document then
-                                if p > current_dec + 0.005 then
-                                    if not next_ahead or p < next_ahead then next_ahead = p end
-                                elseif p > cached_dec + 0.005 then
-                                    if not avail_now or p > avail_now then avail_now = p end
-                                end
-                            end
+    -- A2: the update / instant-install / switch rows come from the SHARED
+    -- builder (koassistant_xray_rows.lua — one set of gates, labels and
+    -- confirms with the X-Ray action popup; this hamburger previously lacked
+    -- the free instant-install row and offered switch-back under the FULL
+    -- posture). Live main views only, like every version surface here.
+    local vr
+    local vr_browser_closed = false
+    if not self.scope and not self.metadata.checkpoint
+        and self.metadata.plugin and self.metadata.book_file then
+        local VrCache = require("koassistant_action_cache")
+        local live = VrCache.getXrayCache(self.metadata.book_file)
+        if live and live.result then
+            local cur
+            if self.ui and self.ui.document
+                and self.ui.document.file == self.metadata.book_file then
+                local ContextExtractor = require("koassistant_context_extractor")
+                cur = ContextExtractor:new(self.ui):getReadingProgress()
+            end
+            vr = require("koassistant_xray_rows").versionRows({
+                plugin = self.metadata.plugin,
+                file = self.metadata.book_file,
+                entry = live,
+                current_progress = cur,
+                on_update = self.on_update,
+                align = "left",
+                list_opts = { file = self.metadata.book_file,
+                    book_title = self.metadata.title,
+                    book_author = self.metadata.book_author },
+                -- DEFERRED close for version browsing (device round 2): the
+                -- list retires this browser only when a version is actually
+                -- Viewed, Restored or Switched — Delete/Back leave it standing
+                checkpoint_list_opts = { file = self.metadata.book_file,
+                    book_title = self.metadata.title,
+                    book_author = self.metadata.book_author,
+                    reopen_live = true,
+                    close_browser = function()
+                        if not vr_browser_closed and self_ref.menu then
+                            vr_browser_closed = true
+                            UIManager:close(self_ref.menu)
                         end
-                        if avail_now then
-                            confirm_text = confirm_text .. "\n" .. T(_("A free checkpoint at %1% is available right now (\"Update to %1%, instant\" in the X-Ray popup)."),
-                                math.floor(avail_now * 100 + 0.5))
-                        elseif next_ahead then
-                            confirm_text = confirm_text .. "\n" .. T(_("The next free checkpoint arrives at %1%."),
-                                math.floor(next_ahead * 100 + 0.5))
-                        end
-                    end
-                    local plugin = self_ref.metadata.plugin
-                    local bg_ok = plugin and plugin.ui and plugin.ui.document
-                        and plugin.ui.document.file == self_ref.metadata.book_file
-                    local ConfirmBox = require("ui/widget/confirmbox")
-                    UIManager:show(ConfirmBox:new{
-                        text = confirm_text,
-                        ok_text = _("Update"),
-                        ok_callback = fire,
-                        other_buttons = bg_ok and {{{
-                            text = _("Update in background (keep reading)"),
-                            callback = function()
-                                if self_ref.menu then UIManager:close(self_ref.menu) end
-                                plugin:_fireXrayAutoUpdate({ manual = true })
-                            end,
-                        }}} or nil,
-                    })
-                end,
-            }})
-        end
-
-        -- Free switch to the finished complete rung (popup parity — replaces
-        -- any paid whole-book path whenever a 1.0 rung exists); never on
-        -- other lineages
-        if uladder_highest >= 0.995 and not ulive_other_lineage
-            and not self.metadata.full_document and cached_dec < 0.995
-            and self.metadata.plugin then
-            table.insert(buttons, {{
-                text = _("Switch to complete version (100%), instant"), align = "left",
-                callback = function()
-                    closeOptions()
-                    -- The switch replaces the data this browser renders
+                    end },
+                pre = closeOptions,
+                retire = function()
+                    -- The operation replaces the data this browser renders
                     if self_ref.menu then UIManager:close(self_ref.menu) end
-                    self_ref.metadata.plugin:_switchToCompleteXrayRung({
-                        file = self_ref.metadata.book_file,
-                        book_title = self_ref.metadata.title,
-                        book_author = self_ref.metadata.book_author,
-                    })
                 end,
-            }})
+            })
+        end
+    end
+    if self.on_update then
+        if vr then
+            if vr.update then table.insert(buttons, vr.update) end
+            if vr.instant then table.insert(buttons, vr.instant) end
+            if vr.switch_complete then table.insert(buttons, vr.switch_complete) end
         end
 
         -- The authoring form (extend / rebuild-from-scratch / checkpoints /
@@ -5217,55 +5167,20 @@ function XrayBrowser:showOptions()
         end
     end
 
-    -- Free exit from ahead-mode (round 8 popup parity): live X-Ray ahead of
-    -- the reader + a rung at-or-below → switch back re-enters position-tracking
-    if not self.scope and not self.metadata.checkpoint
-        and self.metadata.plugin and self.metadata.book_file
-        and self.ui and self.ui.document
-        and self.ui.document.file == self.metadata.book_file then
-        local SbCache = require("koassistant_action_cache")
-        local sb_live = SbCache.getXrayCache(self.metadata.book_file)
-        local SbExtractor = require("koassistant_context_extractor")
-        local sb_cur = SbExtractor:new(self.ui):getReadingProgress()
-        if sb_live and sb_cur and sb_live.result
-            and not sb_live.full_document and sb_live.source_mode ~= "ai_knowledge"
-            and (sb_live.progress_decimal or 0) > sb_cur.decimal + 0.01 then
-            local sb_rung = require("koassistant_xray_auto").pickPromotableRung(
-                SbCache.getXrayLadder(self.metadata.book_file), 0, sb_cur.decimal)
-            if sb_rung then
-                table.insert(buttons, {{
-                    text = T(_("Switch back to your position (%1%), instant"),
-                        math.floor((tonumber(sb_rung.progress_decimal) or 0) * 100 + 0.5)),
-                    align = "left",
-                    callback = function()
-                        closeOptions()
-                        -- The switch replaces the data this browser renders
-                        if self_ref.menu then UIManager:close(self_ref.menu) end
-                        self_ref.metadata.plugin:_switchBackToPositionRung({
-                            file = self_ref.metadata.book_file,
-                        })
-                    end,
-                }})
-            end
-        end
+    -- Free exit from ahead-mode (round 8 popup parity; A2: the shared builder
+    -- also brings the 50(f) posture gate this row previously lacked here)
+    if vr and vr.switch_back then
+        table.insert(buttons, vr.switch_back)
     end
 
     -- Delete option
     if self.on_delete then
         local delete_text = self.scope and _("Delete Section X-Ray") or _("Delete X-Ray")
-        -- Round 13 (maintainer question): deleting the main X-Ray clears the
-        -- whole lineage — ring AND prepared versions (resurrection guard) — so
-        -- the confirm must say so. O(1) header counts.
-        -- Round 28 (maintainer decision): the archived versions are no longer
-        -- collateral — when the ring is non-empty the reader picks. Prepared
-        -- checkpoints (ladder) always go: a surviving rung would resurrect the
-        -- X-Ray through promotion.
-        local n_arch, n_prep = 0, 0
-        if not self.scope and self.metadata and self.metadata.book_file then
-            local DelCache = require("koassistant_action_cache")
-            n_arch = DelCache.getXrayCheckpointCount(self.metadata.book_file)
-            n_prep = DelCache.getXrayLadderCount(self.metadata.book_file)
-        end
+        -- Round 13: deleting the main X-Ray clears the whole lineage — ring
+        -- AND prepared versions (resurrection guard) — so the confirm says so.
+        -- Round 28: archived versions are no longer collateral — the reader
+        -- picks. A2: the choice content is SHARED with the cache viewer's
+        -- delete (koassistant_xray_rows.deleteChoice), read at tap time.
         local function runDelete(keep_versions)
             self_ref.on_delete(keep_versions)
             if self_ref.menu then UIManager:close(self_ref.menu) end
@@ -5274,21 +5189,21 @@ function XrayBrowser:showOptions()
             text = delete_text, align = "left",
             callback = function()
                 closeOptions()
-                if n_arch > 0 then
-                    local title = T(_("Delete this X-Ray? Its %1 archived versions can be kept — they stay reachable under \"Archived X-Ray Versions\" in View Artifacts."), n_arch)
-                    if n_prep > 0 then
-                        title = title .. "\n" .. T(_("Its %1 prepared checkpoints are deleted either way."), n_prep)
-                    end
+                local choice = (not self_ref.scope and self_ref.metadata
+                    and self_ref.metadata.book_file)
+                    and require("koassistant_xray_rows").deleteChoice(self_ref.metadata.book_file)
+                    or nil
+                if choice and choice.two_way then
                     local del_dialog
                     del_dialog = ButtonDialog:new{
-                        title = title,
+                        title = choice.title,
                         buttons = {
-                            {{ text = T(_("Delete X-Ray, keep %1 versions"), n_arch),
+                            {{ text = choice.keep_text,
                                callback = function()
                                    UIManager:close(del_dialog)
                                    runDelete(true)
                                end }},
-                            {{ text = T(_("Delete X-Ray and %1 versions"), n_arch),
+                            {{ text = choice.drop_text,
                                callback = function()
                                    UIManager:close(del_dialog)
                                    runDelete(false)
@@ -5303,8 +5218,8 @@ function XrayBrowser:showOptions()
                 local delete_confirm
                 if self_ref.scope then
                     delete_confirm = T(_("Delete Section X-Ray \"%1\"? This cannot be undone."), self_ref.scope.label or "")
-                elseif n_prep > 0 then
-                    delete_confirm = T(_("Delete this X-Ray? Its %1 checkpoints are deleted with it. This cannot be undone."), n_prep)
+                elseif choice then
+                    delete_confirm = choice.title
                 else
                     delete_confirm = _("Delete this X-Ray? This cannot be undone.")
                 end
@@ -5320,42 +5235,10 @@ function XrayBrowser:showOptions()
 
     -- Archived versions (#73): main X-Ray only — sections have no ring, and an
     -- archived view offering its own history would recurse. Ring + ladder
-    -- rungs (§6 slice 1 — the list aggregates both).
-    if not self.scope and not self.metadata.checkpoint
-        and self.metadata.plugin and self.metadata.book_file then
-        local ActionCache = require("koassistant_action_cache")
-        -- O(1) header counts on both files (a menu row must not full-parse rings)
-        local cp_count = ActionCache.getXrayCheckpointCount(self.metadata.book_file)
-            + ActionCache.getXrayLadderCount(self.metadata.book_file)
-        if cp_count > 0 then
-            table.insert(buttons, {{
-                text = T(_("All versions (%1)…"), cp_count), align = "left",
-                callback = function()
-                    closeOptions()
-                    -- DEFERRED close (device round 2): browsing the list must not
-                    -- retire the browser — it closes only when a version is
-                    -- actually Viewed (another browser opens — module-level
-                    -- state), Restored, or Switched (both replace this view's
-                    -- data). Delete/Back leave it standing.
-                    local browser_closed = false
-                    self_ref.metadata.plugin:_showXrayCheckpointList({
-                        file = self_ref.metadata.book_file,
-                        book_title = self_ref.metadata.title,
-                        book_author = self_ref.metadata.book_author,
-                        -- Round 27 (device): installing from the LIVE X-Ray's
-                        -- own hamburger closed this browser and left the reader
-                        -- nowhere — reopen on the freshly installed data
-                        reopen_live = true,
-                        close_browser = function()
-                            if not browser_closed and self_ref.menu then
-                                browser_closed = true
-                                UIManager:close(self_ref.menu)
-                            end
-                        end,
-                    })
-                end,
-            }})
-        end
+    -- rungs, from the shared builder (deferred close rides its
+    -- checkpoint_list_opts above).
+    if vr and vr.all_versions then
+        table.insert(buttons, vr.all_versions)
     end
 
     -- Merge section X-Rays (§6 slice 3, #90): main X-Ray views only (a section

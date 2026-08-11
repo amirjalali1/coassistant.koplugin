@@ -1002,6 +1002,22 @@ function ArtifactBrowser:_showSectionXrayGroupPopup(sections, doc_path, doc_titl
         return
     end
 
+    -- Merge entry (A2): riding the shared popup covers every consumer of the
+    -- section X-Ray group at once. Management row — select mode skips it,
+    -- like every hamburger/hold-menu in select mode.
+    if not (opts and opts.select_mode) then
+        table.insert(buttons, {{
+            text = _("Merge section X-Rays…"),
+            callback = function()
+                if self_ref._section_group_dialog then
+                    UIManager:close(self_ref._section_group_dialog)
+                end
+                if on_select then on_select() end
+                AskGPT:_startSectionXrayMergeFlow(doc_path, { book_title = doc_title })
+            end,
+        }})
+    end
+
     self._section_group_dialog = ButtonDialog:new{
         title = _("View Section X-Rays"),
         buttons = buttons,

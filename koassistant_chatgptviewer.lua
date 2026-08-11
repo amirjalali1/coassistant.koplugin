@@ -2691,7 +2691,9 @@ function ChatGPTViewer:init()
           end
           local ConfirmBox = require("ui/widget/confirmbox")
           UIManager:show(ConfirmBox:new{
-            text = T(_("Delete this %1?"), self.cache_type_name or _("summary")),
+            -- delete_title also covers the options-less case (A2): an X-Ray
+            -- with prepared checkpoints but no archives warns they go with it
+            text = self.delete_title or T(_("Delete this %1?"), self.cache_type_name or _("summary")),
             ok_text = _("Delete"),
             ok_callback = function()
               self:onClose()
