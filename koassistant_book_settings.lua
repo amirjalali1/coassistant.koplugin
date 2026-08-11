@@ -64,8 +64,9 @@ end
 --   call site has one }
 -- @return table { protected = boolean, reason = "session"|"research"|"book"|
 --   "global"|"default", layer = the resolved layer }. "default" = nothing set
---   anywhere (the schema default) — kept distinct from an explicit global
---   value so the planned default flip (§4.3) changes exactly one branch.
+--   anywhere (the schema default: protection ON since the §4.3 flip) — kept
+--   distinct from an explicit global value so the flip lives in exactly one
+--   branch.
 function BookSettings.resolveSpoilerPosture(doc_settings, features, opts)
     opts = opts or {}
     local layer = opts.layer == "mechanical" and "mechanical" or "request"
@@ -85,7 +86,7 @@ function BookSettings.resolveSpoilerPosture(doc_settings, features, opts)
     if global ~= nil then
         return { protected = global == true, reason = "global", layer = layer }
     end
-    return { protected = false, reason = "default", layer = layer }
+    return { protected = true, reason = "default", layer = layer }
 end
 
 --- Effective spoiler protection for a book — the REQUEST layer of
@@ -1475,7 +1476,7 @@ function BookSettings.showSpoilerFree(opts)
     local doc_settings = resolveDocSettings(ui, document_path)
     local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
     local book_val = doc_settings and doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE)
-    local global_on = features.spoiler_free_chat == true
+    local global_on = features.spoiler_free_chat ~= false
 
     -- Default to "book" only when the book already has an override, else "global".
     local target = opts.target_override
@@ -1567,7 +1568,16 @@ function BookSettings.showSpoilerFree(opts)
         end,
     }})
 
-    dialog = ButtonDialog:new{ title = _("Spoiler-Free Chat"), buttons = buttons }
+    -- §5 research labelling, never graying: research mode disables protection
+    -- outright (the resolver's top persisted layer) — say so while still
+    -- showing the stored state the rows edit.
+    local title = _("Spoiler Protection")
+    local research = doc_settings and doc_settings:readSetting(BookSettings.KEY_RESEARCH)
+    if research == nil then research = features.research_mode == true end
+    if research == true then
+        title = title .. "\n" .. _("Research mode is on: protection is disabled while it stays on.")
+    end
+    dialog = ButtonDialog:new{ title = title, buttons = buttons }
     UIManager:show(dialog)
 end
 
@@ -1981,10 +1991,23 @@ function BookSettings.show(opts)
             showBoolSubPicker(BookSettings.KEY_RESEARCH,
                 _("Research mode (this book)"), features.research_mode == true)
         end })
-    addButton({ text = T(_("Spoiler-free chat: %1"), spoiler_label),
+    -- §5 research labelling, never graying: when research mode disables
+    -- protection the row says so but keeps showing (and editing) the stored
+    -- state — graying would hide a value the user set.
+    local research_active = doc_settings:readSetting(BookSettings.KEY_RESEARCH)
+    if research_active == nil then research_active = features.research_mode == true end
+    local spoiler_row = research_active == true
+        and T(_("Spoiler protection: %1 (off: research mode)"), spoiler_label)
+        or T(_("Spoiler protection: %1"), spoiler_label)
+    addButton({ text = spoiler_row,
         callback = function()
+            local sp_title = _("Spoiler protection (this book)")
+            if research_active == true then
+                sp_title = sp_title .. "\n"
+                    .. _("Research mode is on: protection is disabled while it stays on.")
+            end
             showBoolSubPicker(BookSettings.KEY_SPOILER_FREE,
-                _("Spoiler-free chat (this book)"), features.spoiler_free_chat == true)
+                sp_title, features.spoiler_free_chat ~= false)
         end })
     addButton({ text = T(_("AI Book Tools: %1"), toolsRowLabel(doc_settings:readSetting(BookSettings.KEY_TOOLS))),
         callback = showToolsSubPicker })
@@ -2030,6 +2053,51 @@ function BookSettings.show(opts)
                 end,
                 on_cancel = reopen,
             })
+        end })
+    -- §5 (51g): the promotion hold surfaced as a first-class pick — before this
+    -- row it was only ever set as a side effect of an install choice, which the
+    -- device round found mysterious. Mechanical only: which built version
+    -- installs; prompts and build cadence untouched.
+    addButton({ text = T(_("X-Ray updates: %1"),
+            BookSettings.xrayPromotionHold(doc_settings)
+                and _("Follow my position") or _("Newest first")),
+        callback = function()
+            closeDialog()
+            local hold = BookSettings.xrayPromotionHold(doc_settings)
+            local picker
+            local function pickHold(on)
+                if on then
+                    doc_settings:saveSetting(BookSettings.KEY_XRAY_PROMOTION, "position")
+                else
+                    doc_settings:delSetting(BookSettings.KEY_XRAY_PROMOTION)
+                end
+                doc_settings:flush()
+                syncConfig()
+                -- Let an open book's promotion re-evaluate now (safe no-op otherwise)
+                if plugin and plugin._scheduleXrayLadderPromotion then
+                    plugin:_scheduleXrayLadderPromotion()
+                end
+                UIManager:close(picker)
+                BookSettings.show(opts)
+            end
+            local xr_title = _("X-Ray updates (this book)")
+            if (BookSettings.resolveXrayPosture(doc_settings, features)) == "track" then
+                -- Research labelling rule applied here too: under spoiler
+                -- protection updates follow the position regardless — say so,
+                -- keep the stored pick editable.
+                xr_title = xr_title .. "\n"
+                    .. _("Spoiler protection is on: updates follow your position regardless of this pick.")
+            end
+            local rows = {
+                {{ text = dot(not hold) .. _("Newest first (install checkpoints as they are built)"),
+                    callback = function() pickHold(false) end }},
+                {{ text = dot(hold) .. _("Follow my reading position"),
+                    callback = function() pickHold(true) end }},
+                {{ text = _("Cancel"), id = "close",
+                    callback = function() UIManager:close(picker); BookSettings.show(opts) end }},
+            }
+            picker = ButtonDialog:new{ title = xr_title, buttons = rows }
+            UIManager:show(picker)
         end })
     addButton({ text = T(_("Highlight context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHT_CONTEXT))),
         callback = function()

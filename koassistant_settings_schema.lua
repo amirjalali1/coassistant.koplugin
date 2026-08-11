@@ -560,10 +560,13 @@ local SettingsSchema = {
                 {
                     id = "spoiler_free_chat",
                     type = "toggle",
-                    text = _("Spoiler-free Chat"),
+                    text = _("Spoiler Protection"),
                     path = "features.spoiler_free_chat",
-                    default = false,
-                    help_text = _("When enabled, instructs the AI not to reveal events beyond your current reading position in book and highlight chats. Custom actions can use the {spoiler_free_nudge} placeholder.\n\nFor a per-chat toggle, enable the Spoiler chip via the chat input's gear menu → Toolbar Buttons."),
+                    -- §4.3 flip (2026-08-11): protection ON by default. Read
+                    -- sites check ~= false; the resolver's "default" branch is
+                    -- the single flip point for requests AND X-Ray promotion.
+                    default = true,
+                    help_text = _("On by default: the AI is told not to reveal events beyond your current reading position in book and highlight chats, and X-Ray checkpoint updates follow your position instead of installing the newest version. Research mode disables protection. Override per book in Book Settings; per chat via the Spoiler chip (chat input's gear menu → Toolbar Buttons). Custom actions can use the {spoiler_free_nudge} placeholder."),
                 },
                 {
                     id = "book_info_in_chat",

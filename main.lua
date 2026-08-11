@@ -8098,6 +8098,22 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           })
         end,
       }})
+      -- §5 (51c): one-line posture hint, tap-through to the spoiler picker —
+      -- names why checkpoints will follow the position (post-flip the default)
+      if self:_xrayPosture() == "track" then
+        table.insert(buttons, {{
+          text = _("Spoiler protection is on — checkpoints follow your position"),
+          callback = function()
+            UIManager:close(dialog)
+            require("koassistant_book_settings").showSpoilerFree({
+              plugin = self_ref, ui = self_ref.ui,
+              on_close = function()
+                self_ref:_showXrayScopePopup(action, action_id, on_update, cached_entry, opts)
+              end,
+            })
+          end,
+        }})
+      end
     end
     table.insert(buttons, {{
       text = _("Cancel"),
@@ -8565,6 +8581,22 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           })
         end,
       }})
+      -- §5 (51c): one-line posture hint, tap-through to the spoiler picker —
+      -- names why updates follow the position (post-flip the default)
+      if xr_posture == "track" then
+        table.insert(buttons, {{
+          text = _("Spoiler protection is on — checkpoints follow your position"),
+          callback = function()
+            UIManager:close(dialog)
+            require("koassistant_book_settings").showSpoilerFree({
+              plugin = self_ref, ui = self_ref.ui,
+              on_close = function()
+                self_ref:_showXrayScopePopup(action, action_id, on_update, cached_entry, opts)
+              end,
+            })
+          end,
+        }})
+      end
     end
     table.insert(buttons, {{
       text = _("Cancel"),

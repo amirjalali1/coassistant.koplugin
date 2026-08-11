@@ -123,7 +123,7 @@ TestRunner:test("formats tool results as plain text and appends token usage", fu
     TestRunner:assertTrue(final_answer:find("across 2 API calls", 1, true) ~= nil, "call count")
 end)
 
-TestRunner:test("spoiler-free off → tools get full-document reading scope", function()
+TestRunner:test("spoiler protection off → tools get full-document reading scope", function()
     local scope_message
     local function query_fn(messages, _config, callback)
         scope_message = messages[#messages].content
@@ -132,12 +132,30 @@ TestRunner:test("spoiler-free off → tools get full-document reading scope", fu
     BookToolRunner.run({
         query_fn = query_fn,
         messages = { { role = "user", content = "hi" } },
-        config = { provider = "gemini", features = { is_book_context = true } }, -- no spoiler-free → full
+        -- §4.3 flip: opting out now takes an explicit false
+        config = { provider = "gemini", features = { is_book_context = true, spoiler_free_chat = false } },
         ui = makeUi(),
         on_complete = function() end,
     })
     TestRunner:assertTrue(scope_message:find("read the entire document", 1, true) ~= nil,
         "full-scope scope message")
+end)
+
+TestRunner:test("nothing set → tools clamp by default (the §4.3 flip)", function()
+    local scope_message
+    local function query_fn(messages, _config, callback)
+        scope_message = messages[#messages].content
+        callback(true, "ok")
+    end
+    BookToolRunner.run({
+        query_fn = query_fn,
+        messages = { { role = "user", content = "hi" } },
+        config = { provider = "gemini", features = { is_book_context = true } },
+        ui = makeUi(),
+        on_complete = function() end,
+    })
+    TestRunner:assertTrue(scope_message:find("Do not request or infer content after page", 1, true) ~= nil,
+        "default-protected scope message clamps")
 end)
 
 TestRunner:test("spoiler-free on → tools are clamped to the current page", function()

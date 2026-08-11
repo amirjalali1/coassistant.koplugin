@@ -7836,7 +7836,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                     if kind == "section" and session_spoiler_free
                                         and entry.start_page > cur_page then
                                         UIManager:show(InfoMessage:new{
-                                            text = _("That section is beyond your current position (spoiler-free is on)."),
+                                            text = _("That section is beyond your current position (spoiler protection is on)."),
                                         })
                                         refreshInputDialog()
                                         return
@@ -7864,7 +7864,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 on_select = function(start_entry)
                                     if session_spoiler_free and start_entry.start_page > cur_page then
                                         UIManager:show(InfoMessage:new{
-                                            text = _("That section is beyond your current position (spoiler-free is on)."),
+                                            text = _("That section is beyond your current position (spoiler protection is on)."),
                                         })
                                         refreshInputDialog()
                                         return
@@ -8116,7 +8116,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         if not range then
                             UIManager:show(InfoMessage:new{
                                 text = range_reason == "beyond_position"
-                                    and _("The chosen section is beyond your current position (spoiler-free is on). Pick another scope.")
+                                    and _("The chosen section is beyond your current position (spoiler protection is on). Pick another scope.")
                                     or _("Nothing to include for the chosen scope yet. Pick another scope."),
                                 timeout = 4,
                             })
@@ -9129,7 +9129,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             web_search = _("Web search"),
             book_tools = _("Book tools"),
             quick = _("Quick controls"),
-            spoiler = _("Spoiler-free chat"),
+            spoiler = _("Spoiler protection"),
             scope = _("Scope & context"),
             attach = _("Attach"),
         }
