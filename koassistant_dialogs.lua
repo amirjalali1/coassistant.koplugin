@@ -7612,22 +7612,28 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 -- Just the active domain name (the emoji or the word "Domain" replaces
                 -- the old "Domain: X" prefix — maintainer 2026-07-12). 🏛️ matches the
                 -- Quick Settings domain chip.
+                -- Research indicator v2 (maintainer 2026-08-12): FRONT-positioned —
+                -- chips truncate at the END, so the v1 suffix clipped behind any
+                -- active domain. Emoji mode SWAPS the leading 🏛️ for 🔬 (zero width,
+                -- reads as a mode flip); text mode prefixes "(research)" and lets the
+                -- NAME truncate instead — research-on is the exceptional state, and
+                -- the full name is one tap away. Book > global, matching the freeform
+                -- resolution; per-request DOI auto-detection can't be known at chip
+                -- time. The selector this chip opens is where research is toggled, so
+                -- the marker sits on its own entry point and refreshes with it.
                 local has_domain = (book_domain_id or selected_domain) and book_domain_id ~= "_none"
+                local research_on = book_research_id == true
+                    or (book_research_id == nil and configuration.features
+                        and configuration.features.research_mode == true)
                 local label
                 if enable_emoji then
-                    label = "\u{1F3DB}\u{FE0F} " .. getDomainDisplayName(true)
+                    label = (research_on and "\u{1F52C} " or "\u{1F3DB}\u{FE0F} ")
+                        .. getDomainDisplayName(true)
                 else
                     label = has_domain and getDomainDisplayName(true) or _("Domain")
-                end
-                -- Research indicator (maintainer 2026-08-11: research active had NO
-                -- surface). Book > global, matching the freeform resolution; per-request
-                -- DOI auto-detection can't be known at chip time. The selector this chip
-                -- opens is where research is toggled, so the marker sits on its own
-                -- entry point and refreshes with it.
-                if book_research_id == true
-                    or (book_research_id == nil and configuration.features
-                        and configuration.features.research_mode == true) then
-                    label = label .. (enable_emoji and " \u{1F52C}" or " " .. _("(research)"))
+                    if research_on then
+                        label = _("(research)") .. " " .. label
+                    end
                 end
                 return {
                     text = label,

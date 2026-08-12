@@ -14836,6 +14836,18 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       end
     end
   end
+  -- Research indicator (maintainer 2026-08-12, same rule as the input dialog's
+  -- Domain chip): book override > global; emoji mode swaps the chip's 🏛️ for 🔬,
+  -- text mode appends "(research)" (this row has the width the toolbar chip lacks).
+  -- Tri-state read kept explicit: an `and…or nil` chain would fold a book-level
+  -- FALSE (explicit off) into nil and let the global leak through.
+  local book_research
+  if self.ui and self.ui.document and self.ui.doc_settings then
+    book_research = self.ui.doc_settings:readSetting(
+        require("koassistant_book_settings").KEY_RESEARCH)
+  end
+  local research_on = book_research == true
+      or (book_research == nil and features.research_mode == true)
 
   -- Get primary language display (use native script)
   local primary_lang_id = self:getEffectivePrimaryLanguage()
@@ -14926,7 +14938,9 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
   }
 
   button_defs["domain"] = {
-    text = E("\u{1F3DB}\u{FE0F}", T(_("Domain: %1"), domain_display)),
+    text = E(research_on and "\u{1F52C}" or "\u{1F3DB}\u{FE0F}",
+      T(_("Domain: %1"), domain_display)
+        .. ((research_on and not enable_emoji) and (" " .. _("(research)")) or "")),
     callback = function()
       opening_subdialog = true
       UIManager:close(dialog)
