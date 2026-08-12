@@ -2830,11 +2830,12 @@ function AskGPT:buildProviderMenu(simplified, show_all)
     return a.display_name:lower() < b.display_name:lower()
   end)
 
-  -- Key-filtering (controls parity): in quick-settings mode, once any real API key
-  -- exists, show only configured providers (+ the current selection, marked) with a
-  -- "Show all" escape hatch. Display-only — stored selections are never touched.
+  -- Key-filtering (controls parity; extended from quick-settings to FULL settings
+  -- mode 2026-08-12): once any real API key exists, show only configured providers
+  -- (+ the current selection, marked) with a "Show all" escape hatch. Display-only —
+  -- stored selections are never touched.
   local hidden_count = 0
-  if simplified then
+  do
     local has_real_key = self:hasAnyRealApiKey()
     for _i, prov in ipairs(all_providers) do
       if has_real_key and not self:isProviderConfigured(prov.id, prov.config) then
@@ -2905,6 +2906,14 @@ function AskGPT:buildProviderMenu(simplified, show_all)
     table.insert(items, {
       text = T(_("Show all providers (%1 more)…"), hidden_count),
       replace_items = function() return self_ref:buildProviderMenu(true, true) end,
+      -- TouchMenu path (full settings mode): swap this submenu's list in place.
+      -- The QS popup checks replace_items before callback, so it never gets here.
+      callback = function(touchmenu_instance)
+        self_ref:refreshTouchMenu(touchmenu_instance, function()
+          return self_ref:buildProviderMenu(simplified, true)
+        end)
+      end,
+      keep_menu_open = true,
     })
   end
 

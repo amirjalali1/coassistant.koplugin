@@ -751,222 +751,241 @@ local SettingsSchema = {
         },
 
         -- Reading & Library settings
-        -- Consolidates: chapter quiz, recap reminder, end-of-book, library scanning
+        -- Chapter Quiz and X-Ray are nested submenus (2026-08-12 split — the flat
+        -- section ran 27 rows / 3 pages); recap reminder, end-of-book and library
+        -- scanning stay flat under their headers
         {
             id = "reading_and_library",
             type = "submenu",
             text = _("Reading & Library"),
             emoji = "📖",
             items = {
-                -- Chapter Quiz
+                -- Chapter Quiz (own submenu since the 2026-08-12 section split)
                 {
-                    id = "chapter_quiz_header",
-                    type = "header",
-                    text = _("Chapter Quiz"),
-                },
-                {
-                    id = "enable_chapter_quiz",
-                    type = "toggle",
-                    text = _("Quiz on Chapter End"),
-                    path = "features.enable_chapter_quiz",
-                    default = false,
-                    help_text = _("Offer a comprehension quiz when you finish reading a chapter. Requires a book with a table of contents."),
-                },
-                {
-                    id = "quiz_chapter_depth",
-                    type = "dropdown",
-                    text = _("Quiz Chapter Level"),
-                    path = "features.quiz_chapter_depth",
-                    default = 2,
-                    options = {
-                        { value = "auto", label = _("Auto-detect") },
-                        { value = 1, label = _("Top level (Level 1)") },
-                        { value = 2, label = _("Level 2") },
-                        { value = 3, label = _("Level 3") },
-                        { value = "toc_filter", label = _("All TOC headings") },
-                    },
-                    help_text = _("Which TOC level counts as a 'chapter' for end-of-chapter quizzes. A fixed level falls back to the deepest level the book actually has. 'Auto-detect' picks the deepest level whose chapters are at least the minimum length below. 'All TOC headings' follows KOReader's TOC tick settings. Short or skimmed chapters are skipped by the length setting below."),
-                    depends_on = { id = "enable_chapter_quiz", value = true },
-                },
-                {
-                    id = "quiz_min_chapter_pages",
-                    type = "spinner",
-                    text = _("Minimum Chapter Length (pages)"),
-                    path = "features.quiz_min_chapter_pages",
-                    default = 5,
-                    min = 0,
-                    max = 30,
-                    step = 1,
-                    precision = "%d",
-                    help_text = _("Skip the chapter-end quiz for chapters shorter than this many pages (0 = no minimum). Also sets the threshold 'Auto-detect' uses to pick the chapter level. Can be overridden per book in Book Settings."),
-                    depends_on = { id = "enable_chapter_quiz", value = true },
-                },
-                {
-                    id = "quiz_min_chapter_time",
-                    type = "spinner",
-                    text = _("Minimum Reading Time (minutes)"),
-                    path = "features.quiz_min_chapter_time",
-                    default = 3,
-                    min = 0,
-                    max = 60,
-                    step = 1,
-                    precision = "%d",
-                    help_text = _("Skip the chapter-end quiz unless you spent at least this many minutes reading the chapter (0 = no minimum). Catches flipping quickly through a long chapter. Uses KOReader's reading statistics; if those are unavailable the quiz is still offered. Can be overridden per book in Book Settings."),
-                    depends_on = { id = "enable_chapter_quiz", value = true },
-                },
-                {
-                    id = "quiz_question_count",
-                    type = "spinner",
-                    text = _("Question Count"),
-                    path = "features.quiz_question_count",
-                    default = 8,
-                    min = 3,
-                    max = 15,
-                    step = 1,
-                    precision = "%d",
-                    help_text = _("Total number of questions to generate per quiz."),
-                },
-                {
-                    id = "quiz_difficulty",
-                    type = "dropdown",
-                    text = _("Difficulty"),
-                    path = "features.quiz_difficulty",
-                    default = "medium",
-                    options = {
-                        { value = "easy", label = _("Easy") },
-                        { value = "medium", label = _("Medium") },
-                        { value = "hard", label = _("Hard") },
-                    },
-                    help_text = _("Easy: straightforward recall. Medium: comprehension and application. Hard: analysis and synthesis."),
-                },
-                {
-                    id = "quiz_mc_enabled",
-                    type = "toggle",
-                    text = _("Include Multiple Choice"),
-                    path = "features.quiz_mc_enabled",
-                    default = true,
-                },
-                {
-                    id = "quiz_short_answer_enabled",
-                    type = "toggle",
-                    text = _("Include Short Answer"),
-                    path = "features.quiz_short_answer_enabled",
-                    default = true,
-                },
-                {
-                    id = "quiz_essay_enabled",
-                    type = "toggle",
-                    text = _("Include Discussion"),
-                    path = "features.quiz_essay_enabled",
-                    default = true,
-                    separator = true,
-                },
-                -- X-Ray background auto-update
-                {
-                    id = "xray_auto_header",
-                    type = "header",
-                    text = _("X-Ray"),
-                },
-                {
-                    id = "xray_auto_update",
-                    type = "toggle",
-                    text = _("Automatic X-Ray (all books)"),
-                    path = "features.xray_auto_update",
-                    default = false,
-                    help_text = _("Automatically build and maintain every book's X-Ray as you read (flowing formats like EPUB only): a spoiler-free introduction first, then checkpoints at chapter-sized steps, always keeping the next checkpoint ready ahead of you; reaching it installs it instantly and the one after starts building. Individual books can override this either way: X-Ray popup or Book Settings → Automatic X-Ray; a per-book On works even with this off, and a per-book Off always wins.\n\nSpend guards: at most one background build per cooldown, WiFi only, and text-extraction consent (or a trusted provider) required; background runs extract book text and use API tokens without a per-request tap. Leave off if every request should be explicit."),
-                    on_change = function(new_value, plugin)
-                        -- Round 22 (R4 / known gap (a)): flipping the master with a
-                        -- book open must reach that book immediately — refresh the
-                        -- per-page state and, when turning ON, run the same engine
-                        -- entry a book-open would (the coverage ask fires for
-                        -- first-spend books; established books just restore the
-                        -- one-ahead invariant).
-                        if not plugin or not plugin._refreshXrayAutoState then return end
-                        plugin:_refreshXrayAutoState()
-                        if new_value == true and plugin._fireXrayAutoCheckpoints
-                                and plugin.ui and plugin.ui.document then
-                            local UIManager = require("ui/uimanager")
-                            UIManager:scheduleIn(1, function()
-                                plugin:_fireXrayAutoCheckpoints()
-                            end)
-                        end
+                    id = "chapter_quiz_menu",
+                    type = "submenu",
+                    text_func = function(plugin)
+                        local f = plugin.settings:readSetting("features") or {}
+                        return T(_("Chapter Quiz: %1"),
+                            f.enable_chapter_quiz == true and _("On") or _("Off"))
                     end,
-                },
-                {
-                    id = "xray_auto_create",
-                    type = "toggle",
-                    text = _("Also Start X-Rays Automatically"),
-                    path = "features.xray_auto_create",
-                    default = false,
-                    help_text = _("A sub-setting of Automatic X-Ray (all books), for books that have NO X-Ray yet: allow automation to make the FIRST build (introduction + checkpoints to your position; the first build asks how you want coverage, once per book). With this off, \"all books\" automation only maintains X-Rays you started yourself. Books with an existing non-incremental X-Ray (complete, AI-knowledge, legacy) are never touched.\n\nBooks switched to Automatic individually (per-book On) always build the first one, regardless of this setting."),
-                    depends_on = { id = "xray_auto_update", value = true },
-                },
-                {
-                    id = "xray_coverage_mode",
-                    type = "dropdown",
-                    text = _("First Build for New Books"),
-                    path = "features.xray_coverage_mode",
-                    default = "ask",
-                    options = {
-                        { label = _("Ask each book"), value = "ask" },
-                        { label = _("Catch up, then follow"), value = "follow" },
-                        { label = _("Build all checkpoints"), value = "build" },
+                    items = {
+                        {
+                            id = "enable_chapter_quiz",
+                            type = "toggle",
+                            text = _("Quiz on Chapter End"),
+                            path = "features.enable_chapter_quiz",
+                            default = false,
+                            help_text = _("Offer a comprehension quiz when you finish reading a chapter. Requires a book with a table of contents."),
+                        },
+                        {
+                            id = "quiz_chapter_depth",
+                            type = "dropdown",
+                            text = _("Quiz Chapter Level"),
+                            path = "features.quiz_chapter_depth",
+                            default = 2,
+                            options = {
+                                { value = "auto", label = _("Auto-detect") },
+                                { value = 1, label = _("Top level (Level 1)") },
+                                { value = 2, label = _("Level 2") },
+                                { value = 3, label = _("Level 3") },
+                                { value = "toc_filter", label = _("All TOC headings") },
+                            },
+                            help_text = _("Which TOC level counts as a 'chapter' for end-of-chapter quizzes. A fixed level falls back to the deepest level the book actually has. 'Auto-detect' picks the deepest level whose chapters are at least the minimum length below. 'All TOC headings' follows KOReader's TOC tick settings. Short or skimmed chapters are skipped by the length setting below."),
+                            depends_on = { id = "enable_chapter_quiz", value = true },
+                        },
+                        {
+                            id = "quiz_min_chapter_pages",
+                            type = "spinner",
+                            text = _("Minimum Chapter Length (pages)"),
+                            path = "features.quiz_min_chapter_pages",
+                            default = 5,
+                            min = 0,
+                            max = 30,
+                            step = 1,
+                            precision = "%d",
+                            help_text = _("Skip the chapter-end quiz for chapters shorter than this many pages (0 = no minimum). Also sets the threshold 'Auto-detect' uses to pick the chapter level. Can be overridden per book in Book Settings."),
+                            depends_on = { id = "enable_chapter_quiz", value = true },
+                        },
+                        {
+                            id = "quiz_min_chapter_time",
+                            type = "spinner",
+                            text = _("Minimum Reading Time (minutes)"),
+                            path = "features.quiz_min_chapter_time",
+                            default = 3,
+                            min = 0,
+                            max = 60,
+                            step = 1,
+                            precision = "%d",
+                            help_text = _("Skip the chapter-end quiz unless you spent at least this many minutes reading the chapter (0 = no minimum). Catches flipping quickly through a long chapter. Uses KOReader's reading statistics; if those are unavailable the quiz is still offered. Can be overridden per book in Book Settings."),
+                            depends_on = { id = "enable_chapter_quiz", value = true },
+                        },
+                        {
+                            id = "quiz_question_count",
+                            type = "spinner",
+                            text = _("Question Count"),
+                            path = "features.quiz_question_count",
+                            default = 8,
+                            min = 3,
+                            max = 15,
+                            step = 1,
+                            precision = "%d",
+                            help_text = _("Total number of questions to generate per quiz."),
+                        },
+                        {
+                            id = "quiz_difficulty",
+                            type = "dropdown",
+                            text = _("Difficulty"),
+                            path = "features.quiz_difficulty",
+                            default = "medium",
+                            options = {
+                                { value = "easy", label = _("Easy") },
+                                { value = "medium", label = _("Medium") },
+                                { value = "hard", label = _("Hard") },
+                            },
+                            help_text = _("Easy: straightforward recall. Medium: comprehension and application. Hard: analysis and synthesis."),
+                        },
+                        {
+                            id = "quiz_mc_enabled",
+                            type = "toggle",
+                            text = _("Include Multiple Choice"),
+                            path = "features.quiz_mc_enabled",
+                            default = true,
+                        },
+                        {
+                            id = "quiz_short_answer_enabled",
+                            type = "toggle",
+                            text = _("Include Short Answer"),
+                            path = "features.quiz_short_answer_enabled",
+                            default = true,
+                        },
+                        {
+                            id = "quiz_essay_enabled",
+                            type = "toggle",
+                            text = _("Include Discussion"),
+                            path = "features.quiz_essay_enabled",
+                            default = true,
+                        },
                     },
-                    help_text = _("How Automatic X-Ray handles its first build for a book. \"Ask each book\" shows a one-time choice per book. \"Catch up, then follow\" quietly builds checkpoints to your position and keeps one ahead. \"Build all checkpoints\" offers the full checkpoint build with its cost confirmation. The ask dialog's \"Always do this, for every book\" writes this setting too."),
                 },
+                -- X-Ray settings home (2026-08-12 split): automation, checkpoints,
+                -- versions, and the spoiler mirror that steers checkpoint promotion
                 {
-                    id = "xray_offer_auto",
-                    type = "toggle",
-                    text = _("Offer Automatic X-Ray for New Books"),
-                    path = "features.xray_offer_auto",
-                    default = false,
-                    help_text = _("When you open a book that has no X-Ray, ask once whether to turn on Automatic X-Ray for it. Only asks when it could act right away (flowing format, text-extraction consent in place). Declining turns the book's Automatic X-Ray off, so it never asks again for that book."),
-                },
-                -- (Round 21, unified engine: the min/max progress-gap dials are
-                -- retired — checkpoint spacing IS the increment. Stored values
-                -- are still read by dialsFromFeatures for the promotion
-                -- jump cap.)
-                {
-                    id = "xray_auto_cooldown",
-                    type = "spinner",
-                    text = _("Cooldown (minutes)"),
-                    path = "features.xray_auto_cooldown",
-                    default = 15,
-                    min = 0,
-                    max = 120,
-                    step = 1,
-                    precision = "%d",
-                    help_text = _("Minimum time between background checkpoint builds (0 = no cooldown)."),
-                    depends_on = { id = "xray_auto_update", value = true },
-                },
-                {
-                    id = "xray_auto_notify",
-                    type = "toggle",
-                    text = _("Notify on Background Activity"),
-                    path = "features.xray_auto_notify",
-                    default = false,
-                    help_text = _("Show a brief notification when a background X-Ray update or create starts and completes, and when a checkpoint is silently swapped in. Off = fully silent (the X-Ray popup always shows the current coverage)."),
-                },
-                {
-                    id = "xray_ladder_chapter_snap",
-                    type = "toggle",
-                    text = _("Checkpoints at Chapter Ends"),
-                    path = "features.xray_ladder_chapter_snap",
-                    default = true,
-                    help_text = _("When building X-Ray checkpoints, place each checkpoint at the nearest chapter end (within a few percent) instead of an exact percentage; checkpoints then read as \"up to the end of a chapter\", and the versions list shows the chapter names. Needs a table of contents. Checkpoint spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones."),
-                },
-                {
-                    id = "xray_versions_kept",
-                    type = "spinner",
-                    text = _("X-Ray Versions to Keep"),
-                    path = "features.xray_versions_kept",
-                    default = 5,
-                    min = 0,
-                    max = 20,
-                    step = 1,
-                    precision = "%d",
-                    help_text = _("Whenever an update or redo overwrites the X-Ray, the outgoing version is archived: browse, view, or restore them via \"All versions\" in the X-Ray popup and browser menu. This sets how many are kept per book (oldest dropped first). 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself. Checkpoints are stored separately and are never trimmed by this."),
-                    separator = true,
+                    id = "xray_settings_menu",
+                    type = "submenu",
+                    text = _("X-Ray"),
+                    items = {
+                        {
+                            id = "xray_auto_update",
+                            type = "toggle",
+                            text = _("Automatic X-Ray (all books)"),
+                            path = "features.xray_auto_update",
+                            default = false,
+                            help_text = _("Automatically build and maintain every book's X-Ray as you read (flowing formats like EPUB only): a spoiler-free introduction first, then checkpoints at chapter-sized steps, always keeping the next checkpoint ready ahead of you; reaching it installs it instantly and the one after starts building. Individual books can override this either way: X-Ray popup or Book Settings → Automatic X-Ray; a per-book On works even with this off, and a per-book Off always wins.\n\nSpend guards: at most one background build per cooldown, WiFi only, and text-extraction consent (or a trusted provider) required; background runs extract book text and use API tokens without a per-request tap. Leave off if every request should be explicit."),
+                            on_change = function(new_value, plugin)
+                                -- Round 22 (R4 / known gap (a)): flipping the master with a
+                                -- book open must reach that book immediately — refresh the
+                                -- per-page state and, when turning ON, run the same engine
+                                -- entry a book-open would (the coverage ask fires for
+                                -- first-spend books; established books just restore the
+                                -- one-ahead invariant).
+                                if not plugin or not plugin._refreshXrayAutoState then return end
+                                plugin:_refreshXrayAutoState()
+                                if new_value == true and plugin._fireXrayAutoCheckpoints
+                                        and plugin.ui and plugin.ui.document then
+                                    local UIManager = require("ui/uimanager")
+                                    UIManager:scheduleIn(1, function()
+                                        plugin:_fireXrayAutoCheckpoints()
+                                    end)
+                                end
+                            end,
+                        },
+                        {
+                            id = "xray_auto_create",
+                            type = "toggle",
+                            text = _("Also Start X-Rays Automatically"),
+                            path = "features.xray_auto_create",
+                            default = false,
+                            help_text = _("A sub-setting of Automatic X-Ray (all books), for books that have NO X-Ray yet: allow automation to make the FIRST build (introduction + checkpoints to your position; the first build asks how you want coverage, once per book). With this off, \"all books\" automation only maintains X-Rays you started yourself. Books with an existing non-incremental X-Ray (complete, AI-knowledge, legacy) are never touched.\n\nBooks switched to Automatic individually (per-book On) always build the first one, regardless of this setting."),
+                            depends_on = { id = "xray_auto_update", value = true },
+                        },
+                        {
+                            id = "xray_coverage_mode",
+                            type = "dropdown",
+                            text = _("First Build for New Books"),
+                            path = "features.xray_coverage_mode",
+                            default = "ask",
+                            options = {
+                                { label = _("Ask each book"), value = "ask" },
+                                { label = _("Catch up, then follow"), value = "follow" },
+                                { label = _("Build all checkpoints"), value = "build" },
+                            },
+                            help_text = _("How Automatic X-Ray handles its first build for a book. \"Ask each book\" shows a one-time choice per book. \"Catch up, then follow\" quietly builds checkpoints to your position and keeps one ahead. \"Build all checkpoints\" offers the full checkpoint build with its cost confirmation. The ask dialog's \"Always do this, for every book\" writes this setting too."),
+                        },
+                        {
+                            id = "xray_offer_auto",
+                            type = "toggle",
+                            text = _("Offer Automatic X-Ray for New Books"),
+                            path = "features.xray_offer_auto",
+                            default = false,
+                            help_text = _("When you open a book that has no X-Ray, ask once whether to turn on Automatic X-Ray for it. Only asks when it could act right away (flowing format, text-extraction consent in place). Declining turns the book's Automatic X-Ray off, so it never asks again for that book."),
+                        },
+                        -- (Round 21, unified engine: the min/max progress-gap dials are
+                        -- retired — checkpoint spacing IS the increment. Stored values
+                        -- are still read by dialsFromFeatures for the promotion
+                        -- jump cap.)
+                        {
+                            id = "xray_auto_cooldown",
+                            type = "spinner",
+                            text = _("Cooldown (minutes)"),
+                            path = "features.xray_auto_cooldown",
+                            default = 15,
+                            min = 0,
+                            max = 120,
+                            step = 1,
+                            precision = "%d",
+                            help_text = _("Minimum time between background checkpoint builds (0 = no cooldown)."),
+                            depends_on = { id = "xray_auto_update", value = true },
+                        },
+                        {
+                            id = "xray_auto_notify",
+                            type = "toggle",
+                            text = _("Notify on Background Activity"),
+                            path = "features.xray_auto_notify",
+                            default = false,
+                            help_text = _("Show a brief notification when a background X-Ray update or create starts and completes, and when a checkpoint is silently swapped in. Off = fully silent (the X-Ray popup always shows the current coverage)."),
+                            separator = true,
+                        },
+                        {
+                            id = "xray_ladder_chapter_snap",
+                            type = "toggle",
+                            text = _("Checkpoints at Chapter Ends"),
+                            path = "features.xray_ladder_chapter_snap",
+                            default = true,
+                            help_text = _("When building X-Ray checkpoints, place each checkpoint at the nearest chapter end (within a few percent) instead of an exact percentage; checkpoints then read as \"up to the end of a chapter\", and the versions list shows the chapter names. Needs a table of contents. Checkpoint spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones."),
+                        },
+                        {
+                            id = "xray_versions_kept",
+                            type = "spinner",
+                            text = _("X-Ray Versions to Keep"),
+                            path = "features.xray_versions_kept",
+                            default = 5,
+                            min = 0,
+                            max = 20,
+                            step = 1,
+                            precision = "%d",
+                            help_text = _("Whenever an update or redo overwrites the X-Ray, the outgoing version is archived: browse, view, or restore them via \"All versions\" in the X-Ray popup and browser menu. This sets how many are kept per book (oldest dropped first). 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself. Checkpoints are stored separately and are never trimmed by this."),
+                            separator = true,
+                        },
+                        {
+                            id = "spoiler_free_chat_xray",
+                            type = "toggle",
+                            text = _("Spoiler Protection"),
+                            path = "features.spoiler_free_chat",
+                            default = true,
+                            help_text = _("Mirrors the Spoiler Protection setting in Chat & Export Settings. It also lives here because it steers X-Ray updates: when on, checkpoint installs follow your reading position; when off, the newest built checkpoint installs right away. Override per book in Book Settings (the Spoiler Protection and X-Ray updates rows)."),
+                        },
+                    },
                 },
                 -- Recap Reminder
                 {
