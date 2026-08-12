@@ -11198,6 +11198,9 @@ function AskGPT:viewCachedAction(action, action_id, cached_entry, opts)
             title = quiz_book_title,
             chapter = section_label,
             book_author = quiz_book_author,
+            ui = self.ui,
+            plugin = self,
+            document_path = file,
             on_save_notebook = file and function(text)
               local Notebook = require("koassistant_notebook")
               local notebook_path = Notebook.getPath(file)
@@ -14162,12 +14165,14 @@ function AskGPT:showQuickSettingsPopup(title, menu_items, close_on_select, on_cl
   UIManager:show(self._quick_settings_dialog)
 end
 
---- Quick Settings reasoning popup: the global stance dial plus a per-model control
---- (rendered dynamically from the reasoning profile), and an "Other models…" browser
---- for reaching every configurable model without leaving Quick Settings. Defaults to
---- the active provider/model; pass provider_arg/model_arg to control another one.
---- Rebuilds itself on each change so labels and checkmarks stay fresh.
-function AskGPT:showReasoningQuickPopup(on_close_callback, provider_arg, model_arg)
+--- Quick Settings reasoning popup, in the Web/Tools picker shape: a
+--- [Global | Current model] target-toggle header row, ALWAYS opening on Global.
+--- Global tab = the stance dial; model tab = the per-model controls (shared
+--- _reasoningControlRows) plus the "Other models…" browser. Defaults to the active
+--- provider/model; the model browser passes provider_arg/model_arg to control
+--- another one (and target_arg="model" so the pick lands on that model's tab).
+--- Rebuilds itself on each change so labels and marks stay fresh.
+function AskGPT:showReasoningQuickPopup(on_close_callback, provider_arg, model_arg, target_arg)
   local ButtonDialog = require("ui/widget/buttondialog")
   local ModelConstraints = require("model_constraints")
   local ReasoningPrefs = require("reasoning_prefs")
@@ -14179,73 +14184,92 @@ function AskGPT:showReasoningQuickPopup(on_close_callback, provider_arg, model_a
   local model = model_arg or self:getCurrentModel() or "default"
   local profile = ModelConstraints.getReasoningProfile(provider, model)
   local stance = ReasoningPrefs.getStance(features)
+  local is_model_target = target_arg == "model"
 
-  -- Persist a mutation, then close+reopen so labels/checkmarks refresh.
+  local function reopen(new_target)
+    UIManager:close(self_ref._reasoning_qs_dialog)
+    self_ref._reasoning_qs_dialog = nil
+    self_ref:showReasoningQuickPopup(on_close_callback, provider_arg, model_arg, new_target)
+  end
+  -- Persist a mutation, then close+reopen (same tab) so labels/marks refresh.
   local function mutate(fn)
     local f = self_ref.settings:readSetting("features") or {}
     fn(f)
     self_ref.settings:saveSetting("features", f)
     self_ref.settings:flush()
     self_ref:updateConfigFromSettings()
-    UIManager:close(self_ref._reasoning_qs_dialog)
-    self_ref._reasoning_qs_dialog = nil
-    self_ref:showReasoningQuickPopup(on_close_callback, provider_arg, model_arg)
+    reopen(target_arg)
   end
 
+  local function dot(active) return active and "\u{25CF} " or "\u{25CB} " end
   local buttons = {}
-  local function header(text)
-    table.insert(buttons, {{ text = text, enabled = false }})
-  end
   local function row(text, checked, cb)
-    table.insert(buttons, {{ text = (checked and "\u{2713} " or "") .. text, callback = cb }})
+    table.insert(buttons, {{ text = dot(checked) .. text, callback = cb }})
   end
 
-  -- Global stance (affects every model, respecting each model's capability)
-  header(_("Global stance (all models)"))
-  local STANCES = {
-    { id = "minimal", label = _("Minimal (off where possible)") },
-    { id = "default", label = _("Default (let each model decide)") },
-    { id = "maximum", label = _("Maximum (most reasoning)") },
-  }
-  for _idx, s in ipairs(STANCES) do
-    row(s.label, stance == s.id, function()
-      mutate(function(f) ReasoningPrefs.setStance(f, s.id) end)
-    end)
-  end
-
-  -- This model (rendered from the model's reasoning profile, via shared builder).
-  -- "Inherit" shows the FALLBACK (provider default then stance) — what you'd get
-  -- with no per-model override — NOT the current model pref.
-  header(T(_("This model: %1"), model))
-  local eff = ModelConstraints.resolveReasoning(provider, model, {
-    global_stance = ReasoningPrefs.getStance(features),
+  -- Target toggle: "This model" instead of "Current model" when the browser
+  -- navigated here for an explicit (possibly non-active) model pick.
+  table.insert(buttons, {
+    {
+      text = dot(not is_model_target) .. _("Global"),
+      callback = function()
+        if is_model_target then reopen("global") end
+      end,
+    },
+    {
+      text = dot(is_model_target) .. (model_arg and _("This model") or _("Current model")),
+      callback = function()
+        if not is_model_target then reopen("model") end
+      end,
+    },
   })
-  local eff_label
-  if eff.send_nothing then
-    eff_label = _("model default")
-  elseif eff.mode == "off" then
-    eff_label = _("Off")
-  elseif eff.option then
-    eff_label = ReasoningPrefs.effortLabel(eff.option)
+
+  if not is_model_target then
+    -- Global stance (affects every model, respecting each model's capability)
+    local STANCES = {
+      { id = "minimal", label = _("Minimal (off where possible)") },
+      { id = "default", label = _("Default (let each model decide)") },
+      { id = "maximum", label = _("Maximum (most reasoning)") },
+    }
+    for _idx, s in ipairs(STANCES) do
+      row(s.label, stance == s.id, function()
+        mutate(function(f) ReasoningPrefs.setStance(f, s.id) end)
+      end)
+    end
   else
-    eff_label = _("On")
-  end
-  local function get_model_pref()
-    return ReasoningPrefs.getModelPref(self_ref.settings:readSetting("features") or {}, provider, model)
-  end
-  local model_rows = self:_reasoningControlRows(profile, get_model_pref, eff_label,
-    function(p) mutate(function(f) ReasoningPrefs.setModelPref(f, provider, model, p) end) end,
-    function() mutate(function(f) ReasoningPrefs.clearModelPref(f, provider, model) end) end)
-  for _idx, r in ipairs(model_rows) do
-    if r.info then
-      table.insert(buttons, {{ text = r.text, enabled = false }})
+    -- This model (rendered from the model's reasoning profile, via shared builder).
+    -- "Follow global" shows the FALLBACK (provider default then stance) — what
+    -- you'd get with no per-model override — NOT the current model pref.
+    table.insert(buttons, {{ text = T(_("This model: %1"), model), enabled = false }})
+    local eff = ModelConstraints.resolveReasoning(provider, model, {
+      global_stance = stance,
+    })
+    local eff_label
+    if eff.send_nothing then
+      eff_label = _("model default")
+    elseif eff.mode == "off" then
+      eff_label = _("Off")
+    elseif eff.option then
+      eff_label = ReasoningPrefs.effortLabel(eff.option)
     else
-      row(r.text, r.checked_func(), r.callback)
+      eff_label = _("On")
+    end
+    local function get_model_pref()
+      return ReasoningPrefs.getModelPref(self_ref.settings:readSetting("features") or {}, provider, model)
+    end
+    local model_rows = self:_reasoningControlRows(profile, get_model_pref, eff_label,
+      function(p) mutate(function(f) ReasoningPrefs.setModelPref(f, provider, model, p) end) end,
+      function() mutate(function(f) ReasoningPrefs.clearModelPref(f, provider, model) end) end)
+    for _idx, r in ipairs(model_rows) do
+      if r.info then
+        table.insert(buttons, {{ text = r.text, enabled = false }})
+      else
+        row(r.text, r.checked_func(), r.callback)
+      end
     end
   end
 
-  -- Footer: other-models browser + close
-  header("\u{2500}\u{2500}\u{2500}\u{2500}")
+  -- Footer (both tabs): other-models browser + close
   table.insert(buttons, {{
     text = _("Other models\u{2026}"),
     callback = function()
@@ -14264,7 +14288,7 @@ function AskGPT:showReasoningQuickPopup(on_close_callback, provider_arg, model_a
   }})
 
   self._reasoning_qs_dialog = ButtonDialog:new{
-    title = T(_("Reasoning \u{00B7} %1"), provider_display),
+    title = is_model_target and T(_("Reasoning \u{00B7} %1"), provider_display) or _("Reasoning"),
     buttons = buttons,
     tap_close_callback = function()
       self_ref._reasoning_qs_dialog = nil
@@ -14400,7 +14424,7 @@ function AskGPT:showReasoningModelBrowser(on_close_callback, show_all)
           text = T(_("%1 \u{00B7} %2"), m, ReasoningPrefs.summaryLabel(features, provider, m)),
           callback = function()
             closeBrowser()
-            self_ref:showReasoningQuickPopup(on_close_callback, provider, m)
+            self_ref:showReasoningQuickPopup(on_close_callback, provider, m, "model")
           end,
         }})
       end

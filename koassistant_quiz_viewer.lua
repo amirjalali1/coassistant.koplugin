@@ -95,6 +95,22 @@ function QuizViewer:init()
         self.ges_events = {
             TapClose = { GestureRange:new{ ges = "tap", range = range } },
             Swipe = { GestureRange:new{ ges = "swipe", range = range } },
+            -- Text selection on the rendered HTML (HtmlBoxWidget handles these;
+            -- same wiring as ChatGPTViewer's markdown mode)
+            HoldStartText = { GestureRange:new{ ges = "hold", range = range } },
+            HoldPanText = {
+                GestureRange:new{
+                    ges = "hold_pan",
+                    range = range,
+                    rate = Screen.low_pan_rate and 5.0 or 30.0,
+                },
+            },
+            HoldReleaseText = {
+                GestureRange:new{ ges = "hold_release", range = range },
+                args = function(text, hold_duration)
+                    self:handleTextSelection(text, hold_duration)
+                end,
+            },
         }
     end
 
@@ -155,6 +171,7 @@ function QuizViewer:_buildUI()
         width = self.width - 2 * self.text_padding - 2 * self.text_margin,
         height = content_height - 2 * self.text_padding - 2 * self.text_margin,
         dialog = self,
+        highlight_text_selection = true,
     }
     self._html_widget = html_widget
 
@@ -576,7 +593,9 @@ function QuizViewer:_buildCompletionUI()
         width = self.width - 2 * self.text_padding - 2 * self.text_margin,
         height = content_height - 2 * self.text_padding - 2 * self.text_margin,
         dialog = self,
+        highlight_text_selection = true,
     }
+    self._html_widget = html_widget
 
     local text_frame = FrameContainer:new{
         padding = self.text_padding,
@@ -620,6 +639,58 @@ function QuizViewer:_refresh()
     -- Trigger full rebuild
     self:_buildUI()
     UIManager:setDirty(self, "partial")
+end
+
+--- Clear the hold-selection highlight from the rendered HTML
+function QuizViewer:clearTextHighlight()
+    local inner = self._html_widget and self._html_widget.htmlbox_widget
+    if inner and inner.clearHighlight then
+        if inner:clearHighlight() then
+            inner:redrawHighlight()
+        end
+    end
+end
+
+--- Text selection handler matching ChatGPTViewer behavior:
+--- 1 word + short hold → auto dictionary, 1 word + long hold or 2+ words → selection popup
+function QuizViewer:handleTextSelection(text, hold_duration)
+    if not text or text == "" then return end
+    local ChatGPTViewer = require("koassistant_chatgptviewer")
+    local ui = self.opts and self.opts.ui
+    local plugin = self.opts and self.opts.plugin
+    local self_ref = self
+
+    local word_count = 0
+    for _w in text:gmatch("%S+") do
+        word_count = word_count + 1
+        if word_count > 1 then break end
+    end
+
+    if word_count == 1 and not ChatGPTViewer.isLongHold(hold_duration) then
+        -- Single word + short hold: auto dictionary lookup (fast path)
+        if ui and ui.dictionary then
+            ui.dictionary._koassistant_non_reader_lookup = true
+            ui.dictionary:onLookupWord(text)
+            self:clearTextHighlight()
+            return
+        end
+    end
+
+    local doc_path = self.opts and self.opts.document_path
+    ChatGPTViewer.buildTextSelectionPopup(text, {
+        ui = ui,
+        plugin = plugin,
+        configuration = plugin and plugin.configuration,
+        document_path = doc_path,
+        append_to_notebook = doc_path and function(sel_text)
+            ChatGPTViewer.appendSnippetToNotebook(doc_path, sel_text, {
+                book_title = self_ref.opts and self_ref.opts.title,
+            })
+        end or nil,
+        clear_highlight = function()
+            self_ref:clearTextHighlight()
+        end,
+    })
 end
 
 --- Build formatted text summary of quiz results (for notebook, copy, export)

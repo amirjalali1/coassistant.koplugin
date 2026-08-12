@@ -681,13 +681,19 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
     -- the §11 lever, swap to the mini sibling family-aware · "none" = drop the
     -- layer · any other value = pin that behavior id (the built-in terse is
     -- the intended pick). quick_preset_skip_domain stays a separate opt-in.
-    -- Action pins win (matrix §10): a pinned behavior/domain is never touched;
-    -- Background is identity and always stays.
+    -- Action pins win (matrix §10): a pinned behavior/domain is never touched.
+    -- quick_preset_skip_background (maintainer 2026-08-12) is the same opt-in
+    -- shape for the per-book Background; an action's explicit
+    -- skip_background = false ("always include") counts as a pin and wins.
     local quick_behavior
     if quick_answer then
         if features.quick_preset_skip_domain == true
             and not (action and action.domain) then
             domain_context = nil
+        end
+        if features.quick_preset_skip_background == true
+            and not (action and action.skip_background == false) then
+            book_background = nil
         end
         local qb = features.quick_preset_behavior
         if qb and qb ~= "keep"
@@ -1310,6 +1316,7 @@ showQuickPresetEditor = function(opts)
             toggleRow(_("Web search off"), "quick_preset_web_off"),
             toggleRow(_("Book tools off"), "quick_preset_tools_off"),
             toggleRow(_("Skip domain lens"), "quick_preset_skip_domain", true),
+            toggleRow(_("Skip book background"), "quick_preset_skip_background", true),
             {{
                 text = T(_("Behavior: %1"), quickPresetBehaviorLabel(f)),
                 callback = function()
@@ -10294,6 +10301,9 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
                             title = quiz_title,
                             chapter = chapter_title,
                             book_author = book_metadata and book_metadata.author,
+                            ui = ui,
+                            plugin = plugin,
+                            document_path = quiz_file,
                             on_save_notebook = quiz_file and function(text)
                                 local Notebook = require("koassistant_notebook")
                                 local notebook_path = Notebook.getPath(quiz_file)

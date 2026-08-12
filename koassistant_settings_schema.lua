@@ -579,6 +579,14 @@ local SettingsSchema = {
                             help_text = _("Leave the selected domain lens out of Quick Answer chats. Off by default: the domain shapes identity rather than length, and costs almost nothing in speed."),
                         },
                         {
+                            id = "quick_preset_skip_background",
+                            type = "toggle",
+                            text = _("Skip Book Background"),
+                            path = "features.quick_preset_skip_background",
+                            default = false,
+                            help_text = _("Leave the per-book Background note out of Quick Answer chats. Off by default: the Background frames how you read this book, and costs almost nothing in speed."),
+                        },
+                        {
                             id = "quick_preset_behavior",
                             type = "action",
                             text_func = function(plugin)
