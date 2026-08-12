@@ -455,7 +455,16 @@ local SettingsSchema = {
                             path = "features.stream_auto_scroll",
                             default = true,
                             depends_on = { id = "enable_streaming", value = true },
-                            help_text = _("Follow the arriving text while a response streams. Scrolling up pauses the follow for that response so you can read in place while the rest arrives; the Autoscroll button in the streaming window turns it back on. When the response finishes, the full chat view opens at the newest exchange either way."),
+                            help_text = _("Follow the arriving text while a response streams. Scrolling up pauses the follow for that response so you can read in place while the rest arrives; the Autoscroll button in the streaming window turns it back on."),
+                        },
+                        {
+                            id = "stream_keep_read_position",
+                            type = "toggle",
+                            text = _("Keep Reading Position"),
+                            path = "features.stream_keep_read_position",
+                            default = true,
+                            depends_on = { id = "enable_streaming", value = true },
+                            help_text = _("If auto-scroll is off or paused and you are reading while the response streams, the finished chat opens where you were reading instead of at the newest reply. In Markdown it opens on the page containing your spot; in Plain Text your spot starts the view."),
                         },
                         {
                             id = "stream_page_scroll",

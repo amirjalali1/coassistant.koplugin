@@ -611,7 +611,15 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
         end
     end
 
+    -- Reading-position carry: assigned after the autoscroll state exists (locals
+    -- below finishStream in file order can't be captured here directly)
+    local captureReadPosition
+
     local function finishStream()
+        -- Capture the reader's spot BEFORE the dialog closes: if they paused the
+        -- follow and were reading mid-response, the completion viewer lands there.
+        -- Captured always, handed over only on the success path below.
+        local read_pos_snippet = captureReadPosition and captureReadPosition() or nil
         cleanup()
         -- Clear streaming flag immediately (all exit paths)
         _G.KOAssistantStreaming = nil
@@ -817,6 +825,13 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                 search_used = true
             end
         end
+        -- Reading-position carry hand-over (success only): module slot, consumed
+        -- once by the completion viewer's landing (TTL-guarded there — a stream
+        -- that completes into a non-chat surface never consumes it).
+        if read_pos_snippet then
+            StreamHandler.pending_read_position = { snippet = read_pos_snippet, ts = os.time() }
+            logger.info("KOAssistant: stream read-position captured,", #read_pos_snippet, "bytes")
+        end
         if on_complete then on_complete(true, result, nil, reasoning_content, search_used, usage_data) end
 
         -- Show any pending update popup (deferred during streaming)
@@ -892,6 +907,38 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
         -- Goes through InputText → ScrollTextWidget → TextBoxWidget chain,
         -- keeping scroll indicator and position tracking in sync.
         iw:scrollToBottom()
+    end
+
+    -- Reading-position carry (forward-declared above finishStream): when the
+    -- reader paused the follow (setting off, button, or by scrolling) and the
+    -- stream ends, capture the response text at the TOP of their current view.
+    -- The completion viewer lands on that text instead of the reply anchor. A
+    -- raw snippet is enough — the viewer extracts a render-safe anchor from it
+    -- (this display is raw source text; the viewer may render markdown).
+    -- Skipped while following (they're at the tail — the normal landing is
+    -- right), before any content, in hidden streams, and during reasoning
+    -- (that transcript isn't part of the final answer text).
+    local keep_read_position = settings and settings.stream_keep_read_position ~= false
+    captureReadPosition = function()
+        if not keep_read_position or auto_scroll_active then return nil end
+        if not first_content_received or hidden_streaming or in_reasoning_phase then return nil end
+        local iw = streamDialog and streamDialog._input_widget
+        local stw = iw and iw.text_widget
+        local tb = stw and stw.text_widget
+        local vsl = tb and tb.vertical_string_list
+        local line = vsl and tb.virtual_line_num and vsl[tb.virtual_line_num]
+        local charlist = tb and tb.charlist
+        if not (line and line.offset and charlist and line.offset <= #charlist) then return nil end
+        -- offsets are CHAR indices into charlist (page padding sits at the end,
+        -- so a real top line always points into content). The snippet starts at
+        -- the EXACT top visible line: the completion viewer splits the holding
+        -- paragraph at this very text (round 15c), so the landed page starts
+        -- with the same words the reader had at the top of their view — a
+        -- block-start snap here would cost paragraph-granularity ("misses by
+        -- some lines", logged device round).
+        local snippet = table.concat(charlist, "", line.offset, math.min(#charlist, line.offset + 320))
+        if snippet:match("^%s*$") then return nil end
+        return snippet
     end
 
     -- Hidden streaming: build placeholder text with animated dots

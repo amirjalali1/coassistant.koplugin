@@ -255,7 +255,142 @@ end
 -- use it — verified in libwrap-mupdf). The FIRST marker keeps no break (it
 -- would render a leading blank page); non-transcript viewers carry no marker,
 -- so this is a structural no-op for them.
-local function applyExchangePageBreaks(html_body, configuration)
+-- Reading-position carry: extract a render-safe VERBATIM anchor from a raw
+-- stream snippet. The snippet is raw response text whose markdown syntax
+-- disappears in the rendered view (**bold**, # headings, [links](url), table
+-- pipes) and may be stripped in plain-text mode. Split on syntax chars and
+-- newlines, take the first clean run's first ~4 words with their original
+-- inter-word punctuation — every search that uses the anchor is literal.
+local function extractCarryAnchor(snippet)
+  if type(snippet) ~= "string" then return nil end
+  for raw_run in snippet:gmatch("[^\n%*_#>|~%[%]%(%)`]+") do
+    local run = raw_run:match("^%s*(.-)%s*$") or ""
+    -- List markers render as bullets/numbers the search would never see
+    run = run:gsub("^[-+]%s+", ""):gsub("^%d+%.%s+", "")
+    if #run >= 12 and not run:find("://", 1, true) then
+      local words = run:match("%S+%s+%S+%s+%S+%s+%S+")
+      local candidate = (words and #words >= 12) and words or run
+      if #candidate <= 100 then
+        return candidate
+      end
+    end
+  end
+  return nil
+end
+
+-- Reading-position carry, markdown half (rounds 15b/15c — logged device
+-- rounds): the paused reader's spot must be the TOP of the landed page, and a
+-- paginated HTML view can only top a page at a break. The anchor is the EXACT
+-- text the reader had at the top of their streaming view, so for prose the
+-- holding <p> is SPLIT at the anchor (close it, spacer div, reopen — MuPDF
+-- takes the block sequence; an inline-tag balance walk keeps <strong>/<em>/<a>
+-- nesting intact by backing the split to the last balanced point when needed).
+-- Non-paragraph blocks (list items, headings, pre, quotes) take the break
+-- BEFORE the block — short blocks, so near-exact. Never table cells. Guards:
+-- nothing-above-the-spot (a break would strand a blank/marker-only page — the
+-- 15b 500-char version of this skip ate the first-message carry entirely) and
+-- spot-at-the-reply-start (the reply marker break already tops it).
+-- Display-only, like the reply break.
+local function applyCarryPageBreak(html_body, carry_anchor)
+  if not carry_anchor then return html_body end
+  -- LAST occurrence — the anchor came from the newest reply
+  local anchor_pos, search_start = nil, 1
+  while true do
+    local s = html_body:find(carry_anchor, search_start, true)
+    if not s then break end
+    anchor_pos = s
+    search_start = s + 1
+  end
+  if not anchor_pos then
+    logger.info("KOAssistant: carry page break — anchor not in html")
+    return html_body
+  end
+  -- Nearest block-open tag before the anchor
+  local best, best_tag
+  local i = 1
+  while true do
+    local s = html_body:find("<", i, true)
+    if not s or s >= anchor_pos then break end
+    local tag = html_body:match("^<(%a+)", s)
+    if tag then
+      tag = tag:lower()
+      if tag == "p" or tag == "li" or tag == "pre" or tag == "blockquote"
+          or tag:match("^h%d$") then
+        best, best_tag = s, tag
+      end
+    end
+    i = s + 1
+  end
+  if not best then
+    logger.info("KOAssistant: carry page break — no block open before anchor")
+    return html_body
+  end
+  -- Nothing-above guard: whitespace-collapsed visible text before the spot
+  -- under ~40 chars means at most a bare marker line would fill the page
+  local visible_prefix = html_body:sub(1, anchor_pos - 1):gsub("<[^>]*>", ""):gsub("%s+", "")
+  if #visible_prefix < 40 then
+    logger.info("KOAssistant: carry page break — skipped, nothing above the spot")
+    return html_body
+  end
+  -- Spot at the newest reply's very start: the marker break already tops it
+  local marker = "<p>◉ KOAssistant:</p>"
+  local mpos, msearch = nil, 1
+  while true do
+    local s = html_body:find(marker, msearch, true)
+    if not s then break end
+    mpos = s
+    msearch = s + 1
+  end
+  if mpos and mpos < anchor_pos then
+    local between = html_body:sub(mpos + #marker, anchor_pos - 1):gsub("<[^>]*>", "")
+    if between:match("^%s*$") then
+      logger.info("KOAssistant: carry page break — spot is the reply start, marker break suffices")
+      return html_body
+    end
+  end
+  local DIV = '<div class="koa-exchange-break"></div>'
+  if best_tag == "p" then
+    local content_start = html_body:find(">", best, true)
+    content_start = content_start and (content_start + 1) or best
+    local before_in_block = html_body:sub(content_start, anchor_pos - 1):gsub("<[^>]*>", "")
+    if not before_in_block:match("^%s*$") then
+      -- Mid-paragraph spot: split at the anchor. Balance walk over inline tags
+      -- between the paragraph's start and the anchor — depth 0 at the anchor
+      -- means a clean cut; otherwise back the split to just before the open run
+      local depth, last_balanced = 0, anchor_pos
+      local j = content_start
+      while true do
+        local ts = html_body:find("<", j, true)
+        if not ts or ts >= anchor_pos then break end
+        local closing, name = html_body:match("^<(/?)(%a+)", ts)
+        if name then
+          name = name:lower()
+          if name ~= "br" and name ~= "hr" and name ~= "img" then
+            if closing == "/" then
+              depth = math.max(0, depth - 1)
+            else
+              if depth == 0 then last_balanced = ts end
+              depth = depth + 1
+            end
+          end
+        end
+        j = ts + 1
+      end
+      local split_at = depth > 0 and last_balanced or anchor_pos
+      logger.info("KOAssistant: carry page break — paragraph split at reader's line",
+        depth > 0 and "(backed to tag-balanced point)" or "(exact)")
+      return html_body:sub(1, split_at - 1) .. "</p>" .. DIV .. "<p>" .. html_body:sub(split_at)
+    end
+    -- Spot at the paragraph's first words: plain break before the block
+  end
+  logger.info("KOAssistant: carry page break before reader's block: yes")
+  return html_body:sub(1, best - 1) .. DIV .. html_body:sub(best)
+end
+
+local function applyExchangePageBreaks(html_body, configuration, carry_anchor)
+  -- The carry break rides its own setting (stream_keep_read_position, gated at
+  -- capture time) — it must not die with the exchange-break toggle below
+  html_body = applyCarryPageBreak(html_body, carry_anchor)
   local f = configuration and configuration.features
   -- Default ON since 2026-08-12 (maintainer: no longer experimental)
   if f and f.chat_exchange_page_breaks == false then return html_body end
@@ -1477,6 +1612,26 @@ function ChatGPTViewer:init()
   end
   if self.configuration.features and self.configuration.features.show_debug_in_chat ~= nil then
     self.show_debug_in_chat = self.configuration.features.show_debug_in_chat
+  end
+
+  -- Reading-position carry consumption (INIT-time, round 15b): the markdown
+  -- build below needs the anchor for its page-break injection, so onShow is
+  -- too late to consume. A FRESH slot from a just-finished paused stream
+  -- becomes this viewer's carry anchor; stale slots (a stream that completed
+  -- into a non-chat surface, e.g. the X-Ray browser) are dropped unused.
+  do
+    local ok_sh, SH = pcall(require, "stream_handler")
+    local pending = ok_sh and SH.pending_read_position or nil
+    if pending then
+      SH.pending_read_position = nil
+      if type(pending.snippet) == "string" and os.time() - (pending.ts or 0) <= 15 then
+        self._stream_carry_anchor = extractCarryAnchor(pending.snippet)
+        logger.info("KOAssistant: stream carry anchor:",
+          self._stream_carry_anchor or "none (no usable text in snippet)")
+      else
+        logger.info("KOAssistant: stream carry — stale slot dropped")
+      end
+    end
   end
 
   -- Initialize hide_highlighted_text based on settings and text length
@@ -2857,7 +3012,7 @@ function ChatGPTViewer:init()
       -- Fallback to plain text if HTML generation fails
       html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
     end
-    html_body = applyExchangePageBreaks(html_body, self.configuration)
+    html_body = applyExchangePageBreaks(html_body, self.configuration, self._stream_carry_anchor)
     -- For dictionary popup with RTL language, use "starts with RTL" detection
     local bidi_opts = { use_starts_with_rtl = needs_rtl_fix }
     html_body = addHtmlBidiAttributes(html_body, bidi_opts)
@@ -3427,8 +3582,111 @@ end
 --- START of the latest reply. Markdown rides the HtmlBoxWidget text search
 --- (page granularity); plain text centers the cursor on the marker. Falls
 --- back to the legacy pre-render ratio estimate when the APIs are absent.
+-- Reading-position carry (A8 round 15): when the reader paused the stream's
+-- auto-follow (setting, button, or by scrolling) and was reading mid-response,
+-- StreamHandler.pending_read_position holds the response text at the TOP of
+-- their streaming view. Land THIS viewer on that text instead of the reply
+-- anchor: the streaming window and the finished chat are different widgets with
+-- different layout, so the spot travels as TEXT, not as a scroll offset.
+-- Consume-once: the slot is cleared on the first attempt; a slot older than 15s
+-- is stale (that stream completed into a non-chat surface, e.g. the X-Ray
+-- browser) and is dropped unused. Returns true only when the landing happened.
+function ChatGPTViewer:landOnStreamPosition()
+  local anchor = self._stream_carry_anchor
+  if not anchor then
+    -- Late consumption for renders that skipped init (the B5 update() path):
+    -- no injection happened for this render, so the landing below is
+    -- page-granular — logged as such by the missing carry-break line.
+    local ok_sh, StreamHandler = pcall(require, "stream_handler")
+    local pending = ok_sh and StreamHandler.pending_read_position or nil
+    if not pending then return false end
+    StreamHandler.pending_read_position = nil
+    if type(pending.snippet) ~= "string" or os.time() - (pending.ts or 0) > 15 then
+      return false
+    end
+    anchor = extractCarryAnchor(pending.snippet)
+    if not anchor then
+      logger.info("KOAssistant: stream-position carry — no usable anchor in snippet")
+      return false
+    end
+  end
+  if not self.scroll_text_w then return false end
+  if self.render_markdown then
+    local box = self.scroll_text_w.htmlbox_widget
+    if not (box and box.findText and self.scroll_text_w.scrollToRatio) then return false end
+    -- Same search + cleanup + repaint discipline as the marker landing below
+    -- (MuPDF's page search is case-insensitive and wrap-tolerant; the LAST
+    -- match page is the newest reply's when the phrase repeats)
+    local painted_page = box.page_number
+    local found = box:findText(anchor)
+    local list = box._match_page_list
+    local target = found and list and #list > 0 and list[#list] or nil
+    if box.clearSearch then
+      box:clearSearch(true)
+    else
+      box.search_term, box._search_index, box._match_page_list = nil, nil, nil
+      box.highlight_rects, box.highlight_text = nil, nil
+    end
+    box.page_number = painted_page
+    logger.info("KOAssistant: stream-position carry md — target:", target or "none",
+      "of", box.page_count, "anchor:", anchor)
+    if not target then return false end
+    if target ~= painted_page then
+      self.scroll_text_w:scrollToRatio((target - 0.5) / math.max(1, box.page_count or 1))
+      logger.info("KOAssistant: stream-position carry md — landed page", box.page_number)
+    end
+    return true
+  elseif self.scroll_text_w.moveCursorToCharPos and self.text then
+    -- Plain text carries the response verbatim: find the LAST occurrence (the
+    -- anchor came from the newest reply) and top-align its line — the same
+    -- line-precise recipe as the marker landing
+    local last_byte
+    local search_start = 1
+    while true do
+      local s = self.text:find(anchor, search_start, true)
+      if not s then break end
+      last_byte = s
+      search_start = s + 1
+    end
+    if not last_byte then
+      logger.info("KOAssistant: stream-position carry txt — anchor not found")
+      return false
+    end
+    local _stripped, nchars = self.text:sub(1, last_byte - 1):gsub("[^\128-\191]", "")
+    local target_pos = nchars + 1
+    local tw = self.scroll_text_w.text_widget
+    if tw and tw.lines_per_page and tw.vertical_string_list
+        and #tw.vertical_string_list > 0 and self.scroll_text_w.scrollToRatio then
+      local lines = tw.vertical_string_list
+      local L = 1
+      for i = #lines, 1, -1 do
+        if (lines[i].offset or 1) <= target_pos then
+          L = i
+          break
+        end
+      end
+      logger.info("KOAssistant: stream-position carry txt — line", L, "of", #lines, "to top")
+      if L > tw.lines_per_page then
+        self.scroll_text_w:scrollToRatio(
+          (L - 1 + tw.lines_per_page / 2 + 0.5) / #lines, false)
+      else
+        self.scroll_text_w:scrollToRatio(0, false)
+      end
+      self.scroll_text_w:moveCursorToCharPos(target_pos)
+    else
+      logger.info("KOAssistant: stream-position carry txt — cursor to char", target_pos)
+      self.scroll_text_w:moveCursorToCharPos(target_pos, 5)
+    end
+    return true
+  end
+  return false
+end
+
 function ChatGPTViewer:scrollToLastQuestion()
   if not (self.scroll_text_w and self.text) then return end
+  -- Reading-position carry first: a paused stream's reader spot beats the
+  -- reply anchor (consume-once slot; falls through when absent or unmatched)
+  if self:landOnStreamPosition() then return end
   -- Anchor on the START of the newest reply (maintainer 2026-08-12): the
   -- question can sit at the bottom of its landing page, but the reply is what
   -- the reader came back for. Transcripts without a reply marker (edge/legacy)
@@ -3556,11 +3814,22 @@ function ChatGPTViewer:onShow()
     return "partial", self.frame.dimen
   end)
 
-  -- Schedule scroll after widget renders
+  -- Schedule scroll after widget renders. The carry anchor (consumed at init)
+  -- routes even viewers that would not otherwise scroll — a FIRST streamed
+  -- reply opens at the top, a streamed artifact view has no transcript markers.
   if self.scroll_to_last_question then
     UIManager:scheduleIn(0.1, function()
       if self.scroll_text_w then
         self:scrollToLastQuestion()
+      end
+    end)
+  elseif self._stream_carry_anchor then
+    UIManager:scheduleIn(0.1, function()
+      if self.scroll_text_w then
+        -- Carry only — on a miss the viewer keeps its natural landing (top),
+        -- never the reply-marker fallback (this branch also serves viewers
+        -- without transcript markers, e.g. streamed artifact text)
+        self:landOnStreamPosition()
       end
     end)
   elseif self.scroll_to_bottom then
@@ -4153,7 +4422,12 @@ end
 
 function ChatGPTViewer:update(new_text, scroll_to_bottom)
   self.text = new_text
-  
+  -- New content invalidates the init-time carry anchor: keeping it would pin a
+  -- stray page break at an old paragraph. A reply landing on this path (B5
+  -- fallback) late-consumes the slot in landOnStreamPosition — page-granular,
+  -- since this rebuild carries no injection.
+  self._stream_carry_anchor = nil
+
   -- Default to true for backward compatibility
   if scroll_to_bottom == nil then
     scroll_to_bottom = true
@@ -4170,7 +4444,7 @@ function ChatGPTViewer:update(new_text, scroll_to_bottom)
       logger.warn("ChatGPTViewer: could not generate HTML", err)
       html_body = "<pre>" .. (new_text or "Missing text.") .. "</pre>"
     end
-    html_body = applyExchangePageBreaks(html_body, self.configuration)
+    html_body = applyExchangePageBreaks(html_body, self.configuration, self._stream_carry_anchor)
     -- For dictionary popup with RTL language, use "starts with RTL" detection
     local dict_lang = self.configuration and self.configuration.features
         and self.configuration.features.dictionary_language
@@ -4354,7 +4628,7 @@ function ChatGPTViewer:rebuildScrollWidget()
       logger.warn("ChatGPTViewer: could not generate HTML", err)
       html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
     end
-    html_body = applyExchangePageBreaks(html_body, self.configuration)
+    html_body = applyExchangePageBreaks(html_body, self.configuration, self._stream_carry_anchor)
     -- For dictionary popup with RTL language, use "starts with RTL" detection
     local bidi_opts = { use_starts_with_rtl = needs_rtl_fix }
     html_body = addHtmlBidiAttributes(html_body, bidi_opts)
@@ -4968,7 +5242,7 @@ function ChatGPTViewer:toggleTranslateQuoteVisibility()
       logger.warn("ChatGPTViewer: could not generate HTML", err)
       html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
     end
-    html_body = applyExchangePageBreaks(html_body, self.configuration)
+    html_body = applyExchangePageBreaks(html_body, self.configuration, self._stream_carry_anchor)
     -- For dictionary popup with RTL language, use "starts with RTL" detection
     local dict_lang = self.configuration and self.configuration.features
         and self.configuration.features.dictionary_language
@@ -5869,7 +6143,7 @@ function ChatGPTViewer:refreshMarkdownDisplay()
     logger.warn("ChatGPTViewer: could not generate HTML", err)
     html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
   end
-  html_body = applyExchangePageBreaks(html_body, self.configuration)
+  html_body = applyExchangePageBreaks(html_body, self.configuration, self._stream_carry_anchor)
   -- For dictionary popup with RTL language, use "starts with RTL" detection
   local dict_lang = self.configuration and self.configuration.features
       and self.configuration.features.dictionary_language
