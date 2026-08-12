@@ -324,6 +324,12 @@ local function liveSpoilerLine(cfg, ui)
         end
     end
     local Templates = require("prompts/templates")
+    -- Diagnostic (device round 2026-08-12: spoiler reasoning sighted in a
+    -- general chat — general/library must never reach here, _spoiler_live
+    -- stays nil for them): log every ACTUAL injection so a logged round can
+    -- separate our line from the model's own spoiler-awareness.
+    require("logger").info("KOAssistant: live spoiler line appended — progress:",
+        progress or "none", "book:", book_file or (book_open and "open") or "?")
     if not progress or progress == "" or progress == "0%" then
         return Templates.SPOILER_FREE_NUDGE_NO_PROGRESS
     end

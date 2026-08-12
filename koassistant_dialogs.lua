@@ -2080,7 +2080,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
             title = state.title,
             text = recreated_text,
             configuration = state.configuration,
-            render_markdown = state.render_markdown,
+            render_markdown_override = state.render_markdown,
             show_debug_in_chat = state.show_debug_in_chat,
             -- Set BOTH property names for compatibility
             original_history = state.original_history,
@@ -2376,6 +2376,10 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                         configuration = viewer_cfg,  -- Use viewer's config to maintain state after expand
                         scroll_to_last_question = to_last_question,
                         scroll_to_bottom = not to_last_question,
+                        -- Per-chat view mode survives the reply — the config
+                        -- table can't carry it (settings re-merge), see
+                        -- ChatGPTViewer init's override-first rule
+                        render_markdown_override = viewer.render_markdown,
                         show_debug_in_chat = viewer.show_debug_in_chat,
                         -- Set BOTH property names for compatibility:
                         -- original_history: used by toggleDebugDisplay, toggleHighlightVisibility, etc.

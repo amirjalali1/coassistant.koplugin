@@ -1397,8 +1397,15 @@ function ChatGPTViewer:init()
     end
   end
 
-  -- Use configuration setting if present, otherwise use instance setting
-  if self.configuration.features and self.configuration.features.render_markdown ~= nil then
+  -- Per-chat mode override (reply/rotation/expand chains) BEATS the config
+  -- value: config.features aliases settings state that updateConfigFromSettings
+  -- re-merges from disk mid-chat, so per-chat mode must never depend on it —
+  -- that alias was the "toggle reverts on reply" device bug (2026-08-12).
+  if self.render_markdown_override ~= nil then
+    self.render_markdown = self.render_markdown_override
+    logger.info("KOAssistant: viewer init — per-chat mode override:",
+      self.render_markdown and "markdown" or "plain text")
+  elseif self.configuration.features and self.configuration.features.render_markdown ~= nil then
     self.render_markdown = self.configuration.features.render_markdown
   end
   if self.configuration.features and self.configuration.features.strip_markdown_in_text_mode ~= nil then
@@ -3579,7 +3586,7 @@ function ChatGPTViewer:expandToFullView()
     get_star_state = self.get_star_state,
     close_callback = self.close_callback,
     add_default_buttons = true,
-    render_markdown = self.render_markdown,
+    render_markdown_override = self.render_markdown,
     markdown_font_size = self.markdown_font_size,
     text_align = self.text_align,
     show_debug_in_chat = self.show_debug_in_chat,
@@ -3690,7 +3697,7 @@ function ChatGPTViewer:expandToDictionaryView()
     get_star_state = self.get_star_state,
     close_callback = self.close_callback,
     add_default_buttons = true,
-    render_markdown = self.render_markdown,
+    render_markdown_override = self.render_markdown,
     markdown_font_size = self.markdown_font_size,
     text_align = self.text_align,
     show_debug_in_chat = self.show_debug_in_chat,
@@ -4160,14 +4167,12 @@ end
 
 function ChatGPTViewer:toggleMarkdown()
   -- Toggle markdown rendering for THIS chat only (maintainer 2026-08-12).
-  -- The old tap ALSO wrote the global setting, making per-chat and default
-  -- indistinguishable; the global now lives in the MD/TXT hold popup.
+  -- Live field + the render_markdown_override chain through every viewer
+  -- recreation (reply/rotation/expand) — deliberately NOT the config table:
+  -- its features alias settings state that updateConfigFromSettings re-merges
+  -- from disk mid-chat, which is exactly the "reverts on reply" the device
+  -- rounds hit. The GLOBAL default lives in the MD/TXT hold popup.
   self.render_markdown = not self.render_markdown
-
-  -- Per-chat stickiness: reply-created viewers re-read this config table
-  if self.configuration.features then
-    self.configuration.features.render_markdown = self.render_markdown
-  end
 
   logger.info("KOAssistant: toggleMarkdown — this chat now",
     self.render_markdown and "markdown" or "plain text")
