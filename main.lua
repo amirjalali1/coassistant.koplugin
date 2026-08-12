@@ -6998,14 +6998,16 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
     reading_progress = ContextExtractor:new(self.ui):getReadingProgress()
   end
   -- Gate: whole-doc action + open book + book context (not highlight) + meaningfully mid-read
-  -- (at 0% nothing is read; near 100% it collapses to "Full document"). Visible whether or not text
+  -- (needs a DISPLAYED percent of at least 1 — `decimal > 0` let page 1 of a long book offer
+  -- "Up to current position (0%)" and extract an empty cover-page span, device 2026-08-12;
+  -- near 100% it collapses to "Full document"). Visible whether or not text
   -- extraction is on: with it, read-so-far uses the extracted text (hard spoiler boundary); without
   -- it, it falls back to AI knowledge bounded by the spoiler instruction (soft boundary, like recap).
   -- requires_book_text actions still need extraction (they're blocked otherwise).
   local read_so_far_available = is_whole_doc and not opts.for_highlight
       and self.ui and self.ui.document
       and (text_extraction_enabled or not requires_book_text)
-      and reading_progress and reading_progress.decimal > 0 and reading_progress.decimal < 0.98
+      and reading_progress and reading_progress.percent >= 1 and reading_progress.decimal < 0.98
       and true or false
   -- Show the scope section even without a TOC when read-so-far is the reason (it needs no sections).
   if read_so_far_available then show_scope = true end

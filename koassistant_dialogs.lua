@@ -5689,8 +5689,11 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             and (message_data.book_text_extraction_empty
                 or message_data.full_document_extraction_empty) then
         local empty_dialog
+        local empty_title = message_data.extraction_empty_at_start
+            and _("You're at the very beginning of this book, so there is no text before your position to send.\n\nSending anyway means the AI answers from general knowledge, not this book's text.")
+            or _("No text could be extracted from this document — it may be a scanned or image-only file.\n\nSending anyway means the AI answers from general knowledge, not this book's text.")
         empty_dialog = ButtonDialog:new{
-            title = _("No text could be extracted from this document — it may be a scanned or image-only file.\n\nSending anyway means the AI answers from general knowledge, not this book's text."),
+            title = empty_title,
             buttons = {
                 {{
                     text = _("Cancel"),

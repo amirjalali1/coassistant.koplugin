@@ -1444,6 +1444,12 @@ function ContextExtractor:extractForAction(action)
             if not book_text_result.disabled and self:isAvailable()
                     and (book_text_result.char_count or 0) == 0 then
                 data.book_text_extraction_empty = true
+                -- To-position extraction empty at the very START is expected
+                -- (nothing read yet), not evidence of a scanned file — the
+                -- pre-send ask words the two cases differently.
+                if self:getReadingProgress().percent < 1 then
+                    data.extraction_empty_at_start = true
+                end
             end
         end
 
