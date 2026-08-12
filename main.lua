@@ -14980,8 +14980,10 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       require("koassistant_book_settings").showQuickAnswerDefault({
         plugin = self_ref,
         ui = has_document and self_ref.ui or nil,
-        preset_settings = function()
-          require("koassistant_dialogs").showQuickPresetEditor({ plugin = self_ref })
+        preset_settings = function(chain_close)
+          require("koassistant_dialogs").showQuickPresetEditor({
+            plugin = self_ref, on_close = chain_close,
+          })
         end,
         on_close = reopenQuickSettings,
       })
@@ -15114,6 +15116,11 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       UIManager:close(dialog)
       reopenQuickSettings()
     end,
+    hold_callback = function()
+      opening_subdialog = true
+      UIManager:close(dialog)
+      self_ref:showBypassQuickPick("highlight", reopenQuickSettings)
+    end,
   }
 
   button_defs["d_bypass"] = {
@@ -15127,6 +15134,11 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       opening_subdialog = true
       UIManager:close(dialog)
       reopenQuickSettings()
+    end,
+    hold_callback = function()
+      opening_subdialog = true
+      UIManager:close(dialog)
+      self_ref:showBypassQuickPick("dictionary", reopenQuickSettings)
     end,
   }
 
@@ -16824,6 +16836,44 @@ function AskGPT:executeHighlightBypassAction(action, selected_text, highlight_in
     config_copy,
     self
   )
+end
+
+-- Bypass tile hold (A7b, maintainer 2026-08-12 "worth a menu"): pick the
+-- bypass action without leaving the QS panel flow. Renders the settings
+-- submenu's item builder as a ButtonDialog (auto-scrolls when tall), so the
+-- pick list — including specials like X-Ray Lookup — stays defined in ONE place.
+function AskGPT:showBypassQuickPick(kind, on_close)
+  local ButtonDialog = require("ui/widget/buttondialog")
+  local items = kind == "dictionary"
+    and self:buildDictionaryBypassActionMenu()
+    or self:buildHighlightBypassActionMenu()
+  local menu
+  local function closePicked()
+    UIManager:close(menu)
+    if on_close then on_close() end
+  end
+  local rows = {}
+  for _idx, item in ipairs(items) do
+    if item.callback then
+      local checked = item.checked_func and item.checked_func() or false
+      rows[#rows + 1] = {{
+        text = (checked and "● " or "○ ") .. (item.text or ""),
+        align = "left",
+        callback = function()
+          item.callback()
+          closePicked()
+        end,
+      }}
+    end
+  end
+  rows[#rows + 1] = {{ text = _("Close"), id = "close", callback = closePicked }}
+  menu = ButtonDialog:new{
+    title = kind == "dictionary"
+      and _("Dictionary bypass action") or _("Highlight bypass action"),
+    buttons = rows,
+    tap_close_callback = function() if on_close then on_close() end end,
+  }
+  UIManager:show(menu)
 end
 
 -- Build menu for selecting highlight bypass action

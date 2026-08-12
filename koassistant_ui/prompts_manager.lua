@@ -2118,7 +2118,12 @@ end
 -- flag serves the expanded / doesn't-fit path — the editor must say so
 -- instead of implying the flag decides alone.
 function PromptsManager:_minimalPopupRegistered(state)
-    local id = state.existing_prompt and state.existing_prompt.id
+    -- The three editors carry the action under different keys: wizard =
+    -- existing_prompt (state.prompt there is the prompt TEXT), builtin
+    -- editor = prompt (table), custom quick settings = prompt_ref.
+    local ref = state.existing_prompt or state.prompt_ref
+        or (type(state.prompt) == "table" and state.prompt or nil)
+    local id = ref and ref.id
     if not id then return false end
     local f = self.plugin.settings:readSetting("features") or {}
     return (f.minimal_popup_mode or "short") ~= "off"

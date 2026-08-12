@@ -3130,9 +3130,10 @@ function ChatGPTViewer:askAnotherQuestion()
           plugin = plugin_ref,
           ui = self._ui,
           document_path = hold_document_path,
-          preset_settings = function()
+          preset_settings = function(chain_close)
             require("koassistant_dialogs").showQuickPresetEditor({
               plugin = plugin_ref,
+              on_close = chain_close,
             })
           end,
         })

@@ -949,6 +949,9 @@ function BookSettings.showDomainResearch(opts)
     dialog = ButtonDialog:new{
         title = _("Domain & Research"),
         buttons = BookSettings.buildDomainResearchButtons(state, cb),
+        -- Tap-outside behaves like Close (plugin tenet, applied across every
+        -- picker in this file): the caller's surface must come back
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end,
     }
     UIManager:show(dialog)
 end
@@ -1001,6 +1004,7 @@ function BookSettings.showXrayAutoPicker(opts)
                     if opts.on_cancel then opts.on_cancel() end
                 end }},
         },
+        tap_close_callback = function() if opts.on_cancel then opts.on_cancel() end end,
     }
     UIManager:show(picker)
 end
@@ -1122,7 +1126,8 @@ function BookSettings.showToolsPosture(opts)
         end,
     }})
 
-    dialog = ButtonDialog:new{ title = _("AI Book Tools"), buttons = buttons }
+    dialog = ButtonDialog:new{ title = _("AI Book Tools"), buttons = buttons,
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
     UIManager:show(dialog)
 end
 
@@ -1247,7 +1252,8 @@ function BookSettings.showWebSearch(opts)
         end,
     }})
 
-    dialog = ButtonDialog:new{ title = _("Web Search"), buttons = buttons }
+    dialog = ButtonDialog:new{ title = _("Web Search"), buttons = buttons,
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
     UIManager:show(dialog)
 end
 
@@ -1366,7 +1372,8 @@ function BookSettings.showEffortPicker(opts)
         end,
     }})
 
-    dialog = ButtonDialog:new{ title = spec.title, buttons = buttons }
+    dialog = ButtonDialog:new{ title = spec.title, buttons = buttons,
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
     UIManager:show(dialog)
 end
 
@@ -1432,7 +1439,10 @@ function BookSettings.showQuickAnswerDefault(opts)
             text = _("Preset settings…"),
             callback = function()
                 closeDialog()
-                opts.preset_settings()
+                -- Hand the picker's on_close down the chain so the editor's
+                -- Close/dismiss still returns to the launching surface (the
+                -- QS panel got lost here otherwise)
+                opts.preset_settings(on_close)
             end,
         }})
     end
@@ -1484,7 +1494,8 @@ function BookSettings.showQuickAnswerDefault(opts)
         end,
     }})
 
-    dialog = ButtonDialog:new{ title = _("Quick Answer Default"), buttons = buttons }
+    dialog = ButtonDialog:new{ title = _("Quick Answer Default"), buttons = buttons,
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
     UIManager:show(dialog)
 end
 
@@ -1607,7 +1618,8 @@ function BookSettings.showSpoilerFree(opts)
     elseif summary and summary.status == "complete" then
         title = title .. "\n" .. _("This book is marked finished: protection is off while it stays finished.")
     end
-    dialog = ButtonDialog:new{ title = title, buttons = buttons }
+    dialog = ButtonDialog:new{ title = title, buttons = buttons,
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
     UIManager:show(dialog)
 end
 
@@ -1710,7 +1722,8 @@ function BookSettings.showHighlightContext(opts)
         end,
     }})
 
-    dialog = ButtonDialog:new{ title = _("Context Around Highlights"), buttons = buttons }
+    dialog = ButtonDialog:new{ title = _("Context Around Highlights"), buttons = buttons,
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
     UIManager:show(dialog)
 end
 
@@ -1770,7 +1783,8 @@ function BookSettings.show(opts)
         end
         table.insert(rows, {{ text = _("Cancel"), id = "close",
             callback = function() UIManager:close(picker); BookSettings.show(opts) end }})
-        picker = ButtonDialog:new{ title = _("Domain (this book)"), buttons = rows }
+        picker = ButtonDialog:new{ title = _("Domain (this book)"), buttons = rows,
+            tap_close_callback = function() BookSettings.show(opts) end }
         UIManager:show(picker)
     end
 
@@ -1795,7 +1809,8 @@ function BookSettings.show(opts)
             {{ text = _("Cancel"), id = "close",
                 callback = function() UIManager:close(picker); BookSettings.show(opts) end }},
         }
-        picker = ButtonDialog:new{ title = dialog_title, buttons = rows }
+        picker = ButtonDialog:new{ title = dialog_title, buttons = rows,
+            tap_close_callback = function() BookSettings.show(opts) end }
         UIManager:show(picker)
     end
 
@@ -1851,7 +1866,8 @@ function BookSettings.show(opts)
             {{ text = _("Cancel"), id = "close",
                 callback = function() UIManager:close(picker); BookSettings.show(opts) end }},
         }
-        picker = ButtonDialog:new{ title = dialog_title, buttons = rows }
+        picker = ButtonDialog:new{ title = dialog_title, buttons = rows,
+            tap_close_callback = function() BookSettings.show(opts) end }
         UIManager:show(picker)
     end
 
@@ -1891,7 +1907,8 @@ function BookSettings.show(opts)
             {{ text = _("Cancel"), id = "close",
                 callback = function() UIManager:close(picker); BookSettings.show(opts) end }},
         }
-        picker = ButtonDialog:new{ title = _("Book info in chat (this book)"), buttons = rows }
+        picker = ButtonDialog:new{ title = _("Book info in chat (this book)"), buttons = rows,
+            tap_close_callback = function() BookSettings.show(opts) end }
         UIManager:show(picker)
     end
 
@@ -1918,7 +1935,8 @@ function BookSettings.show(opts)
             {{ text = _("Cancel"), id = "close",
                 callback = function() UIManager:close(picker); BookSettings.show(opts) end }},
         }
-        picker = ButtonDialog:new{ title = dialog_title, buttons = rows }
+        picker = ButtonDialog:new{ title = dialog_title, buttons = rows,
+            tap_close_callback = function() BookSettings.show(opts) end }
         UIManager:show(picker)
     end
     local function contextRowLabel(v)
@@ -2105,7 +2123,8 @@ function BookSettings.show(opts)
                 {{ text = _("Cancel"), id = "close",
                     callback = function() UIManager:close(picker); BookSettings.show(opts) end }},
             }
-            picker = ButtonDialog:new{ title = xr_title, buttons = rows }
+            picker = ButtonDialog:new{ title = xr_title, buttons = rows,
+                tap_close_callback = function() BookSettings.show(opts) end }
             UIManager:show(picker)
         end })
     addButton({ text = T(_("Highlight context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHT_CONTEXT))),
@@ -2192,7 +2211,8 @@ function BookSettings.show(opts)
     end })
 
     local title = (n_custom > 0) and T(_("Book Settings (%1 customized)"), n_custom) or _("Book Settings")
-    dialog = ButtonDialog:new{ title = title, buttons = buttons }
+    dialog = ButtonDialog:new{ title = title, buttons = buttons,
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
     UIManager:show(dialog)
 end
 
@@ -2262,7 +2282,8 @@ function BookSettings.showQuizConfig(opts)
             {{ text = dot(cur == false) .. _("Off"), callback = function() setVal(false) end }},
             {{ text = _("Cancel"), id = "close",
                 callback = function() UIManager:close(picker); BookSettings.showQuizConfig(opts) end }},
-        } }
+        },
+        tap_close_callback = function() BookSettings.showQuizConfig(opts) end }
         UIManager:show(picker)
     end
 
@@ -2286,7 +2307,8 @@ function BookSettings.showQuizConfig(opts)
         end
         table.insert(rows, {{ text = _("Cancel"), id = "close",
             callback = function() UIManager:close(picker); BookSettings.showQuizConfig(opts) end }})
-        picker = ButtonDialog:new{ title = dialog_title, buttons = rows }
+        picker = ButtonDialog:new{ title = dialog_title, buttons = rows,
+            tap_close_callback = function() BookSettings.showQuizConfig(opts) end }
         UIManager:show(picker)
     end
 
@@ -2395,7 +2417,8 @@ function BookSettings.showQuizConfig(opts)
         end }},
     }
 
-    dialog = ButtonDialog:new{ title = _("Quiz settings (this book)"), buttons = buttons }
+    dialog = ButtonDialog:new{ title = _("Quiz settings (this book)"), buttons = buttons,
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
     UIManager:show(dialog)
 end
 
@@ -2476,7 +2499,8 @@ function BookSettings.showLanguageConfig(opts)
             callback = function() UIManager:close(picker); editCustom(key, dialog_title) end }})
         table.insert(rows, {{ text = _("Cancel"), id = "close",
             callback = function() UIManager:close(picker); BookSettings.showLanguageConfig(opts) end }})
-        picker = ButtonDialog:new{ title = dialog_title, buttons = rows }
+        picker = ButtonDialog:new{ title = dialog_title, buttons = rows,
+            tap_close_callback = function() BookSettings.showLanguageConfig(opts) end }
         UIManager:show(picker)
     end
 
@@ -2537,7 +2561,8 @@ function BookSettings.showLanguageConfig(opts)
         end }},
     }
 
-    dialog = ButtonDialog:new{ title = _("Languages (this book)"), buttons = buttons }
+    dialog = ButtonDialog:new{ title = _("Languages (this book)"), buttons = buttons,
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
     UIManager:show(dialog)
 end
 

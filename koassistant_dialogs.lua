@@ -1044,6 +1044,8 @@ showQuickPresetModelMode = function(opts)
     end
     dialog = ButtonDialog:new{
         title = _("Quick Answer preset · model"),
+        -- Tap-outside behaves like Close (plugin tenet): return to the editor
+        tap_close_callback = function() if opts.on_close then opts.on_close() end end,
         buttons = {
             row(_("Keep current model"), mode == "none", function()
                 mutate(function(feats) feats.quick_preset_model_mode = "none" end)
@@ -1127,6 +1129,7 @@ showQuickPresetNudge = function(opts)
     end
     dialog = ButtonDialog:new{
         title = _("Quick Answer preset · brevity nudge"),
+        tap_close_callback = function() if opts.on_close then opts.on_close() end end,
         buttons = {
             row(_("Standard (a few short sentences)"), "standard", function() set(true, nil) end),
             row(_("Ultra-brief (3 sentences max)"), "strict", function() set(true, true) end),
@@ -1213,6 +1216,7 @@ showQuickPresetBehavior = function(opts)
     local pinned = qb ~= "keep" and qb ~= "none" and qb ~= "mini_of_current"
     dialog = ButtonDialog:new{
         title = _("Quick Answer preset · behavior"),
+        tap_close_callback = function() if opts.on_close then opts.on_close() end end,
         buttons = {
             row(_("Keep current behavior"), qb == "keep", function() setMode(nil) end),
             row(_("Mini version of current style"), qb == "mini_of_current", function()
@@ -7719,12 +7723,13 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             plugin = plugin,
                             ui = chips_book_or_highlight and ui_instance or nil,
                             document_path = chips_book_or_highlight and document_path or nil,
-                            preset_settings = function()
+                            preset_settings = function(chain_close)
                                 -- Runtime self-require: a direct file-local ref would
                                 -- add an upvalue to buildInputDialogButtons, which
                                 -- sits AT LuaJIT's 60-upvalue cap.
                                 require("koassistant_dialogs").showQuickPresetEditor({
                                     plugin = plugin,
+                                    on_close = chain_close,
                                 })
                             end,
                             on_close = function()
