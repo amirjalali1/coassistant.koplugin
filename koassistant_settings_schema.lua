@@ -150,7 +150,7 @@ local SettingsSchema = {
             max = 2,
             step = 0.1,
             precision = "%.1f",
-            info_text = _("Range: 0.0-2.0 (Anthropic max 1.0)\nLower = focused, deterministic\nHigher = creative, varied"),
+            info_text = _("Range: 0.0-2.0 (Anthropic max 1.0)\nLower = focused, deterministic\nHigher = creative, varied\n\nApplies to free-form chat: most built-in actions set their own temperature."),
             -- Item 19c: a growing share of models ignore or pin temperature. Annotate
             -- rather than disable — this is a GLOBAL default that still applies to every
             -- other model the reader switches to (same rule as the QS web-search tile).
@@ -1923,8 +1923,8 @@ local SettingsSchema = {
                         {
                             id = "clear_action_cache",
                             type = "action",
-                            text = _("Clear Action Cache"),
-                            help_text = _("Clear cached X-Ray and Recap responses for the current book. Use to regenerate from scratch."),
+                            text = _("Delete Book Artifacts"),
+                            help_text = _("Delete every saved artifact for the current book: the X-Ray (with its archived versions and checkpoints), summaries, analyses and wiki entries. They regenerate from scratch next time you run the actions."),
                             callback = "clearActionCache",
                             depends_on = { id = "enable_book_text_extraction", value = true },
                         },

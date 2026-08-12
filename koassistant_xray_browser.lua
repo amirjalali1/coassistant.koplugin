@@ -1762,7 +1762,7 @@ function XrayBrowser:_commitDormantOp(apply_fn, success_text)
         end,
     })
     if not ok then
-        UIManager:show(InfoMessage:new{ text = _("Cache write failed."), timeout = 4 })
+        UIManager:show(InfoMessage:new{ text = _("Could not save the X-Ray."), timeout = 4 })
         return false
     end
     self._dormant_archived = true

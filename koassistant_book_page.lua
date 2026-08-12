@@ -338,7 +338,7 @@ local function confirmDeleteAll(ctx)
     local ConfirmBox = require("ui/widget/confirmbox")
     local InfoMessage = require("ui/widget/infomessage")
     UIManager:show(ConfirmBox:new{
-        text = T(_("Delete ALL artifacts for \"%1\"?\n\nThis removes the X-Ray (with its archived versions and checkpoints), summaries, analyses, wiki entries and every other cached artifact. Chats, notebook, pinned items and generated images are kept.\n\nThis cannot be undone."), ctx.title),
+        text = T(_("Delete ALL artifacts for \"%1\"?\n\nThis removes the X-Ray (with its archived versions and checkpoints), summaries, analyses, wiki entries and every other artifact. Chats, notebook, pinned items and generated images are kept.\n\nThis cannot be undone."), ctx.title),
         ok_text = _("Delete"),
         ok_callback = function()
             require("koassistant_action_cache").clearAll(ctx.file)

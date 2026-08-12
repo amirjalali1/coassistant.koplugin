@@ -5691,7 +5691,7 @@ function AskGPT:viewCache(parent_dialog)
 
   if #caches == 0 then
     UIManager:show(InfoMessage:new{
-      text = _("No cached content found for this document.\n\nRun X-Ray, Recap, X-Ray (Simple), Document Summary, or Document Analysis to create reusable caches."),
+      text = _("No artifacts found for this document.\n\nRun X-Ray, Recap, X-Ray (Simple), Document Summary, or Document Analysis to create them."),
     })
     return
   end
@@ -14906,6 +14906,7 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
         precision = "%.1f",
         ok_text = _("Set"),
         title_text = _("Temperature"),
+        info_text = _("Range: 0.0-2.0 (Anthropic max 1.0)\nLower = focused, deterministic\nHigher = creative, varied\n\nApplies to free-form chat: most built-in actions set their own temperature."),
         default_value = 0.7,
         callback = function(spin_widget)
           local f = self_ref.settings:readSetting("features") or {}
@@ -15645,8 +15646,8 @@ function AskGPT:testProviderConnection()
   end)
 end
 
---- Clear action cache for the current book
--- Called from Settings → Advanced → Book Text Extraction → Clear Action Cache
+--- Delete all artifacts for the current book
+-- Called from Settings → Advanced → Book Text Extraction → Delete Book Artifacts
 function AskGPT:clearActionCache()
   local InfoMessage = require("ui/widget/infomessage")
   local UIManager = require("ui/uimanager")
@@ -15657,7 +15658,7 @@ function AskGPT:clearActionCache()
   local ui = self.ui
   if not ui or not ui.document or not ui.document.file then
     UIManager:show(InfoMessage:new{
-      text = _("No book is currently open.\n\nOpen a book first, then use this option to clear its cached action responses."),
+      text = _("No book is currently open.\n\nOpen a book first, then use this option to delete its artifacts."),
       timeout = 5,
     })
     return
@@ -15670,7 +15671,7 @@ function AskGPT:clearActionCache()
   local attr = cache_path and lfs.attributes(cache_path)
   if not attr or attr.mode ~= "file" then
     UIManager:show(InfoMessage:new{
-      text = _("No action cache found for this book.\n\nRun an artifact action (X-Ray, Recap, Summarize, etc.) to create a cache."),
+      text = _("No artifacts found for this book.\n\nRun an artifact action (X-Ray, Recap, Summarize, etc.) first."),
       timeout = 3,
     })
     return
@@ -15679,8 +15680,8 @@ function AskGPT:clearActionCache()
   -- Confirm before clearing
   local dialog
   dialog = ButtonDialog:new{
-    title = _("Clear Action Cache"),
-    text = _("Clear all cached action responses for this book?\n\nThis removes X-Ray, Recap, Summarize, Analyze, and X-Ray (Simple) caches. Next time you run these actions, they will regenerate from scratch."),
+    title = _("Delete Book Artifacts"),
+    text = _("Delete ALL artifacts for this book?\n\nThis removes the X-Ray (with its archived versions and checkpoints), summaries, analyses, wiki entries and every other artifact. Chats, notebook, pinned items and generated images are kept.\n\nThis cannot be undone."),
     buttons = {
       {
         {
@@ -15690,7 +15691,7 @@ function AskGPT:clearActionCache()
           end,
         },
         {
-          text = _("Clear Cache"),
+          text = _("Delete"),
           callback = function()
             UIManager:close(dialog)
             local success = ActionCache.clearAll(document_path)
@@ -15698,12 +15699,12 @@ function AskGPT:clearActionCache()
             self._file_dialog_row_cache = { file = nil, rows = nil }
             if success then
               UIManager:show(InfoMessage:new{
-                text = _("Action cache cleared successfully."),
+                text = _("Artifacts deleted."),
                 timeout = 2,
               })
             else
               UIManager:show(InfoMessage:new{
-                text = _("Failed to clear action cache."),
+                text = _("Failed to delete artifacts."),
                 timeout = 3,
               })
             end

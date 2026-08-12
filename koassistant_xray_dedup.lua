@@ -489,7 +489,7 @@ local function commitEntityMerge(opts, state, pair, keep_side, merged_descriptio
         end,
     })
     if not ok then
-        return false, _("Cache write failed.")
+        return false, _("Could not save the X-Ray.")
     end
     state.archived = true
 

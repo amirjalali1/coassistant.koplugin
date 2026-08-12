@@ -648,7 +648,7 @@ Keep bullets short — essential grammar only, no explanatory asides or parenthe
         id = "xray_lookup",
         enable_web_search = false,
         text = _("Look up in X-Ray"),
-        description = _("Search X-Ray cache for selected text. Local lookup: no AI call, works offline."),
+        description = _("Search this book's X-Ray for selected text. Local lookup: no AI call, works offline."),
         context = "highlight",
         local_handler = "xray_lookup",
         requires_open_book = true,

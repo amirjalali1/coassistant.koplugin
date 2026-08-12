@@ -9760,7 +9760,7 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
 
         if total_xrays == 0 then
             UIManager:show(InfoMessage:new{
-                text = _("No X-Ray cache found for this book. Generate one first via the X-Ray action."),
+                text = _("No X-Ray found for this book. Generate one first via the X-Ray action."),
                 timeout = 4,
             })
             return
@@ -9798,7 +9798,7 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
 
     if not best then
         UIManager:show(InfoMessage:new{
-            text = _("No X-Ray cache found for this book. Generate one first via the X-Ray action."),
+            text = _("No X-Ray found for this book. Generate one first via the X-Ray action."),
             timeout = 4,
         })
         return
@@ -9841,7 +9841,7 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
 
     if not data then
         UIManager:show(InfoMessage:new{
-            text = _("Could not parse X-Ray data. Try regenerating the X-Ray cache."),
+            text = _("Could not parse X-Ray data. Try regenerating the X-Ray."),
             timeout = 3,
         })
         return
