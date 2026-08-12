@@ -1931,34 +1931,6 @@ function BookSettings.show(opts)
         if v == nil then return _("Follow global") end
         return BookSettings.toolsPostureLabel(v)
     end
-    local function showToolsSubPicker()
-        closeDialog()
-        local cur = doc_settings:readSetting(BookSettings.KEY_TOOLS)  -- nil | "off" | "manual" | "auto"
-        local picker
-        local function setVal(val)
-            doc_settings:saveSetting(BookSettings.KEY_TOOLS, val)
-            doc_settings:flush()
-            syncConfig()
-            UIManager:close(picker)
-            BookSettings.show(opts)
-        end
-        local global_label = BookSettings.toolsPostureLabel(features.tools_posture or "auto")
-        local rows = {
-            {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), global_label),
-                callback = function() setVal(nil) end }},
-            {{ text = dot(cur == "off") .. _("Off (no tool use at all)"),
-                callback = function() setVal("off") end }},
-            {{ text = dot(cur == "manual") .. _("Manual (Tools chip starts OFF)"),
-                callback = function() setVal("manual") end }},
-            {{ text = dot(cur == "auto") .. _("Auto (Tools chip starts ON)"),
-                callback = function() setVal("auto") end }},
-            {{ text = _("Cancel"), id = "close",
-                callback = function() UIManager:close(picker); BookSettings.show(opts) end }},
-        }
-        picker = ButtonDialog:new{ title = _("AI Book Tools (this book)"), buttons = rows }
-        UIManager:show(picker)
-    end
-
     local book_domain = doc_settings:readSetting(BookSettings.KEY_DOMAIN)
     local domain_label
     if book_domain == "_none" then domain_label = _("None")
@@ -2037,31 +2009,27 @@ function BookSettings.show(opts)
     else
         spoiler_row = T(_("Spoiler protection: %1"), spoiler_label)
     end
+    -- Seam 2 (2026-08-12): these rows open the SHARED scope-aware pickers on
+    -- the book tab (Global one tap away) instead of hand-rolled locals — same
+    -- dialogs as the chip holds and QS tiles, which also makes the web/tool
+    -- effort dials reachable from here. The shared spoiler picker carries the
+    -- research/finished note lines itself.
+    local function sharedPicker(show_fn)
+        closeDialog()
+        show_fn({
+            plugin = plugin, ui = ui, document_path = opts.document_path,
+            target_override = "book",
+            on_close = function() BookSettings.show(opts) end,
+        })
+    end
     addButton({ text = spoiler_row,
-        callback = function()
-            local sp_title = _("Spoiler protection (this book)")
-            if research_active == true then
-                sp_title = sp_title .. "\n"
-                    .. _("Research mode is on: protection is disabled while it stays on.")
-            elseif finished_active then
-                sp_title = sp_title .. "\n"
-                    .. _("This book is marked finished: protection is off while it stays finished.")
-            end
-            showBoolSubPicker(BookSettings.KEY_SPOILER_FREE,
-                sp_title, features.spoiler_free_chat ~= false)
-        end })
+        callback = function() sharedPicker(BookSettings.showSpoilerFree) end })
     addButton({ text = T(_("AI Book Tools: %1"), toolsRowLabel(doc_settings:readSetting(BookSettings.KEY_TOOLS))),
-        callback = showToolsSubPicker })
+        callback = function() sharedPicker(BookSettings.showToolsPosture) end })
     addButton({ text = T(_("Web search: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_WEB_SEARCH))),
-        callback = function()
-            showBoolSubPicker(BookSettings.KEY_WEB_SEARCH,
-                _("Web search (this book)"), features.enable_web_search == true)
-        end })
+        callback = function() sharedPicker(BookSettings.showWebSearch) end })
     addButton({ text = T(_("Quick answer default: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_QUICK_ANSWER))),
-        callback = function()
-            showBoolSubPicker(BookSettings.KEY_QUICK_ANSWER,
-                _("Quick answer default (this book)"), features.quick_answer_default == true)
-        end })
+        callback = function() sharedPicker(BookSettings.showQuickAnswerDefault) end })
     addButton({ text = T(_("Book info: %1"), bookInfoLabel(doc_settings:readSetting(BookSettings.KEY_BOOK_INFO))),
         callback = showBookInfoSubPicker })
     -- Book groups (item 46): membership lives in the groups store, not a
@@ -2141,10 +2109,7 @@ function BookSettings.show(opts)
             UIManager:show(picker)
         end })
     addButton({ text = T(_("Highlight context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHT_CONTEXT))),
-        callback = function()
-            showContextModeSubPicker(BookSettings.KEY_HIGHLIGHT_CONTEXT,
-                _("Highlight context (this book)"), features.highlight_context_mode or "none")
-        end })
+        callback = function() sharedPicker(BookSettings.showHighlightContext) end })
     addButton({ text = T(_("Dictionary context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_DICTIONARY_CONTEXT))),
         callback = function()
             showContextModeSubPicker(BookSettings.KEY_DICTIONARY_CONTEXT,

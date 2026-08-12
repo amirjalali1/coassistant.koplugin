@@ -8156,8 +8156,9 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           text = _("Spoiler protection is on — checkpoints follow your position"),
           callback = function()
             UIManager:close(dialog)
+            -- Seam 2: book-scoped launch surface → open on the book tab
             require("koassistant_book_settings").showSpoilerFree({
-              plugin = self_ref, ui = self_ref.ui,
+              plugin = self_ref, ui = self_ref.ui, target_override = "book",
               on_close = function()
                 self_ref:_showXrayScopePopup(action, action_id, on_update, cached_entry, opts)
               end,
@@ -8522,8 +8523,9 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           text = _("Spoiler protection is on — checkpoints follow your position"),
           callback = function()
             UIManager:close(dialog)
+            -- Seam 2: book-scoped launch surface → open on the book tab
             require("koassistant_book_settings").showSpoilerFree({
-              plugin = self_ref, ui = self_ref.ui,
+              plugin = self_ref, ui = self_ref.ui, target_override = "book",
               on_close = function()
                 self_ref:_showXrayScopePopup(action, action_id, on_update, cached_entry, opts)
               end,
@@ -14950,9 +14952,9 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
 
   button_defs["quick_answer"] = {
     text = (function()
-      -- Quick GLOBAL toggle of the Quick Answer DEFAULT for new chats (web_search
-      -- convention — the scope-aware picker stays in Book Settings / the ⚡ hold
-      -- menu). Label shows the EFFECTIVE state, "(book)" when an override masks it.
+      -- Binary-global rule (seam 2): tap toggles the GLOBAL default in place,
+      -- hold opens the scope-aware picker. Label shows the EFFECTIVE state,
+      -- "(book)" when an override masks it.
       local BookSettings = require("koassistant_book_settings")
       local doc_settings = has_document and self.ui.doc_settings or nil
       local label = BookSettings.resolveQuickAnswerDefault(doc_settings, features)
@@ -14972,13 +14974,62 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       UIManager:close(dialog)
       reopenQuickSettings()
     end,
+    hold_callback = function()
+      opening_subdialog = true
+      UIManager:close(dialog)
+      require("koassistant_book_settings").showQuickAnswerDefault({
+        plugin = self_ref,
+        ui = has_document and self_ref.ui or nil,
+        preset_settings = function()
+          require("koassistant_dialogs").showQuickPresetEditor({ plugin = self_ref })
+        end,
+        on_close = reopenQuickSettings,
+      })
+    end,
+  }
+
+  button_defs["spoiler"] = {
+    text = (function()
+      -- Seam 2 rider (maintainer 2026-08-12): spoiler joins the QS panel.
+      -- Same binary-global rule; label = effective posture for the open book
+      -- (research/finished standing protection down shows as Off here — the
+      -- hold picker carries the explanation lines).
+      local BookSettings = require("koassistant_book_settings")
+      local doc_settings = has_document and self.ui.doc_settings or nil
+      local posture = BookSettings.resolveSpoilerPosture(doc_settings, features)
+      local label = posture.protected and _("On") or _("Off")
+      if doc_settings and doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE) ~= nil then
+        label = label .. _(" (book)")
+      end
+      return E("\u{1F6E1}\u{FE0F}", T(_("Spoiler Protection: %1"), label))
+    end)(),
+    callback = function()
+      local f = self_ref.settings:readSetting("features") or {}
+      -- default-true key: nil/true → explicit false (off), false → true (on)
+      f.spoiler_free_chat = (f.spoiler_free_chat == false)
+      self_ref.settings:saveSetting("features", f)
+      self_ref.settings:flush()
+      self_ref:updateConfigFromSettings()
+      opening_subdialog = true
+      UIManager:close(dialog)
+      reopenQuickSettings()
+    end,
+    hold_callback = function()
+      opening_subdialog = true
+      UIManager:close(dialog)
+      require("koassistant_book_settings").showSpoilerFree({
+        plugin = self_ref,
+        ui = has_document and self_ref.ui or nil,
+        on_close = reopenQuickSettings,
+      })
+    end,
   }
 
   button_defs["web_search"] = {
     text = (function()
-      -- Quick GLOBAL toggle (maintainer decision 2026-07-11 — the scope-aware picker
-      -- stays in the input dialog / Book Settings). Label shows the EFFECTIVE state for
-      -- the open book, with "(book)" when a per-book override masks the global.
+      -- Binary-global rule (seam 2): tap toggles the GLOBAL default in place, hold
+      -- opens the scope-aware picker (with the search-depth dial). Label shows the
+      -- EFFECTIVE state for the open book, "(book)" when a per-book override masks it.
       local BookSettings = require("koassistant_book_settings")
       local doc_settings = has_document and self.ui.doc_settings or nil
       local label = BookSettings.resolveWebSearch(doc_settings, features) and _("On") or _("Off")
@@ -15008,6 +15059,15 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       opening_subdialog = true
       UIManager:close(dialog)
       reopenQuickSettings()
+    end,
+    hold_callback = function()
+      opening_subdialog = true
+      UIManager:close(dialog)
+      require("koassistant_book_settings").showWebSearch({
+        plugin = self_ref,
+        ui = has_document and self_ref.ui or nil,
+        on_close = reopenQuickSettings,
+      })
     end,
   }
 

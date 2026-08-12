@@ -2113,17 +2113,34 @@ function PromptsManager:showTemperatureSelector(state)
     UIManager:show(spin_widget)
 end
 
+-- View-route honesty (A7b): is this action in the Minimal Popup registry with
+-- the feature on? Then eligible sends open as the popup FIRST and the view
+-- flag serves the expanded / doesn't-fit path — the editor must say so
+-- instead of implying the flag decides alone.
+function PromptsManager:_minimalPopupRegistered(state)
+    local id = state.existing_prompt and state.existing_prompt.id
+    if not id then return false end
+    local f = self.plugin.settings:readSetting("features") or {}
+    return (f.minimal_popup_mode or "short") ~= "off"
+        and Constants.resolveMinimalPopupActions(f.minimal_popup_actions)[id] == true
+end
+
 -- Get display text for current view mode
 function PromptsManager:getViewModeDisplayText(state)
+    local base
     if state.translate_view then
-        return _("Translate")
+        base = _("Translate")
     elseif state.dictionary_view then
-        return _("Dictionary")
+        base = _("Dictionary")
     elseif state.compact_view then
-        return _("Dictionary Compact")
+        base = _("Dictionary Compact")
     else
-        return _("Standard")
+        base = _("Standard")
     end
+    if self:_minimalPopupRegistered(state) then
+        return T(_("%1 · opens as Minimal Popup first"), base)
+    end
+    return base
 end
 
 -- View mode selector dialog
@@ -2211,8 +2228,13 @@ function PromptsManager:showViewModeSelector(state, refresh_callback)
         },
     })
 
+    local vm_title = _("View Mode")
+    if self:_minimalPopupRegistered(state) then
+        vm_title = vm_title .. "\n"
+            .. _("This action is in the Minimal Popup list: it opens there first, and the view below applies when it expands or doesn't fit.")
+    end
     self.view_mode_dialog = ButtonDialog:new{
-        title = _("View Mode"),
+        title = vm_title,
         buttons = buttons,
     }
 

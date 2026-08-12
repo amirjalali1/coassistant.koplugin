@@ -164,7 +164,7 @@ end
 Constants.QS_ITEMS_DEFAULT_ORDER = {
     "provider", "model", "behavior", "domain",
     "temperature", "extended_thinking", "web_search",
-    "book_tools", "text_extraction", "quick_answer",
+    "book_tools", "text_extraction", "quick_answer", "spoiler",
     "h_bypass", "d_bypass",
     "language", "translation_language", "dictionary_language",
     "chat_history", "browse_notebooks", "browse_artifacts", "book_groups",
@@ -263,6 +263,7 @@ function Constants.getQsItemText(id, _)
         web_search = _("Web Search"),
         book_tools = _("Book Tools"),
         quick_answer = _("Quick Answer"),
+        spoiler = _("Spoiler Protection"),
         language = _("Language"),
         translation_language = _("Translation Language"),
         dictionary_language = _("Dictionary Language"),
