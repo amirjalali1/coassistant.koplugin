@@ -3368,21 +3368,39 @@ function ChatGPTViewer:scrollToLastQuestion()
   local marker = "▶ User:"
   if self.render_markdown then
     local box = self.scroll_text_w.htmlbox_widget
-    if box and box.findText and box.setPageNumber and box:findText(marker) then
+    if box and box.findText and self.scroll_text_w.scrollToRatio then
+      local painted_page = box.page_number
+      local found = box:findText(marker)
+      logger.info("KOAssistant: scrollToLastQuestion md — painted page", painted_page,
+        "of", box.page_count, "found:", found and true or false)
       -- findText lands on the FIRST match from the current page and builds a
       -- sorted page index of every match — the last user turn is the tail
       local list = box._match_page_list
-      if list and #list > 0 then
-        box:setPageNumber(list[#list])
+      local target = found and list and #list > 0 and list[#list] or nil
+      -- Drop the search state before repainting (no stray match highlights,
+      -- nothing left behind for the viewer's own find feature)
+      if box.clearSearch then
+        box:clearSearch()
+      else
+        box.search_term, box._search_index, box._match_page_list = nil, nil, nil
       end
-      -- Don't leave search state behind for the viewer's own find feature
-      box.search_term = nil
-      box._search_index = nil
-      box._match_page_list = nil
-      if self.scroll_text_w._updateScrollBar then
-        self.scroll_text_w:_updateScrollBar(true)
+      -- findText/setPageNumber change STATE only — the rendered page bitmap
+      -- is cached, and dirtying just the scroll bar leaves it on screen
+      -- (device round 2026-08-12). Restore the painted page and drive the
+      -- jump through scrollToRatio, the one path with the full repaint
+      -- recipe (freeBb + render + dirty the widget region).
+      box.page_number = painted_page
+      if target then
+        logger.info("KOAssistant: scrollToLastQuestion md — jumping to page", target)
+        if target ~= painted_page then
+          -- Mid-page ratio keeps the integer→ratio→integer round-trip off
+          -- the float edge: 1 + floor(count * (target-0.5)/count) == target
+          self.scroll_text_w:scrollToRatio((target - 0.5) / math.max(1, box.page_count or 1))
+        end
+        return
       end
-      return
+    else
+      logger.info("KOAssistant: scrollToLastQuestion md — findText/scrollToRatio unavailable, using ratio fallback")
     end
   elseif self.scroll_text_w.moveCursorToCharPos then
     local last_byte, search_start = nil, 1
@@ -3396,11 +3414,13 @@ function ChatGPTViewer:scrollToLastQuestion()
       -- moveCursorToCharPos wants UTF-8 CHARS, not bytes: count the
       -- non-continuation bytes before the marker
       local _stripped, nchars = self.text:sub(1, last_byte - 1):gsub("[^\128-\191]", "")
+      logger.info("KOAssistant: scrollToLastQuestion txt — cursor to char", nchars + 1)
       self.scroll_text_w:moveCursorToCharPos(nchars + 1)
       return
     end
   end
   local ratio = self:calculateLastQuestionRatio()
+  logger.info("KOAssistant: scrollToLastQuestion — ratio fallback", ratio)
   if self.scroll_text_w.scrollToRatio then
     self.scroll_text_w:scrollToRatio(ratio)
   elseif self.scroll_text_w.scrollToBottom and ratio >= 0.9 then

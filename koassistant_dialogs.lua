@@ -2358,21 +2358,17 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                     -- Use viewer's configuration for replies (respects expand view changes)
                     local viewer_cfg = viewer.configuration or temp_config or CONFIGURATION
 
-                    -- A8 default: a NON-streamed reply lands at the START of the new
-                    -- exchange (last "▶ User:" turn) — the old bottom-land showed the
-                    -- reply's tail first. A STREAMED reply keeps the bottom: the reader
-                    -- just followed the text there, and yanking them back up loses their
-                    -- place. cfg-level signal (`enable_streaming ~= false`); the
-                    -- translate/dict per-mode streaming offs conservatively keep the old
-                    -- bottom behavior. The scroll_to_last_message toggle still forces
-                    -- last-question regardless (its original meaning).
-                    local reply_streamed = not (viewer_cfg and viewer_cfg.features
-                        and viewer_cfg.features.enable_streaming == false)
-                    local to_last_question = (history and history.getAssistantTurnCount
-                            and history:getAssistantTurnCount() > 1)
-                        and (not reply_streamed
-                            or (viewer_cfg and viewer_cfg.features
-                                and viewer_cfg.features.scroll_to_last_message == true))
+                    -- A8 landing rule (maintainer 2026-08-12: streamed replies too —
+                    -- round 1's streamed-keeps-bottom carve-out is REVERTED): every
+                    -- follow-up reply lands at the START of the new exchange (last
+                    -- "▶ User:" turn). During streaming the view still follows the
+                    -- growing text; the completion viewer then re-anchors on the
+                    -- exchange. The scroll_to_last_message toggle keeps governing the
+                    -- OPEN/resume paths only.
+                    local to_last_question = history and history.getAssistantTurnCount
+                        and history:getAssistantTurnCount() > 1
+                    logger.info("KOAssistant: reply landing — to_last_question:",
+                        to_last_question and true or false)
                     -- Create a new viewer with updated content
                     local new_viewer = ChatGPTViewer:new {
                         title = title .. " (" .. model_info .. ")",
@@ -2436,12 +2432,9 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                     if target and target.update then
                         logger.info("KOAssistant: onAskQuestion fallback render — ActiveChatViewer slot changed under an in-flight reply")
                         local viewer_cfg = target.configuration or temp_config or CONFIGURATION
-                        -- Same A8 landing rule as the main branch: streamed → bottom,
-                        -- non-streamed → start of the new exchange
-                        local fb_streamed = not (viewer_cfg and viewer_cfg.features
-                            and viewer_cfg.features.enable_streaming == false)
-                        target:update(history:createResultText(highlightedText, viewer_cfg), fb_streamed)
-                        if not fb_streamed and target.scrollToLastQuestion then
+                        -- Same A8 landing rule as the main branch: land on the exchange
+                        target:update(history:createResultText(highlightedText, viewer_cfg), false)
+                        if target.scrollToLastQuestion then
                             UIManager:scheduleIn(0.15, function()
                                 if target.scroll_text_w then target:scrollToLastQuestion() end
                             end)
