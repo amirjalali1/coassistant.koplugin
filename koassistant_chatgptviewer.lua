@@ -259,16 +259,41 @@ local function applyExchangePageBreaks(html_body, configuration)
   local f = configuration and configuration.features
   -- Default ON since 2026-08-12 (maintainer: no longer experimental)
   if f and f.chat_exchange_page_breaks == false then return html_body end
-  -- Break before each REPLY (maintainer spec 2026-08-12: "the reply starting
-  -- with KOAssistant at the top of a new page, and you are on that page").
+  -- LAST reply only (maintainer 2026-08-12): the goal is the NEWEST reply
+  -- presented from a page top — older exchanges stay compact, so the
+  -- transcript never accumulates whitespace; every re-render (each reply)
+  -- moves the single break forward. Display-only by construction: the spacer
+  -- exists in the rendered HTML, never in the transcript, saves or exports.
   -- MuPDF's plain-HTML layout only implements page-break-AFTER (headless
   -- probe), so an empty spacer div carrying the -after rule goes IN FRONT of
   -- the marker (see div.koa-exchange-break in getViewerCSS). luamd emits the
   -- marker as its own plain paragraph (verified against the bundled lib).
-  local out, n = html_body:gsub("<p>◉ KOAssistant:</p>",
-    '<div class="koa-exchange-break"></div><p>◉ KOAssistant:</p>')
-  logger.info("KOAssistant: exchange page breaks injected:", n)
-  return out
+  local marker = "<p>◉ KOAssistant:</p>"
+  local last_pos, search_start = nil, 1
+  while true do
+    local s = html_body:find(marker, search_start, true)
+    if not s then break end
+    last_pos = s
+    search_start = s + 1
+  end
+  if not last_pos then
+    logger.info("KOAssistant: exchange page break — no marker")
+    return html_body
+  end
+  -- Smart skip (maintainer 2026-08-12): when everything BEFORE the reply is
+  -- short (a fresh chat's first question, a run of short exchanges), breaking
+  -- would strand a near-empty first page — the reply belongs right under the
+  -- question. Rough visible-text length of the prefix is the proxy for "fits
+  -- the first page"; a long first question still gets its break.
+  local visible_prefix = html_body:sub(1, last_pos - 1):gsub("<[^>]*>", "")
+  if #visible_prefix < 500 then
+    logger.info("KOAssistant: exchange page break — skipped, short prefix", #visible_prefix)
+    return html_body
+  end
+  logger.info("KOAssistant: exchange page break before last reply: yes")
+  return html_body:sub(1, last_pos - 1)
+    .. '<div class="koa-exchange-break"></div>'
+    .. html_body:sub(last_pos)
 end
 
 local function addHtmlBidiAttributes(html, options)
@@ -3469,18 +3494,38 @@ function ChatGPTViewer:scrollToLastQuestion()
       local f = self.configuration and self.configuration.features
       local tw = self.scroll_text_w.text_widget
       if not (f and f.chat_exchange_page_breaks == false)
-          and tw and tw.getCharPageTopLineNumber then
-        -- "New page per exchange" in TXT mode: a line scroller has no layout
-        -- gaps, but TextBoxWidget has native HARD PAGES — pre-align the view
-        -- so the marker's page starts the screen (the same alignment its own
-        -- init uses via scrollViewToCharPos), then place the cursor: it is
-        -- already in view, so moveCursorToCharPos keeps the alignment and
-        -- does the repaint (TextViewer's find relies on that behavior).
-        local top = tw:getCharPageTopLineNumber(target_pos)
-        if top then
-          tw.virtual_line_num = math.max(1, top)
+          and tw and tw.lines_per_page and tw.vertical_string_list
+          and #tw.vertical_string_list > 0 and self.scroll_text_w.scrollToRatio then
+        -- TXT mode: put the marker's LINE at the top of the view (a line
+        -- scroller can top any line — hard-page snapping only reached the
+        -- screenful CONTAINING the marker, round-11 device round). Ride the
+        -- widget's OWN scroll path (free + re-render + layout — writing
+        -- virtual_line_num directly desyncs state from screen since
+        -- moveCursorToCharPos only paints the cursor for in-view targets).
+        -- scrollToRatio(r, false): line = 1 + floor(r*#lines - lpp/2); solve
+        -- for our line with a +0.5 margin so floor lands exactly.
+        local lines = tw.vertical_string_list
+        local L = 1
+        for i = #lines, 1, -1 do
+          if (lines[i].offset or 1) <= target_pos then
+            L = i
+            break
+          end
         end
-        logger.info("KOAssistant: scrollToLastQuestion txt — hard-page align, top line", top or "?")
+        if L > tw.lines_per_page then
+          -- Content before the reply exceeds the first screen — top-align it.
+          -- (The widget clamps near the end: it never scrolls past a full
+          -- last screen, which is the correct floor for short tails.)
+          logger.info("KOAssistant: scrollToLastQuestion txt — line", L, "of", #lines, "to top")
+          self.scroll_text_w:scrollToRatio(
+            (L - 1 + tw.lines_per_page / 2 + 0.5) / #lines, false)
+        else
+          -- Everything fits from the top (fresh chat, short exchanges):
+          -- stay at the top, the reply sits right under the question
+          logger.info("KOAssistant: scrollToLastQuestion txt — line", L, "within first screen, staying top")
+          self.scroll_text_w:scrollToRatio(0, false)
+        end
+        -- Cursor placement on the freshly rendered view (cursor-only paint)
         self.scroll_text_w:moveCursorToCharPos(target_pos)
       else
         -- Centered variant (count 5, TextViewer's find pattern) — the bare
@@ -5692,7 +5737,7 @@ function ChatGPTViewer:showRenderingQuickSettings()
         end,
       }},
       {{
-        text = _("New page per exchange") .. ": "
+        text = _("Latest reply on new page") .. ": "
           .. (not (self.configuration and self.configuration.features
                and self.configuration.features.chat_exchange_page_breaks == false)
               and _("On") or _("Off")),
