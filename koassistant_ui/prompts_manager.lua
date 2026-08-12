@@ -5428,6 +5428,7 @@ function PromptsManager:updatePrompt(existing_prompt, state)
                 -- View mode flags
                 translate_view = state.translate_view or nil,
                 compact_view = state.compact_view or nil,
+                dictionary_view = state.dictionary_view or nil,
                 minimal_buttons = state.minimal_buttons or nil,
                 -- Web search (tri-state: nil/true/false - nil means follow global)
                 enable_web_search = state.enable_web_search,

@@ -130,6 +130,28 @@ local function buildItems(ctx)
     local ActionCache = require("koassistant_action_cache")
     local caches = ActionCache.getAvailableArtifactsWithPinned(
         file, nil, ctx.is_open_book and ui.document or nil)
+    -- X-Ray leads the artifact rows (maintainer 2026-08-11: "X-Ray always
+    -- visible since it's major"): the live row moves to the front when present;
+    -- an open book WITHOUT one still gets the row, routing to the X-Ray action
+    -- popup's create path (the Quiz-row precedent). Closed books keep absence —
+    -- creation needs text extraction from the open book.
+    local has_xray_row = false
+    for i, cache in ipairs(caches) do
+        if cache.key == ActionCache.XRAY_CACHE_KEY then
+            has_xray_row = true
+            if i > 1 then table.insert(caches, 1, table.remove(caches, i)) end
+            break
+        end
+    end
+    if not has_xray_row and ctx.is_open_book then
+        items[#items + 1] = {
+            text = Constants.getEmojiText("📦",
+                ActionCache.ARTIFACT_NAMES[ActionCache.XRAY_CACHE_KEY] or _("X-Ray"),
+                ctx.enable_emoji),
+            mandatory = _("none"),
+            callback = function() plugin:executeBookLevelAction("xray") end,
+        }
+    end
     for _idx, cache in ipairs(caches) do
         -- Maintainer 2026-08-11: the page lists TOP-LEVEL artifacts only.
         -- The X-Ray versions group lives in the X-Ray browser, section-scoped

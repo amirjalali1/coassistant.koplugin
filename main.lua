@@ -7033,8 +7033,10 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
     chapter.current_page = (self.ui.view and self.ui.view.state and self.ui.view.state.page) or 1
     chapter.from_section_available = toc_available and chapter.current_page > 1 and true or false
     -- "Pick section range…" (phase 4): two TOC picks, start→end. Needs only a TOC —
-    -- no reading-position requirement.
-    chapter.range_available = toc_available and true or false
+    -- no reading-position requirement. Recap is excluded (maintainer 2026-08-11:
+    -- arbitrary spans make no sense for a catch-up action — "From section…" IS
+    -- the recap shape and stays).
+    chapter.range_available = toc_available and action.id ~= "recap" and true or false
     if is_whole_doc and action.interactive_quiz then
       local info = self:_currentChapterInfo()
       if info then
@@ -7075,8 +7077,15 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
   -- Default source: smart retrieval when offered and eligible (maintainer 2026-07-11 —
   -- targeted passages beat a full-text dump for highlight-anchored questions; full text
   -- stays one tap away), else the pre-D3 rule.
+  -- Default scope: under spoiler protection, pre-select "Up to current position"
+  -- when that row exists (maintainer 2026-08-11) — the popup should not default
+  -- to a scope covering unread text; the C3 consent confirm then only fires when
+  -- the user ACTIVELY picks a spoiler-crossing scope. (read_so_far_available
+  -- implies an open book, so doc_settings is resolvable here.)
   local state = {
-    scope = "full",
+    scope = (read_so_far_available
+        and require("koassistant_book_settings").resolveSpoilerFree(self.ui.doc_settings, features)
+        and "read_so_far") or "full",
     source = (requires_book_text and "full_text")
         -- Dialog launches pass session_tools (the session Tools chip); false skips the
         -- smart-retrieval DEFAULT (row stays selectable). Direct entries pass nothing.
@@ -14269,15 +14278,18 @@ function AskGPT:showReasoningQuickPopup(on_close_callback, provider_arg, model_a
     end
   end
 
-  -- Footer (both tabs): other-models browser + close
-  table.insert(buttons, {{
-    text = _("Other models\u{2026}"),
-    callback = function()
-      UIManager:close(self_ref._reasoning_qs_dialog)
-      self_ref._reasoning_qs_dialog = nil
-      self_ref:showReasoningModelBrowser(on_close_callback)
-    end,
-  }})
+  -- Footer: other-models browser (model tab only — beside the Global stance it
+  -- read as if the stance were per-model, maintainer 2026-08-12) + close
+  if is_model_target then
+    table.insert(buttons, {{
+      text = _("Other models\u{2026}"),
+      callback = function()
+        UIManager:close(self_ref._reasoning_qs_dialog)
+        self_ref._reasoning_qs_dialog = nil
+        self_ref:showReasoningModelBrowser(on_close_callback)
+      end,
+    }})
+  end
   table.insert(buttons, {{
     text = _("Close"),
     callback = function()

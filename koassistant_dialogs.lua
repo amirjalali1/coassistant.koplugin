@@ -7619,6 +7619,16 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 else
                     label = has_domain and getDomainDisplayName(true) or _("Domain")
                 end
+                -- Research indicator (maintainer 2026-08-11: research active had NO
+                -- surface). Book > global, matching the freeform resolution; per-request
+                -- DOI auto-detection can't be known at chip time. The selector this chip
+                -- opens is where research is toggled, so the marker sits on its own
+                -- entry point and refreshes with it.
+                if book_research_id == true
+                    or (book_research_id == nil and configuration.features
+                        and configuration.features.research_mode == true) then
+                    label = label .. (enable_emoji and " \u{1F52C}" or " " .. _("(research)"))
+                end
                 return {
                     text = label,
                     callback = function()
