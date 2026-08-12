@@ -1802,7 +1802,7 @@ function BookSettings.show(opts)
     end
 
     -- Sub-picker for a tri-state per-book boolean (Follow global / On / Off).
-    -- Used by Research mode, Spoiler-free, and future on/off per-book settings.
+    -- Used by Research mode; the privacy rows' twin lives in showPrivacyConfig.
     local function showBoolSubPicker(key, dialog_title, global_on)
         closeDialog()
         local cur = doc_settings:readSetting(key)  -- true | false | nil
@@ -1827,63 +1827,6 @@ function BookSettings.show(opts)
         UIManager:show(picker)
     end
 
-    -- Custom-value text input for an AI title/author override (stored as-is; "" = send empty,
-    -- but that state is normally reached via the "Send empty" sub-picker option).
-    local function editOverride(key, dialog_title)
-        local InputDialog = require("ui/widget/inputdialog")
-        local input
-        input = InputDialog:new{
-            title = dialog_title,
-            input = doc_settings:readSetting(key) or "",
-            input_hint = _("What the AI should see for this book"),
-            buttons = {{
-                { text = _("Cancel"), id = "close", callback = function() UIManager:close(input) end },
-                {
-                    text = _("Save"),
-                    is_enter_default = true,
-                    callback = function()
-                        doc_settings:saveSetting(key, input:getInputText())
-                        doc_settings:flush()
-                        syncConfig()
-                        UIManager:close(input)
-                        reopen()
-                    end,
-                },
-            }},
-        }
-        UIManager:show(input)
-        input:onShowKeyboard()
-    end
-
-    -- Sub-picker for a tri-state metadata override: Use real metadata / Custom… / Send empty.
-    -- nil = real metadata, "" = send empty (suppressed), string = custom.
-    local function showOverrideSubPicker(key, dialog_title, custom_input_title)
-        closeDialog()
-        local cur = doc_settings:readSetting(key)  -- nil | "" | string
-        local picker
-        local function setVal(val)
-            doc_settings:saveSetting(key, val)
-            doc_settings:flush()
-            syncConfig()
-            UIManager:close(picker)
-            BookSettings.show(opts)
-        end
-        local custom_text = (cur ~= nil and cur ~= "") and T(_("Custom: %1"), cur) or _("Custom…")
-        local rows = {
-            {{ text = dot(cur == nil) .. _("Use the book's real metadata"),
-                callback = function() setVal(nil) end }},
-            {{ text = dot(cur ~= nil and cur ~= "") .. custom_text,
-                callback = function() UIManager:close(picker); editOverride(key, custom_input_title) end }},
-            {{ text = dot(cur == "") .. _("Send empty"),
-                callback = function() setVal("") end }},
-            {{ text = _("Cancel"), id = "close",
-                callback = function() UIManager:close(picker); BookSettings.show(opts) end }},
-        }
-        picker = ButtonDialog:new{ title = dialog_title, buttons = rows,
-            tap_close_callback = function() BookSettings.show(opts) end }
-        UIManager:show(picker)
-    end
-
     -- Current per-book values → row labels
     local function boolLabel(v)
         if v == true then return _("On")
@@ -1891,78 +1834,6 @@ function BookSettings.show(opts)
         else return _("Follow global") end
     end
 
-    -- Book-info level: label + sub-picker (None / Title & author / +position)
-    local function bookInfoLabel(v)
-        if v == "none" then return _("None")
-        elseif v == "title" then return _("Title only")
-        elseif v == "full" then return _("Title, author & position")
-        elseif v == "basic" then return _("Title & author") end
-        return _("Follow global")
-    end
-    local function showBookInfoSubPicker()
-        closeDialog()
-        local cur = doc_settings:readSetting(BookSettings.KEY_BOOK_INFO)  -- nil | "none" | "basic" | "full"
-        local picker
-        local function setVal(val)
-            doc_settings:saveSetting(BookSettings.KEY_BOOK_INFO, val)
-            doc_settings:flush()
-            syncConfig()
-            UIManager:close(picker)
-            BookSettings.show(opts)
-        end
-        local rows = {
-            {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), bookInfoLabel(features.book_info_in_chat or "basic")),
-                callback = function() setVal(nil) end }},
-            {{ text = dot(cur == "none") .. _("None"), callback = function() setVal("none") end }},
-            {{ text = dot(cur == "title") .. _("Title only"), callback = function() setVal("title") end }},
-            {{ text = dot(cur == "basic") .. _("Title & author"), callback = function() setVal("basic") end }},
-            {{ text = dot(cur == "full") .. _("Title, author & position"), callback = function() setVal("full") end }},
-            {{ text = _("Cancel"), id = "close",
-                callback = function() UIManager:close(picker); BookSettings.show(opts) end }},
-        }
-        picker = ButtonDialog:new{ title = _("Book info in chat (this book)"), buttons = rows,
-            tap_close_callback = function() BookSettings.show(opts) end }
-        UIManager:show(picker)
-    end
-
-    -- Surrounding-context mode: shared sub-picker for the highlight/dictionary channels
-    -- (Follow global / None / Sentence / Paragraph(s) / Characters)
-    local function showContextModeSubPicker(key, dialog_title, global_mode)
-        closeDialog()
-        local cur = doc_settings:readSetting(key)  -- nil | "none" | "sentence" | "paragraph" | "characters"
-        local picker
-        local function setVal(val)
-            doc_settings:saveSetting(key, val)
-            doc_settings:flush()
-            syncConfig()
-            UIManager:close(picker)
-            BookSettings.show(opts)
-        end
-        local rows = {
-            {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), BookSettings.contextModeLabel(global_mode)),
-                callback = function() setVal(nil) end }},
-            {{ text = dot(cur == "none") .. _("None"), callback = function() setVal("none") end }},
-            {{ text = dot(cur == "sentence") .. _("Sentence"), callback = function() setVal("sentence") end }},
-            {{ text = dot(cur == "paragraph") .. _("Paragraph(s)"), callback = function() setVal("paragraph") end }},
-            {{ text = dot(cur == "characters") .. _("Characters"), callback = function() setVal("characters") end }},
-            {{ text = _("Cancel"), id = "close",
-                callback = function() UIManager:close(picker); BookSettings.show(opts) end }},
-        }
-        picker = ButtonDialog:new{ title = dialog_title, buttons = rows,
-            tap_close_callback = function() BookSettings.show(opts) end }
-        UIManager:show(picker)
-    end
-    local function contextRowLabel(v)
-        if v == nil then return _("Follow global") end
-        return BookSettings.contextModeLabel(v)
-    end
-
-    -- AI Book Tools posture: label + sub-picker (Follow global / Off / Manual / Auto)
-    local function toolsRowLabel(v)
-        local on = toolsValueOn(v)
-        if on == nil then return _("Follow global") end
-        return on and _("On") or _("Off")
-    end
     local book_domain = doc_settings:readSetting(BookSettings.KEY_DOMAIN)
     local domain_label
     if book_domain == "_none" then domain_label = _("None")
@@ -1972,18 +1843,12 @@ function BookSettings.show(opts)
     local research_label = boolLabel(doc_settings:readSetting(BookSettings.KEY_RESEARCH))
     local spoiler_label = boolLabel(doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE))
 
-    -- AI title/author tri-state label: nil = real metadata, "" = empty/suppressed, string = custom
-    local function overrideLabel(v)
-        if v == nil then return _("using metadata")
-        elseif v == "" then return _("empty") end
-        return v
-    end
-    local title_ov, author_ov = BookSettings.getMetadataOverride(doc_settings)
-
-    -- Grouped sections (book_scoped_controls_plan.md §7): disabled rows as headers,
-    -- setting buttons paired two per row (maintainer 2026-07-12 — the screen got long);
-    -- an odd leftover before a header/full-width row takes the whole row.
-    -- Order mirrors the input dialog's chips row where the controls overlap.
+    -- Regrouped 2026-08-12 (release prep A7 — the flat screen ran 13 "AI behavior"
+    -- rows): headline rows carry the identity of the reading (domain, background,
+    -- research, spoiler protection, X-Ray, group); the dial-shaped rows moved to
+    -- the Chat behavior / Privacy / Identity sub-screens below. Setting buttons
+    -- stay paired two per row (maintainer 2026-07-12 — the screen got long); an
+    -- odd leftover before a group break or full-width row takes the whole row.
     local buttons = {}
     local pending  -- unpaired setting button waiting for a row partner
     local function flushPair()
@@ -1991,10 +1856,6 @@ function BookSettings.show(opts)
             table.insert(buttons, { pending })
             pending = nil
         end
-    end
-    local function addHeader(text)
-        flushPair()
-        table.insert(buttons, {{ text = "—  " .. text .. "  —", enabled = false }})
     end
     local function addButton(btn)
         if pending then
@@ -2009,7 +1870,6 @@ function BookSettings.show(opts)
         table.insert(buttons, { btn })
     end
 
-    addHeader(_("AI behavior"))
     addButton({ text = T(_("Domain: %1"), domain_label), callback = showDomainSubPicker })
     -- Background: the reader's standing note about this book (book_background_plan.md)
     addButton({ text = T(_("Background: %1"), BookSettings.backgroundRowLabel(doc_settings)),
@@ -2041,11 +1901,11 @@ function BookSettings.show(opts)
     else
         spoiler_row = T(_("Spoiler protection: %1"), spoiler_label)
     end
-    -- Seam 2 (2026-08-12): these rows open the SHARED scope-aware pickers on
-    -- the book tab (Global one tap away) instead of hand-rolled locals — same
-    -- dialogs as the chip holds and QS tiles, which also makes the web/tool
-    -- effort dials reachable from here. The shared spoiler picker carries the
-    -- research/finished note lines itself.
+    -- Seam 2 (2026-08-12): opens the SHARED scope-aware picker on the book tab
+    -- (Global one tap away) instead of a hand-rolled local — the same dialog as
+    -- the chip hold and QS tile; it carries the research/finished note lines
+    -- itself. The Chat behavior sub-screen keeps its own copy of this helper
+    -- for the tools/web/quick/highlight-context rows.
     local function sharedPicker(show_fn)
         closeDialog()
         show_fn({
@@ -2056,28 +1916,6 @@ function BookSettings.show(opts)
     end
     addButton({ text = spoiler_row,
         callback = function() sharedPicker(BookSettings.showSpoilerFree) end })
-    addButton({ text = T(_("AI Book Tools: %1"), toolsRowLabel(doc_settings:readSetting(BookSettings.KEY_TOOLS))),
-        callback = function() sharedPicker(BookSettings.showToolsPosture) end })
-    addButton({ text = T(_("Web search: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_WEB_SEARCH))),
-        callback = function() sharedPicker(BookSettings.showWebSearch) end })
-    addButton({ text = T(_("Quick answer default: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_QUICK_ANSWER))),
-        callback = function() sharedPicker(BookSettings.showQuickAnswerDefault) end })
-    addButton({ text = T(_("Book info: %1"), bookInfoLabel(doc_settings:readSetting(BookSettings.KEY_BOOK_INFO))),
-        callback = showBookInfoSubPicker })
-    -- Book groups (item 46): membership lives in the groups store, not a
-    -- sidecar key — never counts toward "(N customized)"
-    local groups_file = opts.document_path or (ui and ui.document and ui.document.file)
-    if groups_file then
-        addButton({ text = T(_("Group: %1"),
-                require("koassistant_book_groups_ui").rowLabel(groups_file)),
-            callback = function()
-                closeDialog()
-                require("koassistant_book_groups_ui").showBookRow(groups_file, {
-                    plugin = plugin, ui = ui,
-                    on_close = function() BookSettings.show(opts) end,
-                })
-            end })
-    end
     -- Tri-state Automatic X-Ray (§7 P1): On = create + update + promotion for
     -- this book, standalone — no global master required
     addButton({ text = T(_("Automatic X-Ray: %1"),
@@ -2141,64 +1979,63 @@ function BookSettings.show(opts)
                 tap_close_callback = function() BookSettings.show(opts) end }
             UIManager:show(picker)
         end })
-    addButton({ text = T(_("Highlight context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHT_CONTEXT))),
-        callback = function() sharedPicker(BookSettings.showHighlightContext) end })
-    addButton({ text = T(_("Dictionary context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_DICTIONARY_CONTEXT))),
-        callback = function()
-            showContextModeSubPicker(BookSettings.KEY_DICTIONARY_CONTEXT,
-                _("Dictionary context (this book)"), features.dictionary_context_mode or "sentence")
-        end })
-    -- Per-book privacy overrides: Allow/Deny beat the global Privacy & Data
-    -- toggles for THIS book (deny also beats trusted providers); per-action
-    -- flags still apply on top (double-gating).
-    addHeader(_("Privacy"))
-    addButton({ text = T(_("Highlights sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHTS_SHARING))),
-        callback = function()
-            showBoolSubPicker(BookSettings.KEY_HIGHLIGHTS_SHARING,
-                _("Highlights sharing (this book)"),
-                features.enable_highlights_sharing == true or features.enable_annotations_sharing == true)
-        end })
-    addButton({ text = T(_("Annotations sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_ANNOTATIONS_SHARING))),
-        callback = function()
-            showBoolSubPicker(BookSettings.KEY_ANNOTATIONS_SHARING,
-                _("Annotations sharing (this book)"), features.enable_annotations_sharing == true)
-        end })
-    addButton({ text = T(_("Notebook sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_NOTEBOOK_SHARING))),
-        callback = function()
-            showBoolSubPicker(BookSettings.KEY_NOTEBOOK_SHARING,
-                _("Notebook sharing (this book)"), features.enable_notebook_sharing == true)
-        end })
-    addButton({ text = T(_("Text extraction: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_TEXT_EXTRACTION))),
-        callback = function()
-            showBoolSubPicker(BookSettings.KEY_TEXT_EXTRACTION,
-                _("Text extraction (this book)"), features.enable_book_text_extraction == true)
-        end })
-    addHeader(_("Identity"))
-    addButton({ text = T(_("AI title: %1"), overrideLabel(title_ov)),
-        callback = function()
-            showOverrideSubPicker(BookSettings.KEY_AI_TITLE,
-                _("AI title (this book)"), _("Custom AI title"))
-        end })
-    addButton({ text = T(_("AI author: %1"), overrideLabel(author_ov)),
-        callback = function()
-            showOverrideSubPicker(BookSettings.KEY_AI_AUTHOR,
-                _("AI author (this book)"), _("Custom AI author"))
-        end })
-    addHeader(_("More"))
-    addButton({ text = _("Quiz settings ▸"), callback = function()
-        closeDialog()
-        BookSettings.showQuizConfig({
-            plugin = plugin, ui = ui, document_path = opts.document_path,
-            on_close = function() BookSettings.show(opts) end,
-        })
-    end })
-    addButton({ text = _("Languages ▸"), callback = function()
-        closeDialog()
-        BookSettings.showLanguageConfig({
-            plugin = plugin, ui = ui, document_path = opts.document_path,
-            on_close = function() BookSettings.show(opts) end,
-        })
-    end })
+    -- Book groups (item 46): membership lives in the groups store, not a
+    -- sidecar key — never counts toward "(N customized)"
+    local groups_file = opts.document_path or (ui and ui.document and ui.document.file)
+    if groups_file then
+        addButton({ text = T(_("Group: %1"),
+                require("koassistant_book_groups_ui").rowLabel(groups_file)),
+            callback = function()
+                closeDialog()
+                require("koassistant_book_groups_ui").showBookRow(groups_file, {
+                    plugin = plugin, ui = ui,
+                    on_close = function() BookSettings.show(opts) end,
+                })
+            end })
+    end
+    flushPair()
+
+    -- Sub-screen rows, each with that group's customized count (same non-nil
+    -- rule as the title's "(N customized)") so moved values stay findable from
+    -- the top screen.
+    local function groupCount(keys)
+        local n = 0
+        for _i, k in ipairs(keys) do
+            if doc_settings:readSetting(k) ~= nil then n = n + 1 end
+        end
+        return n
+    end
+    local function subScreenRow(label, n, show_fn)
+        return {
+            text = (n > 0) and T(_("%1 (%2) ▸"), label, n) or T(_("%1 ▸"), label),
+            callback = function()
+                closeDialog()
+                show_fn({
+                    plugin = plugin, ui = ui, document_path = opts.document_path,
+                    on_close = function() BookSettings.show(opts) end,
+                })
+            end,
+        }
+    end
+    addButton(subScreenRow(_("Chat behavior"), groupCount({
+        BookSettings.KEY_TOOLS, BookSettings.KEY_WEB_SEARCH,
+        BookSettings.KEY_QUICK_ANSWER, BookSettings.KEY_BOOK_INFO,
+        BookSettings.KEY_HIGHLIGHT_CONTEXT, BookSettings.KEY_DICTIONARY_CONTEXT,
+        BookSettings.KEY_TOOL_EFFORT, BookSettings.KEY_WEB_EFFORT,
+    }), BookSettings.showChatBehaviorConfig))
+    addButton(subScreenRow(_("Privacy"), groupCount({
+        BookSettings.KEY_HIGHLIGHTS_SHARING, BookSettings.KEY_ANNOTATIONS_SHARING,
+        BookSettings.KEY_NOTEBOOK_SHARING, BookSettings.KEY_TEXT_EXTRACTION,
+    }), BookSettings.showPrivacyConfig))
+    addButton(subScreenRow(_("Identity"), groupCount({
+        BookSettings.KEY_AI_TITLE, BookSettings.KEY_AI_AUTHOR,
+    }), BookSettings.showIdentityConfig))
+    addButton(subScreenRow(_("Quiz settings"), groupCount({ BookSettings.KEY_QUIZ }),
+        BookSettings.showQuizConfig))
+    addButton(subScreenRow(_("Languages"), groupCount({
+        BookSettings.KEY_RESPONSE_LANG, BookSettings.KEY_TRANSLATION_LANG,
+        BookSettings.KEY_DICTIONARY_LANG,
+    }), BookSettings.showLanguageConfig))
     flushPair()
 
     -- Surface customizations: count deviations from global, offer a one-tap reset.
@@ -2226,6 +2063,348 @@ function BookSettings.show(opts)
 
     local title = (n_custom > 0) and T(_("Book Settings (%1 customized)"), n_custom) or _("Book Settings")
     dialog = ButtonDialog:new{ title = title, buttons = buttons,
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
+    UIManager:show(dialog)
+end
+
+--- Per-book CHAT BEHAVIOR dials — a sub-screen of Book Settings (2026-08-12 regrouping;
+-- the flat screen ran 13 "AI behavior" rows). Tools / web search / quick answer /
+-- highlight context open the SHARED scope-aware pickers on the book tab (seam 2) — the
+-- same dialogs as the chip holds and QS tiles, which keeps the web/tool effort dials
+-- reachable from here; book info and dictionary context keep local pickers (no shared
+-- sibling yet).
+-- @param opts table: { plugin, ui, document_path, on_close }
+function BookSettings.showChatBehaviorConfig(opts)
+    opts = opts or {}
+    local plugin = opts.plugin
+    local ui = opts.ui
+    local on_close = opts.on_close
+
+    local doc_settings = resolveDocSettings(ui, opts.document_path)
+    if not doc_settings then return end
+
+    local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
+
+    local dialog
+    local function closeDialog()
+        if dialog then UIManager:close(dialog); dialog = nil end
+    end
+    local function syncConfig()
+        if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
+    end
+    local function dot(active) return active and "● " or "○ " end
+    local function boolLabel(v)
+        if v == true then return _("On")
+        elseif v == false then return _("Off") end
+        return _("Follow global")
+    end
+
+    -- Shared scope-aware pickers (seam 2), opened on the book tab; back here on close.
+    local function sharedPicker(show_fn)
+        closeDialog()
+        show_fn({
+            plugin = plugin, ui = ui, document_path = opts.document_path,
+            target_override = "book",
+            on_close = function() BookSettings.showChatBehaviorConfig(opts) end,
+        })
+    end
+
+    -- Book-info level: label + sub-picker (None / Title & author / +position)
+    local function bookInfoLabel(v)
+        if v == "none" then return _("None")
+        elseif v == "title" then return _("Title only")
+        elseif v == "full" then return _("Title, author & position")
+        elseif v == "basic" then return _("Title & author") end
+        return _("Follow global")
+    end
+    local function showBookInfoSubPicker()
+        closeDialog()
+        local cur = doc_settings:readSetting(BookSettings.KEY_BOOK_INFO)  -- nil | "none" | "basic" | "full"
+        local picker
+        local function setVal(val)
+            doc_settings:saveSetting(BookSettings.KEY_BOOK_INFO, val)
+            doc_settings:flush()
+            syncConfig()
+            UIManager:close(picker)
+            BookSettings.showChatBehaviorConfig(opts)
+        end
+        local rows = {
+            {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), bookInfoLabel(features.book_info_in_chat or "basic")),
+                callback = function() setVal(nil) end }},
+            {{ text = dot(cur == "none") .. _("None"), callback = function() setVal("none") end }},
+            {{ text = dot(cur == "title") .. _("Title only"), callback = function() setVal("title") end }},
+            {{ text = dot(cur == "basic") .. _("Title & author"), callback = function() setVal("basic") end }},
+            {{ text = dot(cur == "full") .. _("Title, author & position"), callback = function() setVal("full") end }},
+            {{ text = _("Cancel"), id = "close",
+                callback = function() UIManager:close(picker); BookSettings.showChatBehaviorConfig(opts) end }},
+        }
+        picker = ButtonDialog:new{ title = _("Book info in chat (this book)"), buttons = rows,
+            tap_close_callback = function() BookSettings.showChatBehaviorConfig(opts) end }
+        UIManager:show(picker)
+    end
+
+    -- Dictionary-channel surrounding-context sub-picker (the highlight channel
+    -- rides the shared picker; no shared sibling for this one yet)
+    local function showContextModeSubPicker(key, dialog_title, global_mode)
+        closeDialog()
+        local cur = doc_settings:readSetting(key)  -- nil | "none" | "sentence" | "paragraph" | "characters"
+        local picker
+        local function setVal(val)
+            doc_settings:saveSetting(key, val)
+            doc_settings:flush()
+            syncConfig()
+            UIManager:close(picker)
+            BookSettings.showChatBehaviorConfig(opts)
+        end
+        local rows = {
+            {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), BookSettings.contextModeLabel(global_mode)),
+                callback = function() setVal(nil) end }},
+            {{ text = dot(cur == "none") .. _("None"), callback = function() setVal("none") end }},
+            {{ text = dot(cur == "sentence") .. _("Sentence"), callback = function() setVal("sentence") end }},
+            {{ text = dot(cur == "paragraph") .. _("Paragraph(s)"), callback = function() setVal("paragraph") end }},
+            {{ text = dot(cur == "characters") .. _("Characters"), callback = function() setVal("characters") end }},
+            {{ text = _("Cancel"), id = "close",
+                callback = function() UIManager:close(picker); BookSettings.showChatBehaviorConfig(opts) end }},
+        }
+        picker = ButtonDialog:new{ title = dialog_title, buttons = rows,
+            tap_close_callback = function() BookSettings.showChatBehaviorConfig(opts) end }
+        UIManager:show(picker)
+    end
+    local function contextRowLabel(v)
+        if v == nil then return _("Follow global") end
+        return BookSettings.contextModeLabel(v)
+    end
+    -- AI Book Tools: On/Off label (legacy posture strings read through)
+    local function toolsRowLabel(v)
+        local on = toolsValueOn(v)
+        if on == nil then return _("Follow global") end
+        return on and _("On") or _("Off")
+    end
+
+    local buttons = {
+        {{ text = T(_("AI Book Tools: %1"), toolsRowLabel(doc_settings:readSetting(BookSettings.KEY_TOOLS))),
+            callback = function() sharedPicker(BookSettings.showToolsPosture) end }},
+        {{ text = T(_("Web search: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_WEB_SEARCH))),
+            callback = function() sharedPicker(BookSettings.showWebSearch) end }},
+        {{ text = T(_("Quick answer default: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_QUICK_ANSWER))),
+            callback = function() sharedPicker(BookSettings.showQuickAnswerDefault) end }},
+        {{ text = T(_("Book info: %1"), bookInfoLabel(doc_settings:readSetting(BookSettings.KEY_BOOK_INFO))),
+            callback = showBookInfoSubPicker }},
+        {{ text = T(_("Highlight context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHT_CONTEXT))),
+            callback = function() sharedPicker(BookSettings.showHighlightContext) end }},
+        {{ text = T(_("Dictionary context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_DICTIONARY_CONTEXT))),
+            callback = function()
+                showContextModeSubPicker(BookSettings.KEY_DICTIONARY_CONTEXT,
+                    _("Dictionary context (this book)"), features.dictionary_context_mode or "sentence")
+            end }},
+        {{ text = _("Close"), id = "close", callback = function()
+            closeDialog()
+            if on_close then on_close() end
+        end }},
+    }
+
+    dialog = ButtonDialog:new{ title = _("Chat behavior (this book)"), buttons = buttons,
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
+    UIManager:show(dialog)
+end
+
+--- Per-book PRIVACY overrides — a sub-screen of Book Settings. Allow/Deny beat the
+-- global Privacy & Data toggles for THIS book (deny also beats trusted providers);
+-- per-action flags still apply on top (double-gating). Implications ride the
+-- resolver, same as the globals: allow-annotations implies allow-highlights,
+-- deny-highlights implies deny-annotations.
+-- @param opts table: { plugin, ui, document_path, on_close }
+function BookSettings.showPrivacyConfig(opts)
+    opts = opts or {}
+    local plugin = opts.plugin
+    local ui = opts.ui
+    local on_close = opts.on_close
+
+    local doc_settings = resolveDocSettings(ui, opts.document_path)
+    if not doc_settings then return end
+
+    local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
+
+    local dialog
+    local function closeDialog()
+        if dialog then UIManager:close(dialog); dialog = nil end
+    end
+    local function syncConfig()
+        if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
+    end
+    local function dot(active) return active and "● " or "○ " end
+    local function boolLabel(v)
+        if v == true then return _("On")
+        elseif v == false then return _("Off") end
+        return _("Follow global")
+    end
+
+    -- Tri-state picker (Follow global / On / Off) for one privacy key.
+    local function showBoolSubPicker(key, dialog_title, global_on)
+        closeDialog()
+        local cur = doc_settings:readSetting(key)  -- true | false | nil
+        local picker
+        local function pick(val)
+            doc_settings:saveSetting(key, val)
+            doc_settings:flush()
+            syncConfig()
+            UIManager:close(picker)
+            BookSettings.showPrivacyConfig(opts)
+        end
+        local rows = {
+            {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), global_on and _("On") or _("Off")),
+                callback = function() pick(nil) end }},
+            {{ text = dot(cur == true) .. _("On"), callback = function() pick(true) end }},
+            {{ text = dot(cur == false) .. _("Off"), callback = function() pick(false) end }},
+            {{ text = _("Cancel"), id = "close",
+                callback = function() UIManager:close(picker); BookSettings.showPrivacyConfig(opts) end }},
+        }
+        picker = ButtonDialog:new{ title = dialog_title, buttons = rows,
+            tap_close_callback = function() BookSettings.showPrivacyConfig(opts) end }
+        UIManager:show(picker)
+    end
+
+    local buttons = {
+        {{ text = T(_("Highlights sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHTS_SHARING))),
+            callback = function()
+                showBoolSubPicker(BookSettings.KEY_HIGHLIGHTS_SHARING,
+                    _("Highlights sharing (this book)"),
+                    features.enable_highlights_sharing == true or features.enable_annotations_sharing == true)
+            end }},
+        {{ text = T(_("Annotations sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_ANNOTATIONS_SHARING))),
+            callback = function()
+                showBoolSubPicker(BookSettings.KEY_ANNOTATIONS_SHARING,
+                    _("Annotations sharing (this book)"), features.enable_annotations_sharing == true)
+            end }},
+        {{ text = T(_("Notebook sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_NOTEBOOK_SHARING))),
+            callback = function()
+                showBoolSubPicker(BookSettings.KEY_NOTEBOOK_SHARING,
+                    _("Notebook sharing (this book)"), features.enable_notebook_sharing == true)
+            end }},
+        {{ text = T(_("Text extraction: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_TEXT_EXTRACTION))),
+            callback = function()
+                showBoolSubPicker(BookSettings.KEY_TEXT_EXTRACTION,
+                    _("Text extraction (this book)"), features.enable_book_text_extraction == true)
+            end }},
+        {{ text = _("Close"), id = "close", callback = function()
+            closeDialog()
+            if on_close then on_close() end
+        end }},
+    }
+
+    dialog = ButtonDialog:new{ title = _("Privacy (this book)"), buttons = buttons,
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
+    UIManager:show(dialog)
+end
+
+--- Per-book AI IDENTITY overrides — a sub-screen of Book Settings: what the AI sees
+-- as this book's title/author. nil = use the book's real metadata; "" = send empty
+-- (suppress entirely); any other string = that custom value.
+-- @param opts table: { plugin, ui, document_path, on_close }
+function BookSettings.showIdentityConfig(opts)
+    opts = opts or {}
+    local plugin = opts.plugin
+    local ui = opts.ui
+    local on_close = opts.on_close
+
+    local doc_settings = resolveDocSettings(ui, opts.document_path)
+    if not doc_settings then return end
+
+    local dialog
+    local function closeDialog()
+        if dialog then UIManager:close(dialog); dialog = nil end
+    end
+    local function reopen()
+        closeDialog()
+        BookSettings.showIdentityConfig(opts)
+    end
+    local function syncConfig()
+        if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
+    end
+    local function dot(active) return active and "● " or "○ " end
+
+    -- Custom-value text input for an AI title/author override (stored as-is; "" = send empty,
+    -- but that state is normally reached via the "Send empty" sub-picker option).
+    local function editOverride(key, dialog_title)
+        local InputDialog = require("ui/widget/inputdialog")
+        local input
+        input = InputDialog:new{
+            title = dialog_title,
+            input = doc_settings:readSetting(key) or "",
+            input_hint = _("What the AI should see for this book"),
+            buttons = {{
+                { text = _("Cancel"), id = "close", callback = function() UIManager:close(input) end },
+                {
+                    text = _("Save"),
+                    is_enter_default = true,
+                    callback = function()
+                        doc_settings:saveSetting(key, input:getInputText())
+                        doc_settings:flush()
+                        syncConfig()
+                        UIManager:close(input)
+                        reopen()
+                    end,
+                },
+            }},
+        }
+        UIManager:show(input)
+        input:onShowKeyboard()
+    end
+
+    -- Sub-picker for a tri-state metadata override: Use real metadata / Custom… / Send empty.
+    local function showOverrideSubPicker(key, dialog_title, custom_input_title)
+        closeDialog()
+        local cur = doc_settings:readSetting(key)  -- nil | "" | string
+        local picker
+        local function setVal(val)
+            doc_settings:saveSetting(key, val)
+            doc_settings:flush()
+            syncConfig()
+            UIManager:close(picker)
+            BookSettings.showIdentityConfig(opts)
+        end
+        local custom_text = (cur ~= nil and cur ~= "") and T(_("Custom: %1"), cur) or _("Custom…")
+        local rows = {
+            {{ text = dot(cur == nil) .. _("Use the book's real metadata"),
+                callback = function() setVal(nil) end }},
+            {{ text = dot(cur ~= nil and cur ~= "") .. custom_text,
+                callback = function() UIManager:close(picker); editOverride(key, custom_input_title) end }},
+            {{ text = dot(cur == "") .. _("Send empty"),
+                callback = function() setVal("") end }},
+            {{ text = _("Cancel"), id = "close",
+                callback = function() UIManager:close(picker); BookSettings.showIdentityConfig(opts) end }},
+        }
+        picker = ButtonDialog:new{ title = dialog_title, buttons = rows,
+            tap_close_callback = function() BookSettings.showIdentityConfig(opts) end }
+        UIManager:show(picker)
+    end
+
+    -- nil = real metadata, "" = empty/suppressed, string = custom
+    local function overrideLabel(v)
+        if v == nil then return _("using metadata")
+        elseif v == "" then return _("empty") end
+        return v
+    end
+    local title_ov, author_ov = BookSettings.getMetadataOverride(doc_settings)
+
+    local buttons = {
+        {{ text = T(_("AI title: %1"), overrideLabel(title_ov)),
+            callback = function()
+                showOverrideSubPicker(BookSettings.KEY_AI_TITLE,
+                    _("AI title (this book)"), _("Custom AI title"))
+            end }},
+        {{ text = T(_("AI author: %1"), overrideLabel(author_ov)),
+            callback = function()
+                showOverrideSubPicker(BookSettings.KEY_AI_AUTHOR,
+                    _("AI author (this book)"), _("Custom AI author"))
+            end }},
+        {{ text = _("Close"), id = "close", callback = function()
+            closeDialog()
+            if on_close then on_close() end
+        end }},
+    }
+
+    dialog = ButtonDialog:new{ title = _("Identity (this book)"), buttons = buttons,
         tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
     UIManager:show(dialog)
 end
