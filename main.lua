@@ -15005,25 +15005,52 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
   button_defs["spoiler"] = {
     text = (function()
       -- Seam 2 rider (maintainer 2026-08-12): spoiler joins the QS panel.
-      -- Same binary-global rule; label = effective posture for the open book
-      -- (research/finished standing protection down shows as Off here — the
-      -- hold picker carries the explanation lines).
+      -- Same binary-global rule; label = effective posture for the open book.
+      -- Unlike web/tools/quick, THREE book layers can mask the global here —
+      -- per-book override, research mode, Finished status — so name whichever
+      -- applies (§5 label-never-gray), else the tap looks dead.
       local BookSettings = require("koassistant_book_settings")
       local doc_settings = has_document and self.ui.doc_settings or nil
       local posture = BookSettings.resolveSpoilerPosture(doc_settings, features)
       local label = posture.protected and _("On") or _("Off")
-      if doc_settings and doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE) ~= nil then
+      if posture.reason == "book" then
         label = label .. _(" (book)")
+      elseif posture.reason == "research" then
+        label = label .. _(" (research mode)")
+      elseif posture.reason == "finished" then
+        label = label .. _(" (book finished)")
       end
       return E("\u{1F6E1}\u{FE0F}", T(_("Spoiler Protection: %1"), label))
     end)(),
     callback = function()
+      local BookSettings = require("koassistant_book_settings")
       local f = self_ref.settings:readSetting("features") or {}
       -- default-true key: nil/true → explicit false (off), false → true (on)
       f.spoiler_free_chat = (f.spoiler_free_chat == false)
       self_ref.settings:saveSetting("features", f)
       self_ref.settings:flush()
       self_ref:updateConfigFromSettings()
+      -- The global is saved either way; if a book-scoped layer masks it for
+      -- the open book, say where the change went (the temperature tile's
+      -- "Saved as default" pattern) — a silent no-op reads as a dead button.
+      local doc_settings = has_document and self_ref.ui and self_ref.ui.doc_settings or nil
+      local posture = BookSettings.resolveSpoilerPosture(doc_settings, f)
+      if posture.reason == "book" then
+        UIManager:show(Notification:new{
+          text = _("Saved as default. This book has its own override — hold the button to change it."),
+          timeout = 3,
+        })
+      elseif posture.reason == "research" then
+        UIManager:show(Notification:new{
+          text = _("Saved as default. Research mode keeps protection off for this book."),
+          timeout = 3,
+        })
+      elseif posture.reason == "finished" then
+        UIManager:show(Notification:new{
+          text = _("Saved as default. This book is marked finished, so protection stays off."),
+          timeout = 3,
+        })
+      end
       opening_subdialog = true
       UIManager:close(dialog)
       reopenQuickSettings()
@@ -19193,19 +19220,26 @@ end
     Shows once for new users. Replaces the old separate welcome + gesture dialogs.
 --]]
 
--- Check if a dispatcher action is already assigned to any gesture
+-- Scan gestures data for every slot holding the given dispatcher action.
+-- Returns an array of { section = "gesture_reader"|"gesture_fm", slot = id },
+-- sorted for a steady display (pairs order is unstable).
 local function _scanGesturesForAction(gestures_data, action_id)
+  local found = {}
   for _idx, section_name in ipairs({"gesture_reader", "gesture_fm"}) do
     local section = gestures_data[section_name]
-    if section then
-      for _gesture_name, gesture_entry in pairs(section) do
+    if type(section) == "table" then
+      for slot, gesture_entry in pairs(section) do
         if type(gesture_entry) == "table" and gesture_entry[action_id] then
-          return true
+          table.insert(found, { section = section_name, slot = slot })
         end
       end
     end
   end
-  return false
+  table.sort(found, function(a, b)
+    if a.section ~= b.section then return a.section < b.section end
+    return a.slot < b.slot
+  end)
+  return found
 end
 
 -- Check if a gesture slot is empty (nil or empty table)
@@ -19217,6 +19251,236 @@ local function _isGestureSlotEmpty(gesture_entry)
     return true
   end
   return false
+end
+
+--[[
+    Shortcuts screen (release prep A7, decided 2026-08-12): every KOA
+    dispatcher action with its CURRENT gesture binding, editable in place.
+    Assignment goes through the LIVE Gestures plugin instance — its settings
+    object is class-level and its gestureAction() reads the shared table at
+    fire time, with every zone registered unconditionally at init, so a write
+    takes effect immediately, no restart (verified against
+    plugins/gestures.koplugin 2026-08-12). The file fallback is READ-ONLY
+    display: writing gestures.lua behind the plugin's back is the issue-#72
+    class of bug — its next flush would clobber the write.
+--]]
+
+-- The static dispatcher registrations from onDispatcherRegisterActions, in
+-- display order. fm/reader eligibility mirrors the registration flags
+-- (general=true actions appear in both gesture menus).
+function AskGPT:_shortcutActionList()
+  local list = {
+    { id = "koassistant_general_chat", title = _("General Chat/Action"), fm = true, reader = true },
+    { id = "koassistant_book_chat", title = _("Book Chat/Action"), fm = false, reader = true },
+    { id = "koassistant_library_actions", title = _("Library Chat/Action"), fm = true, reader = true },
+    { id = "koassistant_book_overview", title = _("Book Hub"), fm = false, reader = true },
+    { id = "koassistant_quick_actions", title = _("Quick Actions"), fm = false, reader = true },
+    { id = "koassistant_ai_settings", title = _("Quick Settings"), fm = true, reader = true },
+    { id = "koassistant_chat_history", title = _("Chat History"), fm = true, reader = true },
+    { id = "koassistant_continue_last_opened", title = _("Continue Last Chat"), fm = true, reader = true },
+    { id = "koassistant_continue_last", title = _("Continue Last Saved Chat"), fm = true, reader = true },
+    { id = "koassistant_settings", title = _("Settings"), fm = true, reader = true },
+    { id = "koassistant_translate_page", title = _("Translate Page"), fm = false, reader = true },
+    { id = "koassistant_toggle_dictionary_bypass", title = _("Toggle Dictionary Bypass"), fm = true, reader = true },
+    { id = "koassistant_toggle_highlight_bypass", title = _("Toggle Highlight Bypass"), fm = true, reader = true },
+  }
+  -- Per-action gestures the user registered via the Action Manager ("Add to
+  -- Gesture Menu") — same ids onDispatcherRegisterActions builds.
+  local features = self.settings:readSetting("features") or {}
+  if features.show_in_gesture_menu ~= false and self.action_service then
+    local gesture_actions = self.action_service:getGestureActions() or {}
+    local keys = {}
+    for k in pairs(gesture_actions) do table.insert(keys, k) end
+    table.sort(keys)
+    for _idx, action_key in ipairs(keys) do
+      local context, action_id = action_key:match("^([^:]+):(.+)$")
+      local action = context and self.action_service
+        and self.action_service:getAction(context, action_id)
+      if action then
+        local is_general = (context == "general" or context == "book+general")
+        table.insert(list, {
+          id = "koassistant_action_" .. context .. "_" .. action_id,
+          title = action.text or action_id,
+          fm = is_general,
+          reader = is_general or context == "book" or context == "book+general",
+        })
+      end
+    end
+  end
+  return list
+end
+
+-- Live-first gestures access. Returns data, live_instance (nil = file
+-- fallback, display only).
+function AskGPT:_gesturesAccess()
+  local ges = self.ui and self.ui.gestures
+  if ges and ges.settings and ges.settings.data then
+    return ges.settings.data, ges
+  end
+  local settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/gestures.lua")
+  return settings.data or {}, nil
+end
+
+-- Friendly name for a gesture slot: our candidate labels, else the raw id
+-- prettified (bindings made through KOReader's own gesture manager).
+function AskGPT:_gestureSlotLabel(slot)
+  local SetupWizard = require("koassistant_setup_wizard")
+  for _idx, cand in ipairs(SetupWizard.GESTURE_CANDIDATES) do
+    if cand.id == slot then return cand.label end
+  end
+  return (slot:gsub("_", " "))
+end
+
+function AskGPT:_gestureSectionLabel(section)
+  return section == "gesture_fm" and _("file browser") or _("reader")
+end
+
+-- Bind action_id to a free slot through the live instance. Single-action
+-- entry, the wizard's write shape; no order bookkeeping needed for one action.
+function AskGPT:_assignShortcut(live, section, slot, action_id)
+  local data = live.settings.data
+  data[section] = data[section] or {}
+  data[section][slot] = { [action_id] = true }
+  -- Re-point the fire-time lookup table in case the section table was
+  -- created fresh (normally the same table ref, so this is a no-op).
+  if live.ges_mode then live.gestures = data[live.ges_mode] end
+  live.settings:flush()
+end
+
+-- Remove action_id from a slot, mirroring Dispatcher's native uncheck path
+-- (setValue → _removeFromOrder). A slot left with nothing actionable goes
+-- back to nil ("pass through"), so a tap that used to fall through — e.g. to
+-- page turn — falls through again.
+function AskGPT:_removeShortcut(live, section, slot, action_id)
+  local data = live.settings.data
+  local sec = data[section]
+  local entry = sec and sec[slot]
+  if type(entry) ~= "table" then return end
+  entry[action_id] = nil
+  Dispatcher._removeFromOrder(sec, slot, action_id)
+  local remaining = 0
+  for k in pairs(entry) do
+    if k ~= "settings" then remaining = remaining + 1 end
+  end
+  if remaining == 0 then sec[slot] = nil end
+  if live.ges_mode then live.gestures = data[live.ges_mode] end
+  live.settings:flush()
+end
+
+function AskGPT:showShortcutsScreen()
+  local data, live = self:_gesturesAccess()
+  local self_ref = self
+  local dialog
+  local buttons = {}
+  for _idx, act in ipairs(self:_shortcutActionList()) do
+    local bindings = _scanGesturesForAction(data, act.id)
+    local label
+    if #bindings == 0 then
+      label = T(_("%1: %2"), act.title, _("not set"))
+    else
+      local parts = {}
+      for _b, b in ipairs(bindings) do
+        table.insert(parts, T(_("%1 (%2)"),
+          self:_gestureSlotLabel(b.slot), self:_gestureSectionLabel(b.section)))
+      end
+      label = T(_("%1: %2"), act.title, table.concat(parts, ", "))
+    end
+    table.insert(buttons, { {
+      text = label,
+      enabled = live ~= nil,
+      callback = function()
+        UIManager:close(dialog)
+        self_ref:showShortcutSlotPicker(act)
+      end,
+    } })
+  end
+  table.insert(buttons, { {
+    text = _("Close"), id = "close",
+    callback = function() UIManager:close(dialog) end,
+  } })
+  local title = _("Shortcuts")
+  if live then
+    title = title .. "\n" .. _("Tap an action to assign or remove a gesture. Changes apply immediately.")
+  else
+    title = title .. "\n" .. _("KOReader's gesture data isn't ready, so assignment is unavailable here — use KOReader Settings > Taps and gestures.")
+  end
+  dialog = ButtonDialog:new{ title = title, buttons = buttons }
+  UIManager:show(dialog)
+end
+
+function AskGPT:showShortcutSlotPicker(act)
+  local data, live = self:_gesturesAccess()
+  if not live then return self:showShortcutsScreen() end
+  local self_ref = self
+  local dialog
+  local function done()
+    if dialog then UIManager:close(dialog); dialog = nil end
+    self_ref:showShortcutsScreen()
+  end
+
+  local buttons = {}
+  local bindings = _scanGesturesForAction(data, act.id)
+  for _b, b in ipairs(bindings) do
+    table.insert(buttons, { {
+      text = T(_("Remove: %1 (%2)"),
+        self:_gestureSlotLabel(b.slot), self:_gestureSectionLabel(b.section)),
+      callback = function()
+        self_ref:_removeShortcut(live, b.section, b.slot, act.id)
+        UIManager:show(Notification:new{ text = _("Gesture removed."), timeout = 2 })
+        done()
+      end,
+    } })
+  end
+
+  local SetupWizard = require("koassistant_setup_wizard")
+  local sections = {}
+  if act.reader then table.insert(sections, { key = "gesture_reader", header = _("— Reader —") }) end
+  if act.fm then table.insert(sections, { key = "gesture_fm", header = _("— File browser —") }) end
+  for _s, s in ipairs(sections) do
+    if #sections > 1 then
+      table.insert(buttons, { { text = s.header, enabled = false } })
+    end
+    for _c, cand in ipairs(SetupWizard.GESTURE_CANDIDATES) do
+      local entry = (data[s.key] or {})[cand.id]
+      local state = SetupWizard.slotState(entry)
+      if state == "free" then
+        table.insert(buttons, { {
+          text = cand.label,
+          callback = function()
+            self_ref:_assignShortcut(live, s.key, cand.id, act.id)
+            UIManager:show(Notification:new{
+              text = T(_("Gesture assigned: %1"), cand.label), timeout = 2 })
+            done()
+          end,
+        } })
+      else
+        -- Show what holds the slot (pcall: gestures.lua can hold ids the
+        -- Dispatcher doesn't know this session, e.g. from removed plugins)
+        local ok, holder = pcall(function() return Dispatcher:menuTextFunc(entry) end)
+        table.insert(buttons, { {
+          text = T(_("%1 — %2"), cand.label, ok and holder or _("taken")),
+          enabled = false,
+        } })
+      end
+    end
+  end
+
+  table.insert(buttons, { {
+    text = _("Cancel"), id = "close",
+    callback = done,
+  } })
+  dialog = ButtonDialog:new{
+    title = T(_("Shortcut for: %1"), act.title) .. "\n"
+      .. _("Pick a gesture — it starts working right away:"),
+    buttons = buttons,
+    -- Outside-tap = Cancel (plugin tenet); the widget already closed itself,
+    -- so only the reopen runs.
+    tap_close_callback = function()
+      dialog = nil
+      self_ref:showShortcutsScreen()
+    end,
+  }
+  UIManager:show(dialog)
 end
 
 -- Check if setup wizard should be shown

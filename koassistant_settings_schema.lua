@@ -2089,6 +2089,13 @@ local SettingsSchema = {
                     text = _("Gestures"),
                 },
                 {
+                    id = "shortcuts_screen",
+                    type = "action",
+                    text = _("Shortcuts"),
+                    callback = "showShortcutsScreen",
+                    help_text = _("See and change the gestures bound to KOAssistant's panels and actions. Assignments apply immediately, no restart needed."),
+                },
+                {
                     id = "show_in_gesture_menu",
                     type = "toggle",
                     text = _("Register gesture actions"),
