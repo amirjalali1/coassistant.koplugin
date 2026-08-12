@@ -1658,6 +1658,35 @@ function ChatHistoryManager:starChat(document_path, chat_id)
     end
 end
 
+--- Patch a saved chat's control_state in place (read-modify-write, star's
+--- update router). For per-chat controls that must persist WITHOUT a full chat
+--- save — a viewer MD/TXT tap followed by close-without-reply never hits a
+--- save site, which is exactly the reopen-revert the 2026-08-12 device rounds
+--- kept finding.
+--- @param document_path string Document path or store sentinel
+--- @param chat_id string
+--- @param patch table Fields merged into the stored control_state
+--- @return boolean success
+function ChatHistoryManager:updateChatControlState(document_path, chat_id, patch)
+    if not document_path or not chat_id or type(patch) ~= "table" then return false end
+    local chat = self:getChatById(document_path, chat_id)
+    if not chat then return false end
+    local cs = chat.control_state or {}
+    for k, v in pairs(patch) do cs[k] = v end
+    if self:useDocSettingsStorage() then
+        if document_path == "__GENERAL_CHATS__" then
+            return self:updateGeneralChat(chat_id, { control_state = cs })
+        elseif document_path == "__LIBRARY_CHATS__" then
+            return self:updateLibraryChat(chat_id, { control_state = cs })
+        else
+            return self:updateChatInDocSettings(nil, chat_id, { control_state = cs }, document_path)
+        end
+    else
+        chat.control_state = cs
+        return self:updateChatData(document_path, chat_id, chat)
+    end
+end
+
 --- Unstar a chat.
 --- @param document_path string Document path or special key
 --- @param chat_id string Chat ID

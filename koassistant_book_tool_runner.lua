@@ -299,6 +299,10 @@ end
 local function liveSpoilerLine(cfg, ui)
     local features = cfg and cfg.features or {}
     if features._spoiler_live ~= true then return nil end
+    -- Defense in depth (2026-08-12 device log): general/library chats never
+    -- get the line, whatever an upstream flag claims — the resume legacy
+    -- default marked sentinel-path chats eligible for a while.
+    if features.is_general_context or features.is_library_context then return nil end
     local book_file = features.book_metadata and features.book_metadata.file
     local book_open = ui and ui.document
         and (not book_file or ui.document.file == book_file) or false

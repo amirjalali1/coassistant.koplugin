@@ -1692,8 +1692,15 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
         -- BookToolRunner.queryWith. An explicit false (artifact chat) restores as
         -- false — the legacy fallback below must not overwrite it. The old
         -- cs.spoiler_free value (one-day C4 v1) is deliberately ignored.
+        -- SENTINEL GUARD (device log 2026-08-12, "live spoiler line appended —
+        -- book: ?"): general/library chats must NEVER restore eligible — chats
+        -- saved while the sentinel bug below was live carry a poisoned
+        -- spoiler_live=true, so the guard sits on the restore, not just the
+        -- default.
         if cs.spoiler_live ~= nil then
             config.features._spoiler_live = cs.spoiler_live == true
+                and document_path ~= "__GENERAL_CHATS__"
+                and document_path ~= "__LIBRARY_CHATS__"
         end
         -- Per-chat view mode: a tapped MD/TXT persists with the chat
         -- (2026-08-12); showChatViewer applies it via render_markdown_override
@@ -1704,8 +1711,13 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
     -- C4 revised, legacy saves (no control_state, or one without the field): book
     -- chats default to ELIGIBLE — protection must not fail open on a protected
     -- book; a pre-revision artifact chat may regain the line on resume (accepted,
-    -- noted in the plan). document_path is the book-chat marker here.
-    if config.features._spoiler_live == nil and document_path then
+    -- noted in the plan). document_path is the book-chat marker here — but the
+    -- GENERAL/LIBRARY store SENTINELS are truthy document_paths too, and this
+    -- default marked general chats eligible (THE 2026-08-12 device-log leak:
+    -- "live spoiler line appended — progress: none book: ?" in a general chat).
+    if config.features._spoiler_live == nil and document_path
+            and document_path ~= "__GENERAL_CHATS__"
+            and document_path ~= "__LIBRARY_CHATS__" then
         config.features._spoiler_live = true
     end
 

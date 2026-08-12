@@ -258,14 +258,16 @@ end
 local function applyExchangePageBreaks(html_body, configuration)
   local f = configuration and configuration.features
   if not (f and f.chat_exchange_page_breaks == true) then return html_body end
-  local first = true
-  return (html_body:gsub("<p>▶ User:", function()
-    if first then
-      first = false
-      return nil  -- keep the first occurrence unchanged
-    end
-    return '<p style="page-break-before: always">▶ User:'
-  end))
+  -- Break before each REPLY (maintainer spec 2026-08-12: "the reply starting
+  -- with KOAssistant at the top of a new page, and you are on that page").
+  -- MuPDF's plain-HTML layout only implements page-break-AFTER (headless
+  -- probe), so an empty spacer div carrying the -after rule goes IN FRONT of
+  -- the marker (see div.koa-exchange-break in getViewerCSS). luamd emits the
+  -- marker as its own plain paragraph (verified against the bundled lib).
+  local out, n = html_body:gsub("<p>◉ KOAssistant:</p>",
+    '<div class="koa-exchange-break"></div><p>◉ KOAssistant:</p>')
+  logger.info("KOAssistant: exchange page breaks injected:", n)
+  return out
 end
 
 local function addHtmlBidiAttributes(html, options)
@@ -852,6 +854,16 @@ blockquote {
     margin: 0.5em 0;
     padding-left: 1em;
     border-left: 3px solid #ccc;
+}
+
+/* "New page per exchange": applyExchangePageBreaks injects an empty spacer
+   div before each reply marker. MuPDF's plain-HTML layout implements
+   page-break-AFTER but NOT page-break-before, and ignores inline style
+   attributes entirely (both probed headlessly against the bundled libwrap-mupdf
+   2026-08-12: 30 paras + pb-after = 31 pages, pb-before = no-op, font-size
+   rule = applied) — so the break rides an -after rule on the spacer. */
+div.koa-exchange-break {
+    page-break-after: always;
 }
 
 code {
@@ -3396,12 +3408,6 @@ function ChatGPTViewer:scrollToLastQuestion()
   -- the reader came back for. Transcripts without a reply marker (edge/legacy)
   -- fall back to the user marker, then to the ratio estimate.
   local markers = { "◉ KOAssistant:", "▶ User:" }
-  if self.configuration and self.configuration.features
-      and self.configuration.features.chat_exchange_page_breaks == true then
-    -- Page breaks put each EXCHANGE at a page top — anchor on the user turn
-    -- so the landing page starts exactly with the exchange
-    markers = { "▶ User:", "◉ KOAssistant:" }
-  end
   if self.render_markdown then
     local box = self.scroll_text_w.htmlbox_widget
     if box and box.findText and self.scroll_text_w.scrollToRatio then
@@ -4215,6 +4221,36 @@ function ChatGPTViewer:toggleMarkdown()
 
   logger.info("KOAssistant: toggleMarkdown — this chat now",
     self.render_markdown and "markdown" or "plain text")
+
+  -- Write-through to the SAVED chat (device round 2026-08-12: tap → close →
+  -- reopen reverted, because close-without-reply never reaches a save site —
+  -- the transient only persists when something saves). Unsaved chats (no
+  -- chat_id yet) rely on the transient at their first save.
+  local hist = self._message_history or self.original_history
+  local chat_id = hist and hist.chat_id
+  if chat_id then
+    local cfg = self.configuration or {}
+    local cfgf = cfg.features or {}
+    local store_path = cfg.document_path
+    if not store_path then
+      if cfgf.is_library_context then
+        store_path = "__LIBRARY_CHATS__"
+      elseif cfgf.is_general_context then
+        store_path = "__GENERAL_CHATS__"
+      end
+    end
+    if store_path then
+      local ok_m, CHM = pcall(require, "koassistant_chat_history_manager")
+      if ok_m and CHM and CHM.new then
+        local ok_w = CHM:new():updateChatControlState(store_path, chat_id,
+          { render_markdown = self.render_markdown })
+        logger.info("KOAssistant: toggleMarkdown — write-through",
+          ok_w and "ok" or "FAILED", store_path)
+      end
+    else
+      logger.info("KOAssistant: toggleMarkdown — no store path; transient only")
+    end
+  end
 
   self:rebuildScrollWidget()
 end
