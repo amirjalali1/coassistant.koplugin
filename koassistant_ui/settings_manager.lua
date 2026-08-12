@@ -207,7 +207,7 @@ function SettingsManager:createMenuItem(plugin, item, schema)
                     break
                 end
             end
-            return T(item.text .. ": %1", current_label)
+            return T(_("%1: %2"), item.text, current_label)
         end
         menu_item.sub_item_table = {}
         for _idx, option in ipairs(item.options) do
@@ -292,10 +292,10 @@ function SettingsManager:createMenuItem(plugin, item, schema)
             else
                 formatted = tostring(value)
             end
-            local label = T(item.text .. ": %1", formatted)
+            local label = T(_("%1: %2"), item.text, formatted)
             local suffix = item.suffix_func and item.suffix_func(plugin)
             if suffix and suffix ~= "" then
-                label = label .. " • " .. suffix
+                label = T(_("%1 • %2"), label, suffix)
             end
             return label
         end

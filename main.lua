@@ -3827,12 +3827,15 @@ function AskGPT:buildTierMenu(provider)
     text = _("Reset all tiers to defaults"),
     keep_menu_open = true,
     enabled_func = function() return self_ref:hasTierOverrides(provider) end,
-    callback = function()
+    callback = function(touchmenu_instance)
       self_ref:clearTierOverrides(provider)
       UIManager:show(Notification:new{
         text = _("Tier customizations cleared"),
         timeout = 1.5,
       })
+      self_ref:refreshTouchMenu(touchmenu_instance, function()
+        return self_ref:buildTierMenu(provider)
+      end)
     end,
   }
   return items
@@ -4979,6 +4982,7 @@ function AskGPT:buildMinimalPopupActionsMenu()
           f.minimal_popup_actions = list
           self_ref.settings:saveSetting("features", f)
           self_ref.settings:flush()
+          self_ref:updateConfigFromSettings()
         end,
       })
     end

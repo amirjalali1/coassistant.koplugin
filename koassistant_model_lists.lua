@@ -220,6 +220,7 @@ local ModelLists = {
 
         -- Anthropic
         "anthropic/claude-sonnet-5",
+        "anthropic/claude-opus-5",      -- deep-reasoning flagship (no dotted version, so the hyphenation rule is moot)
         "anthropic/claude-fable-5",     -- frontier (verified in catalog 2026-07-28)
         "anthropic/claude-sonnet-4-6",
         "anthropic/claude-haiku-4-5",
@@ -463,8 +464,8 @@ local ModelLists = {
             xai = "grok-4.5",
             cohere = "command-a-plus-05-2026",
             ollama = "llama4",
-            openrouter = "anthropic/claude-sonnet-5",
-            requesty = "anthropic/claude-sonnet-5",
+            openrouter = "anthropic/claude-opus-5",  -- mirrors the direct-Anthropic re-tier (opus-5 flagship, sonnet-5 standard)
+            requesty = "anthropic/claude-opus-5",
             together = "deepseek-ai/DeepSeek-V4-Pro",
             fireworks = "accounts/fireworks/models/deepseek-v4-pro",
             sambanova = "Llama-4-Maverick-17B-128E-Instruct",

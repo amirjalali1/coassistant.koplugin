@@ -1610,7 +1610,9 @@ local SettingsSchema = {
             emoji = "📓",
             items = {
                 {
-                    id = "browse_notebooks",
+                    -- Not "browse_notebooks" — that id belongs to the main-menu
+                    -- row and getItemById requires uniqueness across the schema
+                    id = "browse_notebooks_settings",
                     type = "action",
                     text = _("Browse Notebooks..."),
                     callback = "showNotebookBrowser",
