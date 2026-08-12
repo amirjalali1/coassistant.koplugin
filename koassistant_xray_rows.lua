@@ -149,8 +149,12 @@ function XrayRows.versionRows(ctx)
                             math.floor(c_next * 100 + 0.5))
                     end
                 end
+                -- Background updates are flowing-only (_fireXrayAutoUpdate
+                -- bails on has_pages) — never offer a button that would
+                -- silently no-op on page-based books
                 local bg_ok = plugin.ui and plugin.ui.document
                     and plugin.ui.document.file == file
+                    and not (plugin.ui.document.info and plugin.ui.document.info.has_pages)
                 local ConfirmBox = require("ui/widget/confirmbox")
                 UIManager:show(ConfirmBox:new{
                     text = confirm_text,

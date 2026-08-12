@@ -5680,6 +5680,37 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     -- attended warning chain exactly as it always ran.
     local function runPreSendWarnings()
 
+    -- Step 0.5 (A8): extraction attempted but produced ZERO text — a scanned
+    -- or image-only file is the real case. Without this the request sends
+    -- with {text_fallback_nudge} and the reader pays for an answer that never
+    -- saw their book. Attended paths only; background X-Ray machinery is
+    -- flowing-only and never reaches this with an empty extraction.
+    if not message_data._background_request
+            and (message_data.book_text_extraction_empty
+                or message_data.full_document_extraction_empty) then
+        local empty_dialog
+        empty_dialog = ButtonDialog:new{
+            title = _("No text could be extracted from this document — it may be a scanned or image-only file.\n\nSending anyway means the AI answers from general knowledge, not this book's text."),
+            buttons = {
+                {{
+                    text = _("Cancel"),
+                    callback = function()
+                        UIManager:close(empty_dialog)
+                    end,
+                }},
+                {{
+                    text = _("Send anyway"),
+                    callback = function()
+                        UIManager:close(empty_dialog)
+                        checkLargeExtractionAndSend()
+                    end,
+                }},
+            },
+        }
+        UIManager:show(empty_dialog)
+        return nil  -- Early return; continuation via callback
+    end
+
     -- Step 1: Truncation warning (fires before large extraction check)
     -- Book text and full document truncation are mutually exclusive in practice;
     -- incremental truncation is a separate case that could theoretically co-occur.

@@ -621,7 +621,9 @@ local function extractChapterText(ui, chapter, max_chars)
         local has_hidden = document.hasHiddenFlows and document:hasHiddenFlows()
         local parts = {}
         local char_count = 0
-        local end_page = math.min(chapter.end_page, chapter.start_page + 50)  -- Cap pages too
+        -- No page cap: the char budget below is the sole bound. A silent
+        -- +50-page cap made "no mentions" a lie on long monograph chapters.
+        local end_page = chapter.end_page
         for page = chapter.start_page, end_page do
             -- Skip hidden flow pages
             if has_hidden and document:getPageFlow(page) ~= 0 then

@@ -2070,7 +2070,17 @@ local function getCurrentPageFromDoc(doc)
         return nil
     end
     if doc.info.has_pages then
-        -- PDF: not easily accessible without ui.view — fall back to xpointer
+        -- Page-based (PDF/DJVU): the document object is stateless — position
+        -- lives on the reader's VIEW. Read it only when this doc IS the live
+        -- reader's document (identity guard; artifact_browser precedent).
+        -- Before this, the branch was empty and section-in-range never fired
+        -- on page-based books.
+        local ok, ReaderUI = pcall(require, "apps/reader/readerui")
+        local inst = ok and ReaderUI.instance
+        if inst and inst.document == doc and inst.view and inst.view.state then
+            return inst.view.state.page
+        end
+        return nil
     end
     local xp = doc.getXPointer and doc:getXPointer()
     if xp and doc.getPageFromXPointer then

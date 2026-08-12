@@ -965,6 +965,22 @@ function BookSettings.showDomainResearch(opts)
     UIManager:show(dialog)
 end
 
+--- Page-based (PDF/DJVU) detection that works with or without an open document.
+--- Automatic X-Ray's machinery is flowing-only, so its row and picker label the
+--- setting as having no effect on such books — label, never gray (§5): the
+--- stored value stays visible and editable.
+local function isPageBased(ui, document_path)
+    if ui and ui.document and ui.document.info then
+        return ui.document.info.has_pages or false
+    end
+    if document_path then
+        local ok, DocumentRegistry = pcall(require, "document/documentregistry")
+        local prov = ok and DocumentRegistry and DocumentRegistry:getProvider(document_path)
+        return (prov and prov.provider or "crengine") ~= "crengine"
+    end
+    return false
+end
+
 --- Quick AI Book Tools posture picker with a For-this-book ↔ Global target toggle
 -- (tools_ux_plan.md §3) — mirrors the Domain & Research picker. Shared entry point for
 -- the Quick Settings chip; the Book Settings screen has its own per-book-only row.
@@ -1000,7 +1016,10 @@ function BookSettings.showXrayAutoPicker(opts)
     end
     picker = ButtonDialog:new{
         title = _("Automatic X-Ray (this book)") .. "\n"
-            .. _("On: build this book's X-Ray automatically as you read: a spoiler-free introduction first, then checkpoints, always keeping the next one ready ahead of you (background API calls; WiFi + text-extraction consent required)."),
+            .. _("On: build this book's X-Ray automatically as you read: a spoiler-free introduction first, then checkpoints, always keeping the next one ready ahead of you (background API calls; WiFi + text-extraction consent required).")
+            .. (isPageBased(opts.ui, opts.document_path)
+                and ("\n" .. _("This book is page-based (PDF/DJVU): automatic X-Ray only runs on flowing books (EPUB), so this setting has no effect here."))
+                or ""),
         buttons = {
             {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), global_on and _("On") or _("Off")),
                 callback = function() pick(nil) end }},
@@ -1917,9 +1936,11 @@ function BookSettings.show(opts)
     addButton({ text = spoiler_row,
         callback = function() sharedPicker(BookSettings.showSpoilerFree) end })
     -- Tri-state Automatic X-Ray (§7 P1): On = create + update + promotion for
-    -- this book, standalone — no global master required
+    -- this book, standalone — no global master required. Page-based books get
+    -- the honest no-effect marker (auto is flowing-only) instead of a gray row.
     addButton({ text = T(_("Automatic X-Ray: %1"),
-            BookSettings.xrayAutoLabel(doc_settings, features)),
+            BookSettings.xrayAutoLabel(doc_settings, features))
+            .. (isPageBased(ui, opts.document_path) and (" " .. _("(no effect: page-based book)")) or ""),
         callback = function()
             closeDialog()
             BookSettings.showXrayAutoPicker({

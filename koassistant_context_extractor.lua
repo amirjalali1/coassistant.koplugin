@@ -1437,6 +1437,14 @@ function ContextExtractor:extractForAction(action)
                 data.book_text_coverage_start = book_text_result.coverage_start
                 data.book_text_coverage_end = book_text_result.coverage_end
             end
+            -- Extraction ATTEMPTED (consent given, document present) yet
+            -- produced nothing — a scanned/image-only file. The pre-send
+            -- chain turns this into an honest ask instead of silently paying
+            -- for an answer that never saw the book.
+            if not book_text_result.disabled and self:isAvailable()
+                    and (book_text_result.char_count or 0) == 0 then
+                data.book_text_extraction_empty = true
+            end
         end
 
         -- {full_document} / {full_document_section} / {document_context_section} → extract entire document (or section scope)
@@ -1456,6 +1464,11 @@ function ContextExtractor:extractForAction(action)
                 data.full_document_truncated = true
                 data.full_document_coverage_start = full_doc_result.coverage_start
                 data.full_document_coverage_end = full_doc_result.coverage_end
+            end
+            -- Same scanned/image-only guard as the book_text block above
+            if not full_doc_result.disabled and self:isAvailable()
+                    and (full_doc_result.char_count or 0) == 0 then
+                data.full_document_extraction_empty = true
             end
         end
     end
