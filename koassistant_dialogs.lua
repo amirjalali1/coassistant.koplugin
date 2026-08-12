@@ -2358,17 +2358,28 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                     -- Use viewer's configuration for replies (respects expand view changes)
                     local viewer_cfg = viewer.configuration or temp_config or CONFIGURATION
 
+                    -- A8 default: a NON-streamed reply lands at the START of the new
+                    -- exchange (last "▶ User:" turn) — the old bottom-land showed the
+                    -- reply's tail first. A STREAMED reply keeps the bottom: the reader
+                    -- just followed the text there, and yanking them back up loses their
+                    -- place. cfg-level signal (`enable_streaming ~= false`); the
+                    -- translate/dict per-mode streaming offs conservatively keep the old
+                    -- bottom behavior. The scroll_to_last_message toggle still forces
+                    -- last-question regardless (its original meaning).
+                    local reply_streamed = not (viewer_cfg and viewer_cfg.features
+                        and viewer_cfg.features.enable_streaming == false)
+                    local to_last_question = (history and history.getAssistantTurnCount
+                            and history:getAssistantTurnCount() > 1)
+                        and (not reply_streamed
+                            or (viewer_cfg and viewer_cfg.features
+                                and viewer_cfg.features.scroll_to_last_message == true))
                     -- Create a new viewer with updated content
                     local new_viewer = ChatGPTViewer:new {
                         title = title .. " (" .. model_info .. ")",
                         text = history:createResultText(highlightedText, viewer_cfg),
                         configuration = viewer_cfg,  -- Use viewer's config to maintain state after expand
-                        -- Scroll to last question if setting enabled AND this is a follow-up response
-                        -- (This is for follow-up replies, so there should always be 2+ assistant messages here)
-                        scroll_to_last_question = (viewer_cfg and viewer_cfg.features and viewer_cfg.features.scroll_to_last_message == true)
-                            and history and history.getAssistantTurnCount and history:getAssistantTurnCount() > 1,
-                        scroll_to_bottom = not ((viewer_cfg and viewer_cfg.features and viewer_cfg.features.scroll_to_last_message == true)
-                            and history and history.getAssistantTurnCount and history:getAssistantTurnCount() > 1),
+                        scroll_to_last_question = to_last_question,
+                        scroll_to_bottom = not to_last_question,
                         show_debug_in_chat = viewer.show_debug_in_chat,
                         -- Set BOTH property names for compatibility:
                         -- original_history: used by toggleDebugDisplay, toggleHighlightVisibility, etc.
@@ -2425,7 +2436,16 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                     if target and target.update then
                         logger.info("KOAssistant: onAskQuestion fallback render — ActiveChatViewer slot changed under an in-flight reply")
                         local viewer_cfg = target.configuration or temp_config or CONFIGURATION
-                        target:update(history:createResultText(highlightedText, viewer_cfg), true)
+                        -- Same A8 landing rule as the main branch: streamed → bottom,
+                        -- non-streamed → start of the new exchange
+                        local fb_streamed = not (viewer_cfg and viewer_cfg.features
+                            and viewer_cfg.features.enable_streaming == false)
+                        target:update(history:createResultText(highlightedText, viewer_cfg), fb_streamed)
+                        if not fb_streamed and target.scrollToLastQuestion then
+                            UIManager:scheduleIn(0.15, function()
+                                if target.scroll_text_w then target:scrollToLastQuestion() end
+                            end)
+                        end
                     else
                         logger.warn("KOAssistant: onAskQuestion could not render the reply into a live viewer for this chat")
                     end

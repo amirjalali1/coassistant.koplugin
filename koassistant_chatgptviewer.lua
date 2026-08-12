@@ -3359,6 +3359,55 @@ function ChatGPTViewer:calculateLastQuestionRatio()
   end
 end
 
+--- Precise post-render jump to the last user turn (A8). Markdown rides the
+--- HtmlBoxWidget text search (page granularity); plain text moves the cursor
+--- to the marker's char position. Falls back to the legacy pre-render ratio
+--- estimate when the running KOReader lacks the APIs.
+function ChatGPTViewer:scrollToLastQuestion()
+  if not (self.scroll_text_w and self.text) then return end
+  local marker = "▶ User:"
+  if self.render_markdown then
+    local box = self.scroll_text_w.htmlbox_widget
+    if box and box.findText and box.setPageNumber and box:findText(marker) then
+      -- findText lands on the FIRST match from the current page and builds a
+      -- sorted page index of every match — the last user turn is the tail
+      local list = box._match_page_list
+      if list and #list > 0 then
+        box:setPageNumber(list[#list])
+      end
+      -- Don't leave search state behind for the viewer's own find feature
+      box.search_term = nil
+      box._search_index = nil
+      box._match_page_list = nil
+      if self.scroll_text_w._updateScrollBar then
+        self.scroll_text_w:_updateScrollBar(true)
+      end
+      return
+    end
+  elseif self.scroll_text_w.moveCursorToCharPos then
+    local last_byte, search_start = nil, 1
+    while true do
+      local s = self.text:find(marker, search_start, true)
+      if not s then break end
+      last_byte = s
+      search_start = s + 1
+    end
+    if last_byte then
+      -- moveCursorToCharPos wants UTF-8 CHARS, not bytes: count the
+      -- non-continuation bytes before the marker
+      local _stripped, nchars = self.text:sub(1, last_byte - 1):gsub("[^\128-\191]", "")
+      self.scroll_text_w:moveCursorToCharPos(nchars + 1)
+      return
+    end
+  end
+  local ratio = self:calculateLastQuestionRatio()
+  if self.scroll_text_w.scrollToRatio then
+    self.scroll_text_w:scrollToRatio(ratio)
+  elseif self.scroll_text_w.scrollToBottom and ratio >= 0.9 then
+    self.scroll_text_w:scrollToBottom()
+  end
+end
+
 function ChatGPTViewer:onShow()
   UIManager:setDirty(self, function()
     return "partial", self.frame.dimen
@@ -3368,12 +3417,7 @@ function ChatGPTViewer:onShow()
   if self.scroll_to_last_question then
     UIManager:scheduleIn(0.1, function()
       if self.scroll_text_w then
-        local ratio = self:calculateLastQuestionRatio()
-        if self.scroll_text_w.scrollToRatio then
-          self.scroll_text_w:scrollToRatio(ratio)
-        elseif self.scroll_text_w.scrollToBottom and ratio >= 0.9 then
-          self.scroll_text_w:scrollToBottom()
-        end
+        self:scrollToLastQuestion()
       end
     end)
   elseif self.scroll_to_bottom then

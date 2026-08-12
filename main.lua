@@ -11576,6 +11576,10 @@ function AskGPT:onEndOfBook()
   -- Delay slightly to let KOReader's own end-of-book popup show first
   local self_ref = self
   UIManager:scheduleIn(0.3, function()
+    -- The document can close DURING the delay (core end-of-book actions like
+    -- "return to file browser" close it synchronously after our event) — the
+    -- suggestion flow runs book-level machinery, so bail rather than crash
+    if not (self_ref.ui and self_ref.ui.document) then return end
     local ConfirmBox = require("ui/widget/confirmbox")
     UIManager:show(ConfirmBox:new{
       text = _("KOAssistant: Would you like an AI suggestion for what to read next from your library?"),
@@ -14304,6 +14308,13 @@ function AskGPT:_reasoningControlRows(profile, get_pref, effective_label, on_set
       checked_func = function() local p = get_pref(); return p ~= nil and p.state == "off" end,
       callback = function() on_set({ state = "off" }) end,
     }
+  else
+    -- No off switch exists at the API (Gemini 3.x, always-on reasoning
+    -- providers): say so where the Off row would sit — otherwise the picker
+    -- reads as if Off were forgotten. Minimal stance already maps to the
+    -- lowest effort for these models; this row is explanation only.
+    rows[#rows + 1] = { info = true,
+      text = _("Always reasons — this model's API has no off switch") }
   end
   if profile.axis == "binary" then
     rows[#rows + 1] = {
