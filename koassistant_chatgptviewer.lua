@@ -3445,12 +3445,17 @@ function ChatGPTViewer:scrollToLastQuestion()
         -- a sorted page index of every match — the newest turn is the tail
         local list = box._match_page_list
         target = found and list and #list > 0 and list[#list] or nil
-        -- Drop the search state before repainting (no stray match highlights,
-        -- nothing left behind for the viewer's own find feature)
+        -- Drop the search state AND its visual highlight before repainting:
+        -- findText's internal setPageNumber pre-highlights matches on the
+        -- landing page (highlight_rects → gray darkenRect at the next paint),
+        -- and clearSearch without the redraw arg clears state ONLY — on the
+        -- short-chat path (no page change afterwards) the rects survived and
+        -- painted the marker lines gray (device round 2026-08-12)
         if box.clearSearch then
-          box:clearSearch()
+          box:clearSearch(true)
         else
           box.search_term, box._search_index, box._match_page_list = nil, nil, nil
+          box.highlight_rects, box.highlight_text = nil, nil
         end
         -- findText/setPageNumber change STATE only — the rendered page bitmap
         -- is cached, and dirtying just the scroll bar leaves it on screen
