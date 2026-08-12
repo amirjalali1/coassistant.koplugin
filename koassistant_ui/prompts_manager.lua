@@ -623,11 +623,8 @@ end
 function PromptsManager:showMenuOptions()
     local self_ref = self
     local from = "prompts_menu"
-    local buttons = {
-        self:_makeNavButton(_("Highlight Menu"), from, function() self_ref:showHighlightMenuManager() end),
-        self:_makeNavButton(_("Dictionary Popup"), from, function() self_ref:showDictionaryPopupManager() end),
-        self:_makeNavButton(_("Quick Actions"), from, function() self_ref:showQuickActionsManager() end),
-        self:_makeNavButton(_("File Browser Actions"), from, function() self_ref:showFileBrowserActionsManager() end),
+    local buttons = self:_managerNavButtons(from)
+    table.insert(buttons,
         {{ text = _("Reset custom actions"), align = "left", callback = function()
             if self_ref._anchored_menu then UIManager:close(self_ref._anchored_menu) end
             UIManager:show(ConfirmBox:new{
@@ -638,7 +635,8 @@ function PromptsManager:showMenuOptions()
                     self_ref:refreshMenu()
                 end,
             })
-        end }},
+        end }})
+    table.insert(buttons,
         {{ text = _("Reset action edits"), align = "left", callback = function()
             if self_ref._anchored_menu then UIManager:close(self_ref._anchored_menu) end
             UIManager:show(ConfirmBox:new{
@@ -649,12 +647,12 @@ function PromptsManager:showMenuOptions()
                     self_ref:refreshMenu()
                 end,
             })
-        end }},
+        end }})
+    table.insert(buttons,
         {{ text = _("Reset action menus…"), align = "left", callback = function()
             if self_ref._anchored_menu then UIManager:close(self_ref._anchored_menu) end
             self_ref:showResetMenusDialog()
-        end }},
-    }
+        end }})
     self:_showAnchoredMenu(self.prompts_menu, buttons)
 end
 
@@ -5529,6 +5527,31 @@ function PromptsManager:_makeNavButton(text, from_field, show_fn)
     }
 end
 
+-- Full nav loop for the ordering managers' hamburgers (A7b): every manager
+-- lists ALL the others, skipping itself via from_field — the QS/QA panel
+-- managers used to be islands that only linked each other. Input Actions
+-- appears in no list (it needs a context argument, so it stays reachable
+-- from the input dialogs' gear) but its own hamburger calls this too.
+function PromptsManager:_managerNavButtons(from)
+    local self_ref = self
+    local destinations = {
+        { field = "prompts_menu", label = _("Manage Actions"), show = function() self_ref:showPromptsMenu() end },
+        { field = "highlight_menu_manager", label = _("Highlight Menu"), show = function() self_ref:showHighlightMenuManager() end },
+        { field = "dictionary_popup_menu", label = _("Dictionary Popup"), show = function() self_ref:showDictionaryPopupManager() end },
+        { field = "quick_actions_menu", label = _("Quick Actions"), show = function() self_ref:showQuickActionsManager() end },
+        { field = "qa_utilities_menu", label = _("QA Panel Utilities"), show = function() self_ref:showQaUtilitiesManager() end },
+        { field = "qs_items_menu", label = _("QS Panel Items"), show = function() self_ref:showQsItemsManager() end },
+        { field = "file_browser_menu", label = _("File Browser Actions"), show = function() self_ref:showFileBrowserActionsManager() end },
+    }
+    local buttons = {}
+    for _idx, dest in ipairs(destinations) do
+        if dest.field ~= from then
+            table.insert(buttons, self:_makeNavButton(dest.label, from, dest.show))
+        end
+    end
+    return buttons
+end
+
 -- Confirm and execute a reset action, then reopen the manager via nextTick
 function PromptsManager:_confirmAndReset(confirm_text, reset_fn, menu_field, reshow_fn)
     if self._anchored_menu then UIManager:close(self._anchored_menu) end
@@ -5612,18 +5635,14 @@ function PromptsManager:showHighlightMenuManager()
         title_bar_left_icon = "appbar.menu",
         onLeftButtonTap = function()
             local from = "highlight_menu_manager"
-            local buttons = {
-                self_ref:_makeNavButton(_("Manage Actions"), from, function() self_ref:showPromptsMenu() end),
-                self_ref:_makeNavButton(_("Dictionary Popup"), from, function() self_ref:showDictionaryPopupManager() end),
-                self_ref:_makeNavButton(_("Quick Actions"), from, function() self_ref:showQuickActionsManager() end),
-                self_ref:_makeNavButton(_("File Browser Actions"), from, function() self_ref:showFileBrowserActionsManager() end),
+            local buttons = self_ref:_managerNavButtons(from)
+            table.insert(buttons,
                 {{ text = _("Reset to defaults"), align = "left", callback = function()
                     self_ref:_confirmAndReset(
                         _("Reset highlight menu actions to defaults?\n\nThis restores the default ordering and selection.\n\nYour actions (custom and built-in) are preserved."),
                         function() self_ref.plugin:resetHighlightMenuActions() end,
                         from, function() self_ref:showHighlightMenuManager() end)
-                end }},
-            }
+                end }})
             self_ref:_showAnchoredMenu(self_ref.highlight_menu_manager, buttons)
         end,
         item_table = menu_items,
@@ -5741,20 +5760,14 @@ function PromptsManager:showQuickActionsManager(on_close_callback)
         title_bar_left_icon = "appbar.menu",
         onLeftButtonTap = function()
             local from = "quick_actions_menu"
-            local buttons = {
-                self_ref:_makeNavButton(_("Manage Actions"), from, function() self_ref:showPromptsMenu() end),
-                self_ref:_makeNavButton(_("Highlight Menu"), from, function() self_ref:showHighlightMenuManager() end),
-                self_ref:_makeNavButton(_("Dictionary Popup"), from, function() self_ref:showDictionaryPopupManager() end),
-                self_ref:_makeNavButton(_("File Browser Actions"), from, function() self_ref:showFileBrowserActionsManager() end),
-                self_ref:_makeNavButton(_("QA Panel Utilities"), from, function() self_ref:showQaUtilitiesManager() end),
-                self_ref:_makeNavButton(_("QS Panel Items"), from, function() self_ref:showQsItemsManager() end),
+            local buttons = self_ref:_managerNavButtons(from)
+            table.insert(buttons,
                 {{ text = _("Reset to defaults"), align = "left", callback = function()
                     self_ref:_confirmAndReset(
                         _("Reset Quick Actions panel?\n\nThis restores the default actions shown in the Quick Actions menu.\n\nYour actions (custom and built-in) are preserved."),
                         function() self_ref.plugin:resetQuickActions() end,
                         from, function() self_ref:showQuickActionsManager(on_close_callback) end)
-                end }},
-            }
+                end }})
             self_ref:_showAnchoredMenu(self_ref.quick_actions_menu, buttons)
         end,
         item_table = menu_items,
@@ -5875,16 +5888,14 @@ function PromptsManager:showQaUtilitiesManager(restore_page, on_close_callback)
         title_bar_left_icon = "appbar.menu",
         onLeftButtonTap = function()
             local from = "qa_utilities_menu"
-            local buttons = {
-                self_ref:_makeNavButton(_("QA Panel Actions"), from, function() self_ref:showQuickActionsManager() end),
-                self_ref:_makeNavButton(_("QS Panel Items"), from, function() self_ref:showQsItemsManager() end),
+            local buttons = self_ref:_managerNavButtons(from)
+            table.insert(buttons,
                 {{ text = _("Reset to defaults"), align = "left", callback = function()
                     self_ref:_confirmAndReset(
                         _("Reset QA panel utilities to defaults?\n\nThis restores the default order and visibility of utility buttons."),
                         function() self_ref.plugin:resetQaUtilities() end,
                         from, function() self_ref:showQaUtilitiesManager(nil, on_close_callback) end)
-                end }},
-            }
+                end }})
             self_ref:_showAnchoredMenu(self_ref.qa_utilities_menu, buttons)
         end,
         item_table = menu_items,
@@ -6007,16 +6018,14 @@ function PromptsManager:showQsItemsManager(restore_page, on_close_callback)
         title_bar_left_icon = "appbar.menu",
         onLeftButtonTap = function()
             local from = "qs_items_menu"
-            local buttons = {
-                self_ref:_makeNavButton(_("QA Panel Actions"), from, function() self_ref:showQuickActionsManager() end),
-                self_ref:_makeNavButton(_("QA Panel Utilities"), from, function() self_ref:showQaUtilitiesManager() end),
+            local buttons = self_ref:_managerNavButtons(from)
+            table.insert(buttons,
                 {{ text = _("Reset to defaults"), align = "left", callback = function()
                     self_ref:_confirmAndReset(
                         _("Reset QS panel items to defaults?\n\nThis restores the default order and visibility of Quick Settings items."),
                         function() self_ref.plugin:resetQsItems() end,
                         from, function() self_ref:showQsItemsManager(nil, on_close_callback) end)
-                end }},
-            }
+                end }})
             self_ref:_showAnchoredMenu(self_ref.qs_items_menu, buttons)
         end,
         item_table = menu_items,
@@ -6159,18 +6168,14 @@ function PromptsManager:showFileBrowserActionsManager()
         title_bar_left_icon = "appbar.menu",
         onLeftButtonTap = function()
             local from = "file_browser_menu"
-            local buttons = {
-                self_ref:_makeNavButton(_("Manage Actions"), from, function() self_ref:showPromptsMenu() end),
-                self_ref:_makeNavButton(_("Highlight Menu"), from, function() self_ref:showHighlightMenuManager() end),
-                self_ref:_makeNavButton(_("Dictionary Popup"), from, function() self_ref:showDictionaryPopupManager() end),
-                self_ref:_makeNavButton(_("Quick Actions"), from, function() self_ref:showQuickActionsManager() end),
+            local buttons = self_ref:_managerNavButtons(from)
+            table.insert(buttons,
                 {{ text = _("Reset to defaults"), align = "left", callback = function()
                     self_ref:_confirmAndReset(
                         _("Reset file browser actions to defaults?\n\nThis restores the default actions pinned to the file browser.\n\nYour actions (custom and built-in) are preserved."),
                         function() self_ref.plugin:resetFileBrowserActions() end,
                         from, function() self_ref:showFileBrowserActionsManager() end)
-                end }},
-            }
+                end }})
             self_ref:_showAnchoredMenu(self_ref.file_browser_menu, buttons)
         end,
         item_table = menu_items,
@@ -6288,18 +6293,14 @@ function PromptsManager:showDictionaryPopupManager()
         title_bar_left_icon = "appbar.menu",
         onLeftButtonTap = function()
             local from = "dictionary_popup_menu"
-            local buttons = {
-                self_ref:_makeNavButton(_("Manage Actions"), from, function() self_ref:showPromptsMenu() end),
-                self_ref:_makeNavButton(_("Highlight Menu"), from, function() self_ref:showHighlightMenuManager() end),
-                self_ref:_makeNavButton(_("Quick Actions"), from, function() self_ref:showQuickActionsManager() end),
-                self_ref:_makeNavButton(_("File Browser Actions"), from, function() self_ref:showFileBrowserActionsManager() end),
+            local buttons = self_ref:_managerNavButtons(from)
+            table.insert(buttons,
                 {{ text = _("Reset to defaults"), align = "left", callback = function()
                     self_ref:_confirmAndReset(
                         _("Reset dictionary popup actions to defaults?\n\nThis restores the default ordering and selection.\n\nYour actions (custom and built-in) are preserved."),
                         function() self_ref.plugin:resetDictionaryPopupActions() end,
                         from, function() self_ref:showDictionaryPopupManager() end)
-                end }},
-            }
+                end }})
             self_ref:_showAnchoredMenu(self_ref.dictionary_popup_menu, buttons)
         end,
         item_table = menu_items,
@@ -6458,15 +6459,15 @@ function PromptsManager:showInputActionsManager(ctx_name, on_close_callback)
         title = T(_("%1 (%2 shown)"), title, input_count),
         title_bar_left_icon = "appbar.menu",
         onLeftButtonTap = function()
-            local buttons = {
+            local buttons = self_ref:_managerNavButtons("input_actions_menu")
+            table.insert(buttons,
                 {{ text = _("Reset to defaults"), align = "left", callback = function()
                     if self_ref._anchored_menu then UIManager:close(self_ref._anchored_menu) end
                     UIManager:show(ConfirmBox:new{
                         text = _("Reset input actions to defaults?\n\nThis restores the default ordering and selection."),
                         ok_callback = reset_callback,
                     })
-                end }},
-            }
+                end }})
             self_ref:_showAnchoredMenu(self_ref.input_actions_menu, buttons)
         end,
         item_table = menu_items,

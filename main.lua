@@ -15041,8 +15041,9 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
     end,
   }
 
+  -- ⏩ = the bypass class icon; ⚡ is reserved for Quick Answer (A7b de-collision)
   button_defs["h_bypass"] = {
-    text = E("\u{26A1}", highlight_bypass and _("H.Bypass: ON") or _("H.Bypass: OFF")),
+    text = E("\u{23E9}", highlight_bypass and _("H.Bypass: ON") or _("H.Bypass: OFF")),
     callback = function()
       local f = self_ref.settings:readSetting("features") or {}
       f.highlight_bypass_enabled = not f.highlight_bypass_enabled
@@ -15056,7 +15057,7 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
   }
 
   button_defs["d_bypass"] = {
-    text = E("\u{26A1}", dict_bypass and _("D.Bypass: ON") or _("D.Bypass: OFF")),
+    text = E("\u{23E9}", dict_bypass and _("D.Bypass: ON") or _("D.Bypass: OFF")),
     callback = function()
       local f = self_ref.settings:readSetting("features") or {}
       f.dictionary_bypass_enabled = not f.dictionary_bypass_enabled
@@ -15190,7 +15191,8 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
     }
 
     button_defs["quick_actions"] = {
-      text = E("\u{26A1}", _("Quick Actions...")),
+      -- 🔁 = cross-panel link (pairs with the QA panel's Quick Settings utility)
+      text = E("\u{1F501}", _("Quick Actions...")),
       callback = function()
         opening_subdialog = true
         UIManager:close(dialog)
@@ -15345,7 +15347,7 @@ function AskGPT:onKOAssistantQuickActions()
     view_caches = "\u{1F4E6}",         -- 📦
     book_group = "\u{1F5C2}\u{FE0F}",  -- 🗂️ (one icon for groups everywhere)
     book_overview = "\u{1F4CB}",       -- 📋 (the overview page)
-    ai_quick_settings = "\u{2699}\u{FE0F}", -- ⚙️
+    ai_quick_settings = "\u{1F501}",   -- 🔁 cross-panel link (pairs with QS's Quick Actions tile)
     book_settings = "\u{1F4D5}",       -- 📕
   }
 
