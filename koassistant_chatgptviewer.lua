@@ -248,6 +248,26 @@ end
 
 -- Post-process HTML for RTL support in markdown view
 -- Uses inline CSS text-align since MuPDF doesn't support dir attribute
+-- "New page per exchange" (opt-in, 2026-08-12): a CSS page break before each
+-- user turn makes every exchange start at a physical page top in the paginated
+-- HTML view — the landing jump becomes EXACT instead of page-granular. MuPDF's
+-- HTML layout honors page-break-before (its own FB2/HTML default stylesheets
+-- use it — verified in libwrap-mupdf). The FIRST marker keeps no break (it
+-- would render a leading blank page); non-transcript viewers carry no marker,
+-- so this is a structural no-op for them.
+local function applyExchangePageBreaks(html_body, configuration)
+  local f = configuration and configuration.features
+  if not (f and f.chat_exchange_page_breaks == true) then return html_body end
+  local first = true
+  return (html_body:gsub("<p>▶ User:", function()
+    if first then
+      first = false
+      return nil  -- keep the first occurrence unchanged
+    end
+    return '<p style="page-break-before: always">▶ User:'
+  end))
+end
+
 local function addHtmlBidiAttributes(html, options)
     if not html then return html end
     options = options or {}
@@ -2799,6 +2819,7 @@ function ChatGPTViewer:init()
       -- Fallback to plain text if HTML generation fails
       html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
     end
+    html_body = applyExchangePageBreaks(html_body, self.configuration)
     -- For dictionary popup with RTL language, use "starts with RTL" detection
     local bidi_opts = { use_starts_with_rtl = needs_rtl_fix }
     html_body = addHtmlBidiAttributes(html_body, bidi_opts)
@@ -3375,6 +3396,12 @@ function ChatGPTViewer:scrollToLastQuestion()
   -- the reader came back for. Transcripts without a reply marker (edge/legacy)
   -- fall back to the user marker, then to the ratio estimate.
   local markers = { "◉ KOAssistant:", "▶ User:" }
+  if self.configuration and self.configuration.features
+      and self.configuration.features.chat_exchange_page_breaks == true then
+    -- Page breaks put each EXCHANGE at a page top — anchor on the user turn
+    -- so the landing page starts exactly with the exchange
+    markers = { "▶ User:", "◉ KOAssistant:" }
+  end
   if self.render_markdown then
     local box = self.scroll_text_w.htmlbox_widget
     if box and box.findText and self.scroll_text_w.scrollToRatio then
@@ -4065,6 +4092,7 @@ function ChatGPTViewer:update(new_text, scroll_to_bottom)
       logger.warn("ChatGPTViewer: could not generate HTML", err)
       html_body = "<pre>" .. (new_text or "Missing text.") .. "</pre>"
     end
+    html_body = applyExchangePageBreaks(html_body, self.configuration)
     -- For dictionary popup with RTL language, use "starts with RTL" detection
     local dict_lang = self.configuration and self.configuration.features
         and self.configuration.features.dictionary_language
@@ -4208,6 +4236,7 @@ function ChatGPTViewer:rebuildScrollWidget()
       logger.warn("ChatGPTViewer: could not generate HTML", err)
       html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
     end
+    html_body = applyExchangePageBreaks(html_body, self.configuration)
     -- For dictionary popup with RTL language, use "starts with RTL" detection
     local bidi_opts = { use_starts_with_rtl = needs_rtl_fix }
     html_body = addHtmlBidiAttributes(html_body, bidi_opts)
@@ -4821,6 +4850,7 @@ function ChatGPTViewer:toggleTranslateQuoteVisibility()
       logger.warn("ChatGPTViewer: could not generate HTML", err)
       html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
     end
+    html_body = applyExchangePageBreaks(html_body, self.configuration)
     -- For dictionary popup with RTL language, use "starts with RTL" detection
     local dict_lang = self.configuration and self.configuration.features
         and self.configuration.features.dictionary_language
@@ -5583,10 +5613,28 @@ function ChatGPTViewer:showRenderingQuickSettings()
     title = _("Display"),
     buttons = {
       {{
-        text = _("Default for new chats") .. ": "
+        -- The default any chat follows until its MD/TXT is tapped (tapped
+        -- chats keep their explicit per-chat choice)
+        text = _("Default view mode") .. ": "
           .. (globalRenderMarkdown() and _("Markdown") or _("Plain Text")),
         callback = function()
           setGlobalRenderMarkdown(not globalRenderMarkdown())
+          UIManager:close(dialog)
+          self:showRenderingQuickSettings()
+        end,
+      }},
+      {{
+        text = _("New page per exchange") .. ": "
+          .. ((self.configuration and self.configuration.features
+               and self.configuration.features.chat_exchange_page_breaks == true)
+              and _("On") or _("Off")),
+        callback = function()
+          local cur = self.configuration and self.configuration.features
+              and self.configuration.features.chat_exchange_page_breaks == true
+          self:persistFeatureSetting("chat_exchange_page_breaks", not cur)
+          if self.render_markdown then
+            self:rebuildScrollWidget()
+          end
           UIManager:close(dialog)
           self:showRenderingQuickSettings()
         end,
@@ -5703,6 +5751,7 @@ function ChatGPTViewer:refreshMarkdownDisplay()
     logger.warn("ChatGPTViewer: could not generate HTML", err)
     html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
   end
+  html_body = applyExchangePageBreaks(html_body, self.configuration)
   -- For dictionary popup with RTL language, use "starts with RTL" detection
   local dict_lang = self.configuration and self.configuration.features
       and self.configuration.features.dictionary_language

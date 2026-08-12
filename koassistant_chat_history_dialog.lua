@@ -1970,13 +1970,23 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
     -- Function to create and show the chat viewer
     -- state param for rotation: {text, scroll_ratio, scroll_to_last_question}
     -- session_web_search param: preserved session web search override (nil/true/false)
-    local function showChatViewer(content_text, state, session_web_search, session_tools)
+    local function showChatViewer(content_text, state, session_web_search, session_tools, render_mode)
         -- Always close existing viewer first
         safeClose(self_ref.current_chat_viewer)
         self_ref.current_chat_viewer = nil
 
         -- Note: launch context is now included in createResultText() via history.launch_context
         local display_text = content_text or (state and state.text) or history:createResultText(chat_highlighted_text, config)
+
+        -- Per-chat view mode (device round 2026-08-12 — the RESUMED-chat reply
+        -- path was the surface the override chain missed): reply recreations
+        -- pass the tapped mode via render_mode, rotation restores it from the
+        -- captured state; nil = follow the global default. state.render_markdown
+        -- can be legitimately FALSE, so no `or` chains here.
+        local mode_override = render_mode
+        if state and state.render_markdown ~= nil then
+            mode_override = state.render_markdown
+        end
 
         local scroll_setting_enabled = config and config.features and config.features.scroll_to_last_message == true
         -- Only scroll to last question if there are multiple responses (not for single-turn chats)
@@ -1987,6 +1997,7 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
             -- Show last exchange on initial open if setting enabled AND there are multiple turns
             scroll_to_last_question = state == nil and scroll_setting_enabled and has_multiple_turns,
             scroll_to_bottom = state == nil and not (scroll_setting_enabled and has_multiple_turns),
+            render_markdown_override = mode_override,
             configuration = config,
             original_history = history,
             original_highlighted_text = chat_highlighted_text,
@@ -2032,6 +2043,8 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
                 -- Store session overrides before viewer is closed
                 local viewer_web_search = self_viewer.session_web_search_override
                 local viewer_tools = self_viewer.session_tools_override
+                -- Tapped view mode rides the reply like the other session state
+                local viewer_mode = self_viewer.render_markdown
 
                 -- Reply-time Quick overrides (parity §8c): config here is the
                 -- private per-resume copy (see continueChat) — apply directly,
@@ -2057,7 +2070,7 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
                     local function onResponseComplete(success, answer, err)
                         if success and answer then
                             local new_content = history:createResultText(chat_highlighted_text, config)
-                            showChatViewer(new_content, nil, viewer_web_search, viewer_tools)
+                            showChatViewer(new_content, nil, viewer_web_search, viewer_tools, viewer_mode)
                         else
                             UIManager:show(InfoMessage:new{
                                 text = _("Failed to get response: ") .. (err or "Unknown error"),

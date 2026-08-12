@@ -194,6 +194,14 @@ local SettingsSchema = {
                             help_text = _("Markdown renders formatting. Plain Text has better font support for Arabic/CJK."),
                         },
                         {
+                            id = "chat_exchange_page_breaks",
+                            type = "toggle",
+                            text = _("New Page per Exchange"),
+                            path = "features.chat_exchange_page_breaks",
+                            default = false,
+                            help_text = _("In Markdown chats, start every question/reply exchange at the top of a fresh page. Landing on the latest exchange becomes exact, at the cost of some blank space at page ends. Chat viewer only."),
+                        },
+                        {
                             id = "plain_text_options",
                             type = "submenu",
                             text = _("Plain Text Options"),
