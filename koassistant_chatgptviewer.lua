@@ -1511,11 +1511,10 @@ function ChatGPTViewer:init()
     callback = function()
       self:toggleMarkdown()
     end,
+    -- Same hold as every other MD/TXT button: quick display settings
+    -- (incl. the global view-mode default)
     hold_callback = function()
-      UIManager:show(Notification:new{
-        text = _("Toggle between markdown and plain text display"),
-        timeout = 2,
-      })
+      self:showRenderingQuickSettings()
     end,
   })
 
@@ -1946,11 +1945,10 @@ function ChatGPTViewer:init()
     callback = function()
       self:toggleMarkdown()
     end,
+    -- Same hold as every other MD/TXT button: quick display settings
+    -- (incl. the global view-mode default)
     hold_callback = function()
-      UIManager:show(Notification:new{
-        text = _("Toggle between markdown and plain text display"),
-        timeout = 2,
-      })
+      self:showRenderingQuickSettings()
     end,
   })
 
@@ -3359,39 +3357,46 @@ function ChatGPTViewer:calculateLastQuestionRatio()
   end
 end
 
---- Precise post-render jump to the last user turn (A8). Markdown rides the
---- HtmlBoxWidget text search (page granularity); plain text moves the cursor
---- to the marker's char position. Falls back to the legacy pre-render ratio
---- estimate when the running KOReader lacks the APIs.
+--- Precise post-render jump to the newest exchange (A8) — anchored on the
+--- START of the latest reply. Markdown rides the HtmlBoxWidget text search
+--- (page granularity); plain text centers the cursor on the marker. Falls
+--- back to the legacy pre-render ratio estimate when the APIs are absent.
 function ChatGPTViewer:scrollToLastQuestion()
   if not (self.scroll_text_w and self.text) then return end
-  local marker = "▶ User:"
+  -- Anchor on the START of the newest reply (maintainer 2026-08-12): the
+  -- question can sit at the bottom of its landing page, but the reply is what
+  -- the reader came back for. Transcripts without a reply marker (edge/legacy)
+  -- fall back to the user marker, then to the ratio estimate.
+  local markers = { "◉ KOAssistant:", "▶ User:" }
   if self.render_markdown then
     local box = self.scroll_text_w.htmlbox_widget
     if box and box.findText and self.scroll_text_w.scrollToRatio then
       local painted_page = box.page_number
-      local found = box:findText(marker)
-      logger.info("KOAssistant: scrollToLastQuestion md — painted page", painted_page,
-        "of", box.page_count, "found:", found and true or false)
-      -- findText lands on the FIRST match from the current page and builds a
-      -- sorted page index of every match — the last user turn is the tail
-      local list = box._match_page_list
-      local target = found and list and #list > 0 and list[#list] or nil
-      -- Drop the search state before repainting (no stray match highlights,
-      -- nothing left behind for the viewer's own find feature)
-      if box.clearSearch then
-        box:clearSearch()
-      else
-        box.search_term, box._search_index, box._match_page_list = nil, nil, nil
+      local target
+      for _idx, marker in ipairs(markers) do
+        local found = box:findText(marker)
+        -- findText lands on the FIRST match from the current page and builds
+        -- a sorted page index of every match — the newest turn is the tail
+        local list = box._match_page_list
+        target = found and list and #list > 0 and list[#list] or nil
+        -- Drop the search state before repainting (no stray match highlights,
+        -- nothing left behind for the viewer's own find feature)
+        if box.clearSearch then
+          box:clearSearch()
+        else
+          box.search_term, box._search_index, box._match_page_list = nil, nil, nil
+        end
+        -- findText/setPageNumber change STATE only — the rendered page bitmap
+        -- is cached, and dirtying just the scroll bar leaves it on screen
+        -- (device round 2026-08-12). Restore the painted page and drive the
+        -- jump through scrollToRatio, the one path with the full repaint
+        -- recipe (freeBb + render + dirty the widget region).
+        box.page_number = painted_page
+        if target then break end
       end
-      -- findText/setPageNumber change STATE only — the rendered page bitmap
-      -- is cached, and dirtying just the scroll bar leaves it on screen
-      -- (device round 2026-08-12). Restore the painted page and drive the
-      -- jump through scrollToRatio, the one path with the full repaint
-      -- recipe (freeBb + render + dirty the widget region).
-      box.page_number = painted_page
+      logger.info("KOAssistant: scrollToLastQuestion md — painted page", painted_page,
+        "of", box.page_count, "target:", target or "none")
       if target then
-        logger.info("KOAssistant: scrollToLastQuestion md — jumping to page", target)
         if target ~= painted_page then
           -- Mid-page ratio keeps the integer→ratio→integer round-trip off
           -- the float edge: 1 + floor(count * (target-0.5)/count) == target
@@ -3403,19 +3408,25 @@ function ChatGPTViewer:scrollToLastQuestion()
       logger.info("KOAssistant: scrollToLastQuestion md — findText/scrollToRatio unavailable, using ratio fallback")
     end
   elseif self.scroll_text_w.moveCursorToCharPos then
-    local last_byte, search_start = nil, 1
-    while true do
-      local s = self.text:find(marker, search_start, true)
-      if not s then break end
-      last_byte = s
-      search_start = s + 1
+    local last_byte
+    for _idx, marker in ipairs(markers) do
+      local search_start = 1
+      while true do
+        local s = self.text:find(marker, search_start, true)
+        if not s then break end
+        last_byte = s
+        search_start = s + 1
+      end
+      if last_byte then break end
     end
     if last_byte then
       -- moveCursorToCharPos wants UTF-8 CHARS, not bytes: count the
-      -- non-continuation bytes before the marker
+      -- non-continuation bytes before the marker. Centered variant (count 5,
+      -- TextViewer's find pattern) — the bare call scrolls MINIMALLY and
+      -- parks the target on the BOTTOM line (device round 2026-08-12).
       local _stripped, nchars = self.text:sub(1, last_byte - 1):gsub("[^\128-\191]", "")
       logger.info("KOAssistant: scrollToLastQuestion txt — cursor to char", nchars + 1)
-      self.scroll_text_w:moveCursorToCharPos(nchars + 1)
+      self.scroll_text_w:moveCursorToCharPos(nchars + 1, 5)
       return
     end
   end
@@ -4148,18 +4159,18 @@ function ChatGPTViewer:resetLayout()
 end
 
 function ChatGPTViewer:toggleMarkdown()
-  -- Toggle markdown rendering
+  -- Toggle markdown rendering for THIS chat only (maintainer 2026-08-12).
+  -- The old tap ALSO wrote the global setting, making per-chat and default
+  -- indistinguishable; the global now lives in the MD/TXT hold popup.
   self.render_markdown = not self.render_markdown
 
-  -- Update configuration
+  -- Per-chat stickiness: reply-created viewers re-read this config table
   if self.configuration.features then
     self.configuration.features.render_markdown = self.render_markdown
   end
 
-  -- Save to settings if available
-  if self.settings_callback then
-    self.settings_callback("features.render_markdown", self.render_markdown)
-  end
+  logger.info("KOAssistant: toggleMarkdown — this chat now",
+    self.render_markdown and "markdown" or "plain text")
 
   self:rebuildScrollWidget()
 end
@@ -5536,12 +5547,45 @@ end
 -- button. Font size and alignment apply to markdown rendering; strip-markdown applies
 -- to plain-text mode -- each takes effect in its relevant mode.
 function ChatGPTViewer:showRenderingQuickSettings()
+  -- Global default for the view mode (the TAP toggle is per-chat since
+  -- 2026-08-12). Read/write the settings truth, NOT this viewer's config —
+  -- flipping the default must not yank the chat in front of you.
+  local function globalRenderMarkdown()
+    if self._plugin and self._plugin.settings then
+      local f = self._plugin.settings:readSetting("features") or {}
+      return f.render_markdown ~= false
+    end
+    local f = self.configuration and self.configuration.features or {}
+    return f.render_markdown ~= false
+  end
+  local function setGlobalRenderMarkdown(v)
+    if self.settings_callback then
+      self.settings_callback("features.render_markdown", v)
+    elseif self._plugin and self._plugin.settings then
+      local f = self._plugin.settings:readSetting("features") or {}
+      f.render_markdown = v
+      self._plugin.settings:saveSetting("features", f)
+      self._plugin.settings:flush()
+      if self._plugin.updateConfigFromSettings then
+        self._plugin:updateConfigFromSettings()
+      end
+    end
+  end
   local dialog
   dialog = ButtonDialog:new{
     shrink_unneeded_width = true,
     anchor = self:_anchorToButton("toggle_markdown"),
     title = _("Display"),
     buttons = {
+      {{
+        text = _("Default for new chats") .. ": "
+          .. (globalRenderMarkdown() and _("Markdown") or _("Plain Text")),
+        callback = function()
+          setGlobalRenderMarkdown(not globalRenderMarkdown())
+          UIManager:close(dialog)
+          self:showRenderingQuickSettings()
+        end,
+      }},
       {{
         text = _("Font Size") .. ": " .. self.markdown_font_size,
         callback = function()
