@@ -257,7 +257,8 @@ end
 -- so this is a structural no-op for them.
 local function applyExchangePageBreaks(html_body, configuration)
   local f = configuration and configuration.features
-  if not (f and f.chat_exchange_page_breaks == true) then return html_body end
+  -- Default ON since 2026-08-12 (maintainer: no longer experimental)
+  if f and f.chat_exchange_page_breaks == false then return html_body end
   -- Break before each REPLY (maintainer spec 2026-08-12: "the reply starting
   -- with KOAssistant at the top of a new page, and you are on that page").
   -- MuPDF's plain-HTML layout only implements page-break-AFTER (headless
@@ -3462,12 +3463,32 @@ function ChatGPTViewer:scrollToLastQuestion()
     end
     if last_byte then
       -- moveCursorToCharPos wants UTF-8 CHARS, not bytes: count the
-      -- non-continuation bytes before the marker. Centered variant (count 5,
-      -- TextViewer's find pattern) — the bare call scrolls MINIMALLY and
-      -- parks the target on the BOTTOM line (device round 2026-08-12).
+      -- non-continuation bytes before the marker
       local _stripped, nchars = self.text:sub(1, last_byte - 1):gsub("[^\128-\191]", "")
-      logger.info("KOAssistant: scrollToLastQuestion txt — cursor to char", nchars + 1)
-      self.scroll_text_w:moveCursorToCharPos(nchars + 1, 5)
+      local target_pos = nchars + 1
+      local f = self.configuration and self.configuration.features
+      local tw = self.scroll_text_w.text_widget
+      if not (f and f.chat_exchange_page_breaks == false)
+          and tw and tw.getCharPageTopLineNumber then
+        -- "New page per exchange" in TXT mode: a line scroller has no layout
+        -- gaps, but TextBoxWidget has native HARD PAGES — pre-align the view
+        -- so the marker's page starts the screen (the same alignment its own
+        -- init uses via scrollViewToCharPos), then place the cursor: it is
+        -- already in view, so moveCursorToCharPos keeps the alignment and
+        -- does the repaint (TextViewer's find relies on that behavior).
+        local top = tw:getCharPageTopLineNumber(target_pos)
+        if top then
+          tw.virtual_line_num = math.max(1, top)
+        end
+        logger.info("KOAssistant: scrollToLastQuestion txt — hard-page align, top line", top or "?")
+        self.scroll_text_w:moveCursorToCharPos(target_pos)
+      else
+        -- Centered variant (count 5, TextViewer's find pattern) — the bare
+        -- call scrolls MINIMALLY and parks the target on the BOTTOM line
+        -- (device round 2026-08-12)
+        logger.info("KOAssistant: scrollToLastQuestion txt — cursor to char", target_pos)
+        self.scroll_text_w:moveCursorToCharPos(target_pos, 5)
+      end
       return
     end
   end
@@ -5672,12 +5693,12 @@ function ChatGPTViewer:showRenderingQuickSettings()
       }},
       {{
         text = _("New page per exchange") .. ": "
-          .. ((self.configuration and self.configuration.features
-               and self.configuration.features.chat_exchange_page_breaks == true)
+          .. (not (self.configuration and self.configuration.features
+               and self.configuration.features.chat_exchange_page_breaks == false)
               and _("On") or _("Off")),
         callback = function()
-          local cur = self.configuration and self.configuration.features
-              and self.configuration.features.chat_exchange_page_breaks == true
+          local cur = not (self.configuration and self.configuration.features
+              and self.configuration.features.chat_exchange_page_breaks == false)
           self:persistFeatureSetting("chat_exchange_page_breaks", not cur)
           if self.render_markdown then
             self:rebuildScrollWidget()

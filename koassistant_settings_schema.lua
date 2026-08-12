@@ -198,8 +198,8 @@ local SettingsSchema = {
                             type = "toggle",
                             text = _("New Page per Exchange"),
                             path = "features.chat_exchange_page_breaks",
-                            default = false,
-                            help_text = _("In Markdown chats, start every question/reply exchange at the top of a fresh page. Landing on the latest exchange becomes exact, at the cost of some blank space at page ends. Chat viewer only."),
+                            default = true,
+                            help_text = _("Start every reply at the top of a fresh page. Markdown chats get a real page break (blank space closes the previous page); Plain Text chats align the view so the reply starts the screen. Chat viewer only."),
                         },
                         {
                             id = "scroll_to_last_message",
