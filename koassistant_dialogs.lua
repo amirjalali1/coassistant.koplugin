@@ -820,7 +820,7 @@ local function createTempConfig(prompt, base_config)
     -- Use the passed base_config if available, otherwise fall back to CONFIGURATION
     local source_config = base_config or CONFIGURATION or {}
     local temp_config = {}
-    
+
     for k, v in pairs(source_config) do
         if type(v) ~= "table" then
             temp_config[k] = v
@@ -828,6 +828,12 @@ local function createTempConfig(prompt, base_config)
             temp_config[k] = {}
             for k2, v2 in pairs(v) do
                 temp_config[k][k2] = v2
+            end
+            -- Per-chat view mode never rides a FRESH copy: it belongs to the
+            -- chat that tapped it (continueChat restores it for resumed chats
+            -- AFTER its own copy; tap re-sets it on this chat's config)
+            if k == "features" then
+                temp_config[k]._chat_view_mode = nil
             end
         end
     end
@@ -2232,7 +2238,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
         selection_data = selection_data,  -- For "Save to Note" feature
         -- Scroll to last question if setting enabled AND this is a follow-up response
         -- First response should always start from top (user needs to read it)
-        scroll_to_last_question = (temp_config and temp_config.features and temp_config.features.scroll_to_last_message == true)
+        scroll_to_last_question = not (temp_config and temp_config.features and temp_config.features.scroll_to_last_message == false)
             and history and history.getAssistantTurnCount and history:getAssistantTurnCount() > 1,
         -- Set BOTH property names for compatibility:
         -- original_history: used by toggleDebugDisplay, toggleHighlightVisibility, etc.
@@ -2318,6 +2324,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                         -- source so a shared module config can't leak them into
                         -- later chats (fresh-open clears are the backstop).
                         qf._session_quick_answer = nil
+                        qf._chat_view_mode = nil
                         qf._session_reasoning = nil
                         qf._session_model = nil
                         qf._quick_reply_orig = nil
@@ -3331,6 +3338,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         config.features._reasoning_override_active = nil
         config.features._model_override_active = nil
         config.features._session_quick_answer = nil
+        config.features._chat_view_mode = nil
         config.features._session_reasoning = nil
         config.features._session_model = nil
     end
@@ -8527,6 +8535,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             -- maintainer report: the reply ⚡ chip showed OFF on a quick chat) —
                             -- it is the chat's live control state; only the SHARED table is cleared.
                             shared_features._session_quick_answer = nil
+                            shared_features._chat_view_mode = nil
                             shared_features._session_reasoning = nil
                             shared_features._session_model = nil
                         end
@@ -10641,6 +10650,8 @@ local function launchArtifactChat(user_question, artifact_content, artifact_type
     -- chat's reply Tools toggle "N/A (X-Ray)" AND suppress tools in shouldUse —
     -- artifact chats are never X-Ray chats.
     configuration.features._xray_chat_active = nil
+    -- Artifact chats start at the global view mode — never another chat's tap
+    configuration.features._chat_view_mode = nil
     -- Quick controls: artifact chat follows the global settings too — clear the
     -- dispatch consumables and any lingering chip state (matrix §10).
     configuration.features._quick_answer_active = nil

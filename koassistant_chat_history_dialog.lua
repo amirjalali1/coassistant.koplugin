@@ -1627,6 +1627,7 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
     config.features._spoiler_free_active = nil
     config.features._spoiler_live = nil
     config.features._web_search_active = nil
+    config.features._chat_view_mode = nil
     -- Stale X-Ray-chat marker from a prior freeform send would mislabel this
     -- chat's reply Tools toggle "N/A (X-Ray)" AND silently suppress tools in
     -- shouldUse — resumed chats are never X-Ray chats.
@@ -1693,6 +1694,11 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
         -- cs.spoiler_free value (one-day C4 v1) is deliberately ignored.
         if cs.spoiler_live ~= nil then
             config.features._spoiler_live = cs.spoiler_live == true
+        end
+        -- Per-chat view mode: a tapped MD/TXT persists with the chat
+        -- (2026-08-12); showChatViewer applies it via render_markdown_override
+        if cs.render_markdown ~= nil then
+            config.features._chat_view_mode = cs.render_markdown == true
         end
     end
     -- C4 revised, legacy saves (no control_state, or one without the field): book
@@ -1981,14 +1987,21 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
         -- Per-chat view mode (device round 2026-08-12 — the RESUMED-chat reply
         -- path was the surface the override chain missed): reply recreations
         -- pass the tapped mode via render_mode, rotation restores it from the
-        -- captured state; nil = follow the global default. state.render_markdown
-        -- can be legitimately FALSE, so no `or` chains here.
+        -- captured state, and the chat's SAVED mode (control_state, restored
+        -- into _chat_view_mode by continueChat) covers the initial open; nil =
+        -- follow the global default. Values can be legitimately FALSE, so no
+        -- `or` chains here.
         local mode_override = render_mode
+        if mode_override == nil and config and config.features
+                and config.features._chat_view_mode ~= nil then
+            mode_override = config.features._chat_view_mode
+        end
         if state and state.render_markdown ~= nil then
             mode_override = state.render_markdown
         end
 
-        local scroll_setting_enabled = config and config.features and config.features.scroll_to_last_message == true
+        -- Default ON since 2026-08-12 (matches the automatic reply landing)
+        local scroll_setting_enabled = not (config and config.features and config.features.scroll_to_last_message == false)
         -- Only scroll to last question if there are multiple responses (not for single-turn chats)
         local has_multiple_turns = history and history.getAssistantTurnCount and history:getAssistantTurnCount() > 1
         local viewer = ChatGPTViewer:new{

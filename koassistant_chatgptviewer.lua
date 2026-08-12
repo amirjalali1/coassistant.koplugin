@@ -3435,6 +3435,7 @@ function ChatGPTViewer:scrollToLastQuestion()
           -- Mid-page ratio keeps the integer→ratio→integer round-trip off
           -- the float edge: 1 + floor(count * (target-0.5)/count) == target
           self.scroll_text_w:scrollToRatio((target - 0.5) / math.max(1, box.page_count or 1))
+          logger.info("KOAssistant: scrollToLastQuestion md — landed page", box.page_number)
         end
         return
       end
@@ -4201,6 +4202,16 @@ function ChatGPTViewer:toggleMarkdown()
   -- from disk mid-chat, which is exactly the "reverts on reply" the device
   -- rounds hit. The GLOBAL default lives in the MD/TXT hold popup.
   self.render_markdown = not self.render_markdown
+
+  -- Persist WITH the chat (maintainer 2026-08-12: "if I set text, it should
+  -- stay text — reply, close and open"): the save chokepoint
+  -- (ChatHistoryManager.captureControlState) reads this transient into
+  -- control_state.render_markdown; underscore keys never touch disk settings,
+  -- so the settings re-merge cannot revert it, and continueChat restores it
+  -- on reopen.
+  if self.configuration and self.configuration.features then
+    self.configuration.features._chat_view_mode = self.render_markdown
+  end
 
   logger.info("KOAssistant: toggleMarkdown — this chat now",
     self.render_markdown and "markdown" or "plain text")

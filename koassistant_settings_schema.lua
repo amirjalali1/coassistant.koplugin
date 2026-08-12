@@ -202,6 +202,14 @@ local SettingsSchema = {
                             help_text = _("In Markdown chats, start every question/reply exchange at the top of a fresh page. Landing on the latest exchange becomes exact, at the cost of some blank space at page ends. Chat viewer only."),
                         },
                         {
+                            id = "scroll_to_last_message",
+                            type = "toggle",
+                            text = _("Open Chats at Latest Exchange"),
+                            path = "features.scroll_to_last_message",
+                            default = true,
+                            help_text = _("When opening a saved chat, jump to the newest question and reply instead of the top. Replies always land on the newest exchange regardless of this setting. Independent of New Page per Exchange (that one changes the page layout; this one changes where an opened chat starts)."),
+                        },
+                        {
                             id = "plain_text_options",
                             type = "submenu",
                             text = _("Plain Text Options"),
@@ -597,14 +605,6 @@ local SettingsSchema = {
                             keep_menu_open = true,
                         },
                     },
-                },
-                {
-                    id = "scroll_to_last_message",
-                    type = "toggle",
-                    text = _("Scroll to Last Message (Experimental)"),
-                    path = "features.scroll_to_last_message",
-                    default = false,
-                    help_text = _("When resuming or replying to a chat, try to scroll so your last question is visible. When off, shows top for new chats and bottom for replies."),
                 },
                 {
                     id = "spoiler_free_chat",

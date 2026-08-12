@@ -378,6 +378,12 @@ function ChatHistoryManager.captureControlState(config)
     if f._spoiler_live ~= nil then
         cs.spoiler_live = f._spoiler_live == true
     end
+    -- Per-chat view mode (2026-08-12): present only when the chat's MD/TXT was
+    -- explicitly tapped (_chat_view_mode transient) — absent = the chat follows
+    -- the global default on resume.
+    if f._chat_view_mode ~= nil then
+        cs.render_markdown = f._chat_view_mode == true
+    end
     if next(cs) == nil then return nil end
     return cs
 end
