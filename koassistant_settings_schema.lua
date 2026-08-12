@@ -455,6 +455,7 @@ local SettingsSchema = {
                             path = "features.stream_auto_scroll",
                             default = true,
                             depends_on = { id = "enable_streaming", value = true },
+                            help_text = _("Follow the arriving text while a response streams. Scrolling up pauses the follow for that response so you can read in place while the rest arrives; the Autoscroll button in the streaming window turns it back on. When the response finishes, the full chat view opens at the newest exchange either way."),
                         },
                         {
                             id = "stream_page_scroll",

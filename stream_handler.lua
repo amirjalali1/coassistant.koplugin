@@ -983,9 +983,10 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
     -- Functions to toggle auto-scroll (forward declarations)
     local turnOffAutoScroll, turnOnAutoScroll
 
-    turnOffAutoScroll = function()
+    turnOffAutoScroll = function(cause)
         if auto_scroll_active then
             auto_scroll_active = false
+            logger.info("KOAssistant: stream autoscroll paused —", cause or "toggle")
             -- Update button to show current state (OFF)
             local btn = streamDialog.button_table:getButtonById("scroll_control")
             if btn then
@@ -998,11 +999,20 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
 
     turnOnAutoScroll = function()
         auto_scroll_active = true
+        logger.info("KOAssistant: stream autoscroll resumed — toggle")
         local iw = streamDialog._input_widget
         if iw then
             if page_scroll then
-                -- Page-based: jump to the last page of content
-                local display = in_reasoning_phase and table.concat(reasoning_buffer) or table.concat(result_buffer)
+                -- Page-based: jump to the last page of content. Compose the
+                -- hidden shape when a hidden stream's output is concealed —
+                -- painting the raw buffers here flashed the concealed output
+                -- (quiz answers) until the next throttled repaint re-hid it.
+                local display
+                if hidden_streaming and not hidden_output_visible then
+                    display = hiddenDisplay()
+                else
+                    display = in_reasoning_phase and table.concat(reasoning_buffer) or table.concat(result_buffer)
+                end
                 iw:setText(display, true)
                 local stw = iw.text_widget
                 local inner = stw and stw.text_widget
@@ -1128,19 +1138,41 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
     streamDialog.title_bar:init()
     UIManager:show(streamDialog)
 
-    -- Hook into scroll callbacks to auto-pause when user scrolls
-    if auto_scroll then
-        -- Hook scroll buttons on InputText (called by △/▽ button callbacks)
+    -- Hook into scroll callbacks to auto-pause when user scrolls.
+    -- Installed UNCONDITIONALLY (not only when the setting starts ON): the
+    -- Autoscroll button can turn following on mid-stream, and without the hooks
+    -- that state fought the reader — every repaint yanked the view back to the
+    -- tail with no way to pause by scrolling. turnOffAutoScroll no-ops while
+    -- following is already off, so the hooks are inert until it matters.
+    --
+    -- Directional rule: an UPWARD scroll always pauses, even a no-op one —
+    -- page-up on page 1 means "let me look back" (the long-standing behavior).
+    -- A DOWNWARD scroll pauses only when the view actually moved: page-down
+    -- while sitting at the tail moves nothing, and silently stopping the
+    -- follow there left the stream stalled exactly where the reader wanted it.
+    do
+        local function innerLineNum(stw)
+            local tb = stw and stw.text_widget
+            return tb and tb.virtual_line_num
+        end
+
+        -- Hook scroll buttons on InputText (the dialog's △/▽ buttons call
+        -- ScrollTextWidget:scrollUp/scrollDown directly, not scrollText, so the
+        -- inner hooks below never see them).
         local original_scrollUp = streamDialog._input_widget.scrollUp
         streamDialog._input_widget.scrollUp = function(self_widget, ...)
-            turnOffAutoScroll()
+            turnOffAutoScroll("scroll-up button")
             return original_scrollUp(self_widget, ...)
         end
 
         local original_scrollDown = streamDialog._input_widget.scrollDown
         streamDialog._input_widget.scrollDown = function(self_widget, ...)
-            turnOffAutoScroll()
-            return original_scrollDown(self_widget, ...)
+            local before = innerLineNum(self_widget.text_widget)
+            local res = original_scrollDown(self_widget, ...)
+            if innerLineNum(self_widget.text_widget) ~= before then
+                turnOffAutoScroll("scroll-down button")
+            end
+            return res
         end
 
         -- Hook the inner ScrollTextWidget for swipe, device key, and pan scrolling.
@@ -1154,27 +1186,42 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
 
             local orig_scrollText = inner.scrollText
             if orig_scrollText then
-                inner.scrollText = function(self_w, ...)
-                    turnOffAutoScroll()
-                    return orig_scrollText(self_w, ...)
+                inner.scrollText = function(self_w, direction, ...)
+                    if direction and direction < 0 then
+                        turnOffAutoScroll("swipe/key up")
+                        return orig_scrollText(self_w, direction, ...)
+                    end
+                    local before = innerLineNum(self_w)
+                    local res = orig_scrollText(self_w, direction, ...)
+                    if innerLineNum(self_w) ~= before then
+                        turnOffAutoScroll("swipe/key down")
+                    end
+                    return res
                 end
             end
 
+            -- Pan has no direction argument here; movement is the signal (an
+            -- upward pan that can't move — already at the top — stays a no-op).
             local orig_onPanRelease = inner.onPanReleaseText
             if orig_onPanRelease then
                 inner.onPanReleaseText = function(self_w, ...)
-                    turnOffAutoScroll()
-                    return orig_onPanRelease(self_w, ...)
+                    local before = innerLineNum(self_w)
+                    local res = orig_onPanRelease(self_w, ...)
+                    if innerLineNum(self_w) ~= before then
+                        turnOffAutoScroll("pan")
+                    end
+                    return res
                 end
             end
 
             -- Hook onScrollUp to catch page-up key when content fits on one page.
             -- ScrollTextWidget.onScrollUp() only calls scrollText() when virtual_line_num > 1,
-            -- so on page 1 the scrollText hook above never fires.
+            -- so on page 1 the scrollText hook above never fires — and upward
+            -- pauses even without movement.
             local orig_onScrollUp = inner.onScrollUp
             if orig_onScrollUp then
                 inner.onScrollUp = function(self_w, ...)
-                    turnOffAutoScroll()
+                    turnOffAutoScroll("page-up")
                     return orig_onScrollUp(self_w, ...)
                 end
             end
