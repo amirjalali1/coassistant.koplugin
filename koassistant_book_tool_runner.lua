@@ -696,20 +696,13 @@ function BookToolRunner.sessionEligible(config, ui)
     return true
 end
 
--- D3 smart retrieval gate (tools_ux_plan.md §4 + master-switch decision 2026-07-11):
--- the per-action source is allowed when the session could run tools AND the effective
--- tools posture (per-book > global) isn't "off" — posture is THE master switch for all
--- tool use; manual vs auto only affects the chat checkbox's default state.
--- Returns allowed:boolean and, when false, a reason:
--- "provider" | "consent" | "no_book" | "posture_off".
+-- D3 smart retrieval gate (tools_ux_plan.md §4): allowed when the session could
+-- run tools. The old posture-off master switch is gone (binary collapse
+-- 2026-08-12 — Off is a chip DEFAULT, not a hard kill), so this is now a thin
+-- alias of sessionEligible kept for its call sites and reason strings:
+-- "provider" | "consent" | "no_book".
 function BookToolRunner.smartRetrievalAllowed(config, ui)
-    local ok, reason = BookToolRunner.sessionEligible(config, ui)
-    if not ok then return false, reason end
-    local features = config and config.features or {}
-    if BookSettings.resolveToolsPosture(ui and ui.doc_settings, features) == "off" then
-        return false, "posture_off"
-    end
-    return true
+    return BookToolRunner.sessionEligible(config, ui)
 end
 
 function BookToolRunner.shouldUse(config, ui)
@@ -722,12 +715,11 @@ function BookToolRunner.shouldUse(config, ui)
         active = features._tools_active == true
     else
         -- Non-dialog paths (e.g. resumed chats, whose Send transients are cleared):
-        -- follow the effective posture default — the same derivation as the checkbox's
+        -- follow the effective default — the same derivation as the chip's
         -- initial state, so the two never disagree. ui.doc_settings is the OPEN book's
         -- live instance (read-only here); tools only ever run against the open book
         -- (sessionEligible requires ui.document).
-        local posture = BookSettings.resolveToolsPosture(ui and ui.doc_settings, features)
-        active = posture == "auto"
+        active = BookSettings.resolveBookTools(ui and ui.doc_settings, features)
     end
     if not active then return false end
     if not BookToolRunner.sessionEligible(config, ui) then return false end

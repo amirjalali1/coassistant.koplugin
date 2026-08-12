@@ -3037,52 +3037,36 @@ function ChatGPTViewer:askAnotherQuestion()
           }
         end
       else
-        local posture = BookSettings.resolveToolsPosture(
-          self._ui and self._ui.doc_settings, cfg_features)
-        if posture == "off" and self.session_tools_override == nil
-            and cfg_features._tools_active ~= true then
-          -- Posture master switch is off and nothing has re-enabled tools for
-          -- this chat: locked OFF, tap explains (input-chip behavior).
-          tools_btn = {
-            text = enable_emoji and ("\u{1F50D} " .. _("OFF")) or _("Tools OFF"),
-            font_bold = false,
-            callback = function()
-              UIManager:show(InfoMessage:new{
-                text = _("AI Book Tools are turned off. Long-press to turn them on for this book or globally."),
-                timeout = 3,
-              })
-            end,
-            hold_callback = tools_hold,
-          }
+        -- Binary tools model (2026-08-12 collapse): the old posture-off locked
+        -- branch is gone — Off is just a default and the button always toggles.
+        local tools_effective
+        if self.session_tools_override ~= nil then
+          tools_effective = self.session_tools_override
+        elseif quick_on and cfg_features.quick_preset_tools_off ~= false then
+          tools_effective = false  -- ⚡ preset forces tools off at dispatch
         else
-          local tools_effective
-          if self.session_tools_override ~= nil then
-            tools_effective = self.session_tools_override
-          elseif quick_on and cfg_features.quick_preset_tools_off ~= false then
-            tools_effective = false  -- ⚡ preset forces tools off at dispatch
+          -- Baseline: pre-quick stash if a reply dispatched, else the baked
+          -- per-chat flag; failing both, the effective default (resumed
+          -- chats) — label must match BookToolRunner.shouldUse.
+          local base = quick_orig and quick_orig.tools_active
+          if base == nil then base = cfg_features._tools_active end
+          if base ~= nil then
+            tools_effective = base == true
           else
-            -- Baseline: pre-quick stash if a reply dispatched, else the baked
-            -- per-chat flag; failing both, the effective posture default (resumed
-            -- chats) — label must match BookToolRunner.shouldUse.
-            local base = quick_orig and quick_orig.tools_active
-            if base == nil then base = cfg_features._tools_active end
-            if base ~= nil then
-              tools_effective = base == true
-            else
-              tools_effective = posture == "auto"
-            end
+            tools_effective = BookSettings.resolveBookTools(
+              self._ui and self._ui.doc_settings, cfg_features)
           end
-          tools_btn = {
-            text = enable_emoji and ("\u{1F50D} " .. (tools_effective and _("ON") or _("OFF")))
-              or (tools_effective and _("Tools ON") or _("Tools OFF")),
-            font_bold = false,
-            callback = function()
-              current_instance.session_tools_override = not tools_effective
-              reopenWithDraft()
-            end,
-            hold_callback = tools_hold,
-          }
         end
+        tools_btn = {
+          text = enable_emoji and ("\u{1F50D} " .. (tools_effective and _("ON") or _("OFF")))
+            or (tools_effective and _("Tools ON") or _("Tools OFF")),
+          font_bold = false,
+          callback = function()
+            current_instance.session_tools_override = not tools_effective
+            reopenWithDraft()
+          end,
+          hold_callback = tools_hold,
+        }
       end
     end
   end

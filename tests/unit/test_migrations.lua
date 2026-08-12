@@ -170,6 +170,7 @@ TestRunner:test("chain reports changes and stamps every post-0.20.0 guard", func
     TestRunner:assertTrue(needs_save, "needs_save must be true on a v0.20.0 table")
     for _idx, stamp in ipairs({
         "_xray_auto_v2_migrated", "_tools_posture_migrated",
+        "_tools_binary_migrated",
         "_session_chips_migrated", "_session_chips_scope_v2",
         "_session_chips_attach_v1", "_session_chips_quick_v1",
         "_web_search_effort_migrated", "_dict_bypass_default_migrated",
@@ -186,18 +187,34 @@ TestRunner:test("legacy auto-X-Ray master ON -> one-way grant recorded, master O
     TestRunner:assertEqual(f.xray_auto_update, false, "master must switch off (new all-books meaning stays opt-in)")
 end)
 
-TestRunner:test("enable_tool_workflows=false -> tools_posture 'manual', old key removed", function()
+TestRunner:test("enable_tool_workflows=false -> chains to enable_book_tools=false, old keys removed", function()
+    -- Two-hop chain in one launch: old bool -> posture "manual" -> binary false
     local f = v020Fixture()
     Migrations.run(f)
-    TestRunner:assertEqual(f.tools_posture, "manual", "behavior-preserving manual")
+    TestRunner:assertEqual(f.enable_book_tools, false, "behavior-preserving off (chip starts off)")
+    TestRunner:assertEqual(f.tools_posture, nil, "intermediate posture key consumed")
     TestRunner:assertEqual(f.enable_tool_workflows, nil, "old bool removed")
 end)
 
-TestRunner:test("enable_tool_workflows=true -> tools_posture 'auto'", function()
+TestRunner:test("enable_tool_workflows=true -> chains to enable_book_tools=true", function()
     local f = v020Fixture()
     f.enable_tool_workflows = true
     Migrations.run(f)
-    TestRunner:assertEqual(f.tools_posture, "auto")
+    TestRunner:assertEqual(f.enable_book_tools, true)
+    TestRunner:assertEqual(f.tools_posture, nil, "intermediate posture key consumed")
+end)
+
+TestRunner:test("binary collapse maps every posture; nil stays nil (schema default true reachable)", function()
+    for posture, expect in pairs({ auto = true, manual = false, off = false }) do
+        local f = { _tools_posture_migrated = true, tools_posture = posture }
+        Migrations.run(f)
+        TestRunner:assertEqual(f.enable_book_tools, expect, "posture " .. posture)
+        TestRunner:assertEqual(f.tools_posture, nil, "posture key consumed for " .. posture)
+    end
+    local f = { _tools_posture_migrated = true }
+    Migrations.run(f)
+    TestRunner:assertEqual(f.enable_book_tools, nil, "nil posture -> no explicit value baked")
+    TestRunner:assertEqual(f._tools_binary_migrated, true, "stamped even with nothing to do")
 end)
 
 TestRunner:test("session chips seeded then rebuilt to canonical 7; spoiler toggle retired", function()

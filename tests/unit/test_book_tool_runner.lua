@@ -1148,29 +1148,29 @@ TestRunner:test("gatherForAction: budget caps the loop and delivers what was gat
     TestRunner:assertEqual(got_info.tool_calls, 2, "both lookups counted")
 end)
 
-TestRunner:test("smartRetrievalAllowed: posture off is the master switch", function()
+TestRunner:test("smartRetrievalAllowed: eligibility only (posture master switch retired)", function()
     local base = { provider = "gemini",
         features = { enable_book_text_extraction = true } }
     local ok, why = BookToolRunner.smartRetrievalAllowed(base, makeUi())
-    TestRunner:assertTrue(ok, "eligible session with default (auto) posture allowed")
-    base.features.tools_posture = "manual"
+    TestRunner:assertTrue(ok, "eligible session allowed")
+    -- Binary collapse 2026-08-12: tools OFF is a chip default, not a hard
+    -- kill — smart retrieval stays offered on an eligible session
+    base.features.enable_book_tools = false
     TestRunner:assertTrue(BookToolRunner.smartRetrievalAllowed(base, makeUi()),
-        "manual posture allows per-action smart retrieval")
+        "global tools off no longer gates smart retrieval")
+    base.features.enable_book_tools = nil
     base.features.tools_posture = "off"
-    ok, why = BookToolRunner.smartRetrievalAllowed(base, makeUi())
-    TestRunner:assertFalse(ok, "posture off gates smart retrieval")
-    TestRunner:assertEqual(why, "posture_off", "posture reason reported")
-    -- per-book off wins over global manual
-    base.features.tools_posture = "manual"
+    TestRunner:assertTrue(BookToolRunner.smartRetrievalAllowed(base, makeUi()),
+        "legacy posture off no longer gates smart retrieval")
+    base.features.tools_posture = nil
     local ui = makeUi()
     ui.doc_settings = {
         readSetting = function(_self, key)
             if key == "koassistant_book_tools" then return "off" end
         end,
     }
-    ok, why = BookToolRunner.smartRetrievalAllowed(base, ui)
-    TestRunner:assertFalse(ok, "per-book off gates smart retrieval")
-    TestRunner:assertEqual(why, "posture_off", "per-book posture reason reported")
+    TestRunner:assertTrue(BookToolRunner.smartRetrievalAllowed(base, ui),
+        "per-book off no longer gates smart retrieval")
     -- ineligibility reasons pass through unchanged
     ok, why = BookToolRunner.smartRetrievalAllowed(
         { provider = "gemini", features = {} }, makeUi())

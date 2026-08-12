@@ -6348,14 +6348,13 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             doc_settings, configuration and configuration.features)
     end
 
-    -- Initialize the session "Book tools" toggle (D1): effective posture sets the default
-    -- (per-book koassistant_book_tools > global tools_posture; "auto" = checked), the user
-    -- flips it per session. Skipped when restored from a refresh (session choice preserved).
-    -- "off" additionally hides the checkbox at the render site below.
-    local effective_tools_posture = require("koassistant_book_settings").resolveToolsPosture(
-        doc_settings, configuration and configuration.features)
+    -- Initialize the session "Book tools" toggle (D1): the effective default
+    -- (per-book koassistant_book_tools > global enable_book_tools, binary since
+    -- the 2026-08-12 collapse) sets the chip's starting state, the user flips it
+    -- per session. Skipped when restored from a refresh (session choice preserved).
     if session_book_tools == nil then
-        session_book_tools = effective_tools_posture == "auto"
+        session_book_tools = require("koassistant_book_settings").resolveBookTools(
+            doc_settings, configuration and configuration.features)
     end
 
     -- Initialize the session web-search toggle: per-book override > global default.
@@ -7625,7 +7624,6 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                     }
                 end
                 local eligible, reason = BookToolRunner.sessionEligible(configuration, ui_instance)
-                local posture_off = effective_tools_posture == "off"
                 local function holdPicker()
                     BookSettings.showToolsPosture({
                         plugin = plugin, ui = ui_instance, document_path = document_path,
@@ -7648,18 +7646,6 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                     configuration.provider or _("this provider"))
                             end
                             UIManager:show(InfoMessage:new{ text = msg })
-                        end,
-                        hold_callback = holdPicker,
-                    }
-                end
-                if posture_off then
-                    return {
-                        text = enable_emoji and ("\u{1F50D} " .. _("OFF")) or _("Tools OFF"),
-                        callback = function()
-                            UIManager:show(InfoMessage:new{
-                                text = _("AI Book Tools are turned off. Long-press to turn them on for this book or globally."),
-                                timeout = 3,
-                            })
                         end,
                         hold_callback = holdPicker,
                     }

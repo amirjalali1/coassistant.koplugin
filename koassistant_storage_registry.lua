@@ -110,7 +110,8 @@ Registry.SETTINGS_SUBKEYS = {
         "_xray_auto_v2_migrated",
         "_xray_auto_legacy_optin",  -- one-way legacy grant (old master=true users' per-book
                                     -- boolean opt-ins key on it); can NEVER be re-derived
-        "_tools_posture_migrated", "_session_chips_migrated", "_session_chips_scope_v2",
+        "_tools_posture_migrated", "_tools_binary_migrated",
+        "_session_chips_migrated", "_session_chips_scope_v2",
         "_session_chips_attach_v1", "_session_chips_quick_v1",
         "_highlight_context_migrated", "_web_search_effort_migrated",
         "_dict_bypass_default_migrated",

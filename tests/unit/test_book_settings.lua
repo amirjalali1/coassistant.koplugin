@@ -686,32 +686,44 @@ local function fakeDocSettings(values)
     return { readSetting = function(_self, key) return values[key] end }
 end
 
-TestRunner:test("resolveToolsPosture: per-book override > global > auto (schema default)", function()
-    TestRunner:assertEqual(BookSettings.resolveToolsPosture(nil, nil), "auto",
-        "no book, no features → auto (must match the schema default)")
-    TestRunner:assertEqual(BookSettings.resolveToolsPosture(nil, { tools_posture = "auto" }), "auto",
-        "global auto, no book override")
-    local ds = fakeDocSettings({ koassistant_book_tools = "off" })
-    TestRunner:assertEqual(BookSettings.resolveToolsPosture(ds, { tools_posture = "auto" }), "off",
-        "per-book off wins over global auto")
-    ds = fakeDocSettings({})
-    TestRunner:assertEqual(BookSettings.resolveToolsPosture(ds, { tools_posture = "off" }), "off",
-        "no book override → global off")
+TestRunner:test("resolveBookTools: per-book override > global > true (schema default)", function()
+    TestRunner:assertEqual(BookSettings.resolveBookTools(nil, nil), true,
+        "no book, no features → true (must match the schema default)")
+    TestRunner:assertEqual(BookSettings.resolveBookTools(nil, { enable_book_tools = false }), false,
+        "global off, no book override")
+    local ds = fakeDocSettings({ koassistant_book_tools = false })
+    TestRunner:assertEqual(BookSettings.resolveBookTools(ds, { enable_book_tools = true }), false,
+        "per-book off wins over global on")
+    ds = fakeDocSettings({ koassistant_book_tools = true })
+    TestRunner:assertEqual(BookSettings.resolveBookTools(ds, { enable_book_tools = false }), true,
+        "per-book on wins over global off")
 end)
 
-TestRunner:test("resolveToolsPosture: unknown values fall through, never wedge", function()
+TestRunner:test("resolveBookTools: legacy posture strings keep resolving (sidecars never mass-migrate)", function()
+    local ds = fakeDocSettings({ koassistant_book_tools = "auto" })
+    TestRunner:assertEqual(BookSettings.resolveBookTools(ds, { enable_book_tools = false }), true,
+        "legacy per-book auto → on")
+    ds = fakeDocSettings({ koassistant_book_tools = "manual" })
+    TestRunner:assertEqual(BookSettings.resolveBookTools(ds, { enable_book_tools = true }), false,
+        "legacy per-book manual → off")
+    ds = fakeDocSettings({ koassistant_book_tools = "off" })
+    TestRunner:assertEqual(BookSettings.resolveBookTools(ds, { enable_book_tools = true }), false,
+        "legacy per-book off → off (default only — no hard kill anymore)")
+    TestRunner:assertEqual(BookSettings.resolveBookTools(nil, { tools_posture = "manual" }), false,
+        "unmigrated legacy global manual → off")
+    TestRunner:assertEqual(BookSettings.resolveBookTools(nil, { tools_posture = "auto" }), true,
+        "unmigrated legacy global auto → on")
+    TestRunner:assertEqual(BookSettings.resolveBookTools(nil,
+        { enable_book_tools = true, tools_posture = "off" }), true,
+        "new key wins over stale legacy key")
+end)
+
+TestRunner:test("resolveBookTools: unknown values fall through, never wedge", function()
     local ds = fakeDocSettings({ koassistant_book_tools = "banana" })
-    TestRunner:assertEqual(BookSettings.resolveToolsPosture(ds, { tools_posture = "auto" }), "auto",
+    TestRunner:assertEqual(BookSettings.resolveBookTools(ds, { enable_book_tools = false }), false,
         "corrupt sidecar value falls through to the global")
-    TestRunner:assertEqual(BookSettings.resolveToolsPosture(nil, { tools_posture = true }), "auto",
-        "legacy boolean-ish global falls through to the default")
-end)
-
-TestRunner:test("toolsPostureLabel maps all three values (manual is the fallback)", function()
-    TestRunner:assertEqual(BookSettings.toolsPostureLabel("off"), "Off", "off label")
-    TestRunner:assertEqual(BookSettings.toolsPostureLabel("auto"), "Auto", "auto label")
-    TestRunner:assertEqual(BookSettings.toolsPostureLabel("manual"), "Manual", "manual label")
-    TestRunner:assertEqual(BookSettings.toolsPostureLabel(nil), "Manual", "nil falls back to Manual")
+    TestRunner:assertEqual(BookSettings.resolveBookTools(nil, { tools_posture = 42 }), true,
+        "corrupt legacy global falls through to the default")
 end)
 
 TestRunner:test("KEY_TOOLS is registered in SIDECAR_KEYS (reset/count coverage)", function()

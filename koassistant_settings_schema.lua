@@ -2642,26 +2642,14 @@ local SettingsSchema = {
                     },
                 },
                 {
-                    id = "tools_posture",
-                    type = "radio",
-                    text_func = function(plugin)
-                        local f = plugin.settings:readSetting("features") or {}
-                        local posture = f.tools_posture or "auto"
-                        local labels = {
-                            off = _("Off"),
-                            manual = _("Manual"),
-                            auto = _("Auto"),
-                        }
-                        return T(_("AI Book Tools: %1"), labels[posture] or posture)
-                    end,
-                    help_text = _("EXPERIMENTAL: Gemini, Claude (Anthropic), OpenAI, OpenRouter (Claude/GPT/Gemini models), DeepSeek, Mistral, Groq, and xAI. Book tools let the AI search the open book's text, read specific pages, and view the table of contents, so it can ground answers in the actual book instead of guessing. Requires \"Allow Text Extraction\".\n\nOff: no tool use anywhere: the Tools chip disappears from chats, and actions can't use smart retrieval.\nManual: the Tools chip in book chats starts OFF; tap it to allow tools for that chat.\nAuto (default): the Tools chip starts ON; the AI still decides per question whether to actually search. Manual and Auto only set the chip's starting position.\n\nPredefined actions are unaffected either way; they never use tools unless they explicitly offer smart retrieval. Override per book in Book Settings. Work in progress; behavior may change."),
-                    path = "features.tools_posture",
-                    default = "auto",
-                    options = {
-                        { value = "off", text = _("Off (no tool use at all)") },
-                        { value = "manual", text = _("Manual (Tools chip starts OFF)") },
-                        { value = "auto", text = _("Auto (Tools chip starts ON)") },
-                    },
+                    -- Binary since the 2026-08-12 collapse (web-search model);
+                    -- the old 3-way tools_posture migrates via _tools_binary_migrated
+                    id = "enable_book_tools",
+                    type = "toggle",
+                    text = _("AI Book Tools"),
+                    help_text = _("EXPERIMENTAL: Gemini, Claude (Anthropic), OpenAI, OpenRouter (Claude/GPT/Gemini models), DeepSeek, Mistral, Groq, and xAI. Book tools let the AI search the open book's text, read specific pages, and view the table of contents, so it can ground answers in the actual book instead of guessing. Requires \"Allow Text Extraction\".\n\nThis sets whether the Tools chip in book chats starts ON or OFF; you can always flip it per chat, and the AI still decides per question whether to actually search.\n\nPredefined actions are unaffected either way; they never use tools unless they explicitly offer smart retrieval. Override per book in Book Settings. Work in progress; behavior may change."),
+                    path = "features.enable_book_tools",
+                    default = true,
                 },
                 {
                     id = "tool_mode",

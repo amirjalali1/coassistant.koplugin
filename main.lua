@@ -1559,6 +1559,7 @@ function AskGPT:initSettings()
       -- migration would assign "full" instead of the "standard" default.
       behavior_migrated = true,
       _tools_posture_migrated = true,
+      _tools_binary_migrated = true,
     }
     if user_config_loaded then
       for k, v in pairs(config_file_defaults.features) do
@@ -7580,8 +7581,6 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
       if not smart_eligible then
         if smart_block_reason == "consent" then
           sr_text = sr_label .. "  (" .. _("enable in Settings → Privacy") .. ")"
-        elseif smart_block_reason == "posture_off" then
-          sr_text = sr_label .. "  (" .. _("AI Book Tools are off") .. ")"
         else
           sr_text = sr_label .. "  (" .. _("not supported by this provider") .. ")"
         end
@@ -14932,18 +14931,31 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
 
   button_defs["book_tools"] = {
     text = (function()
-      -- Effective posture for the open book; "(book)" marks a per-book override
-      -- (same convention as the domain chip above).
+      -- Binary-global rule since the 2026-08-12 tools collapse (web-search
+      -- model): tap toggles the GLOBAL default, hold opens the scope-aware
+      -- picker. "(book)" marks a per-book override masking the global.
       local BookSettings = require("koassistant_book_settings")
       local doc_settings = has_document and self.ui.doc_settings or nil
-      local label = BookSettings.toolsPostureLabel(
-        BookSettings.resolveToolsPosture(doc_settings, features))
+      local label = BookSettings.resolveBookTools(doc_settings, features)
+        and _("On") or _("Off")
       if doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOLS) ~= nil then
         label = label .. _(" (book)")
       end
       return E("\u{1F4D6}", T(_("Book Tools: %1"), label))
     end)(),
     callback = function()
+      local BookSettings = require("koassistant_book_settings")
+      local f = self_ref.settings:readSetting("features") or {}
+      f.enable_book_tools = not BookSettings.resolveBookTools(nil, f)
+      f.tools_posture = nil
+      self_ref.settings:saveSetting("features", f)
+      self_ref.settings:flush()
+      self_ref:updateConfigFromSettings()
+      opening_subdialog = true
+      UIManager:close(dialog)
+      reopenQuickSettings()
+    end,
+    hold_callback = function()
       opening_subdialog = true
       UIManager:close(dialog)
       self_ref:showToolsPosturePopup(reopenQuickSettings)
@@ -16852,20 +16864,31 @@ function AskGPT:showBypassQuickPick(kind, on_close)
     UIManager:close(menu)
     if on_close then on_close() end
   end
+  -- Two buttons per row (maintainer 2026-08-12: long single-column pick lists
+  -- waste the dialog; the same note covers the provider/model popups — sweep
+  -- recorded in the tracker). Close stays full-width.
   local rows = {}
+  local pending
   for _idx, item in ipairs(items) do
     if item.callback then
       local checked = item.checked_func and item.checked_func() or false
-      rows[#rows + 1] = {{
+      local btn = {
         text = (checked and "● " or "○ ") .. (item.text or ""),
         align = "left",
         callback = function()
           item.callback()
           closePicked()
         end,
-      }}
+      }
+      if pending then
+        rows[#rows + 1] = { pending, btn }
+        pending = nil
+      else
+        pending = btn
+      end
     end
   end
+  if pending then rows[#rows + 1] = { pending } end
   rows[#rows + 1] = {{ text = _("Close"), id = "close", callback = closePicked }}
   menu = ButtonDialog:new{
     title = kind == "dictionary"

@@ -195,27 +195,36 @@ function BookSettings.xrayAutoLabel(doc_settings, features)
 end
 
 
---- Resolve the effective AI Book Tools posture for a book: per-book override > global
--- tools_posture > "auto" (the schema default — the fallback MUST match it, per the
--- check-pattern rule; existing pre-posture users get an explicit "manual"/"auto" from
--- the migration, so nil only means fresh install or post-reset). Pure. Unknown stored
--- values fall through so a future/corrupt sidecar value can't wedge the checkbox.
--- @return "off" | "manual" | "auto"
-function BookSettings.resolveToolsPosture(doc_settings, features)
-    local valid = { off = true, manual = true, auto = true }
-    local per_book = doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOLS)
-    if valid[per_book] then return per_book end
-    local global = features and features.tools_posture
-    if valid[global] then return global end
-    return "auto"
+--- Map a stored tools value — new boolean or legacy posture string — onto the
+-- binary model (2026-08-12 collapse, maintainer: "no reason to have separate
+-- OFF vs Auto/Manual; function like web search"). Sidecar files are never
+-- mass-migrated, so legacy per-book strings live on and MUST keep resolving:
+-- "auto"/true = tools default ON; "manual"/"off"/false = default OFF (the old
+-- hard-off master switch is gone — the chip can always flip a session on).
+-- nil (and anything unrecognized) = no opinion.
+local function toolsValueOn(v)
+    if v == true or v == "auto" then return true end
+    if v == false or v == "manual" or v == "off" then return false end
+    return nil
 end
 
---- Translated label for a tools-posture value (shared by the Book Settings row, the
--- posture picker, and the Quick Settings chip).
-function BookSettings.toolsPostureLabel(v)
-    if v == "off" then return _("Off")
-    elseif v == "auto" then return _("Auto") end
-    return _("Manual")
+--- Effective AI Book Tools default for a book: per-book override > global
+-- `enable_book_tools` (default ON — preserves the pre-collapse "auto" fresh
+-- install; the A9 sitting owns any default flip) > legacy `tools_posture`
+-- read-through for configs the migration hasn't touched. Pure boolean:
+-- true = the Tools chip starts ON.
+function BookSettings.resolveBookTools(doc_settings, features)
+    local per_book = toolsValueOn(
+        doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOLS))
+    if per_book ~= nil then return per_book end
+    if features then
+        if features.enable_book_tools ~= nil then
+            return features.enable_book_tools ~= false
+        end
+        local legacy = toolsValueOn(features.tools_posture)
+        if legacy ~= nil then return legacy end
+    end
+    return true
 end
 
 -- Per-book domain ("<domain id>" | "_none" = explicitly no domain | nil = follow global)
@@ -959,8 +968,9 @@ end
 --- Quick AI Book Tools posture picker with a For-this-book ↔ Global target toggle
 -- (tools_ux_plan.md §3) — mirrors the Domain & Research picker. Shared entry point for
 -- the Quick Settings chip; the Book Settings screen has its own per-book-only row.
--- Book target: Follow global / Off / Manual / Auto (KEY_TOOLS sidecar key).
--- Global target: Off / Manual / Auto (features.tools_posture).
+-- Book target: Follow global / On / Off (KEY_TOOLS sidecar key; legacy posture
+-- strings read as their binary equivalent). Global target: On / Off
+-- (features.enable_book_tools — the 2026-08-12 binary collapse).
 -- @param opts table: { plugin, ui, document_path, on_close, target_override }
 --- Tri-state Automatic X-Ray picker (§7 P1) — shared by the Book Settings row
 --- and both X-Ray popup rows. Defined AFTER resolveDocSettings (file-local
@@ -1018,8 +1028,11 @@ function BookSettings.showToolsPosture(opts)
 
     local doc_settings = resolveDocSettings(ui, document_path)
     local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
-    local book_val = doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOLS) or nil
-    local global_val = features.tools_posture or "auto"
+    -- Legacy per-book strings ("auto"/"manual"/"off") read as their binary
+    -- equivalent; new writes store true/false/nil only
+    local book_val = toolsValueOn(
+        doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOLS))
+    local global_on = BookSettings.resolveBookTools(nil, features)
     local book_effort = doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOL_EFFORT) or nil
     local global_effort = features.tool_lookup_effort or "standard"
 
@@ -1045,7 +1058,8 @@ function BookSettings.showToolsPosture(opts)
     end
     local function pickGlobal(val)
         local f = plugin.settings:readSetting("features") or {}
-        f.tools_posture = val
+        f.enable_book_tools = val
+        f.tools_posture = nil
         plugin.settings:saveSetting("features", f)
         plugin.settings:flush()
         commit()
@@ -1078,29 +1092,28 @@ function BookSettings.showToolsPosture(opts)
         })
     end
 
-    local postures = {
-        { value = "off", label = _("Off (no tool use at all)") },
-        { value = "manual", label = _("Manual (Tools chip starts OFF)") },
-        { value = "auto", label = _("Auto (Tools chip starts ON)") },
-    }
     if is_book_target then
         table.insert(buttons, {{
-            text = dot(book_val == nil) .. T(_("Follow global (%1)"), BookSettings.toolsPostureLabel(global_val)),
+            text = dot(book_val == nil) .. T(_("Follow global (%1)"), global_on and _("On") or _("Off")),
             callback = function() pickBook(nil) end,
         }})
-        for _idx, p in ipairs(postures) do
-            table.insert(buttons, {{
-                text = dot(book_val == p.value) .. p.label,
-                callback = function() pickBook(p.value) end,
-            }})
-        end
+        table.insert(buttons, {{
+            text = dot(book_val == true) .. _("On (Tools chip starts ON)"),
+            callback = function() pickBook(true) end,
+        }})
+        table.insert(buttons, {{
+            text = dot(book_val == false) .. _("Off (Tools chip starts OFF)"),
+            callback = function() pickBook(false) end,
+        }})
     else
-        for _idx, p in ipairs(postures) do
-            table.insert(buttons, {{
-                text = dot(global_val == p.value) .. p.label,
-                callback = function() pickGlobal(p.value) end,
-            }})
-        end
+        table.insert(buttons, {{
+            text = dot(global_on) .. _("On (Tools chip starts ON)"),
+            callback = function() pickGlobal(true) end,
+        }})
+        table.insert(buttons, {{
+            text = dot(not global_on) .. _("Off (Tools chip starts OFF)"),
+            callback = function() pickGlobal(false) end,
+        }})
     end
     -- Lookup effort row → effort sub-picker (inherits the current book/global target).
     local eff_label = is_book_target
@@ -1946,8 +1959,9 @@ function BookSettings.show(opts)
 
     -- AI Book Tools posture: label + sub-picker (Follow global / Off / Manual / Auto)
     local function toolsRowLabel(v)
-        if v == nil then return _("Follow global") end
-        return BookSettings.toolsPostureLabel(v)
+        local on = toolsValueOn(v)
+        if on == nil then return _("Follow global") end
+        return on and _("On") or _("Off")
     end
     local book_domain = doc_settings:readSetting(BookSettings.KEY_DOMAIN)
     local domain_label

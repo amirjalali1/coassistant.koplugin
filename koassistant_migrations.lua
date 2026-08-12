@@ -237,6 +237,27 @@ function Migrations.run(features)
     logger.info("KOAssistant: Migrated enable_tool_workflows to tools_posture")
   end
 
+  -- ONE-TIME migration (tools binary collapse, 2026-08-12): the 3-state
+  -- tools_posture becomes the web-search-shaped bool enable_book_tools —
+  -- maintainer: "no reason to have separate OFF vs Auto/Manual". "auto" → true;
+  -- "manual" → false (chip starts off, exactly as before); "off" → false — the
+  -- ONE behavior change: the chip is visible again and can be flipped per chat
+  -- (hard-off is retired; hiding the chip is the Toolbar Buttons manager's
+  -- job). Runs right after the posture migration above, so pre-posture users
+  -- chain through in a single launch. nil stays nil (schema default true =
+  -- the pre-collapse "auto" fresh-install behavior; A9 owns any default flip).
+  -- Per-book KEY_TOOLS strings are NOT migrated — sidecars are lazy-touched;
+  -- BookSettings reads legacy strings through toolsValueOn forever.
+  if not features._tools_binary_migrated then
+    if features.tools_posture ~= nil then
+      features.enable_book_tools = (features.tools_posture == "auto")
+      features.tools_posture = nil
+      logger.info("KOAssistant: Migrated tools_posture to enable_book_tools")
+    end
+    features._tools_binary_migrated = true
+    needs_save = true
+  end
+
   -- Session-chips membership (book_scoped_controls_plan.md §4/§8): the chips row
   -- replaces the input dialog's checkbox pile + top-row Web/Domain buttons. All four
   -- chips on by default (maintainer 2026-07-12); the old show_spoiler_toggle bool is
