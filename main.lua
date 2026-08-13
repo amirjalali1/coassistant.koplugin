@@ -8240,8 +8240,15 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       -- §5 (51c): one-line posture hint, tap-through to the spoiler picker —
       -- names why checkpoints will follow the position (post-flip the default)
       if self:_xrayPosture() == "track" then
+        -- A deliberately installed COMPLETE version is pinned (item 40 —
+        -- never auto-reverted), so don't claim position-following while one
+        -- is installed (device round 2026-08-13: the hint said "following"
+        -- while the X-Ray stayed at 100%)
+        local posture_hint = (cached_entry and cached_entry.full_document)
+          and _("Spoiler protection is on — the installed X-Ray covers the whole book")
+          or _("Spoiler protection is on — checkpoints follow your position")
         table.insert(buttons, {{
-          text = _("Spoiler protection is on — checkpoints follow your position"),
+          text = posture_hint,
           callback = function()
             UIManager:close(dialog)
             -- Seam 2: book-scoped launch surface → open on the book tab
@@ -8607,8 +8614,15 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       -- §5 (51c): one-line posture hint, tap-through to the spoiler picker —
       -- names why updates follow the position (post-flip the default)
       if xr_posture == "track" then
+        -- A deliberately installed COMPLETE version is pinned (item 40 —
+        -- never auto-reverted), so don't claim position-following while one
+        -- is installed (device round 2026-08-13: the hint said "following"
+        -- while the X-Ray stayed at 100%)
+        local posture_hint = (cached_entry and cached_entry.full_document)
+          and _("Spoiler protection is on — the installed X-Ray covers the whole book")
+          or _("Spoiler protection is on — checkpoints follow your position")
         table.insert(buttons, {{
-          text = _("Spoiler protection is on — checkpoints follow your position"),
+          text = posture_hint,
           callback = function()
             UIManager:close(dialog)
             -- Seam 2: book-scoped launch surface → open on the book tab
@@ -16647,6 +16661,12 @@ end
 function AskGPT:syncDictionaryBypass()
   local features = self.settings:readSetting("features") or {}
   local bypass_enabled = features.dictionary_bypass_enabled
+  -- X-Ray intercept (#63 round 9): opt-in layer AHEAD of the whole
+  -- dictionary flow — an exact entity word opens its X-Ray entry, everything
+  -- else falls through to the configured behavior (bypass action or native
+  -- dictionary). Independent of the bypass setting, so the wrapper installs
+  -- for either.
+  local intercept_on = features.xray_selection_intercept == true
 
   -- Check if we have access to the reader's dictionary module
   if not self.ui or not self.ui.dictionary then
@@ -16656,7 +16676,7 @@ function AskGPT:syncDictionaryBypass()
 
   local dictionary = self.ui.dictionary
 
-  if bypass_enabled then
+  if bypass_enabled or intercept_on then
     -- Store original method if not already stored
     if not dictionary._koassistant_original_onLookupWord then
       dictionary._koassistant_original_onLookupWord = dictionary.onLookupWord
@@ -16665,6 +16685,41 @@ function AskGPT:syncDictionaryBypass()
 
     local self_ref = self
     dictionary.onLookupWord = function(dict_self, word, is_sane, boxes, highlight, link, dict_close_callback)
+      -- X-Ray intercept: exact entity hit → its X-Ray entry, ahead of any
+      -- bypass action. Reads the lookup-book flag WITHOUT consuming (the
+      -- fall-through paths hand it to the normal chain); consumes only when
+      -- actually intercepting.
+      if intercept_on then
+        local ActionCache = require("koassistant_action_cache")
+        local i_file = dict_self._koassistant_lookup_book
+          or (self_ref.ui and self_ref.ui.document and self_ref.ui.document.file)
+        if i_file and ActionCache.hasAnyXray(i_file) then
+          local i_doc = self_ref.ui and self_ref.ui.document
+          if i_doc and i_doc.file ~= i_file then i_doc = nil end
+          local i_hits = ActionCache.searchAllXrays(i_file, word,
+            i_doc, { skip_description = true, exact = true })
+          if #i_hits > 0 then
+            local xaction = self_ref.action_service:getAction("highlight", "xray_lookup")
+            if xaction then
+              logger.info("KOAssistant: X-Ray intercept - word matches entity, opening X-Ray")
+              local lookup_book = dict_self._koassistant_lookup_book
+              dict_self._koassistant_non_reader_lookup = nil
+              dict_self._koassistant_lookup_book = nil
+              self_ref:updateConfigFromSettings()
+              Dialogs.executeDirectAction(self_ref.ui, xaction, word, configuration, self_ref,
+                lookup_book and { document_path = lookup_book } or nil)
+              return
+            end
+          end
+        end
+      end
+      if not bypass_enabled then
+        -- Intercept-only install, no entity hit: the native dictionary
+        if dictionary._koassistant_original_onLookupWord then
+          return dictionary._koassistant_original_onLookupWord(dict_self, word, is_sane, boxes, highlight, link, dict_close_callback)
+        end
+        return
+      end
       -- Get the bypass action from settings (default: quick_define)
       local action_id = features.dictionary_bypass_action or "quick_define"
       local bypass_action = self_ref.action_service:getAction("highlight", action_id)
@@ -16925,6 +16980,37 @@ function AskGPT:syncHighlightBypass()
   -- Replace with our interceptor
   highlight.onShowHighlightMenu = function(hl_self, ...)
     local features = self_ref.settings:readSetting("features", {})
+
+    -- X-Ray intercept (#63 round 9): a selection that IS an entity's
+    -- name/alias opens its X-Ray entry ahead of any highlight flow (bypass
+    -- action or menu); anything else falls through untouched. Opt-in,
+    -- word-count-independent (maintainer ruling).
+    if features.xray_selection_intercept == true
+        and hl_self.selected_text and hl_self.selected_text.text then
+      -- Collapse whitespace runs (selections can span lines), trim edge
+      -- ASCII punctuation; entity handles are short — skip the parse cost
+      -- for long selections outright
+      local sel = hl_self.selected_text.text:gsub("%s+", " ")
+      sel = sel:match("^%s*(.-)%s*$") or ""
+      sel = sel:gsub("^%p+", ""):gsub("%p+$", "")
+      if #sel > 2 and #sel <= 120 then
+        local ActionCache = require("koassistant_action_cache")
+        local i_file = self_ref.ui and self_ref.ui.document and self_ref.ui.document.file
+        if i_file and ActionCache.hasAnyXray(i_file) then
+          local i_hits = ActionCache.searchAllXrays(i_file, sel,
+            self_ref.ui.document, { skip_description = true, exact = true })
+          if #i_hits > 0 then
+            local xaction = self_ref.action_service:getAction("highlight", "xray_lookup")
+            if xaction then
+              logger.info("KOAssistant: X-Ray intercept - selection matches entity, opening X-Ray")
+              self_ref:executeHighlightBypassAction(xaction, sel, hl_self)
+              hl_self:clear()
+              return true
+            end
+          end
+        end
+      end
+    end
 
     -- Check if bypass is enabled
     if features.highlight_bypass_enabled then

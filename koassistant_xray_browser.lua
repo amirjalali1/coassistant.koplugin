@@ -296,6 +296,8 @@ end
 --- position-dedup, doc-order sort, PTF bold-match snippet per hit. Spoiler
 --- gating is applied at DISPLAY time by the consumers (data in memory is
 --- not data shown). Cap: 5000 hits per term (very common terms clip there).
+--- Context: 10 words per side (round 9 — the 3-line snippet rows can afford
+--- more than the search dialog's default).
 --- @return table hits Array of {page?, xp?, display_page, row_text, term, order}
 local function gatherMentionHits(ui, terms)
     local TextBoxWidget = require("ui/widget/textboxwidget")
@@ -305,9 +307,9 @@ local function gatherMentionHits(ui, terms)
         local res
         if term.regex and not is_pages then
             -- Arabic terms: diacritics-tolerant regex (EPUB engine only)
-            res = ui.document:findAllText(term.regex, true, 5, 5000, true)
+            res = ui.document:findAllText(term.regex, true, 10, 5000, true)
         else
-            res = ui.document:findAllText(term.text, true, 5, 5000, false)
+            res = ui.document:findAllText(term.text, true, 10, 5000, false)
         end
         if res then
             for _idx2, r in ipairs(res) do
@@ -1835,14 +1837,23 @@ function XrayBrowser:navigateForward(title, items, focus_idx, display)
             multilines_forced = self.menu.multilines_forced,
             items_max_lines = self.menu.items_max_lines,
             state_w = self.menu.state_w,
+            with_dots = self.menu.with_dots,
+            align_baselines = self.menu.align_baselines,
+            line_color = self.menu.line_color,
         },
     })
     self.current_title = title
     if display then
+        -- Protocol: a display-passing level states everything it needs;
+        -- unstated fields drop to the Menu class defaults (nil clears the
+        -- instance field), so one level's styling never leaks into the next
         self.menu.single_line = display.single_line
         self.menu.multilines_forced = display.multilines_forced
         self.menu.items_max_lines = display.items_max_lines
         self.menu.state_w = display.state_w
+        self.menu.with_dots = display.with_dots
+        self.menu.align_baselines = display.align_baselines
+        self.menu.line_color = display.line_color
     end
 
     -- Add to paths so back arrow becomes enabled via updatePageInfo
@@ -1893,12 +1904,15 @@ function XrayBrowser:navigateBack()
     -- The group jump follows the reader back out (round 25)
     self.location = prev.location
     -- Restore the display params saved at push time (multiline levels,
-    -- the appearances tree's expand/collapse state column)
+    -- the appearances tree's state column / dots / hidden dividers)
     if prev.display then
         self.menu.single_line = prev.display.single_line
         self.menu.multilines_forced = prev.display.multilines_forced
         self.menu.items_max_lines = prev.display.items_max_lines
         self.menu.state_w = prev.display.state_w
+        self.menu.with_dots = prev.display.with_dots
+        self.menu.align_baselines = prev.display.align_baselines
+        self.menu.line_color = prev.display.line_color
     end
 
     -- Remove from paths so back arrow disables when we reach root
@@ -4350,8 +4364,9 @@ end
 --- nodes, top level collapsed on entry with the reader's current chain
 --- auto-expanded, the current node BOLD — with a mention count + histogram
 --- bar at the end of every row, powered by the one gatherMentionHits pass
---- (counts and mention lists consistent by construction). Rows wrap to two
---- lines instead of truncating. Bars normalize GLOBALLY (monotone: a bigger
+--- (counts and mention lists consistent by construction). Stock-TOC row
+--- styling: single truncated lines, dotted leaders to the histogram, no
+--- divider lines (round 9). Bars normalize GLOBALLY (monotone: a bigger
 --- count is never a shorter bar; parents are roll-ups so theirs dominate).
 --- Spoiler gating is DISPLAY-only: all hits are in memory; concealed rows
 --- show "···" until revealed (instant flip, one-time confirm; revealing a
@@ -4645,10 +4660,13 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
         self.current_title = title
         self:_switchMenuItems(title, items, data._focus_idx)
     else
+        -- The stock-TOC look (maintainer round 9): single truncated lines,
+        -- dotted leaders running to the histogram, no divider lines
         self:navigateForward(title, items, data._focus_idx, {
-            single_line = false,
-            multilines_forced = true,
-            items_max_lines = 2,
+            single_line = true,
+            with_dots = true,
+            align_baselines = true,
+            line_color = require("ffi/blitbuffer").COLOR_WHITE,
             state_w = has_parents and button_width or nil,
         })
         -- Stash item detail info so back from distribution reopens the TextViewer

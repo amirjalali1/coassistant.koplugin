@@ -991,6 +991,24 @@ local SettingsSchema = {
                             help_text = _("When building X-Ray checkpoints, place each checkpoint at the nearest chapter end (within a few percent) instead of an exact percentage; checkpoints then read as \"up to the end of a chapter\", and the versions list shows the chapter names. Needs a table of contents. Checkpoint spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones."),
                         },
                         {
+                            id = "xray_selection_intercept",
+                            type = "toggle",
+                            text = _("X-Ray Entry for Matching Selections"),
+                            path = "features.xray_selection_intercept",
+                            default = false,
+                            help_text = _("When a tapped word or selected text exactly matches an X-Ray entity's name or alias, open that X-Ray entry directly — skipping ahead of the dictionary and the highlight menu (including any bypass actions you have set there). Anything that doesn't match falls through to your normal dictionary/highlight behavior. Needs an X-Ray for the book."),
+                            on_change = function(new_value, plugin)
+                                -- The dictionary wrapper is installed/removed at sync
+                                -- time (the highlight side reads per call)
+                                if plugin.syncDictionaryBypass then
+                                    local UIManager = require("ui/uimanager")
+                                    UIManager:nextTick(function()
+                                        plugin:syncDictionaryBypass()
+                                    end)
+                                end
+                            end,
+                        },
+                        {
                             id = "xray_versions_kept",
                             type = "spinner",
                             text = _("X-Ray Versions to Keep"),
