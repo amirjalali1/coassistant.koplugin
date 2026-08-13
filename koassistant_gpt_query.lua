@@ -197,13 +197,36 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
     local suppress_loading = config and config.features
         and config.features._suppress_loading_dialog == true
     if not suppress_loading then
-        loading_dialog = InfoMessage:new{
-            text = loading_text,
-            dismissable = true,
-        }
-        loading_dialog.dismiss_callback = function()
-            user_cancelled = true
-            finish(false, nil, _("Request cancelled by user."))
+        -- Minimal-popup requests swap the centered modal for KOReader's own
+        -- translator wait pattern: a small bottom-left corner notice
+        -- (TrapWidget), so the passage being read stays visible while a quick
+        -- translate/define runs. Any tap/key/swipe dismisses = cancel — the
+        -- same contract as the InfoMessage (and TrapWidget only fires
+        -- dismiss_callback on real dismiss events, never on the programmatic
+        -- close in finish()). Gated on loading_message: the corner text is a
+        -- single-line TextWidget, and the popup dispatch provides a one-line
+        -- notice; an eligible request without one keeps the info-rich modal.
+        local minimal_trap = config and config.features
+            and config.features._minimal_popup_eligible == true
+            and config.features.loading_message ~= nil
+        if minimal_trap then
+            local TrapWidget = require("ui/widget/trapwidget")
+            loading_dialog = TrapWidget:new{
+                text = loading_text,
+                dismiss_callback = function()
+                    user_cancelled = true
+                    finish(false, nil, _("Request cancelled by user."))
+                end,
+            }
+        else
+            loading_dialog = InfoMessage:new{
+                text = loading_text,
+                dismissable = true,
+            }
+            loading_dialog.dismiss_callback = function()
+                user_cancelled = true
+                finish(false, nil, _("Request cancelled by user."))
+            end
         end
         UIManager:show(loading_dialog)
         UIManager:forceRePaint()

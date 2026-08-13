@@ -117,6 +117,18 @@ function MinimalPopup:init()
             },
         }
     end
+    if Device:hasKeys() then
+        -- Page-turn buttons dismiss (device 2026-08-13: the reader pressing
+        -- next-page is moving on). The press is CONSUMED — the next one turns
+        -- the page — matching how modals eat their dismissing tap. Back
+        -- dismisses too (previously unhandled, so it fell through the popup
+        -- to whatever sat below). All map onto the existing onClose path.
+        self.key_events.Close = {
+            { Device.input.group.PgFwd },
+            { Device.input.group.PgBack },
+            { Device.input.group.Back },
+        }
+    end
 end
 
 --- Did the response overflow the popup's height cap (ellipsis showing)?
