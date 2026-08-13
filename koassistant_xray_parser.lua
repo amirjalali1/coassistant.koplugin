@@ -1685,6 +1685,133 @@ function XrayParser.searchAll(data, query, opts)
     return results
 end
 
+--- Fold every exact-matchable handle (name/term/event + aliases) of data's
+--- entities into `set`, keyed the way searchAll's exact mode normalizes the
+--- QUERY side (lower + Arabic normalize) so a set hit means searchAll's
+--- exact mode would match. Skips the same singleton categories. Feeds the
+--- memoized route index behind the selection intercept (slice 2, ref #63).
+--- @param data table Parsed X-Ray data (user aliases already merged)
+--- @param set table Accumulator: normalized handle -> true
+function XrayParser.foldExactHandles(data, set)
+    for _idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
+        if cat.key ~= "current_state" and cat.key ~= "current_position"
+            and cat.key ~= "reader_engagement" and cat.key ~= "conclusion" then
+            for _idx2, item in ipairs(cat.items) do
+                local name = item.name or item.term or item.event or ""
+                if name ~= "" then
+                    set[XrayParser.normalizeArabic(name:lower())] = true
+                end
+                local aliases = ensure_array(item.aliases)
+                if aliases then
+                    for _idx3, a in ipairs(aliases) do
+                        if type(a) == "string" and a ~= "" then
+                            set[XrayParser.normalizeArabic(a:lower())] = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+--- The query-side mirror of searchAll's exact mode against a
+--- foldExactHandles set: normalized equality, plus the ال-stripped query
+--- variant for Arabic (query side only — exact mode never strips handles).
+--- @param set table foldExactHandles accumulator
+--- @param query string Raw query text
+--- @return boolean
+function XrayParser.matchExactHandle(set, query)
+    if type(query) ~= "string" or query == "" then return false end
+    local q = XrayParser.normalizeArabic(query:lower())
+    if set[q] then return true end
+    if XrayParser.containsArabic(q) then
+        local s = stripArabicArticle(q)
+        if s ~= q and #s > 4 and set[s] then return true end
+    end
+    return false
+end
+
+--- Entity name + aliases as search terms: array of { text, regex } — regex =
+--- the Arabic diacritics-tolerant pattern where applicable (EPUB engine
+--- only). Rules: parenthetical strip, >2 chars, case-insensitive dedupe,
+--- substring-minimal set (a term containing another term is dropped — the
+--- short form already finds every occurrence of the long one, and keeping
+--- both would double-count the same physical mention). Moved here from the
+--- browser (slice 2) so the mention lists, the native-search launches AND
+--- ambient marking share one term truth.
+--- @param item table X-Ray entity item
+--- @param item_title string|nil Fallback title when the item has no name
+--- @return table terms Array of { text, regex? }
+function XrayParser.collectSearchTerms(item, item_title)
+    local terms, seen = {}, {}
+    local function add(t)
+        if type(t) ~= "string" then return end
+        -- Strip parenthetical: "Theosis (Deification)" → "Theosis"
+        t = t:gsub("%s*%(.-%)%s*", " ")
+        t = t:match("^%s*(.-)%s*$") or ""
+        if #t > 2 then
+            local k = t:lower()
+            if not seen[k] then
+                seen[k] = true
+                table.insert(terms, {
+                    text = t,
+                    regex = XrayParser.buildArabicSearchRegex(t),
+                })
+            end
+        end
+    end
+    add(item.name or item.term or item.event or item_title)
+    local aliases = item.aliases
+    if type(aliases) == "string" then aliases = { aliases } end
+    if type(aliases) == "table" then
+        for _idx, a in ipairs(aliases) do add(a) end
+    end
+    local minimal = {}
+    for i, t in ipairs(terms) do
+        local contains_other = false
+        local t_lower = t.text:lower()
+        for j, u in ipairs(terms) do
+            if i ~= j and #u.text < #t.text
+                and t_lower:find(u.text:lower(), 1, true) then
+                contains_other = true
+                break
+            end
+        end
+        if not contains_other then table.insert(minimal, t) end
+    end
+    return minimal
+end
+
+--- Ambient-marking entity list (slice 2, ref #78): one entry per markable
+--- entity with its collectSearchTerms terms, its CATEGORY_FAMILY family
+--- (unmapped categories are their own family) and a normalized variant of
+--- each term for the cheap page-presence pre-check. Category gate =
+--- TEXT_MATCH_EXCLUDED, the same truth countItemOccurrences uses.
+--- @param data table Parsed X-Ray data (user aliases already merged)
+--- @return table entities Array of { name, category_key, family, terms }
+function XrayParser.buildMarkEntities(data)
+    local out = {}
+    for _idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
+        if not TEXT_MATCH_EXCLUDED[cat.key] then
+            for _idx2, item in ipairs(cat.items) do
+                local terms = XrayParser.collectSearchTerms(item, nil)
+                if #terms > 0 then
+                    for _idx3, t in ipairs(terms) do
+                        t.norm = XrayParser.normalizeArabic(t.text:lower())
+                    end
+                    table.insert(out, {
+                        name = XrayParser.getItemName(item, cat.key),
+                        category_key = cat.key,
+                        family = XrayParser.CATEGORY_FAMILY[cat.key] or cat.key,
+                        terms = terms,
+                    })
+                end
+            end
+        end
+    end
+    return out
+end
+
 --- Find all X-Ray items appearing in chapter text
 --- @param data table Parsed X-Ray data
 --- @param chapter_text string The chapter text content

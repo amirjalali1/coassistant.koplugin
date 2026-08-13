@@ -2200,6 +2200,60 @@ end
 --- @param doc table|nil Document object (for current page detection)
 --- @param opts table|nil Options passed to searchAll (e.g., skip_description)
 --- @return table Array of { key, label, is_section, scope_summary, results, cache_entry }
+-- Memoized exact-handle route index behind the selection intercept (slice 2,
+-- ref #63): one normalized-handle set across the main + every section X-Ray,
+-- rebuilt only when the book's cache file or user-aliases sidecar changes on
+-- disk (mtime+size key — a stat per lookup instead of a full parse per tap).
+-- One book at a time: taps are reader-scoped, a different file swaps the slot.
+local exact_route_index = nil -- { path, key, set }
+
+--- Would searchAll's EXACT mode match this query in ANY of the book's X-Rays
+--- (main + sections, user search terms folded in)? Boolean route decision
+--- only — the actual lookup re-parses through handleLocalXrayLookup.
+--- @param document_path string
+--- @param query string
+--- @return boolean
+function ActionCache.matchAnyXrayExact(document_path, query)
+    if not document_path or type(query) ~= "string" or query == "" then
+        return false
+    end
+    local path = ActionCache.getPath(document_path)
+    if not path then return false end
+    local attr = lfs.attributes(path)
+    if not attr or attr.mode ~= "file" then return false end
+    local key = tostring(attr.modification) .. "|" .. tostring(attr.size)
+    local alias_path = ActionCache.getUserAliasesPath(document_path)
+    local aattr = alias_path and lfs.attributes(alias_path)
+    if aattr then
+        key = key .. "|" .. tostring(aattr.modification) .. "|" .. tostring(aattr.size)
+    end
+    if not (exact_route_index and exact_route_index.path == path
+            and exact_route_index.key == key) then
+        local XrayParser = require("koassistant_xray_parser")
+        local set = {}
+        local user_aliases = ActionCache.getUserAliases(document_path)
+        local main = ActionCache.getXrayCache(document_path)
+        if main and main.result then
+            local data = XrayParser.parse(main.result)
+            if data then
+                XrayParser.mergeUserAliases(data, user_aliases)
+                XrayParser.foldExactHandles(data, set)
+            end
+        end
+        for _idx, sec in ipairs(ActionCache.getSectionXrays(document_path)) do
+            local data = sec.data and sec.data.result
+                and XrayParser.parse(sec.data.result)
+            if data then
+                XrayParser.mergeUserAliases(data, user_aliases)
+                XrayParser.foldExactHandles(data, set)
+            end
+        end
+        exact_route_index = { path = path, key = key, set = set }
+    end
+    return require("koassistant_xray_parser")
+        .matchExactHandle(exact_route_index.set, query)
+end
+
 function ActionCache.searchAllXrays(document_path, query, doc, opts)
     if not document_path or not query or query == "" then return {} end
 

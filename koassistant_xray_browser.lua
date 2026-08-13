@@ -229,50 +229,10 @@ end
 
 --- Entity name + aliases as search terms: array of { text, regex } — regex =
 --- the Arabic diacritics-tolerant pattern where applicable (EPUB engine
---- only). Shared by the mention list and the native-search launches.
-local function collectSearchTerms(item, item_title)
-    local terms, seen = {}, {}
-    local function add(t)
-        if type(t) ~= "string" then return end
-        -- Strip parenthetical: "Theosis (Deification)" → "Theosis"
-        t = t:gsub("%s*%(.-%)%s*", " ")
-        t = t:match("^%s*(.-)%s*$") or ""
-        if #t > 2 then
-            local k = t:lower()
-            if not seen[k] then
-                seen[k] = true
-                table.insert(terms, {
-                    text = t,
-                    regex = XrayParser.buildArabicSearchRegex(t),
-                })
-            end
-        end
-    end
-    add(item.name or item.term or item.event or item_title)
-    local aliases = item.aliases
-    if type(aliases) == "string" then aliases = { aliases } end
-    if type(aliases) == "table" then
-        for _idx, a in ipairs(aliases) do add(a) end
-    end
-    -- Substring-minimal set: drop any term that CONTAINS another term
-    -- (case-insensitive) — searching the short form already finds every
-    -- occurrence of the long one ("Jean Valjean" ⊇ "Valjean"), and keeping
-    -- both would count the same physical mention twice
-    local minimal = {}
-    for i, t in ipairs(terms) do
-        local contains_other = false
-        local t_lower = t.text:lower()
-        for j, u in ipairs(terms) do
-            if i ~= j and #u.text < #t.text
-                and t_lower:find(u.text:lower(), 1, true) then
-                contains_other = true
-                break
-            end
-        end
-        if not contains_other then table.insert(minimal, t) end
-    end
-    return minimal
-end
+--- only). Shared by the mention list and the native-search launches. The
+--- implementation moved to XrayParser (slice 2) so ambient marking shares
+--- the exact same term rules.
+local collectSearchTerms = XrayParser.collectSearchTerms
 
 --- EPUB regex-OR of every term (so the native search session walks name AND
 --- aliases with its own prev/next). nil when a single plain term suffices.

@@ -1009,6 +1009,78 @@ local SettingsSchema = {
                             end,
                         },
                         {
+                            id = "xray_marking",
+                            type = "toggle",
+                            text = _("Passive Marking"),
+                            path = "features.xray_marking",
+                            default = false,
+                            help_text = _("Discreetly underline words on the page that match an X-Ray entity's name or alias, as you read. Tap a marked word to open its entry (via \"X-Ray Entry for Matching Selections\"). Only marks entities the X-Ray knows at your reading position when spoiler protection is on. EPUB page mode only."),
+                            on_change = function(new_value, plugin)
+                                if plugin.syncXrayMarks then
+                                    local UIManager = require("ui/uimanager")
+                                    UIManager:nextTick(function()
+                                        plugin:syncXrayMarks()
+                                    end)
+                                end
+                            end,
+                        },
+                        {
+                            id = "xray_marking_density",
+                            type = "radio",
+                            text_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                local mode = f.xray_marking_density or "first"
+                                return T(_("Marking Density: %1"),
+                                    mode == "all" and _("All Occurrences") or _("First per Page"))
+                            end,
+                            path = "features.xray_marking_density",
+                            default = "first",
+                            options = {
+                                { value = "first", text = _("First occurrence per page") },
+                                { value = "all", text = _("All occurrences") },
+                            },
+                            help_text = _("How many of an entity's occurrences on a page get marked. First per page keeps pages calm; all occurrences marks every one."),
+                            on_change = function(new_value, plugin)
+                                if plugin.syncXrayMarks then
+                                    local UIManager = require("ui/uimanager")
+                                    UIManager:nextTick(function()
+                                        plugin:syncXrayMarks()
+                                    end)
+                                end
+                            end,
+                        },
+                        {
+                            id = "xray_marking_families",
+                            type = "radio",
+                            text_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                local mode = f.xray_marking_families or "all"
+                                local labels = {
+                                    all = _("All Entities"),
+                                    people = _("People Only"),
+                                    people_places = _("People & Places"),
+                                }
+                                return T(_("Mark: %1"), labels[mode] or mode)
+                            end,
+                            path = "features.xray_marking_families",
+                            default = "all",
+                            options = {
+                                { value = "all", text = _("All entities") },
+                                { value = "people", text = _("People only") },
+                                { value = "people_places", text = _("People and places") },
+                            },
+                            help_text = _("Which kinds of X-Ray entities get marked on the page. People covers characters and key figures; places adds locations."),
+                            on_change = function(new_value, plugin)
+                                if plugin.syncXrayMarks then
+                                    local UIManager = require("ui/uimanager")
+                                    UIManager:nextTick(function()
+                                        plugin:syncXrayMarks()
+                                    end)
+                                end
+                            end,
+                            separator = true,
+                        },
+                        {
                             id = "xray_versions_kept",
                             type = "spinner",
                             text = _("X-Ray Versions to Keep"),

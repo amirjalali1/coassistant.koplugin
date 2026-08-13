@@ -259,6 +259,60 @@ TestRunner:test("ambiguous and missing names are refused", function()
     TestRunner:ok(not XrayParser.addItemAliases(data, "characters", "Nobody", { "X" }))
 end)
 
+TestRunner:suite("slice 2 — foldExactHandles / matchExactHandle (route index)")
+TestRunner:test("name and alias hit, case-insensitive; substrings do not", function()
+    local data = { characters = { { name = "Stanley Kubrick", aliases = { "The Master" } } } }
+    local set = {}
+    XrayParser.foldExactHandles(data, set)
+    TestRunner:ok(XrayParser.matchExactHandle(set, "stanley kubrick"))
+    TestRunner:ok(XrayParser.matchExactHandle(set, "THE MASTER"))
+    TestRunner:ok(not XrayParser.matchExactHandle(set, "Kubrick"))
+    TestRunner:ok(not XrayParser.matchExactHandle(set, "of"))
+    TestRunner:ok(not XrayParser.matchExactHandle(set, ""))
+end)
+TestRunner:test("singleton categories are skipped", function()
+    local data = { current_state = { { name = "Reading chapter 3" } } }
+    local set = {}
+    XrayParser.foldExactHandles(data, set)
+    TestRunner:ok(not XrayParser.matchExactHandle(set, "Reading chapter 3"))
+end)
+TestRunner:test("Arabic: article-stripped QUERY matches unstripped handle (searchAll parity)", function()
+    local data = { characters = { { name = "نجمة" } } }
+    local set = {}
+    XrayParser.foldExactHandles(data, set)
+    -- query "النجمة" strips to "نجمة" (query side only, like searchAll exact)
+    TestRunner:ok(XrayParser.matchExactHandle(set, "النجمة"))
+    -- handle side is never stripped: handle "النار" does not match query "نار"
+    local set2 = {}
+    XrayParser.foldExactHandles({ characters = { { name = "النار" } } }, set2)
+    TestRunner:ok(not XrayParser.matchExactHandle(set2, "نار"))
+end)
+
+TestRunner:suite("slice 2 — collectSearchTerms / buildMarkEntities")
+TestRunner:test("terms: parenthetical strip, dedupe, substring-minimal set", function()
+    local terms = XrayParser.collectSearchTerms({
+        name = "Jean Valjean", aliases = { "Valjean", "Theosis (Deification)" } })
+    local texts = {}
+    for _i, t in ipairs(terms) do texts[t.text] = true end
+    TestRunner:ok(texts["Valjean"])
+    TestRunner:ok(not texts["Jean Valjean"]) -- contains "Valjean", dropped
+    TestRunner:ok(texts["Theosis"])
+end)
+TestRunner:test("mark entities: families mapped, excluded categories out, norms present", function()
+    local data = {
+        characters = { { name = "Mira", description = "d" } },
+        locations = { { name = "Oslo" } },
+        timeline = { { event = "Mira arrives in Oslo" } },
+    }
+    local ents = XrayParser.buildMarkEntities(data)
+    local by_name = {}
+    for _i, e in ipairs(ents) do by_name[e.name] = e end
+    TestRunner:ok(by_name["Mira"] and by_name["Mira"].family == "people")
+    TestRunner:ok(by_name["Oslo"] and by_name["Oslo"].family == "places")
+    TestRunner:ok(not by_name["Mira arrives in Oslo"]) -- timeline excluded
+    TestRunner:eq(by_name["Mira"].terms[1].norm, "mira")
+end)
+
 print("")
 print(string.rep("-", 50))
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))

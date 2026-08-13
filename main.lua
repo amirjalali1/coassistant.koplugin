@@ -366,6 +366,8 @@ function AskGPT:init()
     self:registerToMainMenu()
     -- Sync highlight bypass (needs ui.highlight to be available)
     self:syncHighlightBypass()
+    -- Ambient X-Ray marks (slice 2): install the paint module + first scan
+    self:syncXrayMarks()
     -- Backup: ensure new-API dict buttons are registered (idempotent;
     -- covers cases where ui.dictionary wasn't ready at init time).
     self:installDictButtonRegistration()
@@ -8587,6 +8589,71 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         }})
       end
     end
+    -- Slice 2 quick settings (plan ruling 5: the X-Ray popup doubles as
+    -- X-Ray quick settings): ambient marking + the selection intercept.
+    -- Rows edit the GLOBAL toggles; the book-layer-with-hold shape is the
+    -- recorded follow-up.
+    do
+      local mk_rows = {}
+      local feats = self.settings:readSetting("features") or {}
+      local function reopen()
+        self_ref:_showXrayScopePopup(action, action_id, on_update, cached_entry, opts)
+      end
+      table.insert(mk_rows, {{
+        text = T(_("Passive marking: %1"),
+          feats.xray_marking == true and _("On") or _("Off")),
+        callback = function()
+          UIManager:close(dialog)
+          feats.xray_marking = feats.xray_marking ~= true
+          self_ref.settings:flush()
+          self_ref:syncXrayMarks()
+          reopen()
+        end,
+      }})
+      if feats.xray_marking == true then
+        local dens = feats.xray_marking_density or "first"
+        table.insert(mk_rows, {{
+          text = T(_("Density: %1"),
+            dens == "all" and _("All occurrences") or _("First per page")),
+          callback = function()
+            UIManager:close(dialog)
+            feats.xray_marking_density = dens == "all" and "first" or "all"
+            self_ref.settings:flush()
+            self_ref:syncXrayMarks()
+            reopen()
+          end,
+        }})
+        local fam = feats.xray_marking_families or "all"
+        local fam_labels = {
+          all = _("All entities"),
+          people = _("People only"),
+          people_places = _("People & places"),
+        }
+        local fam_next = { all = "people", people = "people_places", people_places = "all" }
+        table.insert(mk_rows, {{
+          text = T(_("Mark: %1"), fam_labels[fam] or fam),
+          callback = function()
+            UIManager:close(dialog)
+            feats.xray_marking_families = fam_next[fam] or "all"
+            self_ref.settings:flush()
+            self_ref:syncXrayMarks()
+            reopen()
+          end,
+        }})
+      end
+      table.insert(mk_rows, {{
+        text = T(_("Open entries on matching taps: %1"),
+          feats.xray_selection_intercept ~= false and _("On") or _("Off")),
+        callback = function()
+          UIManager:close(dialog)
+          feats.xray_selection_intercept = feats.xray_selection_intercept == false
+          self_ref.settings:flush()
+          self_ref:syncDictionaryBypass()
+          reopen()
+        end,
+      }})
+      addGroupRow(mk_rows, _("Marking & lookup…"), _("Marking & lookup"))
+    end
     table.insert(buttons, {{
       text = _("Cancel"),
       callback = function()
@@ -11739,6 +11806,10 @@ end
 function AskGPT:onPageUpdate(pageno)
   self:_quizOnPageUpdate(pageno)
   self:_xrayAutoOnPageUpdate(pageno)
+  -- Ambient X-Ray marks (slice 2): scanning INSIDE the dispatch lets the
+  -- marks ride the page's own repaint — no extra e-ink refresh. Nil state
+  -- short-circuits when marking is off.
+  require("koassistant_xray_marks").onPageTurn(self, pageno)
 end
 
 function AskGPT:_quizOnPageUpdate(pageno)
@@ -13360,6 +13431,7 @@ end
 --- Kill anything pending or in flight when the book closes. (The completion guard
 --- makes a straggler write impossible regardless; this just stops wasted work.)
 function AskGPT:onCloseDocument()
+  require("koassistant_xray_marks").teardown(self)
   if self._xray_auto_pending then
     UIManager:unschedule(self._xray_auto_pending)
     self._xray_auto_pending = nil
@@ -16645,34 +16717,30 @@ function AskGPT:syncDictionaryBypass()
         local ActionCache = require("koassistant_action_cache")
         local i_file = dict_self._koassistant_lookup_book
           or (self_ref.ui and self_ref.ui.document and self_ref.ui.document.file)
-        if i_file and ActionCache.hasAnyXray(i_file) then
-          local i_doc = self_ref.ui and self_ref.ui.document
-          if i_doc and i_doc.file ~= i_file then i_doc = nil end
-          local i_hits = ActionCache.searchAllXrays(i_file, word,
-            i_doc, { skip_description = true, exact = true })
-          if #i_hits > 0 then
-            local xaction = self_ref.action_service:getAction("highlight", "xray_lookup")
-            if xaction then
-              logger.info("KOAssistant: X-Ray intercept - word matches entity, opening X-Ray")
-              local lookup_book = dict_self._koassistant_lookup_book
-              dict_self._koassistant_non_reader_lookup = nil
-              dict_self._koassistant_lookup_book = nil
-              -- No dict window will ever exist to clear the reader's selection
-              -- on close (stock clears it from DictQuickLookup; the bypass
-              -- path below clears it too) — without this the word stays stuck
-              -- selected and the next tap re-fires the lookup (device
-              -- 2026-08-13)
-              if highlight and highlight.clear then
-                highlight:clear()
-              end
-              if dict_close_callback then
-                dict_close_callback()
-              end
-              self_ref:updateConfigFromSettings()
-              Dialogs.executeDirectAction(self_ref.ui, xaction, word, configuration, self_ref,
-                lookup_book and { document_path = lookup_book } or nil)
-              return
+        -- Memoized route index (slice 2): a stat per tap instead of the old
+        -- full cache parse per tap — the #63 one-parse-per-tap cost is gone
+        if i_file and ActionCache.matchAnyXrayExact(i_file, word) then
+          local xaction = self_ref.action_service:getAction("highlight", "xray_lookup")
+          if xaction then
+            logger.info("KOAssistant: X-Ray intercept - word matches entity, opening X-Ray")
+            local lookup_book = dict_self._koassistant_lookup_book
+            dict_self._koassistant_non_reader_lookup = nil
+            dict_self._koassistant_lookup_book = nil
+            -- No dict window will ever exist to clear the reader's selection
+            -- on close (stock clears it from DictQuickLookup; the bypass
+            -- path below clears it too) — without this the word stays stuck
+            -- selected and the next tap re-fires the lookup (device
+            -- 2026-08-13)
+            if highlight and highlight.clear then
+              highlight:clear()
             end
+            if dict_close_callback then
+              dict_close_callback()
+            end
+            self_ref:updateConfigFromSettings()
+            Dialogs.executeDirectAction(self_ref.ui, xaction, word, configuration, self_ref,
+              lookup_book and { document_path = lookup_book } or nil)
+            return
           end
         end
       end
@@ -17016,17 +17084,15 @@ function AskGPT:syncHighlightBypass()
       if #sel > 2 and #sel <= 120 then
         local ActionCache = require("koassistant_action_cache")
         local i_file = self_ref.ui and self_ref.ui.document and self_ref.ui.document.file
-        if i_file and ActionCache.hasAnyXray(i_file) then
-          local i_hits = ActionCache.searchAllXrays(i_file, sel,
-            self_ref.ui.document, { skip_description = true, exact = true })
-          if #i_hits > 0 then
-            local xaction = self_ref.action_service:getAction("highlight", "xray_lookup")
-            if xaction then
-              logger.info("KOAssistant: X-Ray intercept - selection matches entity, opening X-Ray")
-              self_ref:executeHighlightBypassAction(xaction, sel, hl_self)
-              hl_self:clear()
-              return true
-            end
+        -- Memoized route index (slice 2): a stat per release instead of the
+        -- old full cache parse
+        if i_file and ActionCache.matchAnyXrayExact(i_file, sel) then
+          local xaction = self_ref.action_service:getAction("highlight", "xray_lookup")
+          if xaction then
+            logger.info("KOAssistant: X-Ray intercept - selection matches entity, opening X-Ray")
+            self_ref:executeHighlightBypassAction(xaction, sel, hl_self)
+            hl_self:clear()
+            return true
           end
         end
       end
@@ -17069,6 +17135,12 @@ function AskGPT:syncHighlightBypass()
   end
 
   logger.info("KOAssistant: Highlight bypass synced")
+end
+
+--- Ambient X-Ray marks (slice 2): install/refresh/remove the paint layer per
+--- current settings + book. Safe to call any time; no-ops without a reader.
+function AskGPT:syncXrayMarks()
+  require("koassistant_xray_marks").sync(self)
 end
 
 -- Scrub cross-context state from a features table before entering a new context.
