@@ -208,10 +208,15 @@ function XrayRows.versionRows(ctx)
 
     -- Free exit from ahead-mode. 50(f): hidden under the FULL posture (unless
     -- the promotion hold pins the book) — promotion would re-install the
-    -- newest rung on the next turn. Item 40: gone once complete.
-    if cur and (posture ~= "full" or hold) and not entry.full_document
+    -- newest rung on the next turn. COMPLETE installs offer it too since the
+    -- 2026-08-13 device round (the old "Item 40: gone once complete" rule
+    -- left no one-tap way back to position-following with a complete version
+    -- pinned under spoiler protection; the switch sets the promotion hold,
+    -- so it sticks — deliberate installs still never auto-revert).
+    local cached_eff = entry.full_document and 1.0 or cached_dec
+    if cur and (posture ~= "full" or hold)
         and entry.source_mode ~= "ai_knowledge"
-        and cached_dec < 0.995 and cached_dec > cur.decimal + 0.01 then
+        and cached_eff > cur.decimal + 0.01 then
         local back_rung = XrayAuto.pickPromotableRung(ladder_rungs, 0, cur.decimal)
         if back_rung then
             out.switch_back = row(T(_("Switch back to your position (%1%), instant"),

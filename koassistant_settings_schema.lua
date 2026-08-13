@@ -995,8 +995,8 @@ local SettingsSchema = {
                             type = "toggle",
                             text = _("X-Ray Entry for Matching Selections"),
                             path = "features.xray_selection_intercept",
-                            default = false,
-                            help_text = _("When a tapped word or selected text exactly matches an X-Ray entity's name or alias, open that X-Ray entry directly — skipping ahead of the dictionary and the highlight menu (including any bypass actions you have set there). Anything that doesn't match falls through to your normal dictionary/highlight behavior. Needs an X-Ray for the book."),
+                            default = true,
+                            help_text = _("When a tapped word or selected text exactly matches an X-Ray entity's name or alias, open that X-Ray entry directly — skipping ahead of the dictionary and the highlight menu (including any bypass actions you have set there). Anything that doesn't match falls through to your normal dictionary/highlight behavior. Only does anything for books that have an X-Ray. A very long press at the end of a selection always shows the normal highlight menu."),
                             on_change = function(new_value, plugin)
                                 -- The dictionary wrapper is installed/removed at sync
                                 -- time (the highlight side reads per call)

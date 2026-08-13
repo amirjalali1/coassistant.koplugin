@@ -11799,6 +11799,11 @@ function AskGPT:_quizOnPageUpdate(pageno)
   local features = self.settings:readSetting("features") or {}
   if features.enable_chapter_quiz ~= true then return end
   if not self.ui or not self.ui.document or not self.ui.toc then return end
+  -- A live search session's next/prev jumps are navigation, not reading —
+  -- crossing a chapter boundary there must not offer a quiz (device round
+  -- 2026-08-13: walking X-Ray appearance hits triggered it)
+  local search_dialog = self.ui.search and self.ui.search.search_dialog
+  if search_dialog and UIManager:isWidgetShown(search_dialog) then return end
 
   -- Per-book quiz overrides, read from the live in-memory doc_settings (a hash lookup, fresh
   -- every page turn). `enabled` is suppress-only (the global gate above already returned for a
@@ -12668,7 +12673,12 @@ function AskGPT:_switchBackToPositionRung(opts)
   local file = (self.ui and self.ui.document and self.ui.document.file) or (opts and opts.file)
   if not file or not self.ui or not self.ui.document or self.ui.document.file ~= file then return end
   local live = ActionCache.getXrayCache(file)
-  if live and live.result and (live.full_document or live.source_mode == "ai_knowledge") then
+  -- ai_knowledge lineages never mix with rungs; a COMPLETE live is allowed
+  -- since the 2026-08-13 device round — switching back to position-following
+  -- from a pinned complete install is exactly this row's job (the outgoing
+  -- complete stays recoverable: as a 1.0 rung it lives in the ladder, as a
+  -- foreground build it ring-archives)
+  if live and live.result and live.source_mode == "ai_knowledge" then
     return
   end
   local ContextExtractor = require("koassistant_context_extractor")
@@ -16661,12 +16671,13 @@ end
 function AskGPT:syncDictionaryBypass()
   local features = self.settings:readSetting("features") or {}
   local bypass_enabled = features.dictionary_bypass_enabled
-  -- X-Ray intercept (#63 round 9): opt-in layer AHEAD of the whole
-  -- dictionary flow — an exact entity word opens its X-Ray entry, everything
-  -- else falls through to the configured behavior (bypass action or native
-  -- dictionary). Independent of the bypass setting, so the wrapper installs
-  -- for either.
-  local intercept_on = features.xray_selection_intercept == true
+  -- X-Ray intercept (#63 rounds 9-10, OPT-OUT since round 10 — it only
+  -- does anything for books with an X-Ray, where you almost always want it):
+  -- a layer AHEAD of the whole dictionary flow — an exact entity word opens
+  -- its X-Ray entry, everything else falls through to the configured
+  -- behavior (bypass action or native dictionary). Independent of the
+  -- bypass setting, so the wrapper installs for either.
+  local intercept_on = features.xray_selection_intercept ~= false
 
   -- Check if we have access to the reader's dictionary module
   if not self.ui or not self.ui.dictionary then
@@ -16756,19 +16767,20 @@ function AskGPT:syncDictionaryBypass()
           end
           return
         end
-        -- Word-level conditional (#63): with the X-Ray lookup as the bypass action,
-        -- a word no X-Ray knows falls through to the normal dictionary instead of a
-        -- dead-end "no results" message. EXACT identity only (device round
-        -- 2026-08-13): the gate asks "is this word an entity?" — substring
-        -- matching had "of"/"and" hitting inside names, and a bypass that
-        -- steals every word from the dictionary is broken. Across main +
-        -- section X-Rays; costs one cache parse per tapped word.
+        -- Word-level conditional (#63 round 10): with the X-Ray lookup as the
+        -- bypass action, a word NO X-Ray matches falls through to the normal
+        -- dictionary instead of a dead-end "no results" message. SUBSTRING
+        -- matching again (round 8's exact-only gate is superseded): direct
+        -- entity hits are the INTERCEPT's job now, so this config means the
+        -- deliberate "search the X-Ray for every word" — fuzzy hits and the
+        -- results list are its point. Across main + section X-Rays; costs
+        -- one cache parse per tapped word.
         if bypass_action.local_handler == "xray_lookup" then
           -- Live doc informs page context only when it IS the target book
           local doc = self_ref.ui and self_ref.ui.document
           if doc and doc.file ~= file then doc = nil end
           local hits = ActionCache.searchAllXrays(file, word,
-            doc, { skip_description = true, exact = true })
+            doc, { skip_description = true })
           if #hits == 0 then
             logger.info("KOAssistant: Dictionary bypass - no X-Ray entry for word, falling through to dictionary")
             if dictionary._koassistant_original_onLookupWord then
@@ -16977,15 +16989,39 @@ function AskGPT:syncHighlightBypass()
     highlight._koassistant_original_onShowHighlightMenu = highlight.onShowHighlightMenu
   end
 
+  -- Very-long-press escape (round 10): KOReader's own convention — holding
+  -- LONGER at the end of a selection bypasses the default highlight action
+  -- and shows the menu (readerhighlight.lua onHoldRelease, long_hold_reached).
+  -- That flag is consumed into a local BEFORE onShowHighlightMenu runs, so
+  -- stash it per release; the menu wrapper reads-and-clears the stash and
+  -- steps aside (bypass AND intercept), handing back the native menu. A
+  -- release that never reaches the menu overwrites the stash on the next
+  -- one — self-healing, no staleness.
+  if not highlight._koassistant_original_onHoldRelease then
+    highlight._koassistant_original_onHoldRelease = highlight.onHoldRelease
+    highlight.onHoldRelease = function(hl_self, ...)
+      hl_self._koassistant_long_final = hl_self.long_hold_reached or nil
+      return highlight._koassistant_original_onHoldRelease(hl_self, ...)
+    end
+  end
+
   -- Replace with our interceptor
   highlight.onShowHighlightMenu = function(hl_self, ...)
     local features = self_ref.settings:readSetting("features", {})
 
-    -- X-Ray intercept (#63 round 9): a selection that IS an entity's
-    -- name/alias opens its X-Ray entry ahead of any highlight flow (bypass
-    -- action or menu); anything else falls through untouched. Opt-in,
-    -- word-count-independent (maintainer ruling).
-    if features.xray_selection_intercept == true
+    -- Very-long-press escape: the user asked for the menu — skip the
+    -- intercept and the bypass both
+    local was_long_final = hl_self._koassistant_long_final
+    hl_self._koassistant_long_final = nil
+    if was_long_final then
+      return highlight._koassistant_original_onShowHighlightMenu(hl_self, ...)
+    end
+
+    -- X-Ray intercept (#63 rounds 9-10, opt-out): a selection that IS an
+    -- entity's name/alias opens its X-Ray entry ahead of any highlight flow
+    -- (bypass action or menu); anything else falls through untouched.
+    -- Word-count-independent (maintainer ruling).
+    if features.xray_selection_intercept ~= false
         and hl_self.selected_text and hl_self.selected_text.text then
       -- Collapse whitespace runs (selections can span lines), trim edge
       -- ASCII punctuation; entity handles are short — skip the parse cost
