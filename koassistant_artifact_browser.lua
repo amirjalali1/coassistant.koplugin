@@ -619,7 +619,10 @@ function ArtifactBrowser:showBrowserMenuOptions(opts)
 
     dialog = ButtonDialog:new{
         buttons = {
-            -- " →" marks rows that LEAVE this browser (the navClose rows)
+            -- Uniform browser carousel (maintainer 2026-08-13): the SAME three
+            -- rows in the same order in every browser hamburger — " →" leaves
+            -- this browser (the navClose rows), the grayed "● " row is the
+            -- current one, kept visible so the carousel is memorizable.
             {{ text = _("Chat History") .. " →", align = "left", callback = function()
                 local mc = navClose()
                 UIManager:nextTick(function()
@@ -636,6 +639,8 @@ function ArtifactBrowser:showBrowserMenuOptions(opts)
                     if AskGPT then AskGPT:showNotebookBrowser() end
                 end)
             end }},
+            {{ text = "● " .. _("Artifacts"), align = "left", enabled = false,
+               callback = function() end }},
             -- Group break (device 2026-08-13: hamburger pattern = carousel/nav
             -- rows first, current-view rows below a separator). An EMPTY row is
             -- ButtonTable's cheapest double-rule: it contributes only its

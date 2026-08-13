@@ -98,10 +98,13 @@ function ChatHistoryDialog:showDocumentMenuOptions(ui, chat_history_manager, con
         return menu_to_close
     end
 
-    -- " →" marks rows that LEAVE this browser (the navClose rows); the empty {}
-    -- row is ButtonTable's double-rule group break between the nav carousel and
-    -- current-view rows (same treatment as the artifact-browser hamburger)
+    -- Uniform browser carousel (maintainer 2026-08-13): same three rows in the
+    -- same order in every browser hamburger, the grayed "● " row = current;
+    -- second group = chat history's own views; the empty {} rows are
+    -- ButtonTable's double-rule group breaks; " →" = leaves this view
     local buttons = {
+        {{ text = "● " .. _("Chat History"), align = "left", enabled = false,
+           callback = function() end }},
         {{ text = _("Notebooks") .. " →", align = "left", callback = function()
             local mc = navClose()
             safeClose(mc)
@@ -112,6 +115,7 @@ function ChatHistoryDialog:showDocumentMenuOptions(ui, chat_history_manager, con
             safeClose(mc)
             if ui.koassistant then ui.koassistant:showArtifactBrowser() end
         end }},
+        {},
         {{ text = _("View by Domain") .. " →", align = "left", callback = function()
             local mc = navClose()
             safeClose(mc)
@@ -170,8 +174,14 @@ function ChatHistoryDialog:showDomainBrowserMenuOptions(ui, chat_history_manager
         return menu_to_close
     end
 
-    -- All rows navigate away — arrows throughout, no group break needed
+    -- Uniform browser carousel + chat-views group; current view = grayed "● "
+    -- (Chat History → returns to the main list)
     local buttons = {
+        {{ text = _("Chat History") .. " →", align = "left", callback = function()
+            local mc = navClose()
+            safeClose(mc)
+            self_ref:showChatHistoryBrowser(ui, nil, chat_history_manager, config)
+        end }},
         {{ text = _("Notebooks") .. " →", align = "left", callback = function()
             local mc = navClose()
             safeClose(mc)
@@ -182,15 +192,13 @@ function ChatHistoryDialog:showDomainBrowserMenuOptions(ui, chat_history_manager
             safeClose(mc)
             if ui.koassistant then ui.koassistant:showArtifactBrowser() end
         end }},
+        {},
+        {{ text = "● " .. _("View by Domain"), align = "left", enabled = false,
+           callback = function() end }},
         {{ text = _("View by Tag") .. " →", align = "left", callback = function()
             local mc = navClose()
             safeClose(mc)
             self_ref:showChatsByTagBrowser(ui, chat_history_manager, config)
-        end }},
-        {{ text = _("Chat History") .. " →", align = "left", callback = function()
-            local mc = navClose()
-            safeClose(mc)
-            self_ref:showChatHistoryBrowser(ui, nil, chat_history_manager, config)
         end }},
     }
 
@@ -220,8 +228,14 @@ function ChatHistoryDialog:showTagBrowserMenuOptions(ui, chat_history_manager, c
         return menu_to_close
     end
 
-    -- All rows navigate away — arrows throughout, no group break needed
+    -- Uniform browser carousel + chat-views group; current view = grayed "● "
+    -- (Chat History → returns to the main list)
     local buttons = {
+        {{ text = _("Chat History") .. " →", align = "left", callback = function()
+            local mc = navClose()
+            safeClose(mc)
+            self_ref:showChatHistoryBrowser(ui, nil, chat_history_manager, config)
+        end }},
         {{ text = _("Notebooks") .. " →", align = "left", callback = function()
             local mc = navClose()
             safeClose(mc)
@@ -232,16 +246,14 @@ function ChatHistoryDialog:showTagBrowserMenuOptions(ui, chat_history_manager, c
             safeClose(mc)
             if ui.koassistant then ui.koassistant:showArtifactBrowser() end
         end }},
+        {},
         {{ text = _("View by Domain") .. " →", align = "left", callback = function()
             local mc = navClose()
             safeClose(mc)
             self_ref:showChatsByDomainBrowser(ui, chat_history_manager, config)
         end }},
-        {{ text = _("Chat History") .. " →", align = "left", callback = function()
-            local mc = navClose()
-            safeClose(mc)
-            self_ref:showChatHistoryBrowser(ui, nil, chat_history_manager, config)
-        end }},
+        {{ text = "● " .. _("View by Tag"), align = "left", enabled = false,
+           callback = function() end }},
     }
 
     dialog = ButtonDialog:new{

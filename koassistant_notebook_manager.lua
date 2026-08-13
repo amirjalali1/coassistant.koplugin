@@ -269,7 +269,9 @@ function NotebookManager:showBrowserMenuOptions(opts)
 
     dialog = ButtonDialog:new{
         buttons = {
-            -- " →" marks rows that LEAVE this browser (the navClose rows)
+            -- Uniform browser carousel (maintainer 2026-08-13): same three rows
+            -- in the same order everywhere — " →" leaves this browser, the
+            -- grayed "● " row is the current one
             {{ text = _("Chat History") .. " →", align = "left", callback = function()
                 local mc = navClose()
                 UIManager:nextTick(function()
@@ -278,6 +280,8 @@ function NotebookManager:showBrowserMenuOptions(opts)
                     if AskGPT then AskGPT:showChatHistory() end
                 end)
             end }},
+            {{ text = "● " .. _("Notebooks"), align = "left", enabled = false,
+               callback = function() end }},
             {{ text = _("Artifacts") .. " →", align = "left", callback = function()
                 local mc = navClose()
                 UIManager:nextTick(function()

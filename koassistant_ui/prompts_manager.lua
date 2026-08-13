@@ -5562,18 +5562,20 @@ end
 -- from the input dialogs' gear) but its own hamburger calls this too.
 function PromptsManager:_managerNavButtons(from)
     local self_ref = self
-    -- Grouped by surface family (maintainer pick 2026-08-13, option b): the
-    -- action library | reader popups | the panels (Quick Actions IS the QA
-    -- panel's action list, so it sits beside its utilities) | file browser.
-    -- The empty {} rows render as ButtonTable's double-rule group breaks;
-    -- " →" marks navigate-away rows (every carousel row is one). A trailing
-    -- {} separates the carousel from the view-local rows (Reset etc.) that
-    -- every call site appends.
+    -- Grouped by surface family (maintainer picks 2026-08-13): the action
+    -- library | reader popups | the panels (QA Panel Actions IS the QA panel's
+    -- action list, so it sits beside its utilities) | file browser. The empty
+    -- {} rows render as ButtonTable's double-rule group breaks; " →" marks
+    -- navigate-away rows. The CURRENT manager stays visible as a grayed
+    -- "● " row in its place — every hamburger shows the identical carousel,
+    -- so row positions are memorizable and the dot says "you are here". A
+    -- trailing {} separates the carousel from the view-local rows (Reset
+    -- etc.) that every call site appends.
     local destinations = {
         { group = 1, field = "prompts_menu", label = _("Manage Actions"), show = function() self_ref:showPromptsMenu() end },
         { group = 2, field = "highlight_menu_manager", label = _("Highlight Menu"), show = function() self_ref:showHighlightMenuManager() end },
         { group = 2, field = "dictionary_popup_menu", label = _("Dictionary Popup"), show = function() self_ref:showDictionaryPopupManager() end },
-        { group = 3, field = "quick_actions_menu", label = _("Quick Actions"), show = function() self_ref:showQuickActionsManager() end },
+        { group = 3, field = "quick_actions_menu", label = _("QA Panel Actions"), show = function() self_ref:showQuickActionsManager() end },
         { group = 3, field = "qa_utilities_menu", label = _("QA Panel Utilities"), show = function() self_ref:showQaUtilitiesManager() end },
         { group = 3, field = "qs_items_menu", label = _("QS Panel Items"), show = function() self_ref:showQsItemsManager() end },
         { group = 4, field = "file_browser_menu", label = _("File Browser Actions"), show = function() self_ref:showFileBrowserActionsManager() end },
@@ -5581,14 +5583,16 @@ function PromptsManager:_managerNavButtons(from)
     local buttons = {}
     local last_group
     for _idx, dest in ipairs(destinations) do
-        if dest.field ~= from then
-            -- Break only between two VISIBLE rows of different groups — a group
-            -- emptied by the self-skip (e.g. from = prompts_menu) leaves no
-            -- leading or doubled rule
-            if last_group and dest.group ~= last_group then
-                table.insert(buttons, {})
-            end
-            last_group = dest.group
+        if last_group and dest.group ~= last_group then
+            table.insert(buttons, {})
+        end
+        last_group = dest.group
+        if dest.field == from then
+            table.insert(buttons, {
+                { text = "● " .. dest.label, align = "left", enabled = false,
+                  callback = function() end },
+            })
+        else
             table.insert(buttons, self:_makeNavButton(dest.label .. " →", from, dest.show))
         end
     end
@@ -5782,7 +5786,7 @@ function PromptsManager:_refreshQuickActionsMenu(bold_id)
     if not self.quick_actions_menu then return end
     local menu_items, quick_count = self:_buildQuickActionsItems(bold_id)
     self.quick_actions_menu:switchItemTable(
-        T(_("Quick Actions (%1 enabled)"), quick_count), menu_items, -1)
+        T(_("QA Panel Actions (%1 enabled)"), quick_count), menu_items, -1)
 end
 
 function PromptsManager:showQuickActionsManager(on_close_callback)
@@ -5800,7 +5804,7 @@ function PromptsManager:showQuickActionsManager(on_close_callback)
     local menu_items, quick_count = self:_buildQuickActionsItems()
     local self_ref = self
     self.quick_actions_menu = Menu:new{
-        title = T(_("Quick Actions (%1 enabled)"), quick_count),
+        title = T(_("QA Panel Actions (%1 enabled)"), quick_count),
         title_bar_left_icon = "appbar.menu",
         onLeftButtonTap = function()
             local from = "quick_actions_menu"
