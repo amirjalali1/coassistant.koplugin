@@ -3803,6 +3803,11 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     if prompt and prompt.interactive_quiz then
         local quiz = BookSettings.resolveQuiz(per_book_ds, config.features)
         message_data.quiz_instructions = require("koassistant_quiz_prompt").build(quiz)
+        -- Requested count for the honesty toast at parse time (consumed once in
+        -- executeDirectAction's onComplete — same transient channel as
+        -- _chapter_quiz_title). Models routinely under-deliver ("asked 10, got
+        -- 9") and nothing compared the counts anywhere.
+        config.features._quiz_requested_count = quiz.count or 8
     end
 
     -- Add book info for highlight context when:
@@ -10365,6 +10370,14 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
                 local result_text = last_msg and last_msg.content or ""
                 local QuizParser = require("koassistant_quiz_parser")
                 local parsed = QuizParser.parse(result_text)
+                -- Requested-vs-delivered honesty (consume-once transient from the
+                -- quiz-instruction build). Surfaced as a toast, never a retry —
+                -- the shortfall costs nothing but candor.
+                local requested_count = configuration and configuration.features
+                    and configuration.features._quiz_requested_count
+                if requested_count then
+                    configuration.features._quiz_requested_count = nil
+                end
                 if parsed and parsed.questions and #parsed.questions > 0 then
                     local QuizViewer = require("koassistant_quiz_viewer")
                     local quiz_title = book_metadata and book_metadata.title or ""
@@ -10398,6 +10411,14 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
                             end,
                         },
                     })
+                    if requested_count and #parsed.questions ~= requested_count then
+                        local Notification = require("ui/widget/notification")
+                        UIManager:show(Notification:new{
+                            text = T(_("The model generated %1 of %2 requested questions."),
+                                #parsed.questions, requested_count),
+                            timeout = 3,
+                        })
+                    end
                     return
                 end
                 -- Fallback: if JSON parsing failed, show raw text in normal viewer

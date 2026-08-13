@@ -16,7 +16,7 @@ function QuizPrompt.build(quiz)
     quiz = quiz or {}
     local parts = {}
     local count = quiz.count or 8
-    table.insert(parts, "Generate exactly " .. count .. " questions total.")
+    table.insert(parts, "Generate exactly " .. count .. " questions total. The \"questions\" array must contain exactly " .. count .. " items -- count them before finalizing.")
 
     -- Difficulty
     local difficulty = quiz.difficulty or "medium"

@@ -13438,7 +13438,29 @@ function AskGPT:_offerChapterQuiz(chapter_index)
         {
           text = _("Quiz settings…"),
           callback = function()
-            require("koassistant_book_settings").showQuizConfig({ plugin = self_ref, ui = self_ref.ui })
+            -- The ConfirmBox died with this tap, so the settings screen re-offers
+            -- THIS chapter's quiz on close (was a dead end: settings opened, and
+            -- the only path back to the quiz was the NEXT chapter trigger).
+            -- Suppressed when the reader just used the screen to turn chapter
+            -- quizzes off — globally or for this book.
+            require("koassistant_book_settings").showQuizConfig({
+              plugin = self_ref, ui = self_ref.ui,
+              on_close = function()
+                local feats = self_ref.settings:readSetting("features") or {}
+                if feats.enable_chapter_quiz ~= true then return end
+                local bq = self_ref.ui and self_ref.ui.doc_settings
+                    and self_ref.ui.doc_settings:readSetting("koassistant_book_quiz")
+                if bq and bq.enabled == false then return end
+                UIManager:show(ConfirmBox:new{
+                  text = T(_("End of: %1\n\nStart the quiz now?"), display_title),
+                  ok_text = _("Quiz"),
+                  cancel_text = _("Skip"),
+                  ok_callback = function()
+                    self_ref:_runChapterQuiz(chapter_index)
+                  end,
+                })
+              end,
+            })
           end,
         },
       }},

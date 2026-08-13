@@ -471,37 +471,48 @@ function QuizViewer:_showCompletion()
     self:_refresh()
 end
 
+--- Score the quiz over ALL questions: a skipped question counts against the
+--- score (device 2026-08-13: answered-only scoring read "5/5 (100%)" on a run
+--- with 4 skips). Shared by the completion screen and the text/export builder,
+--- which had drifted into duplicating the loop.
+--- @return number correct, number total, number answered, number pct
+function QuizViewer:_score()
+    local questions = self.quiz_data.questions or {}
+    local total = #questions
+    local correct, answered = 0, 0
+    for idx in ipairs(questions) do
+        if self.correct[idx] ~= nil then
+            answered = answered + 1
+            if self.correct[idx] then correct = correct + 1 end
+        end
+    end
+    local pct = total > 0 and math.floor(correct / total * 100 + 0.5) or 0
+    return correct, total, answered, pct
+end
+
 --- Build the completion screen UI
 function QuizViewer:_buildCompletionUI()
     local questions = self.quiz_data.questions or {}
     local total = #questions
 
-    -- Calculate scores per type
+    -- Per-type breakdown (the headline score comes from the shared scorer,
+    -- whose denominators these lines already agreed with — correct / all-of-type)
     local scores = { multiple_choice = {0, 0}, short_answer = {0, 0}, essay = {0, 0} }
-    local total_correct = 0
-    local total_answered = 0
-
     for idx, q in ipairs(questions) do
         if scores[q.type] then
             scores[q.type][2] = scores[q.type][2] + 1
-        end
-        if self.correct[idx] ~= nil then
-            total_answered = total_answered + 1
             if self.correct[idx] then
-                total_correct = total_correct + 1
-                if scores[q.type] then
-                    scores[q.type][1] = scores[q.type][1] + 1
-                end
+                scores[q.type][1] = scores[q.type][1] + 1
             end
         end
     end
 
-    local pct = total_answered > 0 and math.floor(total_correct / total_answered * 100 + 0.5) or 0
+    local total_correct, _total, total_answered, pct = self:_score()
 
     -- Build summary HTML
     local parts = {}
     table.insert(parts, "<h3>" .. _("Quiz Complete") .. "</h3>")
-    table.insert(parts, "<p><b>" .. T(_("Score: %1/%2 (%3)"), total_correct, total_answered, pct .. "%") .. "</b></p>")
+    table.insert(parts, "<p><b>" .. T(_("Score: %1/%2 (%3)"), total_correct, total, pct .. "%") .. "</b></p>")
 
     local type_labels = { multiple_choice = _("Multiple Choice"), short_answer = _("Short Answer"), essay = _("Discussion") }
     table.insert(parts, "<ul>")
@@ -713,16 +724,11 @@ function QuizViewer:_buildResultText()
     table.insert(lines, T(_("**Date:** %1"), os.date("%Y-%m-%d %H:%M")))
     table.insert(lines, "")
 
-    local total_correct = 0
-    local total_answered = 0
-    for idx in ipairs(questions) do
-        if self.correct[idx] ~= nil then
-            total_answered = total_answered + 1
-            if self.correct[idx] then total_correct = total_correct + 1 end
-        end
+    local total_correct, total, total_answered, pct = self:_score()
+    table.insert(lines, T(_("**Score: %1/%2 (%3)**"), total_correct, total, pct .. "%"))
+    if total - total_answered > 0 then
+        table.insert(lines, T(_("%1 question(s) not answered."), total - total_answered))
     end
-    local pct = total_answered > 0 and math.floor(total_correct / total_answered * 100 + 0.5) or 0
-    table.insert(lines, T(_("**Score: %1/%2 (%3)**"), total_correct, total_answered, pct .. "%"))
     table.insert(lines, "")
 
     for idx, q in ipairs(questions) do
