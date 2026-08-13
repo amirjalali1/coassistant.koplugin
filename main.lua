@@ -389,7 +389,6 @@ function AskGPT:init()
               name = "X-Ray",
               key = "_xray_cache",
               data = cached,
-              skip_stale_popup = true,
             })
           end
         end)
@@ -6011,8 +6010,7 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
                 }
               end
               self_ref:showCacheViewer({ name = _("X-Ray"), key = "_xray_cache",
-                data = entry, book_title = title, file = captured,
-                skip_stale_popup = true })
+                data = entry, book_title = title, file = captured })
             end
           else
             title = title .. " " .. _("(not in its X-Ray)")
@@ -6324,71 +6322,6 @@ function AskGPT:showCacheViewer(cache_info)
         end
         XrayBrowser:show(parsed, browser_metadata, browser_ui, on_delete)
 
-        -- Staleness check (reading progress advance) — only when viewing same book
-        local ce_ok, ContextExtractor
-        if browser_ui and browser_ui.document then
-            ce_ok, ContextExtractor = pcall(require, "koassistant_context_extractor")
-        end
-
-        -- Progress staleness popup (not suppressed by caller,
-        -- e.g. showCacheActionPopup already showed update option)
-        if not cache_info.skip_stale_popup
-                and not cache_info.data.full_document
-                and ce_ok and ContextExtractor
-                and self.ui and self.ui.document
-                and cache_info.data.progress_decimal then
-            local extractor = ContextExtractor:new(self.ui)
-            local current = extractor:getReadingProgress()
-            local cached_dec = cache_info.data.progress_decimal
-            -- Check session-based dismiss (keyed by book + cached progress)
-            local book_file = self.ui.document.file
-            local dismissed = self._xray_stale_dismissed
-                and self._xray_stale_dismissed[book_file] == cached_dec
-            if not dismissed and current.decimal - cached_dec > 0.08 then
-                local cache_pct = math.floor(cached_dec * 100 + 0.5)
-                local rel_time = formatRelativeTime(cache_info.data.timestamp)
-                local info_text = T(_("X-Ray covers to %1%"), cache_pct)
-                if rel_time ~= "" then
-                    info_text = info_text .. " (" .. rel_time .. ")"
-                end
-                info_text = info_text .. "\n" .. T(_("You're now at %1%."), current.percent)
-
-                local self_ref = self
-                local stale_dialog
-                stale_dialog = ButtonDialog:new{
-                    title = info_text,
-                    buttons = {
-                        {{
-                            text = T(_("Update X-Ray (to %1)"), current.formatted),
-                            callback = function()
-                                UIManager:close(stale_dialog)
-                                if XrayBrowser.menu then
-                                    UIManager:close(XrayBrowser.menu)
-                                end
-                                local action = self_ref.action_service:getAction("book", "xray")
-                                if action then
-                                    if self_ref:_checkRequirements(action) then return end
-                                    self_ref:_executeBookLevelActionDirect(action, "xray")
-                                end
-                            end,
-                        }},
-                        {{
-                            text = _("Don't remind me this session"),
-                            callback = function()
-                                UIManager:close(stale_dialog)
-                                -- Suppress for this session until X-Ray is updated
-                                if not self_ref._xray_stale_dismissed then
-                                    self_ref._xray_stale_dismissed = {}
-                                end
-                                self_ref._xray_stale_dismissed[book_file] = cached_dec
-                            end,
-                        }},
-                    },
-                }
-                UIManager:show(stale_dialog)
-            end
-        end
-
         return
       end
     end
@@ -6640,7 +6573,6 @@ function AskGPT:showCacheActionPopup(action, action_id, on_update, opts)
             callback = function()
               UIManager:close(no_cache_dialog)
               self_ref:viewCachedAction(action, action_id, captured_sec.data, {
-                skip_stale_popup = true,
                 file = file,
                 section_key = captured_sec.key,
                 section_label = captured_sec.label,
@@ -6750,7 +6682,6 @@ function AskGPT:showCacheActionPopup(action, action_id, on_update, opts)
     callback = function()
       UIManager:close(dialog)
       self_ref:viewCachedAction(action, action_id, cached, {
-        skip_stale_popup = true,
         file = file,
         book_title = opts and opts.book_title,
         book_author = opts and opts.book_author,
@@ -6780,7 +6711,6 @@ function AskGPT:showCacheActionPopup(action, action_id, on_update, opts)
         callback = function()
           UIManager:close(dialog)
           self_ref:viewCachedAction(action, action_id, captured_sec.data, {
-            skip_stale_popup = true,
             section_key = captured_sec.key,
             section_label = captured_sec.label,
           })
@@ -6931,7 +6861,7 @@ function AskGPT:_showAnalyzeNotesScopePopup(action, action_id, on_update, cached
       text = T(_("View %1"), action_name .. view_detail),
       callback = function()
         UIManager:close(dialog)
-        self_ref:viewCachedAction(action, action_id, cached_entry, { skip_stale_popup = true })
+        self_ref:viewCachedAction(action, action_id, cached_entry)
       end,
     }})
 
@@ -8054,7 +7984,6 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
             callback = function()
               UIManager:close(dialog)
               self_ref:viewCachedAction(action, action_id, captured_sec.data, {
-                skip_stale_popup = true,
                 section_key = captured_sec.key,
                 section_label = captured_sec.label,
               })
@@ -8240,18 +8169,25 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       -- §5 (51c): one-line posture hint, tap-through to the spoiler picker —
       -- names why checkpoints will follow the position (post-flip the default)
       if self:_xrayPosture() == "track" then
-        -- A deliberately installed COMPLETE version is pinned (item 40 —
-        -- never auto-reverted), so don't claim position-following while one
-        -- is installed (device round 2026-08-13: the hint said "following"
-        -- while the X-Ray stayed at 100%)
-        -- "Complete" includes a promoted 1.0 ladder rung: progress-complete
-        -- but no full_document stamp ("Switch to complete version" installs
-        -- one — device 2026-08-13, the hint kept claiming position-following)
-        local installed_complete = cached_entry and (cached_entry.full_document
-          or (tonumber(cached_entry.progress_decimal) or 0) >= 0.995)
-        local posture_hint = installed_complete
-          and _("Spoiler protection is on — the installed X-Ray covers the whole book")
-          or _("Spoiler protection is on — checkpoints follow your position")
+        -- Round 12 wording: never claim "spoiler protection is on" beside an
+        -- install that ignores it — a complete or ahead install is pinned
+        -- (item 40, never auto-reverted) and its content is not
+        -- position-limited. Complete includes a promoted 1.0 ladder rung
+        -- (progress-complete, no full_document stamp); the ahead check
+        -- follows the versionRows open-book + margin discipline.
+        local inst_dec = (cached_entry and cached_entry.result)
+          and tonumber(cached_entry.progress_decimal) or 0
+        local posture_hint
+        if cached_entry and cached_entry.result
+            and (cached_entry.full_document or inst_dec >= 0.995) then
+          posture_hint = _("The installed X-Ray covers the whole book — spoiler protection does not limit it")
+        elseif current_progress and inst_dec > (current_progress.decimal or 0) + 0.01
+            and self.ui and self.ui.document and self.ui.document.file == sx_file then
+          posture_hint = T(_("The installed X-Ray reaches %1%, ahead of your reading position"),
+            math.floor(inst_dec * 100 + 0.5))
+        else
+          posture_hint = _("Spoiler protection is on — checkpoints follow your position")
+        end
         table.insert(buttons, {{
           text = posture_hint,
           callback = function()
@@ -8323,7 +8259,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       text = T(_("View %1"), action_name .. view_detail),
       callback = function()
         UIManager:close(dialog)
-        self_ref:viewCachedAction(action, action_id, cached_entry, { skip_stale_popup = true })
+        self_ref:viewCachedAction(action, action_id, cached_entry)
       end,
     }})
     -- Re-reader shortcut: when the live X-Ray is ahead of the reading position,
@@ -8352,7 +8288,6 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
               file = sx_file,
               book_title = opts and opts.book_title,
               book_author = opts and opts.book_author,
-              skip_stale_popup = true,
               checkpoint = true,
             })
           end,
@@ -8378,7 +8313,6 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           callback = function()
             UIManager:close(dialog)
             self_ref:viewCachedAction(action, action_id, captured_sec.data, {
-              skip_stale_popup = true,
               section_key = captured_sec.key,
               section_label = captured_sec.label,
             })
@@ -8619,18 +8553,25 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       -- §5 (51c): one-line posture hint, tap-through to the spoiler picker —
       -- names why updates follow the position (post-flip the default)
       if xr_posture == "track" then
-        -- A deliberately installed COMPLETE version is pinned (item 40 —
-        -- never auto-reverted), so don't claim position-following while one
-        -- is installed (device round 2026-08-13: the hint said "following"
-        -- while the X-Ray stayed at 100%)
-        -- "Complete" includes a promoted 1.0 ladder rung: progress-complete
-        -- but no full_document stamp ("Switch to complete version" installs
-        -- one — device 2026-08-13, the hint kept claiming position-following)
-        local installed_complete = cached_entry and (cached_entry.full_document
-          or (tonumber(cached_entry.progress_decimal) or 0) >= 0.995)
-        local posture_hint = installed_complete
-          and _("Spoiler protection is on — the installed X-Ray covers the whole book")
-          or _("Spoiler protection is on — checkpoints follow your position")
+        -- Round 12 wording: never claim "spoiler protection is on" beside an
+        -- install that ignores it — a complete or ahead install is pinned
+        -- (item 40, never auto-reverted) and its content is not
+        -- position-limited. Complete includes a promoted 1.0 ladder rung
+        -- (progress-complete, no full_document stamp); the ahead check
+        -- follows the versionRows open-book + margin discipline.
+        local inst_dec = (cached_entry and cached_entry.result)
+          and tonumber(cached_entry.progress_decimal) or 0
+        local posture_hint
+        if cached_entry and cached_entry.result
+            and (cached_entry.full_document or inst_dec >= 0.995) then
+          posture_hint = _("The installed X-Ray covers the whole book — spoiler protection does not limit it")
+        elseif current_progress and inst_dec > (current_progress.decimal or 0) + 0.01
+            and self.ui and self.ui.document and self.ui.document.file == sx_file then
+          posture_hint = T(_("The installed X-Ray reaches %1%, ahead of your reading position"),
+            math.floor(inst_dec * 100 + 0.5))
+        else
+          posture_hint = _("Spoiler protection is on — checkpoints follow your position")
+        end
         table.insert(buttons, {{
           text = posture_hint,
           callback = function()
@@ -10576,7 +10517,6 @@ function AskGPT:_showLiveXray(file, opts)
     file = file,
     book_title = opts and opts.book_title,
     book_author = opts and opts.book_author,
-    skip_stale_popup = true,
   })
 end
 
@@ -10658,7 +10598,6 @@ function AskGPT:_showXrayCheckpointList(opts)
           file = file,
           book_title = opts and opts.book_title,
           book_author = opts and opts.book_author,
-          skip_stale_popup = true,
         })
       end,
     }})
@@ -10868,7 +10807,6 @@ function AskGPT:_showXrayLadderRungOptions(rung, opts)
         file = file,
         book_title = opts and opts.book_title,
         book_author = opts and opts.book_author,
-        skip_stale_popup = true,
         checkpoint = true,
       })
     end,
@@ -11122,7 +11060,6 @@ function AskGPT:_showXrayCheckpointOptions(cp, opts)
         file = file,
         book_title = opts and opts.book_title,
         book_author = opts and opts.book_author,
-        skip_stale_popup = true,
         checkpoint = true,
       })
     end,
@@ -11244,7 +11181,6 @@ function AskGPT:viewCachedAction(action, action_id, cached_entry, opts)
     end
     local info = { name = name, key = key, data = cached_entry }
     if opts then info.file = opts.file; info.book_title = opts.book_title; info.book_author = opts.book_author end
-    if opts and opts.skip_stale_popup then info.skip_stale_popup = true end
     self:showCacheViewer(info)
     return
   end
@@ -12638,15 +12574,11 @@ function AskGPT:_switchToCompleteXrayRung(opts)
           self_ref:_setXrayPromotionHold(file, false)
           self_ref._file_dialog_row_cache = { file = nil, rows = nil }
           self_ref:_refreshXrayAutoState()
-          -- Round 13 (maintainer): the modal delete offer was too aggressive —
-          -- open the switched-to X-Ray instead and note the versions can be
-          -- safely deleted (the delete row lives under All versions).
-          local xr_action = self_ref.action_service
-            and self_ref.action_service:getAction("book", "xray")
-          local new_live = ActionCache.get(file, "xray")
-          if xr_action and new_live and new_live.result then
-            self_ref:viewCachedAction(xr_action, "xray", new_live, { skip_stale_popup = true })
-          end
+          -- Round 12: land where the reader was — the switched-to X-Ray
+          -- reopens only when the switch started from an OPEN X-Ray (the
+          -- browser hamburger and its version list pass reopen_live); from
+          -- the action popup and its version list the toast is the feedback
+          self_ref:_reopenLiveXrayAfterInstall(file, opts)
           UIManager:show(InfoMessage:new{
             text = _("Switched to the complete X-Ray. The checkpoints are kept; they can be safely deleted under \"All versions\", or kept for the free \"Switch back to your position\" option."),
             timeout = 6,
@@ -12712,12 +12644,9 @@ function AskGPT:_switchBackToPositionRung(opts)
     end
     self._file_dialog_row_cache = { file = nil, rows = nil }
     self:_refreshXrayAutoState()
-    -- Round 13 parity with switch-to-complete: open the switched-to X-Ray
-    local xr_action = self.action_service and self.action_service:getAction("book", "xray")
-    local new_live = ActionCache.get(file, "xray")
-    if xr_action and new_live and new_live.result then
-      self:viewCachedAction(xr_action, "xray", new_live, { skip_stale_popup = true })
-    end
+    -- Round 12 parity with switch-to-complete: reopen only from an open
+    -- X-Ray (reopen_live rides the browser's list opts)
+    self:_reopenLiveXrayAfterInstall(file, opts)
     UIManager:show(Notification:new{
       text = posture == "full"
         and T(_("Switched back: X-Ray now at %1% and follows your position for this book"),
@@ -13673,7 +13602,6 @@ function AskGPT:executeBookLevelAction(action_id)
         callback = function()
           UIManager:close(dialog)
           self_ref:viewCachedAction(action, action_id, cached, {
-            skip_stale_popup = true,
             file = file,
           })
         end,
@@ -13700,7 +13628,6 @@ function AskGPT:executeBookLevelAction(action_id)
             callback = function()
               UIManager:close(dialog)
               self_ref:viewCachedAction(action, action_id, captured_sec.data, {
-                skip_stale_popup = true,
                 section_key = captured_sec.key,
                 section_label = captured_sec.label,
               })
@@ -13801,7 +13728,6 @@ function AskGPT:executeBookLevelAction(action_id)
               callback = function()
                 UIManager:close(nc_dialog)
                 self_ref:viewCachedAction(action, action_id, captured_sec.data, {
-                  skip_stale_popup = true,
                   file = file,
                   section_key = captured_sec.key,
                   section_label = captured_sec.label,
@@ -14052,7 +13978,6 @@ function AskGPT:executeFileBrowserAction(file, title, authors, book_props, actio
           callback = function()
             UIManager:close(fb_dialog)
             self_ref:viewCachedAction(action, action_id, cached, {
-              skip_stale_popup = true,
               file = file,
               book_title = title,
               book_author = authors,

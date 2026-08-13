@@ -160,7 +160,6 @@ local function showSearchReturnButton(return_state)
                                 name = name,
                                 key = cache_key,
                                 data = cached,
-                                skip_stale_popup = true,
                             })
                         end
                     end
@@ -5533,7 +5532,11 @@ function XrayBrowser:showOptions()
                 align = "left",
                 list_opts = { file = self.metadata.book_file,
                     book_title = self.metadata.title,
-                    book_author = self.metadata.book_author },
+                    book_author = self.metadata.book_author,
+                    -- Round 12: switches launched from an OPEN X-Ray land in
+                    -- the switched-to one; popup-launched switches don't
+                    -- (the switch helpers gate their reopen on this)
+                    reopen_live = true },
                 -- DEFERRED close for version browsing (device round 2): the
                 -- list retires this browser only when a version is actually
                 -- Viewed, Restored or Switched — Delete/Back leave it standing

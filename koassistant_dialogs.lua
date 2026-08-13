@@ -10061,53 +10061,6 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
             XrayBrowser:showSearchResults(query, true)
         end
 
-        -- Show progress staleness popup (main X-Ray only; sections cover fixed ranges)
-        if not best.is_section then
-            local book_file = document_path
-            local dismissed = book_file and plugin._xray_stale_dismissed
-                and plugin._xray_stale_dismissed[book_file] == cache_progress
-            if not dismissed and progress_gap and progress_gap > 0.08 and plugin then
-                local ButtonDialog = require("ui/widget/buttondialog")
-                local cache_pct = math.floor(cache_progress * 100 + 0.5)
-                local ContextExtractor = require("koassistant_context_extractor")
-                local extractor = ContextExtractor:new(ui)
-                local current = extractor:getReadingProgress()
-                local info_text = T(_("X-Ray covers to %1%"), cache_pct)
-                info_text = info_text .. "\n" .. T(_("You're now at %1%."), current.percent)
-
-                local stale_dialog
-                stale_dialog = ButtonDialog:new{
-                    title = info_text,
-                    buttons = {
-                        {{
-                            text = T(_("Update X-Ray (to %1)"), current.formatted),
-                            callback = function()
-                                UIManager:close(stale_dialog)
-                                if XrayBrowser.menu then
-                                    UIManager:close(XrayBrowser.menu)
-                                end
-                                local action = plugin.action_service:getAction("book", "xray")
-                                if action then
-                                    if plugin:_checkRequirements(action) then return end
-                                    plugin:_executeBookLevelActionDirect(action, "xray")
-                                end
-                            end,
-                        }},
-                        {{
-                            text = _("Don't remind me this session"),
-                            callback = function()
-                                UIManager:close(stale_dialog)
-                                if not plugin._xray_stale_dismissed then
-                                    plugin._xray_stale_dismissed = {}
-                                end
-                                plugin._xray_stale_dismissed[book_file] = cache_progress
-                            end,
-                        }},
-                    },
-                }
-                UIManager:show(stale_dialog)
-            end
-        end
     end
 end
 
