@@ -451,6 +451,15 @@ function ArtifactBrowser:showArtifactSelector(doc_path, doc_title, opts)
             text = require("koassistant_book_page").entryLabel(),
             callback = function()
                 UIManager:close(self_ref._cache_selector)
+                -- Close the full-screen browser too — Book Hub replaces it as
+                -- this book's surface. Leaving it below leaked an invisible
+                -- Menu behind the reader once the hub navigated away (device
+                -- 2026-08-13: ghost browser flashing on book open, surviving
+                -- to app close); the "Open Book" sibling already closes both.
+                if self_ref.current_menu then
+                    UIManager:close(self_ref.current_menu)
+                    self_ref.current_menu = nil
+                end
                 require("koassistant_book_page").show({
                     file = doc_path,
                     plugin = AskGPT,

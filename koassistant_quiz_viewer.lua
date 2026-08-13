@@ -670,6 +670,10 @@ function QuizViewer:handleTextSelection(text, hold_duration)
         -- Single word + short hold: auto dictionary lookup (fast path)
         if ui and ui.dictionary then
             ui.dictionary._koassistant_non_reader_lookup = true
+            -- Carry the quiz's book so a bypass / dict-popup X-Ray lookup
+            -- targets it, not whatever the reader has open
+            ui.dictionary._koassistant_lookup_book =
+                (self.opts and self.opts.document_path) or nil
             ui.dictionary:onLookupWord(text)
             self:clearTextHighlight()
             return

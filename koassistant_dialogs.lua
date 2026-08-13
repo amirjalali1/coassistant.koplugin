@@ -9610,11 +9610,15 @@ end
 
 -- Open X-Ray browser with cached data and metadata
 -- Returns the XrayBrowser module for chaining (e.g., showItemDetail, showSearchResults)
-local function openXrayBrowserFromCache(ui, data, cached, config, plugin, book_metadata, best, cleanup_widgets)
+local function openXrayBrowserFromCache(ui, data, cached, config, plugin, book_metadata, best, cleanup_widgets, document_path)
     local XrayBrowser = require("koassistant_xray_browser")
     local ActionCache = require("koassistant_action_cache")
     local Notification = require("ui/widget/notification")
     local config_features = (config or {}).features or {}
+    -- The lookup's target book — may differ from the open document (chat-
+    -- launched lookups); the browser identity AND the delete callback must
+    -- key on it, never on whatever the reader happens to have open
+    local target_file = document_path or (ui and ui.document and ui.document.file)
 
     local book_title = (book_metadata and book_metadata.title) or ""
     local source_label = cached.used_book_text == false
@@ -9629,7 +9633,7 @@ local function openXrayBrowserFromCache(ui, data, cached, config, plugin, book_m
             (math.floor(cached.progress_decimal * 100 + 0.5) .. "%"),
         model = cached.model,
         timestamp = cached.timestamp,
-        book_file = ui and ui.document and ui.document.file,
+        book_file = target_file,
         enable_emoji = config_features.enable_emoji_icons == true,
         configuration = config,
         plugin = plugin,
@@ -9657,8 +9661,10 @@ local function openXrayBrowserFromCache(ui, data, cached, config, plugin, book_m
         local scope_start = cached.scope_start_page
         local scope_end = cached.scope_end_page
         local scope_summary = cached.scope_page_summary
-        -- Reconvert XPointers to current pages if book is open
+        -- Reconvert XPointers to current pages if book is open (identity-
+        -- guarded: another open book's pages would be garbage for this one)
         local doc = ui and ui.document
+        if doc and target_file and doc.file ~= target_file then doc = nil end
         if doc and doc.getPageFromXPointer and cached.scope_start_xpointer then
             local new_start = doc:getPageFromXPointer(cached.scope_start_xpointer)
             if new_start then scope_start = new_start end
@@ -9698,7 +9704,9 @@ local function openXrayBrowserFromCache(ui, data, cached, config, plugin, book_m
         -- key, the per-action "xray" entry (a doc-key-only clear leaves an entry
         -- background auto-update resurrects from), wiki entries and the ladder;
         -- the archived versions only when the reader chose so in the confirm.
-        ActionCache.deleteXray(ui.document.file, { keep_versions = keep_versions })
+        -- target_file, NOT ui.document.file: a cross-book lookup deleting the
+        -- OPEN book's X-Ray would be silent data loss (2026-08-13)
+        ActionCache.deleteXray(target_file, { keep_versions = keep_versions })
         UIManager:show(Notification:new{
             text = keep_versions and _("X-Ray deleted — archived versions kept")
                 or T(_("%1 deleted"), "X-Ray"),
@@ -9715,7 +9723,7 @@ end
 -- @param config table Configuration
 -- @param plugin table Plugin reference
 -- @param book_metadata table Book metadata
-local function showCrossSectionResults(grouped_results, query, ui, config, plugin, book_metadata, cleanup_widgets)
+local function showCrossSectionResults(grouped_results, query, ui, config, plugin, book_metadata, cleanup_widgets, document_path)
     local Menu = require("ui/widget/menu")
     local XrayParser = require("koassistant_xray_parser")
 
@@ -9777,7 +9785,7 @@ local function showCrossSectionResults(grouped_results, query, ui, config, plugi
                     if not data then return end
                     local XrayBrowser = openXrayBrowserFromCache(
                         ui, data, captured_group.cache_entry, config, plugin, book_metadata, best,
-                        cleanup_widgets)
+                        cleanup_widgets, document_path)
                     XrayBrowser:showItemDetail(
                         captured_result.item, captured_result.category_key, captured_name)
                 end,
@@ -9826,6 +9834,10 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
 
     local ActionCache = require("koassistant_action_cache")
     local doc = ui and ui.document
+    -- Identity guard (artifact_browser precedent): the live doc informs page
+    -- context only when it IS the target book — chat-launched lookups can
+    -- target a book other than the one the reader has open (2026-08-13)
+    if doc and doc.file ~= document_path then doc = nil end
 
     -- Build cleanup list: widgets to close when browser launches book text search.
     -- Prevents dictionary popup and cross-section results from blocking search highlights.
@@ -9870,7 +9882,8 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
                 -- Fall through to existing single-X-Ray handling below
             else
                 -- Results in multiple X-Rays: show cross-section results
-                showCrossSectionResults(grouped, query, ui, config, plugin, book_metadata, cleanup_widgets)
+                showCrossSectionResults(grouped, query, ui, config, plugin, book_metadata,
+                    cleanup_widgets, document_path)
                 return
             end
         end
@@ -9933,8 +9946,9 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
     -- Search name + alias only (description matches are noise for dictionary lookup)
     local results = XrayParser.searchAll(data, query, { skip_description = true })
 
-    -- Calculate progress gap (only for main X-Ray; sections cover fixed ranges)
-    local current_progress = getProgressDecimal(ui)
+    -- Calculate progress gap (only for main X-Ray; sections cover fixed ranges;
+    -- doc-guarded — the live position means nothing for another book's X-Ray)
+    local current_progress = doc and getProgressDecimal(ui) or nil
     local cache_progress = cached.progress_decimal
     local progress_gap = nil
     if not best.is_section and current_progress and cache_progress then
@@ -9959,7 +9973,7 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
     else
         -- Open X-Ray browser directly
         local XrayBrowser = openXrayBrowserFromCache(ui, data, cached, config, plugin, book_metadata, best,
-            #cleanup_widgets > 0 and cleanup_widgets or nil)
+            #cleanup_widgets > 0 and cleanup_widgets or nil, document_path)
 
         if #results == 1 then
             -- Single result: navigate directly to item detail
@@ -9974,7 +9988,7 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
 
         -- Show progress staleness popup (main X-Ray only; sections cover fixed ranges)
         if not best.is_section then
-            local book_file = ui.document and ui.document.file
+            local book_file = document_path
             local dismissed = book_file and plugin._xray_stale_dismissed
                 and plugin._xray_stale_dismissed[book_file] == cache_progress
             if not dismissed and progress_gap and progress_gap > 0.08 and plugin then
@@ -10066,7 +10080,7 @@ local function attachRerunContext(temp_config, action, ui, plugin)
     end
 end
 
-local function executeDirectAction(ui, action, highlighted_text, configuration, plugin)
+local function executeDirectAction(ui, action, highlighted_text, configuration, plugin, opts)
     local logger = require("logger")
 
     if not action then
@@ -10088,8 +10102,13 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
     -- Get document info if available
     local document_path = nil
     local book_metadata = nil
+    -- Originating-surface book override (opts.document_path — set by the
+    -- chat-viewer/selection-popup X-Ray lookup chain): the chat may be about a
+    -- different book than the open one, so its identity beats the live
+    -- document (device 2026-08-13: wrong-book lookups)
+    local forced_path = opts and opts.document_path
 
-    if ui and ui.document then
+    if ui and ui.document and (not forced_path or ui.document.file == forced_path) then
         local props = ui.doc_props or {}
         document_path = ui.document.file
 
@@ -10117,15 +10136,38 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
         }
     end
 
+    if forced_path then
+        document_path = forced_path
+    end
+
     -- Fallback for file browser actions: no open document but book metadata has file path
     local cfg_metadata = configuration and configuration.features and configuration.features.book_metadata
     if not document_path and cfg_metadata and cfg_metadata.file then
         document_path = cfg_metadata.file
     end
-    if not book_metadata and cfg_metadata then
+    if not book_metadata and cfg_metadata
+        and (not forced_path or cfg_metadata.file == forced_path) then
         book_metadata = {
             title = cfg_metadata.title or "Unknown",
             author = cfg_metadata.author or "",
+        }
+    end
+    -- Forced path with no matching metadata source: read the book's own
+    -- sidecar props (the stale global book_metadata may name a THIRD book)
+    if forced_path and not book_metadata then
+        local ds = SafeDocSettings.resolve(forced_path, ui)
+        local props = (ds and ds:readSetting("doc_props")) or {}
+        local author = props.authors
+        if author and author:find("\n") then
+            author = author:gsub("\n", ", ")
+        end
+        local fname = forced_path:match("([^/\\]+)$")
+        if fname then
+            fname = fname:gsub("%.[^%.]+$", ""):gsub("[_-]", " ")
+        end
+        book_metadata = {
+            title = (props.title and props.title ~= "") and props.title or fname or "Unknown",
+            author = (author and author ~= "") and author or "",
         }
     end
 

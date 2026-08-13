@@ -79,11 +79,18 @@ end
 --- Consume the pending non-reader-lookup flag once, transferring it from the
 --- dictionary onto the popup. Idempotent: a later call (e.g. a pagination/resize
 --- rebuild) keeps the value already captured for this popup. `dict` may be nil.
+--- Also transfers `_koassistant_lookup_book` (the originating surface's own
+--- book, set by chat-viewer/selection-popup lookups) so the X-Ray button can
+--- target the chat's book instead of whatever the reader has open.
 --- Returns the captured boolean.
 function DictButtons.consumeNonReader(popup, dict)
     if popup._koassistant_non_reader == nil then
         popup._koassistant_non_reader = (dict and dict._koassistant_non_reader_lookup) or false
-        if dict then dict._koassistant_non_reader_lookup = nil end
+        popup._koassistant_lookup_book = dict and dict._koassistant_lookup_book or nil
+        if dict then
+            dict._koassistant_non_reader_lookup = nil
+            dict._koassistant_lookup_book = nil
+        end
     end
     return popup._koassistant_non_reader
 end

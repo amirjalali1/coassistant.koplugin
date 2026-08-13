@@ -186,6 +186,26 @@ function T:runAll()
         self:assertEquals(DictButtons.consumeNonReader(p, nil), false)
     end)
 
+    self:test("consumeNonReader transfers lookup book alongside flag, clears dict", function()
+        local dict = {
+            _koassistant_non_reader_lookup = true,
+            _koassistant_lookup_book = "/books/other.epub",
+        }
+        local p = {}
+        DictButtons.consumeNonReader(p, dict)
+        self:assertEquals(p._koassistant_lookup_book, "/books/other.epub")
+        self:assertEquals(dict._koassistant_lookup_book, nil, "book must be consumed")
+        -- Rebuild with a fresh dict: captured book must survive (idempotence)
+        DictButtons.consumeNonReader(p, { _koassistant_lookup_book = "/books/third.epub" })
+        self:assertEquals(p._koassistant_lookup_book, "/books/other.epub")
+    end)
+
+    self:test("consumeNonReader leaves lookup book nil when dict has none", function()
+        local p = {}
+        DictButtons.consumeNonReader(p, { _koassistant_non_reader_lookup = true })
+        self:assertEquals(p._koassistant_lookup_book, nil)
+    end)
+
     -- ---- splitRows ----
     local function rowSizes(rows)
         local sizes = {}

@@ -5141,7 +5141,9 @@ end
 -- fallback. `word` is the looked-up word, `dict_popup` the DictQuickLookup
 -- instance, `non_reader_lookup` true when the lookup originated outside the
 -- reader (e.g. the chat viewer) so book context must NOT be extracted.
-function AskGPT:executeDictAction(action, word, dict_popup, non_reader_lookup)
+-- `lookup_book`: the originating surface's own book (chat-viewer lookups) —
+-- local X-Ray lookups target it instead of whatever the reader has open.
+function AskGPT:executeDictAction(action, word, dict_popup, non_reader_lookup, lookup_book)
   local features = self.settings:readSetting("features") or {}
 
   -- FIRST: Capture selection_data for "Save to Note" feature (before popup closes)
@@ -5199,7 +5201,10 @@ function AskGPT:executeDictAction(action, word, dict_popup, non_reader_lookup)
     -- Pass dictionary popup reference so X-Ray browser can close it
     -- when launching book text search (prevents widget stack blocking)
     configuration.features._source_widget = dict_popup
-    Dialogs.executeDirectAction(self.ui, action, word, configuration, self)
+    -- Chat-originated lookups carry the chat's own book — it beats whatever
+    -- the reader happens to have open (device 2026-08-13: wrong-book lookups)
+    Dialogs.executeDirectAction(self.ui, action, word, configuration, self,
+      lookup_book and { document_path = lookup_book } or nil)
   else
     -- Ensure network is available (use runWhenConnected to avoid blocking DNS check)
     NetworkMgr:runWhenConnected(function()
@@ -5354,7 +5359,8 @@ function AskGPT:syncDictButtons()
       return true
     end
     spec.callback = function(popup)
-      self_ref:executeDictAction(act, popup.word, popup, popup._koassistant_non_reader)
+      self_ref:executeDictAction(act, popup.word, popup, popup._koassistant_non_reader,
+        popup._koassistant_lookup_book)
     end
     dictionary:addToDictButtons(spec)
   end
@@ -5381,6 +5387,7 @@ function AskGPT:installDictButtonRegistration()
       -- Safety: clear any non-reader flag that no show_func consumed (e.g. when
       -- our buttons are hidden) so it cannot leak to a later popup.
       dict_self._koassistant_non_reader_lookup = nil
+      dict_self._koassistant_lookup_book = nil
       return result
     end
   end
@@ -5420,8 +5427,11 @@ function AskGPT:onDictButtonsReady(dict_popup, dict_buttons)
   -- Capture early so button callbacks (fired later) can use it via closure.
   local non_reader_lookup = self.ui and self.ui.dictionary
       and self.ui.dictionary._koassistant_non_reader_lookup
-  if non_reader_lookup then
-    self.ui.dictionary._koassistant_non_reader_lookup = nil  -- Consume flag
+  local lookup_book = self.ui and self.ui.dictionary
+      and self.ui.dictionary._koassistant_lookup_book
+  if non_reader_lookup or lookup_book then
+    self.ui.dictionary._koassistant_non_reader_lookup = nil  -- Consume flags
+    self.ui.dictionary._koassistant_lookup_book = nil
   end
 
   -- Get configured actions for dictionary popup
@@ -5439,7 +5449,7 @@ function AskGPT:onDictButtonsReady(dict_popup, dict_buttons)
       text = ActionService.getActionDisplayText(action, features) .. " (KOA)",
       font_bold = true,
       callback = function()
-        self_ref:executeDictAction(action, word, dict_popup, non_reader_lookup)
+        self_ref:executeDictAction(action, word, dict_popup, non_reader_lookup, lookup_book)
       end,
     }
   end
@@ -16598,7 +16608,11 @@ function AskGPT:syncDictionaryBypass()
       -- Check cache requirements before executing
       if bypass_action.requires_xray_cache then
         local ActionCache = require("koassistant_action_cache")
-        local file = self_ref.ui and self_ref.ui.document and self_ref.ui.document.file
+        -- Chat-viewer lookups carry their own book (may differ from the open
+        -- one). Read WITHOUT consuming — the fall-through paths below hand the
+        -- flags to the normal dictionary-popup chain, which consumes them.
+        local file = dict_self._koassistant_lookup_book
+            or (self_ref.ui and self_ref.ui.document and self_ref.ui.document.file)
         if not file or not ActionCache.hasAnyXray(file) then
           logger.info("KOAssistant: Dictionary bypass - action requires X-Ray cache, falling through to dictionary")
           if dictionary._koassistant_original_onLookupWord then
@@ -16611,8 +16625,11 @@ function AskGPT:syncDictionaryBypass()
         -- dead-end "no results" message. Same name+alias matcher the handler uses,
         -- across main + section X-Rays; costs one cache parse per tapped word.
         if bypass_action.local_handler == "xray_lookup" then
+          -- Live doc informs page context only when it IS the target book
+          local doc = self_ref.ui and self_ref.ui.document
+          if doc and doc.file ~= file then doc = nil end
           local hits = ActionCache.searchAllXrays(file, word,
-            self_ref.ui and self_ref.ui.document, { skip_description = true })
+            doc, { skip_description = true })
           if #hits == 0 then
             logger.info("KOAssistant: Dictionary bypass - no X-Ray entry for word, falling through to dictionary")
             if dictionary._koassistant_original_onLookupWord then
@@ -16626,7 +16643,9 @@ function AskGPT:syncDictionaryBypass()
       -- Check if this is a non-reader lookup (e.g., from ChatGPT viewer or nested dictionary).
       -- Context extraction from the book page would be irrelevant in these cases.
       local non_reader_lookup = dict_self._koassistant_non_reader_lookup
-      dict_self._koassistant_non_reader_lookup = nil  -- Consume flag
+      local lookup_book_override = dict_self._koassistant_lookup_book
+      dict_self._koassistant_non_reader_lookup = nil  -- Consume flags
+      dict_self._koassistant_lookup_book = nil
 
       -- IMPORTANT: Extract context BEFORE clearing highlight
       -- The highlight object contains the selection state needed for context extraction.
@@ -16686,7 +16705,8 @@ function AskGPT:syncDictionaryBypass()
       if bypass_action.local_handler then
         -- Local actions don't need network or dictionary-specific config
         self_ref:updateConfigFromSettings()
-        Dialogs.executeDirectAction(self_ref.ui, bypass_action, word, configuration, self_ref)
+        Dialogs.executeDirectAction(self_ref.ui, bypass_action, word, configuration, self_ref,
+          lookup_book_override and { document_path = lookup_book_override } or nil)
       else
         NetworkMgr:runWhenConnected(function()
           -- Make sure we're using the latest configuration

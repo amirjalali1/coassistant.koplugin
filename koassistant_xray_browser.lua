@@ -792,6 +792,9 @@ local function handleTextSelection(text, hold_duration, opts)
         -- Single word + short hold: auto dictionary lookup (fast path)
         if ui and ui.dictionary then
             ui.dictionary._koassistant_non_reader_lookup = true
+            -- Carry the X-Ray's SOURCE book so a bypass / dict-popup X-Ray
+            -- lookup targets it, not whatever the reader has open
+            ui.dictionary._koassistant_lookup_book = opts.book_file or nil
             ui.dictionary:onLookupWord(text)
             clear_highlight()
             return

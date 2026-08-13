@@ -4204,6 +4204,11 @@ function ChatGPTViewer:handleTextSelection(text, hold_duration, start_idx, end_i
     local ui = self._ui or (self.configuration and self.configuration._rerun_ui)
     if ui and ui.dictionary then
       ui.dictionary._koassistant_non_reader_lookup = true
+      -- Carry this chat's book so a bypass / dict-popup X-Ray lookup targets
+      -- it, not whatever the reader has open (device 2026-08-13)
+      local book = self.configuration and self.configuration.document_path
+      if book == "__GENERAL_CHATS__" or book == "__LIBRARY_CHATS__" then book = nil end
+      ui.dictionary._koassistant_lookup_book = book
       ui.dictionary:onLookupWord(text)
       self:clearTextHighlight()
       return
@@ -4272,6 +4277,11 @@ function ChatGPTViewer.buildTextSelectionPopup(text, opts)
   local plugin = opts.plugin
   local document_path = opts.document_path
   local clear_highlight = opts.clear_highlight
+  -- Real book path only — chat stores use sentinel paths
+  local book_path = document_path
+  if book_path == "__GENERAL_CHATS__" or book_path == "__LIBRARY_CHATS__" then
+    book_path = nil
+  end
 
   local flat_buttons = {}
   local dialog_ref = {}
@@ -4304,7 +4314,30 @@ function ChatGPTViewer.buildTextSelectionPopup(text, opts)
       callback = function()
         close_and_clear()
         ui.dictionary._koassistant_non_reader_lookup = true
+        -- Carry the surface's own book for bypass / dict-popup X-Ray lookups
+        ui.dictionary._koassistant_lookup_book = book_path
         ui.dictionary:onLookupWord(text)
+      end,
+    })
+  end
+
+  -- Look up in X-Ray — targets this surface's OWN book, so it works without a
+  -- reader/dictionary module (chats opened from the file browser) and for
+  -- multi-word entity names the dictionary fast path never covers
+  if plugin and book_path
+      and require("koassistant_action_cache").hasAnyXray(book_path) then
+    table.insert(flat_buttons, {
+      text = _("Look up in X-Ray"),
+      callback = function()
+        close_and_clear()
+        local Actions = require("prompts/actions")
+        local Dialogs = require("koassistant_dialogs")
+        local action = Actions.getById("xray_lookup")
+        if action then
+          Dialogs.executeDirectAction(ui, action, text,
+            opts.configuration or (plugin and plugin.configuration), plugin,
+            { document_path = book_path })
+        end
       end,
     })
   end
