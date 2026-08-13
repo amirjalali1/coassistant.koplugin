@@ -659,6 +659,23 @@ Keep bullets short — essential grammar only, no explanatory asides or parenthe
         no_duplicate = true,
         builtin = true,
     },
+    -- Image generation (PR #96) as a real action (2026-08-13): membership and
+    -- order via the Highlight Menu manager replaced the old hardcoded button +
+    -- buried "Show Generate Image button" toggle. Local dispatch to
+    -- ImageGenerator — never the chat pipeline; hidden while no configured
+    -- provider supports image output (requires_image_provider gate).
+    image_gen = {
+        id = "image_gen",
+        text = _("Generate Image"),
+        description = _("Generate an image from the selected text description using the current AI provider."),
+        context = "highlight",
+        local_handler = "image_gen",
+        requires_image_provider = true,
+        in_highlight_menu = 12,
+        exclude_from_compact = true,
+        no_duplicate = true,
+        builtin = true,
+    },
 }
 
 -- ============================================================

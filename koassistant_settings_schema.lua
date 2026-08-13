@@ -2016,14 +2016,10 @@ local SettingsSchema = {
                     default = true,
                     help_text = _("Add an 'Add to notebook' button to the highlight menu, saving the selected text directly to this book's notebook. Takes effect the next time the menu opens."),
                 },
-                {
-                    id = "show_image_gen_in_highlight",
-                    type = "toggle",
-                    text = _("Show Generate Image button"),
-                    path = "features.show_image_gen_in_highlight",
-                    default = true,
-                    help_text = _("Add a 'Generate Image' button to the highlight menu, visualizing the selected text with the current AI provider. Only shown when the provider supports image generation (OpenAI, xAI, Gemini). Takes effect the next time the menu opens."),
-                },
+                -- (The old "Show Generate Image button" toggle is retired:
+                -- image generation is the image_gen ACTION since 2026-08-13 —
+                -- visibility/order via Highlight Menu Actions below; an
+                -- explicit old OFF was migrated to a menu dismissal.)
                 {
                     id = "highlight_menu_actions",
                     type = "action",

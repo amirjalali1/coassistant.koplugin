@@ -79,6 +79,8 @@ function ImageBrowser.show(opts)
 
     local menu
     local items = {}
+    -- One index read serves every row's prompt lookup
+    local prompt_index = ImageGenerator.readIndex()
     for _idx, f in ipairs(files) do
         local display = f.name:gsub("%.png$", "")
         table.insert(items, {
@@ -86,17 +88,41 @@ function ImageBrowser.show(opts)
             mandatory = string.format("%d KB", math.floor(f.size / 1024 + 0.5)),
             mandatory_dim = true,
             callback = function() viewImage(f.path) end,
+            -- Hold = options (was delete-only; the full sent prompt is now
+            -- recorded in the index and viewable here — filenames truncate)
             hold_callback = function()
-                UIManager:show(ConfirmBox:new{
-                    text = T(_("Delete this image?\n\n%1"), display),
-                    ok_text = _("Delete"),
-                    ok_callback = function()
-                        os.remove(f.path)
-                        ImageGenerator.removeIndexEntries({ f.name })
-                        UIManager:close(menu)
-                        ImageBrowser.show(opts)
-                    end,
-                })
+                local ie = prompt_index[f.name]
+                local full_prompt = type(ie) == "table" and type(ie.prompt) == "string"
+                    and ie.prompt or nil
+                local ButtonDialog = require("ui/widget/buttondialog")
+                local dialog
+                dialog = ButtonDialog:new{
+                    title = display,
+                    buttons = {
+                        {{ text = _("Show full prompt"), enabled = full_prompt ~= nil,
+                           align = "left", callback = function()
+                            UIManager:close(dialog)
+                            UIManager:show(InfoMessage:new{ text = full_prompt })
+                        end }},
+                        {{ text = _("Delete…"), align = "left", callback = function()
+                            UIManager:close(dialog)
+                            UIManager:show(ConfirmBox:new{
+                                text = T(_("Delete this image?\n\n%1"), display),
+                                ok_text = _("Delete"),
+                                ok_callback = function()
+                                    os.remove(f.path)
+                                    ImageGenerator.removeIndexEntries({ f.name })
+                                    UIManager:close(menu)
+                                    ImageBrowser.show(opts)
+                                end,
+                            })
+                        end }},
+                        {{ text = _("Cancel"), callback = function()
+                            UIManager:close(dialog)
+                        end }},
+                    },
+                }
+                UIManager:show(dialog)
             end,
         })
     end

@@ -337,49 +337,11 @@ function AskGPT:init()
         end,
       }
     end)
-    -- "Generate Image" button — shown only when enabled and the active provider
-    -- supports image generation. Key sorts BEFORE "koassistant_dialog" on purpose
-    -- (orderedPairs renders by key): Chat/Action stays the LAST KOAssistant button
-    -- in the highlight menu (maintainer 2026-07-19).
-    self.ui.highlight:addToHighlightDialog("koassistant_b_generate_image", function(reader_highlight_instance)
-      return {
-        text = _("Generate Image") .. " (KOA)",
-        show_in_highlight_dialog_func = function()
-          local feats = self.settings:readSetting("features") or {}
-          if feats.show_image_gen_in_highlight == false then return false end
-          -- Same provider fallback chain as updateConfigFromSettings()
-          local main_provider = feats.provider
-              or (config_file_defaults and config_file_defaults.provider)
-              or "anthropic"
-          -- Resolves image_gen_provider override + image capability + key presence
-          local ImageGenerator = require("koassistant_image_generator")
-          return ImageGenerator.effectiveProvider(feats, main_provider, self.settings) ~= nil
-        end,
-        hold_callback = function()
-          UIManager:show(InfoMessage:new{
-            text = _("Generate an image from the selected text description using the current AI provider."),
-          })
-        end,
-        callback = function()
-          -- Capture selection before closing the overlay
-          local selected_text = reader_highlight_instance.selected_text
-              and reader_highlight_instance.selected_text.text
-          reader_highlight_instance:onClose()
-          if not selected_text or selected_text == "" then return end
-          -- Book association for the images index (per-book gallery)
-          local book_info = self.ui and self.ui.document and self.ui.document.file and {
-            file = self.ui.document.file,
-            title = self.ui.doc_props
-              and (self.ui.doc_props.display_title or self.ui.doc_props.title),
-          } or nil
-          NetworkMgr:runWhenConnected(function()
-            self:updateConfigFromSettings()
-            local ImageGenerator = require("koassistant_image_generator")
-            ImageGenerator.generate(selected_text, configuration, self.settings, book_info)
-          end)
-        end,
-      }
-    end)
+    -- The old hardcoded "Generate Image" button is RETIRED (2026-08-13): image
+    -- generation is the `image_gen` ACTION now — membership/order via the
+    -- Highlight Menu manager, provider-capability gate in the action getters
+    -- (requires_image_provider), dispatch through handleLocalAction. The old
+    -- "Show Generate Image button" toggle is migrated in initSettings.
 
     logger.info("KOAssistant: highlight-menu buttons registered (visibility resolved per menu open)")
 
@@ -1614,6 +1576,29 @@ function AskGPT:initSettings()
     -- place; the save below persists. The model-default refresh stays HERE — it is
     -- not one-time (re-evaluates every launch) and needs self + ModelLists.
     local needs_save = require("koassistant_migrations").run(features)
+
+    -- Image gen became the image_gen ACTION (2026-08-13). One-time here, not in
+    -- the pure migrations module: an explicit old "Show Generate Image button"
+    -- OFF must seed a highlight-menu DISMISSAL — a top-level settings list the
+    -- features-only module can't reach — so the auto-injected action doesn't
+    -- resurrect the button against the user's choice. Stamp registered in the
+    -- storage registry's internal bucket.
+    if not features._image_gen_action_v1 then
+      features._image_gen_action_v1 = true
+      if features.show_image_gen_in_highlight == false then
+        local dismissed = self.settings:readSetting("_dismissed_highlight_menu_actions") or {}
+        local present = false
+        for _idx, id in ipairs(dismissed) do
+          if id == "image_gen" then present = true break end
+        end
+        if not present then
+          table.insert(dismissed, "image_gen")
+          self.settings:saveSetting("_dismissed_highlight_menu_actions", dismissed)
+        end
+      end
+      features.show_image_gen_in_highlight = nil
+      needs_save = true
+    end
 
     -- Model default refresh (defaults_propagation_plan.md §3, gaps G2/G3). NOT guarded by a
     -- one-time flag: it must re-evaluate whenever we bump a provider default. Safe to repeat
@@ -17225,8 +17210,11 @@ function AskGPT:executeQuickAction(action, highlighted_text, context, selection_
   configuration.features.selection_data = selection_data
   -- Pre-extracted selection window (set-or-clear: a stale window must not survive
   -- this entry; handlePredefinedPrompt consumes it — which local actions never
-  -- reach, so don't leave it on the shared config for them)
-  configuration.features._selection_context_window = (not action.local_handler) and sc_window or nil
+  -- reach, so don't leave it on the shared config for them. Exception: the
+  -- image_gen local handler consumes it itself, as prompt-framing context)
+  configuration.features._selection_context_window =
+      (not action.local_handler or action.local_handler == "image_gen")
+      and sc_window or nil
   -- Block actions when declared requirements are unmet
   if self:_checkRequirements(action) then
     return

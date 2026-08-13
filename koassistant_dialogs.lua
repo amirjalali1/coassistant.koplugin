@@ -8906,6 +8906,14 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 excluded = true
                             end
                         end
+                        -- Same provider gate as the action_service getters
+                        if not excluded and action.requires_image_provider then
+                            local ImageGenerator = require("koassistant_image_generator")
+                            local feats = (configuration and configuration.features) or {}
+                            excluded = ImageGenerator.effectiveProvider(feats,
+                                feats.provider or "anthropic",
+                                plugin and plugin.settings) == nil
+                        end
                         if not excluded then
                             table.insert(more_actions, action)
                         end
@@ -10070,6 +10078,36 @@ local function handleLocalAction(handler_name, ui, highlighted_text, document_pa
 
     if handler_name == "xray_lookup" then
         handleLocalXrayLookup(ui, highlighted_text, document_path, book_metadata, config, plugin)
+    elseif handler_name == "image_gen" then
+        -- The old hardcoded highlight button as a local action (2026-08-13):
+        -- same network gate + settings refresh; book association now follows
+        -- document_path too, so viewer/file-browser launches credit the right
+        -- book in the images index instead of silently dropping it.
+        local book_info
+        if ui and ui.document and ui.document.file
+            and (not document_path or ui.document.file == document_path) then
+            book_info = {
+                file = ui.document.file,
+                title = ui.doc_props and (ui.doc_props.display_title or ui.doc_props.title),
+            }
+        elseif document_path then
+            book_info = {
+                file = document_path,
+                title = book_metadata and book_metadata.title,
+            }
+        end
+        -- Consume-once framing context: the pre-extracted selection window
+        -- rides _selection_context_window only for this handler (the entry
+        -- points nil it for other local handlers)
+        local window = config and config.features and config.features._selection_context_window
+        if config and config.features then config.features._selection_context_window = nil end
+        local NetworkMgr = require("ui/network/manager")
+        NetworkMgr:runWhenConnected(function()
+            if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
+            require("koassistant_image_generator").generate(highlighted_text, config,
+                plugin and plugin.settings, book_info,
+                { window = window, book_metadata = book_metadata })
+        end)
     else
         logger.warn("KOAssistant: Unknown local handler: " .. tostring(handler_name))
         UIManager:show(InfoMessage:new{

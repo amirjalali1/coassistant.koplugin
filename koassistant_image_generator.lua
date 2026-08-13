@@ -278,7 +278,10 @@ end
 --- (maintainer decision 2026-07-16): the filename carries the metadata
 --- (date + prompt snippet) and the Generated Images browser handles deletion.
 --- `book_info` = optional { file, title } → recorded in the images index.
-local function showImage(image_data, description, on_close, book_info)
+--- full_prompt (optional): the exact prompt sent to the API (context-framed);
+--- recorded in the index so the gallery's "Show full prompt" shows the truth.
+--- `description` stays the raw selection — it drives filename + viewer title.
+local function showImage(image_data, description, on_close, book_info, full_prompt)
     local UIManager  = require("ui/uimanager")
     local lfs = require("libs/libkoreader-lfs")
 
@@ -302,7 +305,7 @@ local function showImage(image_data, description, on_close, book_info)
     end
     f:write(image_data)
     f:close()
-    ImageGenerator.recordImage(path:match("([^/]+)$"), book_info, description)
+    ImageGenerator.recordImage(path:match("([^/]+)$"), book_info, full_prompt or description)
 
     -- Try to load KOReader's ImageViewer
     local ok, ImageViewer = pcall(require, "ui/widget/imageviewer")
@@ -480,9 +483,9 @@ end
 --- @param config_table table   The global `configuration` table from main.lua
 --- @param settings     table   LuaSettings instance (for GUI API keys)
 --- @param book_info    table|nil { file, title } for the images index
-function ImageGenerator.generate(word, config_table, settings, book_info)
+function ImageGenerator.generate(word, config_table, settings, book_info, opts)
     local ok, err = pcall(function()
-        ImageGenerator._generateImpl(word, config_table, settings, book_info)
+        ImageGenerator._generateImpl(word, config_table, settings, book_info, opts)
     end)
     if not ok then
         logger.err("KOAssistant: image generation error:", err)
@@ -491,7 +494,11 @@ function ImageGenerator.generate(word, config_table, settings, book_info)
 end
 
 --- Internal implementation — called via pcall from generate() for error catching.
-function ImageGenerator._generateImpl(word, config_table, settings, book_info)
+--- opts (optional): { book_metadata = {title, author}, window = {prev, next} } —
+--- context the prompt is framed with (2026-08-13). book_metadata carries the
+--- per-book AI-identity overrides already applied; window is the pre-extracted
+--- surrounding-context selection window (consent-exempt, hard-capped upstream).
+function ImageGenerator._generateImpl(word, config_table, settings, book_info, opts)
     local UIManager = require("ui/uimanager")
 
     -- Effective provider (maintainer decision 2026-07-16): explicit
@@ -519,6 +526,41 @@ function ImageGenerator._generateImpl(word, config_table, settings, book_info)
         return
     end
 
+    -- Context-framed prompt (device 2026-08-13 "more context"): book identity +
+    -- a trimmed slice of the surrounding passage, framed as context so the
+    -- model illustrates the SELECTION, not the frame. `description` stays the
+    -- raw selection (filename + viewer title); the FULL prompt is what gets
+    -- sent and recorded (viewable via the gallery's "Show full prompt").
+    -- English on purpose — model-facing, like the quiz/nudge templates.
+    local final_prompt = description
+    do
+        local fixUtf8 = require("util").fixUtf8
+        local frame = {}
+        local meta = opts and opts.book_metadata
+        if meta and meta.title and meta.title ~= "" then
+            if meta.author and meta.author ~= "" then
+                table.insert(frame, string.format('The passage is from the book "%s" by %s.', meta.title, meta.author))
+            else
+                table.insert(frame, string.format('The passage is from the book "%s".', meta.title))
+            end
+        end
+        local w = opts and opts.window
+        local prev = w and type(w.prev) == "string" and w.prev or ""
+        local next_ = w and type(w.next) == "string" and w.next or ""
+        if prev ~= "" or next_ ~= "" then
+            -- Image prompts reward brevity: ~400 chars a side, UTF-8-safe cuts
+            if #prev > 400 then prev = "…" .. fixUtf8(prev:sub(-400), "") end
+            if #next_ > 400 then next_ = fixUtf8(next_:sub(1, 400), "") .. "…" end
+            table.insert(frame, "Surrounding text, for context only: "
+                .. prev .. " […] " .. next_)
+        end
+        if #frame > 0 then
+            final_prompt = "Create an illustration of the following passage from a book. "
+                .. table.concat(frame, " ")
+                .. "\n\nPassage to illustrate: " .. description
+        end
+    end
+
     -- Build request JSON (provider-specific format)
     local request_body_str
     if endpoint.is_gemini then
@@ -527,7 +569,7 @@ function ImageGenerator._generateImpl(word, config_table, settings, book_info)
             contents = {
                 {
                     role  = "user",
-                    parts = {{ text = description }},
+                    parts = {{ text = final_prompt }},
                 }
             },
             generationConfig = {
@@ -542,7 +584,7 @@ function ImageGenerator._generateImpl(word, config_table, settings, book_info)
         -- size/quality/style but honors response_format.
         local request_body = {
             model  = resolved_model,
-            prompt = description,
+            prompt = final_prompt,
             n      = 1,
         }
         if provider == "openai" then
@@ -712,7 +754,7 @@ function ImageGenerator._generateImpl(word, config_table, settings, book_info)
                             return
                         end
                         status.close()
-                        showImage(image_bytes, description, nil, book_info)
+                        showImage(image_bytes, description, nil, book_info, final_prompt)
                         return
                     end
                 end
@@ -738,7 +780,7 @@ function ImageGenerator._generateImpl(word, config_table, settings, book_info)
                 return
             end
             status.close()
-            showImage(image_bytes, description, nil, book_info)
+            showImage(image_bytes, description, nil, book_info, final_prompt)
             return
         end
 
@@ -773,7 +815,7 @@ function ImageGenerator._generateImpl(word, config_table, settings, book_info)
             end
             -- "OK:" prefix + binary
             status.close()
-            showImage(dl_raw:sub(4), description, nil, book_info)
+            showImage(dl_raw:sub(4), description, nil, book_info, final_prompt)
         end))
     end))
 end

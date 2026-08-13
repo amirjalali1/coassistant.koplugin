@@ -831,6 +831,12 @@ function ActionService:getHighlightMenuActionObjects(has_open_book, document_pat
                     include = false
                 end
             end
+            if include and action.requires_image_provider then
+                local ImageGenerator = require("koassistant_image_generator")
+                local feats = self.settings:readSetting("features") or {}
+                include = ImageGenerator.effectiveProvider(feats,
+                    feats.provider or "anthropic", self.settings) ~= nil
+            end
             if include then
                 table.insert(result, action)
             end
@@ -986,6 +992,12 @@ function ActionService:getDictionaryPopupActionObjects(has_open_book, document_p
                 if not ActionCache.hasAnyXray(document_path) then
                     include = false
                 end
+            end
+            if include and action.requires_image_provider then
+                local ImageGenerator = require("koassistant_image_generator")
+                local feats = self.settings:readSetting("features") or {}
+                include = ImageGenerator.effectiveProvider(feats,
+                    feats.provider or "anthropic", self.settings) ~= nil
             end
             if include then
                 table.insert(result, action)
@@ -2202,6 +2214,12 @@ function ActionService:getInputActionObjects(ctx_name, document_path)
                 if not ActionCache.hasAnyXray(document_path) then
                     include = false
                 end
+            end
+            if include and action.requires_image_provider then
+                local ImageGenerator = require("koassistant_image_generator")
+                local feats = self.settings:readSetting("features") or {}
+                include = ImageGenerator.effectiveProvider(feats,
+                    feats.provider or "anthropic", self.settings) ~= nil
             end
             if include then
                 table.insert(result, action)
