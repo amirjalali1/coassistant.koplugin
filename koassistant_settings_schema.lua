@@ -1793,6 +1793,15 @@ local SettingsSchema = {
                     keep_menu_open = true,
                     separator = true,
                 },
+                -- Per-book override pattern, made explicit (device note 2026-08-13)
+                {
+                    id = "privacy_per_book_tip",
+                    type = "action",
+                    text = _("Tip: Per-book overrides"),
+                    help_text = _("Every sharing toggle here can be overridden per book (Book Settings → Privacy). Two patterns: keep a global toggle off and allow it for specific books, or keep it on and deny it for sensitive books. A per-book deny always wins — even over trusted providers."),
+                    callback = "showPrivacyOverridesTip",
+                    keep_menu_open = true,
+                },
                 -- Individual toggles
                 {
                     id = "enable_annotations_sharing",

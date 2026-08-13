@@ -922,6 +922,7 @@ function AskGPT:addFileDialogButtons()
   -- Stored on self so delete callbacks can invalidate it
   self._file_dialog_row_cache = { file = nil, rows = nil }
   local row_generators = {}
+  -- Key set MUST stay in sync with removeFileDialogButtons' list
   local row_keys = { "zzz_koassistant_1a", "zzz_koassistant_1b", "zzz_koassistant_1c" }
   for slot = 1, 3 do
     local row_index = slot
@@ -934,6 +935,21 @@ function AskGPT:addFileDialogButtons()
     end
   end
 
+  -- KOA group break (maintainer 2026-08-13): a leading EMPTY row renders as
+  -- ButtonTable's double-rule between KOReader's native rows and the KOA
+  -- section. Registered FIRST — generators run in registration order
+  -- (filemanager.lua inserts returned rows in ipairs order) — and emits only
+  -- when a KOA row will actually follow, so folders/non-documents get no
+  -- stray line. Shares the row cache (it runs first, so it fills it).
+  local separator_generator = function(file, is_file, book_props)
+    if self._file_dialog_row_cache.file ~= file then
+      self._file_dialog_row_cache.file = file
+      self._file_dialog_row_cache.rows = self:generateFileDialogRows(file, is_file, book_props)
+    end
+    local rows = self._file_dialog_row_cache.rows
+    if rows and rows[1] then return {} end
+  end
+
   local multi_file_generator = function(file, is_file, book_props)
     return self:generateMultiSelectButtons(file, is_file, book_props)
   end
@@ -943,6 +959,7 @@ function AskGPT:addFileDialogButtons()
   -- Method 1: Register via instance method if available
   if FileManager.instance and FileManager.instance.addFileDialogButtons then
     local success = pcall(function()
+      FileManager.instance:addFileDialogButtons("zzz_koassistant_0_sep", separator_generator)
       for slot = 1, 3 do
         FileManager.instance:addFileDialogButtons(row_keys[slot], row_generators[slot])
       end
@@ -968,6 +985,7 @@ function AskGPT:addFileDialogButtons()
     if widget_class and FileManager.addFileDialogButtons then
       logger.info("KOAssistant: Attempting to register buttons on " .. widget_name .. " class")
       local success, err = pcall(function()
+        FileManager.addFileDialogButtons(widget_class, "zzz_koassistant_0_sep", separator_generator)
         for slot = 1, 3 do
           FileManager.addFileDialogButtons(widget_class, row_keys[slot], row_generators[slot])
         end
@@ -1014,12 +1032,22 @@ function AskGPT:removeFileDialogButtons()
   local FileManagerCollection = require("apps/filemanager/filemanagercollection")
   local FileManagerFileSearcher = require("apps/filemanager/filemanagerfilesearcher")
   
+  -- The REGISTERED key set (must match addFileDialogButtons). The old list
+  -- here named "zzz_koassistant_1_utilities"/"_2_main" — ids that were never
+  -- registered — so unload left the real 1a/1b/1c generators (and their stale
+  -- self closures) behind. Fixed alongside the 0_sep addition (2026-08-13).
+  local koa_row_keys = {
+    "zzz_koassistant_0_sep",
+    "zzz_koassistant_1a", "zzz_koassistant_1b", "zzz_koassistant_1c",
+    "zzz_koassistant_multi_select",
+  }
+
   -- Remove from instance if available
   if FileManager.instance and FileManager.instance.removeFileDialogButtons then
     pcall(function()
-      FileManager.instance:removeFileDialogButtons("zzz_koassistant_1_utilities")
-      FileManager.instance:removeFileDialogButtons("zzz_koassistant_2_main")
-      FileManager.instance:removeFileDialogButtons("zzz_koassistant_multi_select")
+      for _idx, key in ipairs(koa_row_keys) do
+        FileManager.instance:removeFileDialogButtons(key)
+      end
     end)
   end
 
@@ -1034,9 +1062,9 @@ function AskGPT:removeFileDialogButtons()
   for widget_name, widget_class in pairs(widgets_to_clean) do
     if widget_class and FileManager.removeFileDialogButtons then
       pcall(function()
-        FileManager.removeFileDialogButtons(widget_class, "zzz_koassistant_1_utilities")
-        FileManager.removeFileDialogButtons(widget_class, "zzz_koassistant_2_main")
-        FileManager.removeFileDialogButtons(widget_class, "zzz_koassistant_multi_select")
+        for _idx, key in ipairs(koa_row_keys) do
+          FileManager.removeFileDialogButtons(widget_class, key)
+        end
       end)
     end
   end
@@ -17757,6 +17785,13 @@ function AskGPT:applyPrivacyPresetFull(touchmenu_instance)
   })
 end
 
+-- The per-book override pattern, spelled out (schema privacy tip row)
+function AskGPT:showPrivacyOverridesTip()
+  UIManager:show(InfoMessage:new{
+    text = _("Every sharing toggle here can be overridden per book (Book Settings → Privacy). Two patterns: keep a global toggle off and allow it for specific books, or keep it on and deny it for sensitive books. A per-book deny always wins — even over trusted providers."),
+  })
+end
+
 -- Show trusted providers dialog for privacy settings
 function AskGPT:showTrustedProvidersDialog()
   local CheckButton = require("ui/widget/checkbutton")
@@ -19971,7 +20006,8 @@ end
 function AskGPT:showSetupStep5Tips(gestures_applied)
   local text = _("GETTING STARTED") .. "\n\n" ..
     _("Privacy & Data") .. "\n" ..
-    _("Some features need document text access. Enable in: Settings → Privacy & Data") .. "\n\n" ..
+    _("Some features need document text access. Enable in: Settings → Privacy & Data") .. "\n" ..
+    _("Tip: keep a toggle off globally and allow it per book — or on globally and deny it for sensitive books. A per-book deny always wins.") .. "\n\n" ..
     _("Actions & Prompts") .. "\n" ..
     _("Create or edit prompts: Settings → Actions & Prompts → Manage Actions (or from Quick Settings panel)")
 

@@ -2307,6 +2307,12 @@ function BookSettings.showPrivacyConfig(opts)
                 showBoolSubPicker(BookSettings.KEY_TEXT_EXTRACTION,
                     _("Text extraction (this book)"), features.enable_book_text_extraction == true)
             end }},
+        -- The override rules, spelled out (device note 2026-08-13)
+        {{ text = _("How overrides work…"), callback = function()
+            UIManager:show(require("ui/widget/infomessage"):new{
+                text = _("These override the global privacy toggles for this book. Deny always wins — even over trusted providers. Allow satisfies only the global gate: actions still need their own data-access settings. Allowing annotations implies highlights; denying highlights denies annotations."),
+            })
+        end }},
         {{ text = _("Close"), id = "close", callback = function()
             closeDialog()
             if on_close then on_close() end

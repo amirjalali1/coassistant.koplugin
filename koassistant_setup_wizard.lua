@@ -662,6 +662,7 @@ function SetupWizard.stepPrivacy(plugin, ctx, next_step)
     dialog = ButtonDialog:new{
         title = _("PRIVACY & DATA") .. "\n" ..
             _("What may KOAssistant share with your AI provider? Everything here is off until you allow it, and per-book overrides exist for all of it.") .. "\n" ..
+            _("Tip: keep a toggle off globally and allow it per book — or on globally and deny it for sensitive books. A per-book deny always wins.") .. "\n" ..
             _("Spoiler protection is separate and ON by default — responses respect your reading position.") .. "\n\n" ..
             _("Minimal: nothing beyond what you type.") .. "\n" ..
             _("Default: basic reading stats only.") .. "\n" ..
