@@ -6618,6 +6618,20 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
         UIManager:close(input_dialog)
         if plugin then plugin.current_input_dialog = nil end
 
+        -- Local-only actions (X-Ray Lookup): run the local handler and stop —
+        -- this dispatch used to fall through to the API path, context-extracting
+        -- and sending an EMPTY-prompt chat (device log 2026-08-13). Runtime
+        -- self-require like attachRerunContext below (executeDirectAction is
+        -- defined later in the file; a file-local ref would add an upvalue to
+        -- showChatGPTDialog, which sits near the 60-upvalue LuaJIT cap). The
+        -- dialog's own book beats whatever the reader has open.
+        if action.local_handler then
+            require("koassistant_dialogs").executeDirectAction(
+                ui_instance, action, highlighted_text or "", configuration, plugin,
+                document_path and { document_path = document_path } or nil)
+            return
+        end
+
         local function runAction()
             UIManager:scheduleIn(0.1, function()
                 local function onPromptComplete(history, temp_config_or_error)
@@ -8775,7 +8789,9 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
         -- Use per-context ordering for non-general contexts
         local action_service = plugin and plugin.action_service
         if input_context ~= "general" and action_service then
-            local ordered_actions = action_service:getInputActionObjects(input_context)
+            -- document_path = the DIALOG's book (open doc or fb book_metadata),
+            -- so the requires_xray_cache gate keys on the right book
+            local ordered_actions = action_service:getInputActionObjects(input_context, document_path)
             prompts = {}
             prompt_keys = {}
             for _idx, action in ipairs(ordered_actions) do
@@ -8876,6 +8892,13 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         if exclude_action_flags then
                             for _idx3, flag in ipairs(exclude_action_flags) do
                                 if action[flag] then excluded = true; break end
+                            end
+                        end
+                        -- Same X-Ray-cache gate as the favorites list above
+                        if not excluded and action.requires_xray_cache and document_path then
+                            local ActionCache = require("koassistant_action_cache")
+                            if not ActionCache.hasAnyXray(document_path) then
+                                excluded = true
                             end
                         end
                         if not excluded then

@@ -2187,14 +2187,25 @@ function ActionService:getInputActions(ctx_name)
 end
 
 -- Get ordered action objects for an input context (resolved, enabled only)
-function ActionService:getInputActionObjects(ctx_name)
+-- @param document_path: optional path — hides requires_xray_cache actions when
+-- that book has no X-Ray (same gate as the highlight/dictionary getters)
+function ActionService:getInputActionObjects(ctx_name, document_path)
     local action_ids = self:getInputActions(ctx_name)
     local result = {}
     for _, id in ipairs(action_ids) do
         -- Search across contexts since "both" actions appear in highlight and book
         local action = self:getAction(nil, id)
         if action and action.enabled then
-            table.insert(result, action)
+            local include = true
+            if action.requires_xray_cache and document_path then
+                local ActionCache = require("koassistant_action_cache")
+                if not ActionCache.hasAnyXray(document_path) then
+                    include = false
+                end
+            end
+            if include then
+                table.insert(result, action)
+            end
         end
     end
     return result
