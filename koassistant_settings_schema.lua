@@ -1025,6 +1025,22 @@ local SettingsSchema = {
                             end,
                         },
                         {
+                            id = "xray_marking_tap",
+                            type = "toggle",
+                            text = _("Tap Marked Words to Open"),
+                            path = "features.xray_marking_tap",
+                            default = true,
+                            help_text = _("With passive marking on, a plain tap on a marked word opens its X-Ray entry, like a link (real links in the text still win). Off = marks are visual only; a long press still opens matching entries via \"X-Ray Entry for Matching Selections\"."),
+                            on_change = function(new_value, plugin)
+                                if plugin.syncXrayMarks then
+                                    local UIManager = require("ui/uimanager")
+                                    UIManager:nextTick(function()
+                                        plugin:syncXrayMarks()
+                                    end)
+                                end
+                            end,
+                        },
+                        {
                             id = "xray_marking_density",
                             type = "radio",
                             text_func = function(plugin)

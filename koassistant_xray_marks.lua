@@ -48,7 +48,9 @@ local MODULE_NAME = "koassistant_xray_marks"
 --   artifact_key,      -- identity of the artifact the entity index came from
 --   entities,          -- XrayParser.buildMarkEntities output
 --   term_hits = {},    -- term text (lower) -> { {start, e, page}, ... }
---   page_boxes,        -- screen boxes for the current page (paint input)
+--   page_marks,        -- current page: { {x,y,w,h, name}, ... } — the strip
+--                      -- is painted from these, the FULL box is the tap
+--                      -- target (round 2, d2)
 -- }
 local st = nil
 
@@ -56,11 +58,11 @@ local st = nil
 -- every view repaint, so it must only READ prepared state.
 local paint_widget = {
   paintTo = function(_w, bb, _x, _y)
-    local boxes = st and st.page_boxes
-    if not boxes then return end
+    local marks = st and st.page_marks
+    if not marks then return end
     local Screen = require("device").screen
     local strip = math.max(2, Screen:scaleBySize(2))
-    for _i, box in ipairs(boxes) do
+    for _i, box in ipairs(marks) do
       if box.x and box.y and box.w and box.h and box.w > 0 and box.h > strip then
         bb:invertRect(box.x, box.y + box.h - strip, box.w, strip)
       end
@@ -169,9 +171,9 @@ local function searchTerm(document, term)
   return hits
 end
 
-local function dedupeBoxes(boxes)
+local function dedupeMarks(marks)
   local seen, out = {}, {}
-  for _i, b in ipairs(boxes) do
+  for _i, b in ipairs(marks) do
     local k = tostring(b.x) .. "|" .. tostring(b.y) .. "|" .. tostring(b.w)
     if not seen[k] then
       seen[k] = true
@@ -189,11 +191,11 @@ function XrayMarks.onPageTurn(plugin, pageno)
   if not (ui and ui.document and ui.rolling and pageno) then return end
   if ui.document.file ~= st.file then return end
   if ui.view and ui.view.view_mode == "scroll" then
-    st.page_boxes = nil
+    st.page_marks = nil
     return
   end
 
-  st.page_boxes = nil
+  st.page_marks = nil
   local ok, err = pcall(function()
     ensureIndex(plugin, pageno)
     if not st.entities or #st.entities == 0 then return end
@@ -204,9 +206,15 @@ function XrayMarks.onPageTurn(plugin, pageno)
     local page_text = ContextExtractor:new(ui):getVisiblePageText().text or ""
     if page_text == "" then return end
     local XrayParser = require("koassistant_xray_parser")
+    -- The extracted page text is LAYOUT text: line wraps arrive as newlines,
+    -- so a wrapped "Danny\nLloyd" must still match the single-space term
+    -- (device 2026-08-14 — multi-word entities silently unmarked when they
+    -- wrapped). Collapse all whitespace (NBSP included) to single spaces;
+    -- term norms are collapsed the same way at index build.
     local hay = XrayParser.normalizeArabic(page_text:lower())
+        :gsub("\194\160", " "):gsub("%s+", " ")
 
-    local boxes = {}
+    local marks = {}
     for _i, ent in ipairs(st.entities) do
       if not st.families or st.families[ent.family] then
         local ent_done = false
@@ -228,7 +236,8 @@ function XrayMarks.onPageTurn(plugin, pageno)
                   local added = false
                   for _b, box in ipairs(bxs) do
                     if box.y and box.y >= 0 and box.h and box.h > 0 then
-                      boxes[#boxes + 1] = box
+                      marks[#marks + 1] = { x = box.x, y = box.y,
+                        w = box.w, h = box.h, name = ent.name }
                       added = true
                     end
                   end
@@ -242,14 +251,38 @@ function XrayMarks.onPageTurn(plugin, pageno)
         end
       end
     end
-    if #boxes > 0 then
-      st.page_boxes = dedupeBoxes(boxes)
+    if #marks > 0 then
+      st.page_marks = dedupeMarks(marks)
     end
   end)
   if not ok then
     logger.warn("KOAssistant marks: scan failed:", err)
-    st.page_boxes = nil
+    st.page_marks = nil
   end
+end
+
+--- d2 tap layer (round 2): entity name under a tap, or nil. The FULL word
+--- box is the target (the painted strip alone would be a sliver); small
+--- padding helps e-ink finger accuracy. Gated on the tap setting per call.
+--- @param plugin table AskGPT instance
+--- @param ges table Tap gesture ({pos = {x, y}})
+--- @return string|nil entity name
+function XrayMarks.tapTarget(plugin, ges)
+  local marks = st and st.page_marks
+  if not (marks and ges and ges.pos) then return nil end
+  local features = plugin and plugin.settings
+      and plugin.settings:readSetting("features") or {}
+  if features.xray_marking_tap == false then return nil end
+  local Screen = require("device").screen
+  local pad = Screen:scaleBySize(3)
+  local tx, ty = ges.pos.x, ges.pos.y
+  for _i, m in ipairs(marks) do
+    if tx >= m.x - pad and tx <= m.x + m.w + pad
+        and ty >= m.y - pad and ty <= m.y + m.h + pad then
+      return m.name
+    end
+  end
+  return nil
 end
 
 --- Install/refresh/remove per settings + book state. Call on reader ready,

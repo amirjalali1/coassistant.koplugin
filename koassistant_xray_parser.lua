@@ -1797,7 +1797,11 @@ function XrayParser.buildMarkEntities(data)
                 local terms = XrayParser.collectSearchTerms(item, nil)
                 if #terms > 0 then
                     for _idx3, t in ipairs(terms) do
+                        -- Whitespace-collapsed (NBSP too) to match the
+                        -- layout-text haystack the marks scan collapses the
+                        -- same way (line wraps arrive as newlines there)
                         t.norm = XrayParser.normalizeArabic(t.text:lower())
+                            :gsub("\194\160", " "):gsub("%s+", " ")
                     end
                     table.insert(out, {
                         name = XrayParser.getItemName(item, cat.key),

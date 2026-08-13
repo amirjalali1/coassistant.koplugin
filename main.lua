@@ -8590,70 +8590,18 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       end
     end
     -- Slice 2 quick settings (plan ruling 5: the X-Ray popup doubles as
-    -- X-Ray quick settings): ambient marking + the selection intercept.
-    -- Rows edit the GLOBAL toggles; the book-layer-with-hold shape is the
-    -- recorded follow-up.
-    do
-      local mk_rows = {}
-      local feats = self.settings:readSetting("features") or {}
-      local function reopen()
-        self_ref:_showXrayScopePopup(action, action_id, on_update, cached_entry, opts)
-      end
-      table.insert(mk_rows, {{
-        text = T(_("Passive marking: %1"),
-          feats.xray_marking == true and _("On") or _("Off")),
-        callback = function()
-          UIManager:close(dialog)
-          feats.xray_marking = feats.xray_marking ~= true
-          self_ref.settings:flush()
-          self_ref:syncXrayMarks()
-          reopen()
-        end,
-      }})
-      if feats.xray_marking == true then
-        local dens = feats.xray_marking_density or "first"
-        table.insert(mk_rows, {{
-          text = T(_("Density: %1"),
-            dens == "all" and _("All occurrences") or _("First per page")),
-          callback = function()
-            UIManager:close(dialog)
-            feats.xray_marking_density = dens == "all" and "first" or "all"
-            self_ref.settings:flush()
-            self_ref:syncXrayMarks()
-            reopen()
-          end,
-        }})
-        local fam = feats.xray_marking_families or "all"
-        local fam_labels = {
-          all = _("All entities"),
-          people = _("People only"),
-          people_places = _("People & places"),
-        }
-        local fam_next = { all = "people", people = "people_places", people_places = "all" }
-        table.insert(mk_rows, {{
-          text = T(_("Mark: %1"), fam_labels[fam] or fam),
-          callback = function()
-            UIManager:close(dialog)
-            feats.xray_marking_families = fam_next[fam] or "all"
-            self_ref.settings:flush()
-            self_ref:syncXrayMarks()
-            reopen()
-          end,
-        }})
-      end
-      table.insert(mk_rows, {{
-        text = T(_("Open entries on matching taps: %1"),
-          feats.xray_selection_intercept ~= false and _("On") or _("Off")),
-        callback = function()
-          UIManager:close(dialog)
-          feats.xray_selection_intercept = feats.xray_selection_intercept == false
-          self_ref.settings:flush()
-          self_ref:syncDictionaryBypass()
-          reopen()
-        end,
-      }})
-      addGroupRow(mk_rows, _("Marking & lookup…"), _("Marking & lookup"))
-    end
+    -- X-Ray quick settings). Round 2: a SELF-REBUILDING dialog — toggling
+    -- inside the old addGroupRow sub-dialog dumped the reader back at the
+    -- main popup (maintainer: "same as clicking the back button").
+    table.insert(buttons, {{
+      text = _("Marking & lookup…"),
+      callback = function()
+        UIManager:close(dialog)
+        self_ref:_showXrayMarkingQuickSettings({ back = function()
+          self_ref:_showXrayScopePopup(action, action_id, on_update, cached_entry, opts)
+        end })
+      end,
+    }})
     table.insert(buttons, {{
       text = _("Cancel"),
       callback = function()
@@ -17141,6 +17089,100 @@ end
 --- current settings + book. Safe to call any time; no-ops without a reader.
 function AskGPT:syncXrayMarks()
   require("koassistant_xray_marks").sync(self)
+  -- d2 tap layer (slice 2 round 2): marked words are LINKS — a plain tap on
+  -- a mark opens the entity. ReaderHighlight's tap zone sees every tap
+  -- EXCEPT link taps (stock zone comment: links keep priority), so real
+  -- links in the text still win; everything else falls through to the
+  -- original handler (saved-highlight taps, page turns). Wrapper reads
+  -- per call — tapTarget returns nil when marking/tap is off.
+  local highlight = self.ui and self.ui.highlight
+  if highlight and not highlight._koassistant_original_onTap then
+    highlight._koassistant_original_onTap = highlight.onTap
+    local self_ref = self
+    highlight.onTap = function(hl_self, arg, ges)
+      local name = ges and require("koassistant_xray_marks").tapTarget(self_ref, ges)
+      if name then
+        local xaction = self_ref.action_service
+          and self_ref.action_service:getAction("highlight", "xray_lookup")
+        if xaction then
+          logger.info("KOAssistant: X-Ray mark tap - opening entity: " .. name)
+          self_ref:updateConfigFromSettings()
+          Dialogs.executeDirectAction(self_ref.ui, xaction, name, configuration, self_ref)
+          return true
+        end
+      end
+      return highlight._koassistant_original_onTap(hl_self, arg, ges)
+    end
+  end
+end
+
+--- Slice-2 quick settings (X-Ray popup "Marking & lookup…"): SELF-REBUILDING
+--- — every toggle re-shows this dialog with fresh labels instead of dumping
+--- the reader back at the main popup (device 2026-08-14). Edits the GLOBAL
+--- toggles; the book-layer-with-hold shape is the recorded follow-up.
+--- opts.back reopens whatever launched this.
+function AskGPT:_showXrayMarkingQuickSettings(opts)
+  local self_ref = self
+  local features = self.settings:readSetting("features") or {}
+  local ButtonDialog = require("ui/widget/buttondialog")
+  local dialog
+  local function row(text, change_fn, resync_fn)
+    return {{ text = text, callback = function()
+      UIManager:close(dialog)
+      change_fn()
+      self_ref.settings:flush()
+      if resync_fn then resync_fn() else self_ref:syncXrayMarks() end
+      self_ref:_showXrayMarkingQuickSettings(opts)
+    end }}
+  end
+  local buttons = {}
+  table.insert(buttons, row(
+    T(_("Passive marking: %1"), features.xray_marking == true and _("On") or _("Off")),
+    function() features.xray_marking = features.xray_marking ~= true end))
+  if features.xray_marking == true then
+    local dens = features.xray_marking_density or "first"
+    table.insert(buttons, row(
+      T(_("Density: %1"), dens == "all" and _("All occurrences") or _("First per page")),
+      function() features.xray_marking_density = dens == "all" and "first" or "all" end))
+    local fam = features.xray_marking_families or "all"
+    local fam_labels = {
+      all = _("All entities"),
+      people = _("People only"),
+      people_places = _("People & places"),
+    }
+    local fam_next = { all = "people", people = "people_places", people_places = "all" }
+    table.insert(buttons, row(
+      T(_("Mark: %1"), fam_labels[fam] or fam),
+      function() features.xray_marking_families = fam_next[fam] or "all" end))
+    table.insert(buttons, row(
+      T(_("Tap marked words to open: %1"),
+        features.xray_marking_tap ~= false and _("On") or _("Off")),
+      function()
+        if features.xray_marking_tap == false then
+          features.xray_marking_tap = true
+        else
+          features.xray_marking_tap = false
+        end
+      end))
+  end
+  -- The long-press layer (independent of marking): a held selection that
+  -- exactly matches an entity opens it, everything else falls through
+  table.insert(buttons, row(
+    T(_("Matching selections open entries: %1"),
+      features.xray_selection_intercept ~= false and _("On") or _("Off")),
+    function() features.xray_selection_intercept = features.xray_selection_intercept == false end,
+    function() self_ref:syncDictionaryBypass() end))
+  if opts and opts.back then
+    table.insert(buttons, {{ text = _("Back"), callback = function()
+      UIManager:close(dialog)
+      opts.back()
+    end }})
+  end
+  dialog = ButtonDialog:new{
+    title = _("Marking & lookup"),
+    buttons = buttons,
+  }
+  UIManager:show(dialog)
 end
 
 -- Scrub cross-context state from a features table before entering a new context.
