@@ -325,10 +325,23 @@ local function showImage(image_data, description, on_close, book_info, full_prom
         end
     end
 
+    -- Framed prompt rides as the native ImageViewer caption (triangle icon in
+    -- the title bar toggles it; starts hidden). Truncated — a full multi-side
+    -- frame as a title-bar subtitle would squeeze the image out; the complete
+    -- prompt is a gallery hold away. Skipped when unframed (= title already).
+    local caption
+    if full_prompt and full_prompt ~= description then
+        caption = full_prompt
+        if #caption > 400 then
+            caption = require("util").fixUtf8(caption:sub(1, 400), "") .. "…"
+        end
+    end
     local viewer = ImageViewer:new{
         file = path,
         with_title_bar = true,
         title_text = title_text,
+        caption = caption,
+        caption_visible = false,
         is_doc_page = false,
     }
     if on_close then
@@ -483,6 +496,56 @@ end
 --- @param config_table table   The global `configuration` table from main.lua
 --- @param settings     table   LuaSettings instance (for GUI API keys)
 --- @param book_info    table|nil { file, title } for the images index
+--- Assemble the prompt actually sent to the image API (context framing,
+--- 2026-08-13). Exported so the action-details view and the settings screen
+--- render the SAME template through the same code — no display copy to drift.
+--- opts: { book_metadata = {title, author}, window = {prev, next} }.
+--- features gates the frame parts: image_gen_frame_identity /
+--- image_gen_frame_context (both opt-out, default on — schema defaults).
+--- `description` stays the raw selection (filename + viewer title); English
+--- frame on purpose — model-facing, like the quiz/nudge templates.
+function ImageGenerator.buildPrompt(description, opts, features)
+    local fixUtf8 = require("util").fixUtf8
+    features = features or {}
+    local frame = {}
+    local meta = (features.image_gen_frame_identity ~= false)
+        and opts and opts.book_metadata or nil
+    if meta and meta.title and meta.title ~= "" then
+        if meta.author and meta.author ~= "" then
+            table.insert(frame, string.format('The passage is from the book "%s" by %s.', meta.title, meta.author))
+        else
+            table.insert(frame, string.format('The passage is from the book "%s".', meta.title))
+        end
+    end
+    local w = (features.image_gen_frame_context ~= false)
+        and opts and opts.window or nil
+    local prev = w and type(w.prev) == "string" and w.prev or ""
+    local next_ = w and type(w.next) == "string" and w.next or ""
+    if prev ~= "" or next_ ~= "" then
+        -- Image prompts reward brevity: ~400 chars a side, UTF-8-safe cuts
+        if #prev > 400 then prev = "…" .. fixUtf8(prev:sub(-400), "") end
+        if #next_ > 400 then next_ = fixUtf8(next_:sub(1, 400), "") .. "…" end
+        table.insert(frame, "Surrounding text, for context only: "
+            .. prev .. " […] " .. next_)
+    end
+    if #frame > 0 then
+        return "Create an illustration of the following passage from a book. "
+            .. table.concat(frame, " ")
+            .. "\n\nPassage to illustrate: " .. description
+    end
+    return description
+end
+
+--- The prompt template as display text: the real builder run with placeholder
+--- tokens, honoring the caller's current frame toggles. Tokens stay English —
+--- this shows the wire truth, and the frame itself is English.
+function ImageGenerator.promptTemplateText(features)
+    return ImageGenerator.buildPrompt("{selected text}", {
+        book_metadata = { title = "{book title}", author = "{book author}" },
+        window = { prev = "{text before selection}", next = "{text after selection}" },
+    }, features)
+end
+
 function ImageGenerator.generate(word, config_table, settings, book_info, opts)
     local ok, err = pcall(function()
         ImageGenerator._generateImpl(word, config_table, settings, book_info, opts)
@@ -528,38 +591,9 @@ function ImageGenerator._generateImpl(word, config_table, settings, book_info, o
 
     -- Context-framed prompt (device 2026-08-13 "more context"): book identity +
     -- a trimmed slice of the surrounding passage, framed as context so the
-    -- model illustrates the SELECTION, not the frame. `description` stays the
-    -- raw selection (filename + viewer title); the FULL prompt is what gets
-    -- sent and recorded (viewable via the gallery's "Show full prompt").
-    -- English on purpose — model-facing, like the quiz/nudge templates.
-    local final_prompt = description
-    do
-        local fixUtf8 = require("util").fixUtf8
-        local frame = {}
-        local meta = opts and opts.book_metadata
-        if meta and meta.title and meta.title ~= "" then
-            if meta.author and meta.author ~= "" then
-                table.insert(frame, string.format('The passage is from the book "%s" by %s.', meta.title, meta.author))
-            else
-                table.insert(frame, string.format('The passage is from the book "%s".', meta.title))
-            end
-        end
-        local w = opts and opts.window
-        local prev = w and type(w.prev) == "string" and w.prev or ""
-        local next_ = w and type(w.next) == "string" and w.next or ""
-        if prev ~= "" or next_ ~= "" then
-            -- Image prompts reward brevity: ~400 chars a side, UTF-8-safe cuts
-            if #prev > 400 then prev = "…" .. fixUtf8(prev:sub(-400), "") end
-            if #next_ > 400 then next_ = fixUtf8(next_:sub(1, 400), "") .. "…" end
-            table.insert(frame, "Surrounding text, for context only: "
-                .. prev .. " […] " .. next_)
-        end
-        if #frame > 0 then
-            final_prompt = "Create an illustration of the following passage from a book. "
-                .. table.concat(frame, " ")
-                .. "\n\nPassage to illustrate: " .. description
-        end
-    end
+    -- model illustrates the SELECTION, not the frame. The FULL prompt is what
+    -- gets sent and recorded (viewable via the gallery + viewer caption).
+    local final_prompt = ImageGenerator.buildPrompt(description, opts, features)
 
     -- Build request JSON (provider-specific format)
     local request_body_str

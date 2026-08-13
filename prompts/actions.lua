@@ -60,6 +60,12 @@ local Constants = require("koassistant_constants")
 --                      for Quick Actions" is the global kill-switch. Explicit
 --                      provider/model pins and ⚡ session picks win; providers without
 --                      tier placements keep the current model (optional)
+--   local_handler    - Dispatch to a named handler (dialogs handleLocalAction) instead
+--                      of the chat pipeline (xray_lookup, image_gen). The details view
+--                      hides chat flags, AI settings and prompt sections for these
+--   local_note       - Details-view note replacing the generic "local action: no AI
+--                      call is made" line — for local handlers that DO call an API
+--                      (image_gen); translated string (optional)
 
 local _ = require("koassistant_gettext")
 
@@ -670,6 +676,7 @@ Keep bullets short — essential grammar only, no explanatory asides or parenthe
         description = _("Generate an image from the selected text description using the current AI provider."),
         context = "highlight",
         local_handler = "image_gen",
+        local_note = _("This action skips the chat pipeline, but it does send one AI request: the framed prompt below goes to the image provider's API. Provider, model, size and prompt framing are set in Settings → Advanced → Image Generation."),
         requires_image_provider = true,
         in_highlight_menu = 12,
         exclude_from_compact = true,

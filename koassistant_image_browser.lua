@@ -3,7 +3,9 @@ KOAssistant Generated Images browser (PR #96 polish).
 
 Lists images produced by koassistant_image_generator.lua — kept in
 data_dir/koassistant_images, filenames carry the metadata (date + prompt
-snippet). Tap = view, hold = delete (confirm), title-bar menu = delete all.
+snippet). Tap = view (sent prompt as toggleable viewer caption), hold = full
+prompt in a scrollable TextViewer with Delete inside (plain delete confirm
+for pre-index images), title-bar menu = delete all.
 
 show(opts): opts.book_file (+ opts.book_title for the title) filters to
 images generated for that book, via the generator's book-association index
@@ -54,13 +56,22 @@ local function listImages(book_file)
     return files
 end
 
-local function viewImage(path)
+local function viewImage(path, prompt)
     local ok, ImageViewer = pcall(require, "ui/widget/imageviewer")
     if not ok then return end
+    -- Sent prompt as the native toggleable caption (triangle icon; starts
+    -- hidden). Truncated so the title bar can't squeeze the image out — the
+    -- full prompt lives behind the gallery row's hold.
+    local caption = prompt
+    if caption and #caption > 400 then
+        caption = require("util").fixUtf8(caption:sub(1, 400), "") .. "…"
+    end
     UIManager:show(ImageViewer:new{
         file = path,
         with_title_bar = true,
         title_text = path:match("([^/]+)%.%w+$") or path:match("([^/]+)$"),
+        caption = caption,
+        caption_visible = false,
         is_doc_page = false,
     })
 end
@@ -83,46 +94,49 @@ function ImageBrowser.show(opts)
     local prompt_index = ImageGenerator.readIndex()
     for _idx, f in ipairs(files) do
         local display = f.name:gsub("%.png$", "")
+        local ie = prompt_index[f.name]
+        local full_prompt = type(ie) == "table" and type(ie.prompt) == "string"
+            and ie.prompt or nil
+        local function confirmDelete(also_close)
+            UIManager:show(ConfirmBox:new{
+                text = T(_("Delete this image?\n\n%1"), display),
+                ok_text = _("Delete"),
+                ok_callback = function()
+                    os.remove(f.path)
+                    ImageGenerator.removeIndexEntries({ f.name })
+                    if also_close then UIManager:close(also_close) end
+                    UIManager:close(menu)
+                    ImageBrowser.show(opts)
+                end,
+            })
+        end
         table.insert(items, {
             text = display,
             mandatory = string.format("%d KB", math.floor(f.size / 1024 + 0.5)),
             mandatory_dim = true,
-            callback = function() viewImage(f.path) end,
-            -- Hold = options (was delete-only; the full sent prompt is now
-            -- recorded in the index and viewable here — filenames truncate)
+            callback = function() viewImage(f.path, full_prompt) end,
+            -- Hold = the full sent prompt, scrollable (InfoMessage truncated —
+            -- device 2026-08-13), with Delete riding inside; pre-index images
+            -- have no recorded prompt, so hold falls back to the delete confirm
             hold_callback = function()
-                local ie = prompt_index[f.name]
-                local full_prompt = type(ie) == "table" and type(ie.prompt) == "string"
-                    and ie.prompt or nil
-                local ButtonDialog = require("ui/widget/buttondialog")
-                local dialog
-                dialog = ButtonDialog:new{
+                if not full_prompt then
+                    confirmDelete()
+                    return
+                end
+                local TextViewer = require("ui/widget/textviewer")
+                local tv
+                tv = TextViewer:new{
                     title = display,
-                    buttons = {
-                        {{ text = _("Show full prompt"), enabled = full_prompt ~= nil,
-                           align = "left", callback = function()
-                            UIManager:close(dialog)
-                            UIManager:show(InfoMessage:new{ text = full_prompt })
-                        end }},
-                        {{ text = _("Delete…"), align = "left", callback = function()
-                            UIManager:close(dialog)
-                            UIManager:show(ConfirmBox:new{
-                                text = T(_("Delete this image?\n\n%1"), display),
-                                ok_text = _("Delete"),
-                                ok_callback = function()
-                                    os.remove(f.path)
-                                    ImageGenerator.removeIndexEntries({ f.name })
-                                    UIManager:close(menu)
-                                    ImageBrowser.show(opts)
-                                end,
-                            })
-                        end }},
-                        {{ text = _("Cancel"), callback = function()
-                            UIManager:close(dialog)
+                    title_multilines = true,
+                    text = full_prompt,
+                    add_default_buttons = true,
+                    buttons_table = {
+                        {{ text = _("Delete image…"), callback = function()
+                            confirmDelete(tv)
                         end }},
                     },
                 }
-                UIManager:show(dialog)
+                UIManager:show(tv)
             end,
         })
     end

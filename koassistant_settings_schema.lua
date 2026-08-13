@@ -2648,6 +2648,34 @@ local SettingsSchema = {
                             depends_on = { id = "image_gen_provider", value = "xai" },
                             separator = true,
                         },
+                        -- Prompt framing (2026-08-13): what surrounds the raw
+                        -- selection in the prompt sent to the image API. Both
+                        -- opt-out (default true) — ImageGenerator.buildPrompt
+                        -- reads them with ~= false
+                        {
+                            id = "image_gen_frame_identity",
+                            type = "toggle",
+                            text = _("Include book title/author in prompt"),
+                            path = "features.image_gen_frame_identity",
+                            default = true,
+                            help_text = _("Frame image prompts with the book's title and author, so illustrations can match the work's setting and era.\n\nApplies when generating from a book."),
+                        },
+                        {
+                            id = "image_gen_frame_context",
+                            type = "toggle",
+                            text = _("Include surrounding text in prompt"),
+                            path = "features.image_gen_frame_context",
+                            default = true,
+                            help_text = _("Add a short slice of the text around the selection, marked as context only, so the illustration reflects the scene the passage sits in."),
+                        },
+                        {
+                            id = "image_gen_prompt_template",
+                            type = "action",
+                            text = _("Prompt template…"),
+                            callback = "showImageGenPromptTemplate",
+                            help_text = _("Shows the exact prompt sent to the image API, with your current framing toggles applied."),
+                            separator = true,
+                        },
                         {
                             id = "generated_images_browser",
                             type = "action",

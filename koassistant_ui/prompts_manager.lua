@@ -823,8 +823,21 @@ function PromptsManager:showPromptDetails(prompt)
     )
 
     if prompt.local_handler then
-        -- Local handler actions don't use AI — skip flags, AI settings, and prompt sections
-        info_text = info_text .. "\n\n" .. _("This is a local action: no AI call is made.")
+        -- Local handler actions bypass the chat pipeline — skip chat flags, AI
+        -- settings and prompt sections. local_note lets an action say what it
+        -- actually does (image_gen DOES make an API call — the generic line
+        -- was misleading, device 2026-08-13)
+        info_text = info_text .. "\n\n"
+            .. (prompt.local_note or _("This is a local action: no AI call is made."))
+        if prompt.id == "image_gen" then
+            -- The REAL prompt template, rendered through the live builder with
+            -- the current framing toggles — display can never drift from wire
+            local ImageGenerator = require("koassistant_image_generator")
+            local feats = self.plugin.settings:readSetting("features") or {}
+            info_text = info_text .. "\n\n" .. _("─── Image Prompt ───")
+                .. "\n" .. ImageGenerator.promptTemplateText(feats)
+                .. "\n\n" .. _("Book title/author and surrounding text are included only when available for the request.")
+        end
     else
         -- Flags section (grouped together)
         info_text = info_text .. "\n\n" .. _("─── Flags ───")

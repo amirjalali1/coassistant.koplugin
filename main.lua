@@ -5520,6 +5520,19 @@ function AskGPT:showImageBrowser()
   ImageBrowser.show()
 end
 
+-- The exact prompt sent to the image API, rendered through the live builder
+-- with the current framing toggles (Settings → Advanced → Image Generation)
+function AskGPT:showImageGenPromptTemplate()
+  local ImageGenerator = require("koassistant_image_generator")
+  local TextViewer = require("ui/widget/textviewer")
+  local features = self.settings:readSetting("features") or {}
+  UIManager:show(TextViewer:new{
+    title = _("Image prompt template"),
+    text = ImageGenerator.promptTemplateText(features)
+        .. "\n\n" .. _("Book title/author and surrounding text are included only when available for the request."),
+  })
+end
+
 -- Event handlers for gesture-triggered actions
 function AskGPT:onKOAssistantChatHistory()
   -- Use the same implementation as the settings menu
