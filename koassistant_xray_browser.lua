@@ -375,18 +375,33 @@ end
 local function launchSearchSession(ui, term, use_regex, return_info)
     UIManager:scheduleIn(0.2, function()
         if use_regex then
-            ui.search.last_search_text = term
-            ui.search.use_regex = true
-            ui.search.case_insensitive = true
+            -- The session runs ENTIRELY on onShowSearchDialog's args (its
+            -- prev/next closures capture them) — write NOTHING onto the
+            -- search module. Setting last_search_text leaked our pipes
+            -- pattern into the user's regular search-input prefill, and a
+            -- synthesized current_search_type table read as "no type
+            -- selected" there (the type checkboxes compare by TABLE
+            -- IDENTITY), so a later manual search ran the pattern literally
+            -- and found nothing (device 2026-08-13).
             -- KOReader master changed onShowSearchDialog's 3rd arg from a
             -- boolean `regex` to a `search_type` table ({flags, regex}); the
             -- master handler does `search_type.regex`, so a bare boolean
             -- crashes ("attempt to index a boolean"). Detect the new API via
-            -- default_search_type and pass the matching shape.
+            -- default_search_type and pass KOReader's OWN regex entry (0x0001
+            -- fallback matches its stock flags).
             local regex_arg = true
             if type(ui.search.default_search_type) == "table" then
-                regex_arg = { flags = 0x0001, regex = true }
-                ui.search.current_search_type = regex_arg
+                regex_arg = nil
+                for _idx, st in ipairs(ui.search.search_types or {}) do
+                    if st.regex then
+                        regex_arg = st
+                        break
+                    end
+                end
+                regex_arg = regex_arg or { flags = 0x0001, regex = true }
+            else
+                -- Legacy boolean API read the module field, not the arg
+                ui.search.use_regex = true
             end
             ui.search:onShowSearchDialog(term, 0, regex_arg, true)
         else

@@ -8244,7 +8244,12 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         -- never auto-reverted), so don't claim position-following while one
         -- is installed (device round 2026-08-13: the hint said "following"
         -- while the X-Ray stayed at 100%)
-        local posture_hint = (cached_entry and cached_entry.full_document)
+        -- "Complete" includes a promoted 1.0 ladder rung: progress-complete
+        -- but no full_document stamp ("Switch to complete version" installs
+        -- one — device 2026-08-13, the hint kept claiming position-following)
+        local installed_complete = cached_entry and (cached_entry.full_document
+          or (tonumber(cached_entry.progress_decimal) or 0) >= 0.995)
+        local posture_hint = installed_complete
           and _("Spoiler protection is on — the installed X-Ray covers the whole book")
           or _("Spoiler protection is on — checkpoints follow your position")
         table.insert(buttons, {{
@@ -8618,7 +8623,12 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         -- never auto-reverted), so don't claim position-following while one
         -- is installed (device round 2026-08-13: the hint said "following"
         -- while the X-Ray stayed at 100%)
-        local posture_hint = (cached_entry and cached_entry.full_document)
+        -- "Complete" includes a promoted 1.0 ladder rung: progress-complete
+        -- but no full_document stamp ("Switch to complete version" installs
+        -- one — device 2026-08-13, the hint kept claiming position-following)
+        local installed_complete = cached_entry and (cached_entry.full_document
+          or (tonumber(cached_entry.progress_decimal) or 0) >= 0.995)
+        local posture_hint = installed_complete
           and _("Spoiler protection is on — the installed X-Ray covers the whole book")
           or _("Spoiler protection is on — checkpoints follow your position")
         table.insert(buttons, {{
@@ -13497,7 +13507,12 @@ function AskGPT:_offerChapterQuiz(chapter_index)
   local self_ref = self
   UIManager:scheduleIn(0.3, function()
     local ConfirmBox = require("ui/widget/confirmbox")
-    UIManager:show(ConfirmBox:new{
+    -- Running through several chapters fires several offers — replace the
+    -- previous one instead of stacking (device 2026-08-13)
+    if self_ref._quiz_offer_box and UIManager:isWidgetShown(self_ref._quiz_offer_box) then
+      UIManager:close(self_ref._quiz_offer_box)
+    end
+    self_ref._quiz_offer_box = ConfirmBox:new{
       text = T(_("End of: %1\n\nWould you like a comprehension quiz?"), display_title),
       ok_text = _("Quiz"),
       cancel_text = _("Skip"),
@@ -13547,7 +13562,8 @@ function AskGPT:_offerChapterQuiz(chapter_index)
           end,
         },
       }},
-    })
+    }
+    UIManager:show(self_ref._quiz_offer_box)
   end)
   return true
 end
@@ -16716,6 +16732,17 @@ function AskGPT:syncDictionaryBypass()
               local lookup_book = dict_self._koassistant_lookup_book
               dict_self._koassistant_non_reader_lookup = nil
               dict_self._koassistant_lookup_book = nil
+              -- No dict window will ever exist to clear the reader's selection
+              -- on close (stock clears it from DictQuickLookup; the bypass
+              -- path below clears it too) — without this the word stays stuck
+              -- selected and the next tap re-fires the lookup (device
+              -- 2026-08-13)
+              if highlight and highlight.clear then
+                highlight:clear()
+              end
+              if dict_close_callback then
+                dict_close_callback()
+              end
               self_ref:updateConfigFromSettings()
               Dialogs.executeDirectAction(self_ref.ui, xaction, word, configuration, self_ref,
                 lookup_book and { document_path = lookup_book } or nil)
@@ -17002,6 +17029,38 @@ function AskGPT:syncHighlightBypass()
     highlight.onHoldRelease = function(hl_self, ...)
       hl_self._koassistant_long_final = hl_self.long_hold_reached or nil
       return highlight._koassistant_original_onHoldRelease(hl_self, ...)
+    end
+  end
+
+  -- Stock KOReader never ARMS that long-hold timer when default_highlight_action
+  -- is "ask" ("the menu would come anyway" — readerhighlight.lua
+  -- _resetHoldTimer), so under the stock default the escape could never
+  -- trigger: no state icon, long_hold_reached never set (device 2026-08-13 —
+  -- worked for words, which arm unconditionally, but never for selections).
+  -- Our wrapper REPLACES that menu, so supplement the timer in exactly the
+  -- branches stock skips, only while our layer is active.
+  if not highlight._koassistant_original_resetHoldTimer then
+    highlight._koassistant_original_resetHoldTimer = highlight._resetHoldTimer
+    highlight._resetHoldTimer = function(hl_self, clear)
+      highlight._koassistant_original_resetHoldTimer(hl_self, clear)
+      if clear then return end
+      local features = self_ref.settings:readSetting("features") or {}
+      if not (features.highlight_bypass_enabled
+          or features.xray_selection_intercept ~= false) then
+        return
+      end
+      if G_reader_settings:readSetting("default_highlight_action", "ask") ~= "ask" then
+        return -- stock armed the timer itself
+      end
+      if hl_self.is_word_selection
+          and not G_reader_settings:isTrue("highlight_action_on_single_word") then
+        return -- word heading for dict lookup: stock armed this one too
+      end
+      -- long_hold_reached_action exists: the original call above creates it
+      -- unconditionally before deciding whether to schedule
+      local GestureDetector = require("device/gesturedetector")
+      UIManager:scheduleIn(G_reader_settings:readSetting("highlight_long_hold_threshold_s")
+        or GestureDetector.LONG_HOLD_INTERVAL_S, hl_self.long_hold_reached_action)
     end
   end
 
