@@ -619,6 +619,12 @@ function ArtifactBrowser:showBrowserMenuOptions(opts)
 
     dialog = ButtonDialog:new{
         buttons = {
+            -- Stays INSIDE the browser (list overlays it) — no navClose, unlike
+            -- the cross-browser rows below
+            {{ text = _("Browse by type…"), align = "left", callback = function()
+                UIManager:close(dialog)
+                self_ref:showBrowseByType(opts)
+            end }},
             {{ text = _("Chat History"), align = "left", callback = function()
                 local mc = navClose()
                 UIManager:nextTick(function()
@@ -642,6 +648,127 @@ function ArtifactBrowser:showBrowserMenuOptions(opts)
         end,
     }
     UIManager:show(dialog)
+end
+
+--- Cross-book "browse by type" (device 2026-08-13): pick an artifact type,
+--- list every book's artifact of that type. Walks the SAME validated index as
+--- showArtifactBrowser and the same per-book aggregation
+--- (getAvailableArtifacts), so a type surfaces exactly where the per-book
+--- selector would list it; group rows (sections / wiki / archived versions)
+--- are skipped — those live behind their book's own surfaces. Loads each
+--- indexed book's cache once; explicit user action, so the scan is acceptable.
+--- @param opts table|nil Config passed through
+function ArtifactBrowser:showBrowseByType(opts)
+    local AskGPT = self:getAskGPTInstance()
+    if not AskGPT then
+        UIManager:show(InfoMessage:new{ text = _("Could not open viewer.") })
+        return
+    end
+    local lfs = require("libs/libkoreader-lfs")
+    local index = G_reader_settings:readSetting("koassistant_artifact_index", {})
+    local types = {}   -- key → { name, items = { {path, title, artifact, modified} } }
+    local order = {}   -- type keys, sorted below
+    for doc_path in pairs(index) do
+        local cache_path = ActionCache.getPath(doc_path)
+        if cache_path and lfs.attributes(cache_path, "mode") == "file" then
+            local title = getBookMetadata(doc_path)
+            for _idx, a in ipairs(ActionCache.getAvailableArtifacts(doc_path)) do
+                if not (a.is_xray_versions_group or a.is_section_group or a.is_wiki_group) then
+                    local t = types[a.key]
+                    if not t then
+                        t = { name = a.name, items = {} }
+                        types[a.key] = t
+                        table.insert(order, a.key)
+                    end
+                    table.insert(t.items, {
+                        path = doc_path,
+                        title = title,
+                        artifact = a,
+                        modified = a.data and a.data.timestamp or 0,
+                    })
+                end
+            end
+        end
+    end
+    if #order == 0 then
+        UIManager:show(InfoMessage:new{ text = _("No artifacts yet."), timeout = 2 })
+        return
+    end
+    -- Most-populated types first, ties alphabetical
+    table.sort(order, function(x, y)
+        local cx, cy = #types[x].items, #types[y].items
+        if cx ~= cy then return cx > cy end
+        return types[x].name < types[y].name
+    end)
+
+    local self_ref = self
+    local dialog
+    local rows = {}
+    for _idx, key in ipairs(order) do
+        local t = types[key]
+        table.insert(rows, {{
+            text = T("%1 (%2)", t.name, #t.items),
+            align = "left",
+            callback = function()
+                UIManager:close(dialog)
+                self_ref:_showTypeList(t, AskGPT, opts)
+            end,
+        }})
+    end
+    table.insert(rows, {{ text = _("Cancel"),
+        callback = function() UIManager:close(dialog) end }})
+    dialog = ButtonDialog:new{
+        title = _("Browse by type"),
+        buttons = rows,
+    }
+    UIManager:show(dialog)
+end
+
+--- One type's artifacts across all books, newest first. Overlays the browser
+--- Menu (X/back returns to it); a tapped artifact opens its viewer on top via
+--- the selector's exact concrete-entry dispatch (per-action → viewCachedAction,
+--- plain → showCacheViewer).
+function ArtifactBrowser:_showTypeList(t, AskGPT, opts)
+    table.sort(t.items, function(a, b) return (a.modified or 0) > (b.modified or 0) end)
+    local menu_items = {}
+    for _idx, item in ipairs(t.items) do
+        local captured = item
+        table.insert(menu_items, {
+            text = captured.title,
+            mandatory = Constants.formatArtifactMeta(captured.artifact.data),
+            mandatory_dim = true,
+            help_text = captured.path,
+            callback = function()
+                local a = captured.artifact
+                if a.is_per_action then
+                    AskGPT:viewCachedAction({ text = a.name }, a.key, a.data,
+                        { file = captured.path, book_title = captured.title })
+                else
+                    AskGPT:showCacheViewer({ name = a.name, key = a.key, data = a.data,
+                        book_title = captured.title, file = captured.path })
+                end
+            end,
+        })
+    end
+    local menu = Menu:new{
+        title = T(_("%1 — all books"), t.name),
+        item_table = menu_items,
+        is_borderless = true,
+        is_popout = false,
+        width = Screen:getWidth(),
+        height = Screen:getHeight(),
+        onMenuSelect = function(_self_menu, item)
+            if item and item.callback then item.callback() end
+            return true
+        end,
+        multilines_show_more_text = true,
+        items_max_lines = 2,
+        single_line = false,
+        multilines_forced = true,
+        items_font_size = 18,
+        items_mandatory_font_size = 14,
+    }
+    UIManager:show(menu)
 end
 
 --- Show list of pinned artifacts for a given context

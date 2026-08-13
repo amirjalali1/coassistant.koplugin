@@ -2780,7 +2780,7 @@ function AskGPT:buildProviderMenu(simplified, show_all)
 
   -- Helper to create provider select callback
   local function createProviderCallback(prov_id, display_name)
-    return function()
+    return function(touchmenu_instance)
       local features = self_ref.settings:readSetting("features") or {}
       local old_provider = features.provider
 
@@ -2800,6 +2800,21 @@ function AskGPT:buildProviderMenu(simplified, show_all)
         text = T(_("Provider: %1"), display_name),
         timeout = 1.5,
       })
+      -- Selecting an unconfigured provider offers its setup right here instead
+      -- of failing politely at send time (device 2026-08-13). The selection
+      -- STANDS either way — Cancel just leaves the key for later. Checked at
+      -- tap time (not the build-time no_key marker) so a key added since the
+      -- menu was built doesn't re-prompt. Codex has no key — its connect
+      -- dialog is the equivalent. menuRefresher(nil) in the QS popup path is
+      -- the documented safe no-op (QS rebuilds per open).
+      if not self_ref:isProviderConfigured(prov_id) then
+        if prov_id == "openai_codex" then
+          require("koassistant_openai_codex_oauth").showManageDialog(self_ref)
+        else
+          self_ref:showApiKeyDialog(prov_id, display_name, false,
+            menuRefresher(touchmenu_instance))
+        end
+      end
     end
   end
 

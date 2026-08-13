@@ -1103,7 +1103,10 @@ local SettingsSchema = {
             id = "ai_language_settings",
             type = "submenu",
             text = _("AI Language Settings"),
-            emoji = "🌐",
+            -- 🌍 like every other language surface (QS Language/Translate/Dictionary
+            -- chips, Translate Settings) — 🌐 is the web-search glyph (action
+            -- indicators, Web chip) and must not double as language
+            emoji = "🌍",
             items = {
                 {
                     id = "interaction_languages",

@@ -4392,6 +4392,18 @@ function ChatGPTViewer.buildTextSelectionPopup(text, opts)
     })
   end
 
+  -- Wikipedia (KOReader's own lookup; ReaderWikipedia handles the
+  -- offline case itself via willRerunWhenOnline)
+  if ui and ui.wikipedia then
+    table.insert(flat_buttons, {
+      text = _("Wikipedia"),
+      callback = function()
+        close_and_clear()
+        ui.wikipedia:onLookupWikipedia(text)
+      end,
+    })
+  end
+
   -- Look up in X-Ray — targets this surface's OWN book, so it works without a
   -- reader/dictionary module (chats opened from the file browser) and for
   -- multi-word entity names the dictionary fast path never covers
