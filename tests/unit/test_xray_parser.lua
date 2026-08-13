@@ -276,6 +276,18 @@ TestRunner:test("singleton categories are skipped", function()
     XrayParser.foldExactHandles(data, set)
     TestRunner:ok(not XrayParser.matchExactHandle(set, "Reading chapter 3"))
 end)
+TestRunner:test("parenthetical-stripped variant folds (marked text = selectable text)", function()
+    -- Device 2026-08-14: "Poison container (giftbeholder)" was marked as
+    -- "Poison container" (collectSearchTerms strips the parenthetical) but
+    -- selecting those words missed the raw-handle-only route index
+    local data = { locations = { { name = "Poison container (giftbeholder)" } } }
+    local set = {}
+    XrayParser.foldExactHandles(data, set)
+    TestRunner:ok(XrayParser.matchExactHandle(set, "poison container"))
+    TestRunner:ok(XrayParser.matchExactHandle(set, "Poison container (giftbeholder)"))
+    TestRunner:ok(XrayParser.matchExactHandle(set, "  poison   container "))
+    TestRunner:ok(not XrayParser.matchExactHandle(set, "giftbeholder"))
+end)
 TestRunner:test("Arabic: article-stripped QUERY matches unstripped handle (searchAll parity)", function()
     local data = { characters = { { name = "نجمة" } } }
     local set = {}

@@ -2125,6 +2125,9 @@ local function getSectionPageRange(data, doc)
     if not end_page then end_page = data.scope_end_page end
     return start_page, end_page
 end
+-- Exported for the marks scan (slice 2): section ranges resolve once per
+-- disk change there and compare per page turn without re-parsing
+ActionCache.getSectionPageRange = getSectionPageRange
 
 --- Find the best X-Ray for the current reading position.
 --- Priority: section in range > main > sole section out of range.

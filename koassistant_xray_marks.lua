@@ -45,12 +45,18 @@ local MODULE_NAME = "koassistant_xray_marks"
 --   file, density_first, families (nil = all),
 --   stamps,            -- cache+ladder+aliases disk stamp gating the reloads
 --   live, ladder,      -- in-memory copies reloaded on stamp change
---   artifact_key,      -- identity of the artifact the entity index came from
---   entities,          -- XrayParser.buildMarkEntities output
+--   sections,          -- { {key, sp, ep, stamp, data} } ranges resolved on
+--                      -- stamp change; in-range filter per turn is pure
+--                      -- arithmetic (round 3: section-only entities were
+--                      -- invisible to marking)
+--   artifact_key,      -- identity of the artifacts the entity index came from
+--   entities,          -- XrayParser.buildMarkEntities output (main + in-range sections)
 --   term_hits = {},    -- term text (lower) -> { {start, e, page}, ... }
---   page_marks,        -- current page: { {x,y,w,h, name}, ... } — the strip
---                      -- is painted from these, the FULL box is the tap
---                      -- target (round 2, d2)
+--   page_marks,        -- current page: { {x,y,w,h, name}, ... } — FULL word
+--                      -- boxes, the tap targets (round 2, d2)
+--   paint_boxes,       -- same-line-merged union rects the strips paint from
+--                      -- (round 3: overlapping invertRect strips XOR each
+--                      -- other back to normal — "only 'on' of Kubrickon")
 -- }
 local st = nil
 
@@ -58,11 +64,11 @@ local st = nil
 -- every view repaint, so it must only READ prepared state.
 local paint_widget = {
   paintTo = function(_w, bb, _x, _y)
-    local marks = st and st.page_marks
-    if not marks then return end
+    local boxes = st and st.paint_boxes
+    if not boxes then return end
     local Screen = require("device").screen
     local strip = math.max(2, Screen:scaleBySize(2))
-    for _i, box in ipairs(marks) do
+    for _i, box in ipairs(boxes) do
       if box.x and box.y and box.w and box.h and box.w > 0 and box.h > strip then
         bb:invertRect(box.x, box.y + box.h - strip, box.w, strip)
       end
@@ -118,7 +124,7 @@ local function pickArtifact(plugin, pageno)
   return live
 end
 
---- Reload disk state on stamp change, re-pick the artifact, rebuild the
+--- Reload disk state on stamp change, re-pick the artifacts, rebuild the
 --- entity index when the pick changed. Cheap when nothing moved.
 local function ensureIndex(plugin, pageno)
   local ActionCache = require("koassistant_action_cache")
@@ -127,27 +133,71 @@ local function ensureIndex(plugin, pageno)
     st.stamps = stamps
     st.live = ActionCache.getXrayCache(st.file)
     st.ladder = ActionCache.getXrayLadder(st.file)
+    -- Section X-Rays (round 3): entities that live only in a section were
+    -- invisible to marking while every LOOKUP surface searches sections
+    -- too. Ranges resolve once per disk change (the real resolver — an
+    -- exclusive end xpointer and last-section/hidden-flow handling live
+    -- there); the per-turn in-range filter is pure arithmetic.
+    st.sections = {}
+    local doc = plugin.ui and plugin.ui.document
+    for _idx, sec in ipairs(ActionCache.getSectionXrays(st.file)) do
+      if sec.data and sec.data.result then
+        local okr, sp, ep = pcall(ActionCache.getSectionPageRange, sec.data, doc)
+        if okr and sp and ep then
+          st.sections[#st.sections + 1] = { key = sec.key, sp = sp, ep = ep,
+            stamp = tostring(sec.data.timestamp), data = sec.data }
+        end
+      end
+    end
   end
   local art = pickArtifact(plugin, pageno)
-  if not art then
+  local in_range = {}
+  for _idx, s in ipairs(st.sections or {}) do
+    if pageno >= s.sp and pageno <= s.ep then
+      in_range[#in_range + 1] = s
+    end
+  end
+  if not art and #in_range == 0 then
     st.entities = nil
     st.artifact_key = nil
     return
   end
-  local key = tostring(art.timestamp) .. "|" .. tostring(art.progress_decimal)
-      .. "|" .. st.stamps
+  local key = art and (tostring(art.timestamp) .. "|" .. tostring(art.progress_decimal)) or "-"
+  for _idx, s in ipairs(in_range) do
+    key = key .. "|" .. s.key .. ":" .. s.stamp
+  end
+  key = key .. "|" .. st.stamps
   if st.artifact_key == key and st.entities then return end
   local XrayParser = require("koassistant_xray_parser")
-  local data = XrayParser.parse(art.result)
-  if not data then
-    st.entities = nil
-    st.artifact_key = nil
-    return
+  local user_aliases = ActionCache.getUserAliases(st.file)
+  local ents = {}
+  local function addFrom(result)
+    local data = XrayParser.parse(result)
+    if not data then return end
+    XrayParser.mergeUserAliases(data, user_aliases)
+    for _idx, e in ipairs(XrayParser.buildMarkEntities(data)) do
+      ents[#ents + 1] = e
+    end
   end
-  XrayParser.mergeUserAliases(data, ActionCache.getUserAliases(st.file))
-  st.entities = XrayParser.buildMarkEntities(data)
+  if art then addFrom(art.result) end
+  for _idx, s in ipairs(in_range) do addFrom(s.data.result) end
+  st.entities = #ents > 0 and ents or nil
   st.artifact_key = key
-  logger.dbg("KOAssistant marks: entity index rebuilt,", #st.entities, "entities")
+  logger.dbg("KOAssistant marks: entity index rebuilt,", #ents, "entities")
+end
+
+-- Word-boundary honesty for plain terms (round 3, device: "Kubrick" marked
+-- inside "Kubrickon"): crengine's own word segmentation arrives as
+-- matched_word_prefix/suffix — leftover LETTERS in the same word mean a
+-- mid-word substring match, dropped for marking. Possessive tails ('s) and
+-- pure punctuation stay markable ("Kubrick's" must mark). Arabic regex
+-- terms are exempt: their pattern already consumes article/diacritic
+-- variants, and attached-prefix morphology needs the looseness.
+local function blockingAffix(s)
+  if not s or s == "" then return false end
+  if s == "'s" or s == "\226\128\153s" then return false end
+  if s:find("%a") or s:find("[\128-\255]") then return true end
+  return false
 end
 
 --- Whole-doc hit list for one term, page precomputed per hit. Memoized by
@@ -155,16 +205,23 @@ end
 local function searchTerm(document, term)
   local res
   if term.regex then
-    res = document:findAllText(term.regex, true, 0, 2000, true)
+    res = document:findAllText(term.regex, true, 1, 2000, true)
   else
-    res = document:findAllText(term.text, true, 0, 2000, false)
+    res = document:findAllText(term.text, true, 1, 2000, false)
   end
   local hits = {}
   if res then
     for _i, r in ipairs(res) do
-      local ok, page = pcall(document.getPageFromXPointer, document, r.start)
-      if ok and page then
-        hits[#hits + 1] = { start = r.start, e = r["end"], page = page }
+      local keep = true
+      if not term.regex and (blockingAffix(r.matched_word_prefix)
+          or blockingAffix(r.matched_word_suffix)) then
+        keep = false
+      end
+      if keep then
+        local ok, page = pcall(document.getPageFromXPointer, document, r.start)
+        if ok and page then
+          hits[#hits + 1] = { start = r.start, e = r["end"], page = page }
+        end
       end
     end
   end
@@ -183,6 +240,46 @@ local function dedupeMarks(marks)
   return out
 end
 
+-- Union overlapping same-line boxes into single paint rects (round 3):
+-- invertRect is self-cancelling, so two entities matching overlapping spans
+-- (Arabic article variants, main+section duplicates) XOR each other back to
+-- normal — the "only the 'on' of Kubrickon marked" artifact. Tap targets
+-- keep the raw per-entity boxes; only the painted strips merge.
+local function mergeLineBoxes(marks)
+  local rows = {}
+  for _i, m in ipairs(marks) do
+    local placed = false
+    for _j, row in ipairs(rows) do
+      if math.abs(row.y - m.y) < math.max(row.h, m.h) / 2 then
+        row.boxes[#row.boxes + 1] = m
+        placed = true
+        break
+      end
+    end
+    if not placed then
+      rows[#rows + 1] = { y = m.y, h = m.h, boxes = { m } }
+    end
+  end
+  local out = {}
+  for _i, row in ipairs(rows) do
+    table.sort(row.boxes, function(a, b) return a.x < b.x end)
+    local cur
+    for _j, b in ipairs(row.boxes) do
+      if cur and b.x <= cur.x + cur.w then
+        local right = math.max(cur.x + cur.w, b.x + b.w)
+        local bottom = math.max(cur.y + cur.h, b.y + b.h)
+        cur.y = math.min(cur.y, b.y)
+        cur.w = right - cur.x
+        cur.h = bottom - cur.y
+      else
+        cur = { x = b.x, y = b.y, w = b.w, h = b.h }
+        out[#out + 1] = cur
+      end
+    end
+  end
+  return out
+end
+
 --- The per-page-turn scan. Called from AskGPT:onPageUpdate (inside the
 --- dispatch, before the repaint) and from sync() for the current page.
 function XrayMarks.onPageTurn(plugin, pageno)
@@ -192,10 +289,37 @@ function XrayMarks.onPageTurn(plugin, pageno)
   if ui.document.file ~= st.file then return end
   if ui.view and ui.view.view_mode == "scroll" then
     st.page_marks = nil
+    st.paint_boxes = nil
     return
   end
 
+  -- A live search session owns the page visuals: our findAllText shares
+  -- crengine's selection state with the session's hit highlighting, so a
+  -- scan mid-session ERASES the highlights (round 3, device: "hits are no
+  -- longer highlighted"). The session flag is set by the onShowSearchDialog
+  -- wrap BEFORE the initial jump (do_search runs before UIManager:show, so
+  -- isWidgetShown alone misses the first hit); once the dialog has been
+  -- seen shown, its close ends the session and marks resume.
+  local search = ui.search
+  local sd = search and search.search_dialog
+  if sd and UIManager:isWidgetShown(sd) then
+    search._koassistant_search_session = "shown"
+    st.page_marks = nil
+    st.paint_boxes = nil
+    return
+  end
+  local sess = search and search._koassistant_search_session
+  if sess == true then
+    st.page_marks = nil
+    st.paint_boxes = nil
+    return
+  elseif sess then
+    -- Was shown, now closed: session over
+    search._koassistant_search_session = nil
+  end
+
   st.page_marks = nil
+  st.paint_boxes = nil
   local ok, err = pcall(function()
     ensureIndex(plugin, pageno)
     if not st.entities or #st.entities == 0 then return end
@@ -214,6 +338,14 @@ function XrayMarks.onPageTurn(plugin, pageno)
     local hay = XrayParser.normalizeArabic(page_text:lower())
         :gsub("\194\160", " "):gsub("%s+", " ")
 
+    -- Diagnosis lines (features.debug only): which terms went present this
+    -- turn, which entities marked, and the collapsed page text itself —
+    -- enough to replay a presence miss offline (round 3, the unmarked
+    -- Danny Lloyd hunt)
+    local dbg = plugin.settings
+        and (plugin.settings:readSetting("features") or {}).debug
+        and { present = {}, marked = {} } or nil
+
     local marks = {}
     for _i, ent in ipairs(st.entities) do
       if not st.families or st.families[ent.family] then
@@ -222,6 +354,7 @@ function XrayMarks.onPageTurn(plugin, pageno)
           local tkey = term.text:lower()
           local hits = st.term_hits[tkey]
           if not hits and hay:find(term.norm, 1, true) then
+            if dbg then table.insert(dbg.present, term.text) end
             hits = searchTerm(ui.document, term)
             st.term_hits[tkey] = hits
           end
@@ -249,15 +382,26 @@ function XrayMarks.onPageTurn(plugin, pageno)
           end
           if st.density_first and ent_done then break end
         end
+        if dbg and ent_done then table.insert(dbg.marked, ent.name) end
       end
     end
     if #marks > 0 then
       st.page_marks = dedupeMarks(marks)
+      st.paint_boxes = mergeLineBoxes(st.page_marks)
+    end
+    if dbg then
+      logger.info("KOAssistant marks dbg: page " .. tostring(pageno)
+        .. " ents=" .. tostring(#st.entities)
+        .. " fresh_present=[" .. table.concat(dbg.present, ", ") .. "]"
+        .. " marked=[" .. table.concat(dbg.marked, ", ") .. "]"
+        .. " boxes=" .. tostring(st.page_marks and #st.page_marks or 0))
+      logger.info("KOAssistant marks dbg hay: " .. hay)
     end
   end)
   if not ok then
     logger.warn("KOAssistant marks: scan failed:", err)
     st.page_marks = nil
+    st.paint_boxes = nil
   end
 end
 

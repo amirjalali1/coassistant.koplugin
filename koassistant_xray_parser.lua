@@ -1685,28 +1685,46 @@ function XrayParser.searchAll(data, query, opts)
     return results
 end
 
+-- One normalization for handle-vs-selection equality: lower + Arabic
+-- normalize + whitespace collapse + trim (selections and JSON handles both
+-- carry stray spacing).
+local function exactKey(s)
+    s = XrayParser.normalizeArabic(s:lower()):gsub("\194\160", " "):gsub("%s+", " ")
+    return s:match("^%s*(.-)%s*$") or s
+end
+
 --- Fold every exact-matchable handle (name/term/event + aliases) of data's
---- entities into `set`, keyed the way searchAll's exact mode normalizes the
---- QUERY side (lower + Arabic normalize) so a set hit means searchAll's
---- exact mode would match. Skips the same singleton categories. Feeds the
---- memoized route index behind the selection intercept (slice 2, ref #63).
+--- entities into `set`. Each handle folds BOTH its raw form and its
+--- parenthetical-stripped form — the SAME reduction collectSearchTerms
+--- applies for marking/searching, so anything the marks layer underlines is
+--- reachable by selecting exactly the underlined words (device 2026-08-14:
+--- entity "Poison container (giftbeholder)" was marked as "Poison
+--- container" but the raw-handle-only set refused the selection). Skips the
+--- singleton categories searchAll skips. Feeds the memoized route index
+--- behind the selection intercept (slice 2, ref #63).
 --- @param data table Parsed X-Ray data (user aliases already merged)
 --- @param set table Accumulator: normalized handle -> true
 function XrayParser.foldExactHandles(data, set)
+    local function fold(h)
+        if type(h) ~= "string" or h == "" then return end
+        local k = exactKey(h)
+        if k ~= "" then set[k] = true end
+        -- Parenthetical-stripped variant: "Theosis (Deification)" → "Theosis"
+        local stripped = h:gsub("%s*%(.-%)%s*", " ")
+        if stripped ~= h then
+            k = exactKey(stripped)
+            if k ~= "" then set[k] = true end
+        end
+    end
     for _idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
         if cat.key ~= "current_state" and cat.key ~= "current_position"
             and cat.key ~= "reader_engagement" and cat.key ~= "conclusion" then
             for _idx2, item in ipairs(cat.items) do
-                local name = item.name or item.term or item.event or ""
-                if name ~= "" then
-                    set[XrayParser.normalizeArabic(name:lower())] = true
-                end
+                fold(item.name or item.term or item.event)
                 local aliases = ensure_array(item.aliases)
                 if aliases then
                     for _idx3, a in ipairs(aliases) do
-                        if type(a) == "string" and a ~= "" then
-                            set[XrayParser.normalizeArabic(a:lower())] = true
-                        end
+                        fold(a)
                     end
                 end
             end
@@ -1714,15 +1732,17 @@ function XrayParser.foldExactHandles(data, set)
     end
 end
 
---- The query-side mirror of searchAll's exact mode against a
---- foldExactHandles set: normalized equality, plus the ال-stripped query
---- variant for Arabic (query side only — exact mode never strips handles).
+--- The query-side mirror against a foldExactHandles set: normalized
+--- equality, plus the ال-stripped query variant for Arabic (query side only
+--- — the handle side is never article-stripped, matching searchAll's exact
+--- mode).
 --- @param set table foldExactHandles accumulator
 --- @param query string Raw query text
 --- @return boolean
 function XrayParser.matchExactHandle(set, query)
     if type(query) ~= "string" or query == "" then return false end
-    local q = XrayParser.normalizeArabic(query:lower())
+    local q = exactKey(query)
+    if q == "" then return false end
     if set[q] then return true end
     if XrayParser.containsArabic(q) then
         local s = stripArabicArticle(q)

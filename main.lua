@@ -17114,6 +17114,20 @@ function AskGPT:syncXrayMarks()
       return highlight._koassistant_original_onTap(hl_self, arg, ges)
     end
   end
+  -- Search-session flag for the marks scan (round 3): our findAllText
+  -- shares crengine's selection state with the search session's hit
+  -- highlighting, so the scan stands down for the whole session. The flag
+  -- must be set BEFORE the session's initial jump — do_search runs before
+  -- UIManager:show(search_dialog), so an isWidgetShown check alone would
+  -- miss the first hit. The marks module promotes/clears it from there.
+  local search = self.ui and self.ui.search
+  if search and not search._koassistant_original_onShowSearchDialog then
+    search._koassistant_original_onShowSearchDialog = search.onShowSearchDialog
+    search.onShowSearchDialog = function(s_self, ...)
+      s_self._koassistant_search_session = true
+      return search._koassistant_original_onShowSearchDialog(s_self, ...)
+    end
+  end
 end
 
 --- Slice-2 quick settings (X-Ray popup "Marking & lookup…"): SELF-REBUILDING
