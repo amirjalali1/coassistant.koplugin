@@ -5578,7 +5578,7 @@ function PromptsManager:_managerNavButtons(from)
         { group = 3, field = "quick_actions_menu", label = _("QA Panel Actions"), show = function() self_ref:showQuickActionsManager() end },
         { group = 3, field = "qa_utilities_menu", label = _("QA Panel Utilities"), show = function() self_ref:showQaUtilitiesManager() end },
         { group = 3, field = "qs_items_menu", label = _("QS Panel Items"), show = function() self_ref:showQsItemsManager() end },
-        { group = 4, field = "file_browser_menu", label = _("File Browser Actions"), show = function() self_ref:showFileBrowserActionsManager() end },
+        { group = 4, field = "file_browser_menu", label = _("File Browser Items"), show = function() self_ref:showFileBrowserActionsManager() end },
     }
     local buttons = {}
     local last_group
@@ -6154,6 +6154,26 @@ end
 -- File Browser Actions Manager
 -- ============================================================
 
+-- The long-press popup's utility buttons (File Browser Items round,
+-- 2026-08-13), in POPUP ORDER — the manager mirrors what the reader sees.
+-- Each row toggles its features.* boolean (default true, read `~= false`) —
+-- the SAME keys the Menus & Buttons ▸ File browser toggles write, so both
+-- surfaces stay in sync by construction. `dynamic` = the button also has a
+-- content condition (chats/artifacts exist), marked "(dynamic)" in the row;
+-- Notebook is dynamic only while its require-existing modifier is on.
+local FB_UTILITY_ITEMS = {
+    { key = "show_chat_action_in_file_browser", label = function() return _("Chat/Action") end },
+    { key = "show_notebook_in_file_browser", label = function() return _("Notebook") end,
+      dynamic = function(f) return f.notebook_button_require_existing ~= false end },
+    { key = "show_chat_history_in_file_browser", label = function() return _("Chat History") end,
+      dynamic = function() return true end },
+    { key = "show_artifacts_in_file_browser", label = function() return _("View Artifacts") end,
+      dynamic = function() return true end },
+    { key = "show_book_hub_in_file_browser",
+      label = function() return require("koassistant_book_page").pageName() end },
+    { key = "show_book_settings_in_file_browser", label = function() return _("Book Settings") end },
+}
+
 function PromptsManager:_buildFileBrowserItems(bold_id)
     local features = self.plugin.settings:readSetting("features") or {}
     local all_actions = self.plugin.action_service:getAllBookActionsWithFileBrowserState()
@@ -6161,7 +6181,35 @@ function PromptsManager:_buildFileBrowserItems(bold_id)
     local menu_items = {}
 
     table.insert(menu_items, {
-        text = _("✓ = pinned | Tap = toggle | Hold = move | ☰ = navigate"),
+        text = _("✓ = shown | Tap = toggle | Hold = move (actions) | ☰ = navigate"),
+        dim = true,
+        callback = function() end,
+    })
+
+    -- Utility buttons first — popup order (they precede the actions there too)
+    for _idx, u in ipairs(FB_UTILITY_ITEMS) do
+        local enabled_now = features[u.key] ~= false
+        local text = (enabled_now and "✓ " or "  ") .. u.label()
+        if u.dynamic and u.dynamic(features) then
+            text = text .. " " .. _("(dynamic)")
+        end
+        table.insert(menu_items, {
+            text = text,
+            callback = function()
+                local f = self.plugin.settings:readSetting("features") or {}
+                -- off = explicit false; on = key absent (default true) — the
+                -- schema toggles read the same path either way
+                if f[u.key] == false then f[u.key] = nil else f[u.key] = false end
+                self.plugin.settings:saveSetting("features", f)
+                self.plugin.settings:flush()
+                if self.plugin.updateConfigFromSettings then self.plugin:updateConfigFromSettings() end
+                UIManager:nextTick(function() self:_refreshFileBrowserMenu() end)
+            end,
+        })
+    end
+
+    table.insert(menu_items, {
+        text = _("Actions:"),
         dim = true,
         callback = function() end,
     })
@@ -6194,7 +6242,7 @@ function PromptsManager:_refreshFileBrowserMenu(bold_id)
     if not self.file_browser_menu then return end
     local menu_items, fb_count = self:_buildFileBrowserItems(bold_id)
     self.file_browser_menu:switchItemTable(
-        T(_("File Browser Actions (%1 pinned)"), fb_count), menu_items, -1)
+        T(_("File Browser Items (%1 actions pinned)"), fb_count), menu_items, -1)
 end
 
 function PromptsManager:showFileBrowserActionsManager()
@@ -6212,7 +6260,7 @@ function PromptsManager:showFileBrowserActionsManager()
     local menu_items, fb_count = self:_buildFileBrowserItems()
     local self_ref = self
     self.file_browser_menu = Menu:new{
-        title = T(_("File Browser Actions (%1 pinned)"), fb_count),
+        title = T(_("File Browser Items (%1 actions pinned)"), fb_count),
         title_bar_left_icon = "appbar.menu",
         onLeftButtonTap = function()
             local from = "file_browser_menu"

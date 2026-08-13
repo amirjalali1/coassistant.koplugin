@@ -622,17 +622,23 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
   end
   local authors = book_props and book_props.authors or ""
   local self_ref_main = self
-  table.insert(buttons, {
-    text = _("Chat/Action") .. " (KOA)",
-    callback = function()
-      local UIManager = require("ui/uimanager")
-      local current_dialog = UIManager:getTopmostVisibleWidget()
-      if current_dialog and current_dialog.close then
-        UIManager:close(current_dialog)
-      end
-      self_ref_main:showKOAssistantDialogForFile(file, title, authors, book_props)
-    end,
-  })
+  -- Every utility button below is individually toggleable (File Browser Items
+  -- manager + Menus & Buttons ▸ File browser — same features.* booleans,
+  -- default true, read `~= false`); dynamic conditions (has_chats etc.) AND
+  -- with the toggle
+  if features.show_chat_action_in_file_browser ~= false then
+    table.insert(buttons, {
+      text = _("Chat/Action") .. " (KOA)",
+      callback = function()
+        local UIManager = require("ui/uimanager")
+        local current_dialog = UIManager:getTopmostVisibleWidget()
+        if current_dialog and current_dialog.close then
+          UIManager:close(current_dialog)
+        end
+        self_ref_main:showKOAssistantDialogForFile(file, title, authors, book_props)
+      end,
+    })
+  end
 
   -- Notebook (KOA) button - respects settings
   local show_notebook = features.show_notebook_in_file_browser ~= false  -- default true
@@ -660,7 +666,7 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
   end
 
   -- Chat History (KOA) button - only if chats exist
-  if has_chats then
+  if features.show_chat_history_in_file_browser ~= false and has_chats then
     table.insert(buttons, {
       text = _("Chat History") .. " (KOA)",
       callback = function()
@@ -689,7 +695,7 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
   if #caches > 0 then
     ActionCache.refreshIndex(file)
   end
-  if #caches > 0 then
+  if features.show_artifacts_in_file_browser ~= false and #caches > 0 then
     local self_ref = self
     table.insert(buttons, {
       text = _("View Artifacts") .. " (KOA)",
@@ -809,18 +815,20 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
   end
 
   -- Book Settings (KOA) button — per-book domain, research, AI title/author overrides
-  table.insert(buttons, {
-    text = _("Book Settings") .. " (KOA)",
-    callback = function()
-      local UIManager = require("ui/uimanager")
-      local current_dialog = UIManager:getTopmostVisibleWidget()
-      if current_dialog and current_dialog.close then
-        UIManager:close(current_dialog)
-      end
-      local BookSettings = require("koassistant_book_settings")
-      BookSettings.show({ plugin = self, ui = self.ui, document_path = file })
-    end,
-  })
+  if features.show_book_settings_in_file_browser ~= false then
+    table.insert(buttons, {
+      text = _("Book Settings") .. " (KOA)",
+      callback = function()
+        local UIManager = require("ui/uimanager")
+        local current_dialog = UIManager:getTopmostVisibleWidget()
+        if current_dialog and current_dialog.close then
+          UIManager:close(current_dialog)
+        end
+        local BookSettings = require("koassistant_book_settings")
+        BookSettings.show({ plugin = self, ui = self.ui, document_path = file })
+      end,
+    })
+  end
 
   -- Pinned file browser actions (user-selected via Action Manager hold menu)
   local fb_actions = self.action_service and self.action_service:getFileBrowserActions() or {}

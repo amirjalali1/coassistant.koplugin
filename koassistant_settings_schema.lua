@@ -2066,16 +2066,16 @@ local SettingsSchema = {
                         })
                     end,
                 },
+                -- Utility-button toggles in POPUP ORDER (File Browser Items
+                -- round 2026-08-13); the File Browser Items manager mirrors
+                -- these rows — same features.* keys, both surfaces in sync
                 {
-                    -- A4 follow-up (2026-08-11): the Book Hub utility button gets
-                    -- the Notebook button's visibility-toggle shape; defaults for
-                    -- this section get a joint look later
-                    id = "show_book_hub_in_file_browser",
+                    id = "show_chat_action_in_file_browser",
                     type = "toggle",
-                    text = _("Show Book Hub button"),
-                    path = "features.show_book_hub_in_file_browser",
+                    text = _("Show Chat/Action button"),
+                    path = "features.show_chat_action_in_file_browser",
                     default = true,
-                    help_text = _("Show 'Book Hub' button when long-pressing books in the file browser."),
+                    help_text = _("Show 'Chat/Action' button when long-pressing books in the file browser."),
                 },
                 {
                     id = "show_notebook_in_file_browser",
@@ -2095,11 +2095,45 @@ local SettingsSchema = {
                     help_text = _("Only show button if notebook already exists. Disable to allow creating new notebooks from file browser."),
                 },
                 {
+                    id = "show_chat_history_in_file_browser",
+                    type = "toggle",
+                    text = _("Show Chat History button"),
+                    path = "features.show_chat_history_in_file_browser",
+                    default = true,
+                    help_text = _("Show 'Chat History' button when long-pressing books in the file browser. Only appears for books with saved chats."),
+                },
+                {
+                    id = "show_artifacts_in_file_browser",
+                    type = "toggle",
+                    text = _("Show View Artifacts button"),
+                    path = "features.show_artifacts_in_file_browser",
+                    default = true,
+                    help_text = _("Show 'View Artifacts' button when long-pressing books in the file browser. Only appears for books with artifacts."),
+                },
+                {
+                    -- A4 follow-up (2026-08-11): the Book Hub utility button gets
+                    -- the Notebook button's visibility-toggle shape
+                    id = "show_book_hub_in_file_browser",
+                    type = "toggle",
+                    text = _("Show Book Hub button"),
+                    path = "features.show_book_hub_in_file_browser",
+                    default = true,
+                    help_text = _("Show 'Book Hub' button when long-pressing books in the file browser."),
+                },
+                {
+                    id = "show_book_settings_in_file_browser",
+                    type = "toggle",
+                    text = _("Show Book Settings button"),
+                    path = "features.show_book_settings_in_file_browser",
+                    default = true,
+                    help_text = _("Show 'Book Settings' button when long-pressing books in the file browser."),
+                },
+                {
                     id = "file_browser_actions",
                     type = "action",
-                    text = _("File Browser Actions"),
+                    text = _("File Browser Items"),
                     callback = "showFileBrowserActionsManager",
-                    help_text = _("Choose which actions appear in the file browser long-press menu."),
+                    help_text = _("Choose which buttons and actions appear in the file browser long-press menu."),
                     separator = true,
                 },
                 -- Quick panels
