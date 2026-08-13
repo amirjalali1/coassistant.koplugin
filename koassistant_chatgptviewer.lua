@@ -1432,9 +1432,15 @@ function ChatGPTViewer:init()
     {
       text = _("Notebook"),
       id = "save_to_notebook",
-      enabled = self.configuration and self.configuration.document_path
+      -- `and true or false`: Button treats enabled = nil as its DEFAULT TRUE,
+      -- so a nil document_path (general chats) left this tappable and the tap
+      -- answered with the "single-book chats only" error popup — the gate must
+      -- gray it out instead. The sentinel paths (library/general stores)
+      -- already evaluated false and grayed correctly.
+      enabled = (self.configuration and self.configuration.document_path
                 and self.configuration.document_path ~= "__GENERAL_CHATS__"
-                and self.configuration.document_path ~= "__LIBRARY_CHATS__",
+                and self.configuration.document_path ~= "__LIBRARY_CHATS__")
+                and true or false,
       callback = function()
         self:showNotebookPopup()
       end,
@@ -2091,7 +2097,9 @@ function ChatGPTViewer:init()
   table.insert(minimal_button_row2, {
     text = current_action_text,
     id = "switch_action",
-    enabled = has_rerun and #other_actions > 0,
+    -- ~= nil: a nil has_rerun would leak enabled = nil = Button's default TRUE
+    -- (dead-looking-but-tappable; the callback just returned)
+    enabled = has_rerun ~= nil and #other_actions > 0,
     callback = function()
       if not has_rerun or #other_actions == 0 then return end
 
@@ -2264,7 +2272,9 @@ function ChatGPTViewer:init()
   })
 
   -- Translate Row 2: Toggle Quote button
-  local has_original = self.original_highlighted_text and self.original_highlighted_text ~= ""
+  -- ~= nil first: `X and X ~= ""` yields NIL (not false) when X is nil, and
+  -- Button treats enabled = nil as its default TRUE
+  local has_original = self.original_highlighted_text ~= nil and self.original_highlighted_text ~= ""
   table.insert(translate_button_row2, {
     text_func = function()
       return self.translate_hide_quote and _("Show Original") or _("Hide Original")
