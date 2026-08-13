@@ -293,13 +293,34 @@ end
 -- Display-only, like the reply break.
 local function applyCarryPageBreak(html_body, carry_anchor)
   if not carry_anchor then return html_body end
-  -- LAST occurrence — the anchor came from the newest reply
-  local anchor_pos, search_start = nil, 1
+  -- The anchor came from the NEWEST reply, so scope the search to it: first
+  -- occurrence AFTER the newest reply marker. "Last occurrence overall"
+  -- mis-split when the phrase repeats INSIDE the reply itself (device
+  -- 2026-08-13: a duplicated sentence landed the reader on the second copy —
+  -- the reply is generated linearly, the reader's spot is the earliest
+  -- occurrence). Marker-less bodies (streamed artifact text) keep the
+  -- last-occurrence rule: no marker to scope by, and last still beats first
+  -- across older turns.
+  local marker = "<p>◉ KOAssistant:</p>"
+  local mpos, msearch = nil, 1
   while true do
-    local s = html_body:find(carry_anchor, search_start, true)
+    local s = html_body:find(marker, msearch, true)
     if not s then break end
-    anchor_pos = s
-    search_start = s + 1
+    mpos = s
+    msearch = s + 1
+  end
+  local anchor_pos
+  if mpos then
+    anchor_pos = html_body:find(carry_anchor, mpos + #marker, true)
+  end
+  if not anchor_pos then
+    local search_start = 1
+    while true do
+      local s = html_body:find(carry_anchor, search_start, true)
+      if not s then break end
+      anchor_pos = s
+      search_start = s + 1
+    end
   end
   if not anchor_pos then
     logger.info("KOAssistant: carry page break — anchor not in html")
@@ -333,14 +354,7 @@ local function applyCarryPageBreak(html_body, carry_anchor)
     return html_body
   end
   -- Spot at the newest reply's very start: the marker break already tops it
-  local marker = "<p>◉ KOAssistant:</p>"
-  local mpos, msearch = nil, 1
-  while true do
-    local s = html_body:find(marker, msearch, true)
-    if not s then break end
-    mpos = s
-    msearch = s + 1
-  end
+  -- (marker/mpos computed at the top for the scoped anchor search)
   if mpos and mpos < anchor_pos then
     local between = html_body:sub(mpos + #marker, anchor_pos - 1):gsub("<[^>]*>", "")
     if between:match("^%s*$") then
@@ -3615,12 +3629,38 @@ function ChatGPTViewer:landOnStreamPosition()
     local box = self.scroll_text_w.htmlbox_widget
     if not (box and box.findText and self.scroll_text_w.scrollToRatio) then return false end
     -- Same search + cleanup + repaint discipline as the marker landing below
-    -- (MuPDF's page search is case-insensitive and wrap-tolerant; the LAST
-    -- match page is the newest reply's when the phrase repeats)
+    -- (MuPDF's page search is case-insensitive and wrap-tolerant)
     local painted_page = box.page_number
     local found = box:findText(anchor)
     local list = box._match_page_list
-    local target = found and list and #list > 0 and list[#list] or nil
+    -- Copy the page list — the marker findText below overwrites it
+    local pages = {}
+    if found and list then
+      for i = 1, #list do pages[i] = list[i] end
+    end
+    local target
+    if #pages > 1 then
+      -- The anchor phrase REPEATS. Bare "last match" mis-lands when the
+      -- repeat sits inside the newest reply itself (device 2026-08-13: a
+      -- duplicated sentence landed the reader on the second copy). Scope to
+      -- the newest reply: its marker's last page bounds the anchor from
+      -- below — take the FIRST match from there (the reply is generated
+      -- linearly, the reader's spot is the earliest occurrence). No marker
+      -- (streamed artifact text): keep the last match, which still beats
+      -- first across older turns.
+      local mfound = box:findText("◉ KOAssistant:")
+      local mlist = box._match_page_list
+      local marker_page = mfound and mlist and #mlist > 0 and mlist[#mlist] or nil
+      if marker_page then
+        for i = 1, #pages do
+          if pages[i] >= marker_page then
+            target = pages[i]
+            break
+          end
+        end
+      end
+    end
+    if not target and #pages > 0 then target = pages[#pages] end
     if box.clearSearch then
       box:clearSearch(true)
     else
@@ -3637,16 +3677,34 @@ function ChatGPTViewer:landOnStreamPosition()
     end
     return true
   elseif self.scroll_text_w.moveCursorToCharPos and self.text then
-    -- Plain text carries the response verbatim: find the LAST occurrence (the
-    -- anchor came from the newest reply) and top-align its line — the same
-    -- line-precise recipe as the marker landing
+    -- Plain text carries the response verbatim. The anchor came from the
+    -- newest reply, so search FROM its marker: first occurrence after it is
+    -- the reader's spot — bare "last occurrence" mis-landed when the phrase
+    -- repeated inside the reply itself (device 2026-08-13). Marker-less text
+    -- (streamed artifacts) keeps the last-occurrence rule. Then top-align
+    -- the line — the same line-precise recipe as the marker landing.
+    local marker_byte
+    do
+      local msearch = 1
+      while true do
+        local s = self.text:find("◉ KOAssistant:", msearch, true)
+        if not s then break end
+        marker_byte = s
+        msearch = s + 1
+      end
+    end
     local last_byte
-    local search_start = 1
-    while true do
-      local s = self.text:find(anchor, search_start, true)
-      if not s then break end
-      last_byte = s
-      search_start = s + 1
+    if marker_byte then
+      last_byte = self.text:find(anchor, marker_byte, true)
+    end
+    if not last_byte then
+      local search_start = 1
+      while true do
+        local s = self.text:find(anchor, search_start, true)
+        if not s then break end
+        last_byte = s
+        search_start = s + 1
+      end
     end
     if not last_byte then
       logger.info("KOAssistant: stream-position carry txt — anchor not found")
@@ -3814,34 +3872,37 @@ function ChatGPTViewer:onShow()
     return "partial", self.frame.dimen
   end)
 
-  -- Schedule scroll after widget renders. The carry anchor (consumed at init)
-  -- routes even viewers that would not otherwise scroll — a FIRST streamed
-  -- reply opens at the top, a streamed artifact view has no transcript markers.
+  -- Land BEFORE the first paint: onShow fires synchronously inside
+  -- UIManager:show (stack insert → setDirty → Show event, verified in
+  -- frontend/ui/uimanager.lua) and the actual paint runs on the next UI
+  -- cycle — so scroll state set HERE is what the first painted frame shows.
+  -- The old scheduleIn(0.1) ran after that paint, so every landing was a
+  -- visible second repaint — the e-ink "scrolls there after opening at the
+  -- top" flash (device 2026-08-13). The scrollToRatio repaint recipe is
+  -- harmless pre-paint: freeBb no-ops (nothing rendered yet), _render builds
+  -- the target page, setDirty merges with show()'s own dirty. The carry
+  -- anchor (consumed at init) routes even viewers that would not otherwise
+  -- scroll — a FIRST streamed reply opens at the top, a streamed artifact
+  -- view has no transcript markers.
   if self.scroll_to_last_question then
-    UIManager:scheduleIn(0.1, function()
-      if self.scroll_text_w then
-        self:scrollToLastQuestion()
-      end
-    end)
+    if self.scroll_text_w then
+      self:scrollToLastQuestion()
+    end
   elseif self._stream_carry_anchor then
-    UIManager:scheduleIn(0.1, function()
-      if self.scroll_text_w then
-        -- Carry only — on a miss the viewer keeps its natural landing (top),
-        -- never the reply-marker fallback (this branch also serves viewers
-        -- without transcript markers, e.g. streamed artifact text)
-        self:landOnStreamPosition()
-      end
-    end)
+    if self.scroll_text_w then
+      -- Carry only — on a miss the viewer keeps its natural landing (top),
+      -- never the reply-marker fallback (this branch also serves viewers
+      -- without transcript markers, e.g. streamed artifact text)
+      self:landOnStreamPosition()
+    end
   elseif self.scroll_to_bottom then
-    UIManager:scheduleIn(0.1, function()
-      if self.scroll_text_w then
-        if self.render_markdown then
-          self.scroll_text_w:scrollToRatio(1)
-        else
-          self.scroll_text_w:scrollToBottom()
-        end
+    if self.scroll_text_w then
+      if self.render_markdown then
+        self.scroll_text_w:scrollToRatio(1)
+      else
+        self.scroll_text_w:scrollToBottom()
       end
-    end)
+    end
   end
 
   return true
@@ -4500,13 +4561,12 @@ function ChatGPTViewer:update(new_text, scroll_to_bottom)
     self.textw:clear()
     self.textw[1] = self.scroll_text_w
 
-    -- Only scroll to bottom if requested
-    if scroll_to_bottom then
-      UIManager:scheduleIn(0.1, function()
-        if self.scroll_text_w then
-          self.scroll_text_w:scrollToRatio(1)
-        end
-      end)
+    -- Scroll to bottom INLINE, before the setDirty below — the widget swap is
+    -- synchronous, so the repaint then shows the bottom directly (the old
+    -- scheduleIn ran after that repaint: a second visible jump, the same
+    -- e-ink flash class as the onShow landing, device 2026-08-13)
+    if scroll_to_bottom and self.scroll_text_w then
+      self.scroll_text_w:scrollToRatio(1)
     end
   else
     -- For plain text, optionally strip markdown and recreate widget
@@ -4537,13 +4597,10 @@ function ChatGPTViewer:update(new_text, scroll_to_bottom)
     self.textw:clear()
     self.textw[1] = self.scroll_text_w
 
-    -- Only scroll to bottom if requested
-    if scroll_to_bottom then
-      UIManager:scheduleIn(0.1, function()
-        if self.scroll_text_w and type(self.scroll_text_w.scrollToBottom) == "function" then
-          self.scroll_text_w:scrollToBottom()
-        end
-      end)
+    -- Inline for the same one-repaint reason as the markdown branch above
+    if scroll_to_bottom and self.scroll_text_w
+        and type(self.scroll_text_w.scrollToBottom) == "function" then
+      self.scroll_text_w:scrollToBottom()
     end
   end
 
