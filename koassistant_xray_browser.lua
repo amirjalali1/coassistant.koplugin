@@ -124,6 +124,17 @@ local function showSearchReturnButton(return_state)
                         ui.search.search_dialog:onClose()
                     end
                 end
+                -- Restore the reading position captured at jump time (round
+                -- 4): returning must never leave the reader at the search
+                -- hit — tapping outside to read on is how you KEEP the spot
+                local origin = return_state.origin
+                if ui and origin then
+                    if origin.xp then
+                        ui:handleEvent(Event:new("GotoXPointer", origin.xp, origin.xp))
+                    elseif origin.page then
+                        ui:handleEvent(Event:new("GotoPage", origin.page))
+                    end
+                end
                 -- Reopen X-Ray browser via plugin reference
                 local plugin = return_state.plugin_ref
                 if plugin then
@@ -140,6 +151,18 @@ local function showSearchReturnButton(return_state)
                                 item_name = return_state.item_name,
                                 open_distribution = true,
                             }
+                            -- Chain one level further: reopen the MENTION
+                            -- page the user came from (round 4) once the
+                            -- distribution is up. Copy — book_file stamping
+                            -- must not mutate the shared descriptor
+                            if return_state.mentions_state then
+                                local pm = {}
+                                for k, v in pairs(return_state.mentions_state) do
+                                    pm[k] = v
+                                end
+                                pm.book_file = book_file
+                                XrayBrowser._pending_mentions = pm
+                            end
                             local name = "X-Ray"
                             if scope and scope.label then
                                 name = T(_("Section X-Ray: %1"), scope.label)
@@ -1861,16 +1884,27 @@ end
 --- Navigate forward: push current state and switch to new items
 --- @param title string New menu title
 --- @param items table New menu items
-function XrayBrowser:navigateForward(title, items, focus_idx)
+function XrayBrowser:navigateForward(title, items, focus_idx, display)
     if not self.menu then return end
 
-    -- Save current state
+    -- Save current state (incl. display params, so a level that flips the
+    -- menu to multiline — the mention list — restores cleanly on back)
     table.insert(self.nav_stack, {
         title = self.current_title,
         items = self.menu.item_table,
         location = self.location,
+        display = {
+            single_line = self.menu.single_line,
+            multilines_forced = self.menu.multilines_forced,
+            items_max_lines = self.menu.items_max_lines,
+        },
     })
     self.current_title = title
+    if display then
+        self.menu.single_line = display.single_line
+        self.menu.multilines_forced = display.multilines_forced
+        self.menu.items_max_lines = display.items_max_lines
+    end
 
     -- Add to paths so back arrow becomes enabled via updatePageInfo
     table.insert(self.menu.paths, true)
@@ -1904,6 +1938,12 @@ function XrayBrowser:navigateBack()
     self.current_title = prev.title
     -- The group jump follows the reader back out (round 25)
     self.location = prev.location
+    -- Restore the display params saved at push time (multiline levels)
+    if prev.display then
+        self.menu.single_line = prev.display.single_line
+        self.menu.multilines_forced = prev.display.multilines_forced
+        self.menu.items_max_lines = prev.display.items_max_lines
+    end
 
     -- Remove from paths so back arrow disables when we reach root
     table.remove(self.menu.paths)
@@ -4358,6 +4398,24 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
 
     local items = {}
 
+    -- "All appearances" (round 4): door to the whole-book mention list — no
+    -- histogram, just the full snippet view, clipped by the text-matching
+    -- gate (label shows the clip). Not on section browsers (their scope is
+    -- the boundary; the chapter rows already cover it).
+    if not self.scope then
+        local boundary = self:_mentionBoundary()
+        table.insert(items, {
+            text = _("All appearances"),
+            bold = true,
+            mandatory = boundary and T(_("up to p. %1"), boundary) or nil,
+            mandatory_dim = true,
+            separator = not data.has_unread,
+            callback = function()
+                self_ref:_showChapterMentions(item, category_key, item_title, nil)
+            end,
+        })
+    end
+
     -- "Scan entire document / beyond scope" at top when there are unread/out-of-scope chapters
     if data.has_unread then
         local scan_text = self.scope and _("Scan beyond scope") or _("Scan entire document")
@@ -4563,6 +4621,30 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
             detail_context.dismiss_viewer:onClose()
         end
     end
+
+    -- Search-return chain (round 4): reopen the mention page the user came
+    -- from, one stack level above the freshly built distribution
+    if not is_refresh and XrayBrowser._pending_mentions then
+        local pm = XrayBrowser._pending_mentions
+        XrayBrowser._pending_mentions = nil
+        if not pm.book_file or pm.book_file == self.metadata.book_file then
+            local target_chapter
+            if not pm.whole_book and pm.chapter_start_page then
+                for _idx, ch in ipairs(chapters) do
+                    if ch.start_page == pm.chapter_start_page
+                        and (not pm.chapter_title or ch.title == pm.chapter_title) then
+                        target_chapter = ch
+                        break
+                    end
+                end
+                -- Chapter no longer found (rebuilt data): stay on distribution
+                if not target_chapter then pm = nil end
+            end
+            if pm then
+                self:_showChapterMentions(item, category_key, item_title, target_chapter)
+            end
+        end
+    end
 end
 
 --- Return-info shape for the floating "Back to X-Ray" button (reopens the
@@ -4578,15 +4660,29 @@ function XrayBrowser:_mentionReturnInfo(category_key, item_title)
     return return_info
 end
 
---- Mention list (xray_marking_plan.md slice 1 round 3, ref #78): one row per
---- occurrence — page + bold-match context snippet (the exact PTF shape
---- KOReader's own search all-results list renders), readable IN PLACE
---- without touching the book position. Tap = jump to THAT hit and enter the
+--- Whole-book mention boundary: the text-matching spoiler gate — max of
+--- X-Ray coverage and reading position. nil = no clip (coverage complete,
+--- or the boundary reaches the end of the book).
+function XrayBrowser:_mentionBoundary()
+    local ui = self.ui
+    if not (ui and ui.document) then return nil end
+    if self.is_complete then return nil end
+    local total = ui.document.info and ui.document.info.number_of_pages
+    local boundary = math.max(self.coverage_page or 0, getCurrentPage(ui) or 0)
+    if boundary == 0 or (total and boundary >= total) then return nil end
+    return boundary
+end
+
+--- Mention list (xray_marking_plan.md slice 1, round 4 shape, ref #78): one
+--- row per occurrence — page + bold-match context snippet (the exact PTF
+--- shape KOReader's own search all-results list renders, ellipsized),
+--- readable IN PLACE without touching the book position. Lives IN the
+--- browser stack: lower-left up-arrow returns to Chapter Appearances, the
+--- hamburger stays the browser's own. Tap = jump to THAT hit and enter the
 --- native search session there (built-in highlighting + prev/next — no
---- custom overlay, maintainer 2026-08-13). ☰ widens scope from the chapter
---- to the whole book, spoiler-gated to max(coverage, reading position) —
---- the same gate every text-matching feature uses. chapter = nil → whole
---- book directly.
+--- custom overlay, maintainer verdict). chapter = nil → whole book, clipped
+--- by the text-matching spoiler gate (the distribution's "All appearances"
+--- rows are the entries for that).
 function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapter)
     local self_ref = self
     local ui = self.ui
@@ -4620,24 +4716,16 @@ function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapte
         local is_pages = ui.document.info and ui.document.info.has_pages
 
         -- Scope bounds: the chapter's page range, or the whole book clipped
-        -- by the text-matching spoiler gate (max of X-Ray coverage and
-        -- reading position) unless coverage is complete
-        local first_page, last_page, scope_label
+        -- by the text-matching spoiler gate (_mentionBoundary)
+        local first_page, last_page, boundary
         if chapter then
             first_page = chapter.start_page
             last_page = chapter.end_page
-            scope_label = chapter.title or _("Chapter")
         else
             first_page = 1
-            local total = ui.document.info and ui.document.info.number_of_pages
-            local boundary
-            if not self_ref.is_complete then
-                boundary = math.max(self_ref.coverage_page or 0, getCurrentPage(ui) or 0)
-                if boundary == 0 or (total and boundary >= total) then boundary = nil end
-            end
-            last_page = boundary or total
-            scope_label = boundary and T(_("Whole book — up to p. %1"), boundary)
-                or _("Whole book")
+            boundary = self_ref:_mentionBoundary()
+            last_page = boundary
+                or (ui.document.info and ui.document.info.number_of_pages)
         end
         if not (first_page and last_page) then return end
 
@@ -4665,8 +4753,9 @@ function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapte
                     if page and page >= first_page and page <= last_page
                         and not seen[key] then
                         seen[key] = true
-                        -- Bold-match snippet (readersearch.lua idiom)
-                        local text = { TextBoxWidget.PTF_HEADER }
+                        -- Bold-match snippet (readersearch.lua idiom);
+                        -- ellipsized both ends — rows are mid-text fragments
+                        local text = { TextBoxWidget.PTF_HEADER, "… " }
                         if r.prev_text then
                             table.insert(text, r.prev_text)
                             if not r.prev_text:find("%s$") then
@@ -4684,6 +4773,7 @@ function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapte
                             end
                             table.insert(text, r.next_text)
                         end
+                        table.insert(text, " …")
                         table.insert(mentions, {
                             page = is_pages and page or nil,
                             xp = (not is_pages) and r.start or nil,
@@ -4705,6 +4795,12 @@ function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapte
             return a.order < b.order
         end)
 
+        -- Return descriptor: the search-return button relaunches THIS page
+        local mentions_state = {
+            whole_book = (not chapter) or nil,
+            chapter_start_page = chapter and chapter.start_page or nil,
+            chapter_title = chapter and chapter.title or nil,
+        }
         local list_items = {}
         for _i, m in ipairs(mentions) do
             local captured = m
@@ -4714,7 +4810,7 @@ function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapte
                 mandatory_dim = true,
                 callback = function()
                     self_ref:_gotoMentionAndSearch(category_key, item_title,
-                        captured, terms)
+                        captured, terms, mentions_state)
                 end,
             })
         end
@@ -4728,65 +4824,43 @@ function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapte
             })
         end
 
-        local Menu = require("ui/widget/menu")
-        -- Overlay Menu above the browser (artifact-browser type-list idiom):
-        -- X/back reveals the distribution view untouched underneath
-        local list_menu
-        local widen = chapter and not self_ref.scope
-        list_menu = Menu:new{
-            title = T(_("%1: %2 mentions"), item_title, #mentions),
-            subtitle = scope_label,
-            item_table = list_items,
-            is_borderless = true,
-            is_popout = false,
-            width = Screen:getWidth(),
-            height = Screen:getHeight(),
+        -- In the browser stack (round 4): lower-left up-arrow returns to
+        -- Chapter Appearances, the hamburger stays the browser's own; the
+        -- menu flips to multiline for the PTF bold-match snippets and flips
+        -- back on navigate-back
+        local title
+        if not chapter and boundary then
+            title = T(_("%1: %2 mentions (up to p. %3)"),
+                item_title, #mentions, boundary)
+        else
+            title = T(_("%1: %2 mentions"), item_title, #mentions)
+        end
+        self_ref:navigateForward(title, list_items, nil, {
+            single_line = false,
             multilines_forced = true,
             items_max_lines = 3,
-            -- ☰ = scope widening; only offered chapter → whole book (section
-            -- X-Rays keep their own scope as the boundary)
-            title_bar_left_icon = widen and "appbar.menu" or nil,
-            onLeftButtonTap = widen and function()
-                local scope_dialog
-                scope_dialog = ButtonDialog:new{
-                    buttons = {{{
-                        text = _("Whole book"),
-                        callback = function()
-                            UIManager:close(scope_dialog)
-                            UIManager:close(list_menu)
-                            self_ref._mention_list_menu = nil
-                            self_ref:_showChapterMentions(item, category_key,
-                                item_title, nil)
-                        end,
-                    }}},
-                }
-                UIManager:show(scope_dialog)
-            end or nil,
-            onMenuSelect = function(_menu_self, entry)
-                if entry.callback then entry.callback() end
-                return true
-            end,
-            close_callback = function()
-                self_ref._mention_list_menu = nil
-            end,
-        }
-        self_ref._mention_list_menu = list_menu
-        UIManager:show(list_menu)
+        })
     end)
 end
 
 --- Jump to one mention and enter KOReader's native search session there —
 --- the built-in search owns hit highlighting and prev/next navigation; the
---- floating "Back to X-Ray" button leads back to the browser. Location-stack
---- snapshot first, so the native back gesture undoes the jump (A8, ref #78).
-function XrayBrowser:_gotoMentionAndSearch(category_key, item_title, mention, terms)
+--- floating "Back to X-Ray" button restores the ORIGIN reading position and
+--- leads back to the mention page (round 4 points 5+6); reading on instead
+--- keeps the new place deliberately. Location-stack snapshot too, so the
+--- native back gesture also undoes the jump (A8, ref #78).
+function XrayBrowser:_gotoMentionAndSearch(category_key, item_title, mention, terms, mentions_state)
     local ui = self.ui
     if not (ui and ui.document and ui.search) then return end
-    -- Reveal the page: overlay list, covering widgets, then the browser
-    if self._mention_list_menu then
-        UIManager:close(self._mention_list_menu)
-        self._mention_list_menu = nil
+    -- Origin BEFORE anything moves: the return button jumps back here
+    local origin
+    if ui.document.info and ui.document.info.has_pages then
+        origin = { page = ui.view and ui.view.state and ui.view.state.page or 1 }
+    else
+        origin = { xp = (ui.rolling and ui.rolling.getLastProgress
+            and ui.rolling:getLastProgress()) or ui.document:getXPointer() }
     end
+    -- Reveal the page: covering widgets, then the browser
     if self._cleanup_widgets then
         for _cw, widget in ipairs(self._cleanup_widgets) do
             UIManager:close(widget)
@@ -4802,6 +4876,8 @@ function XrayBrowser:_gotoMentionAndSearch(category_key, item_title, mention, te
         ui:handleEvent(Event:new("GotoPage", mention.page))
     end
     local return_info = self:_mentionReturnInfo(category_key, item_title)
+    return_info.origin = origin
+    return_info.mentions_state = mentions_state
     if ui.document.info and ui.document.info.has_pages then
         -- PDF: no regex support — search the term that produced this hit
         launchSearchSession(ui, mention.term.text, false, return_info)
