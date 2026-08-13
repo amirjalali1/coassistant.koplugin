@@ -21,13 +21,14 @@ Mechanics (donor-verified, xray_marking_plan.md §1/§6):
   (the donor rides the native highlight.temp slot there, which the search
   session also owns — conflict; follow-up).
 
-Spoiler contract (F2, one rule): posture "full" (protection off — research /
-finished / explicit off) → mark from the LIVE artifact. Posture "track"
-(protected) → live only if its coverage is at or below the reading position;
-otherwise the best non-intro ladder checkpoint at or below the position;
-none → no marks (the artifact knows nothing spoiler-safe here). The entity
-index rebuilds only when the chosen artifact or the user-alias sidecar
-changes (mtime+size stamps — stats per turn, parses only on change).
+Spoiler stance (round 5, per the standing round-7 ruling): the LIVE X-Ray is
+the marking truth in every posture — installed content already reveals
+through its coverage, and demoting to an at-position checkpoint silently
+split the mark set from the lookup set (entities added as the X-Ray grew
+existed for lookup/tap yet never marked). All section X-Rays fold in,
+range-free, for the same one-truth reason. The entity index rebuilds only
+when the cache or user-alias sidecar changes on disk (mtime+size stamps —
+stats per turn, parses only on change).
 
 State is module-resident and single-book (reader-scoped, like the
 Attachments staging list); a different file swaps it wholesale.
@@ -43,8 +44,8 @@ local MODULE_NAME = "koassistant_xray_marks"
 
 -- st = {
 --   file, density_first, families (nil = all),
---   stamps,            -- cache+ladder+aliases disk stamp gating the reloads
---   live, ladder,      -- in-memory copies reloaded on stamp change
+--   stamps,            -- cache+aliases disk stamp gating the reloads
+--   live,              -- in-memory live entry, reloaded on stamp change
 --   sections,          -- { {key, sp, ep, stamp, data} } ranges resolved on
 --                      -- stamp change; in-range filter per turn is pure
 --                      -- arithmetic (round 3: section-only entities were
@@ -82,44 +83,26 @@ local function diskStamps(ActionCache, file)
   local cache_path = ActionCache.getPath(file)
   local attr = cache_path and lfs.attributes(cache_path)
   parts[#parts + 1] = attr and (tostring(attr.modification) .. ":" .. tostring(attr.size)) or "-"
-  local sidecar = cache_path and cache_path:gsub("[^/]+$", "")
-  local lattr = sidecar and lfs.attributes(sidecar .. ActionCache.XRAY_LADDER_FILE)
-  parts[#parts + 1] = lattr and (tostring(lattr.modification) .. ":" .. tostring(lattr.size)) or "-"
   local apath = ActionCache.getUserAliasesPath(file)
   local aattr = apath and lfs.attributes(apath)
   parts[#parts + 1] = aattr and (tostring(aattr.modification) .. ":" .. tostring(aattr.size)) or "-"
   return table.concat(parts, "|")
 end
 
---- The F2 artifact pick. Returns the cache/ladder entry to mark from, or nil.
-local function pickArtifact(plugin, pageno)
+--- The artifact behind the marks: the LIVE X-Ray, always (round 5). The
+--- earlier draft demoted to a ladder checkpoint at-or-below the reading
+--- position under spoiler protection — but that contradicts the standing
+--- round-7 ruling ("installed content already reveals through its coverage;
+--- a complete install reveals everything"), and it silently split the mark
+--- set from the lookup set: entities added as the X-Ray grew (the minor
+--- ones) existed for lookup/tap yet never marked. Installed = revealed;
+--- marked = findable, one truth. ai_knowledge/non-JSON lineages never mark.
+local function pickArtifact()
   local XrayParser = require("koassistant_xray_parser")
   local live = st.live
   if not (live and live.result) or live.source_mode == "ai_knowledge"
       or not XrayParser.isJSON(live.result) then
     return nil
-  end
-  local posture = plugin._xrayPosture and plugin:_xrayPosture() or "track"
-  if posture ~= "full" then
-    local total = plugin.ui.document:getPageCount()
-    local pos_dec = (total and total > 0) and (pageno / total) or nil
-    if pos_dec then
-      local live_dec = live.full_document and 1.0
-          or (tonumber(live.progress_decimal) or 0)
-      if live_dec > pos_dec + 0.01 then
-        -- Live artifact is ahead of the reader under protection: mark from
-        -- the best checkpoint at or below the position instead
-        local best
-        for _idx, r in ipairs(st.ladder or {}) do
-          local p = tonumber(r.progress_decimal)
-          if p and r.result and not r.intro and p <= pos_dec + 0.01
-              and (not best or p > (tonumber(best.progress_decimal) or 0)) then
-            best = r
-          end
-        end
-        return best
-      end
-    end
   end
   return live
 end
@@ -132,7 +115,6 @@ local function ensureIndex(plugin, pageno)
   if stamps ~= st.stamps then
     st.stamps = stamps
     st.live = ActionCache.getXrayCache(st.file)
-    st.ladder = ActionCache.getXrayLadder(st.file)
     -- Section X-Rays (round 3): entities that live only in a section were
     -- invisible to marking while every LOOKUP surface searches sections
     -- too. Ranges resolve once per disk change (the real resolver — an
@@ -150,20 +132,21 @@ local function ensureIndex(plugin, pageno)
       end
     end
   end
-  local art = pickArtifact(plugin, pageno)
-  local in_range = {}
-  for _idx, s in ipairs(st.sections or {}) do
-    if pageno >= s.sp and pageno <= s.ep then
-      in_range[#in_range + 1] = s
-    end
-  end
-  if not art and #in_range == 0 then
+  local art = pickArtifact()
+  -- Round 5: ALL section X-Rays fold in, range-free — the lookup/intercept
+  -- surfaces search every section regardless of range (searchAllXrays), so
+  -- a section-only entity was findable-but-never-marked outside its span
+  -- (device: ents jumped 153→181 across a section boundary while "Danny
+  -- Lloyd" matched lookups everywhere and marks nowhere). Marked = findable,
+  -- one truth; the spoiler angle is covered by the round-7 ruling (installed
+  -- content reveals through its coverage — sections are installed content).
+  if not art and #(st.sections or {}) == 0 then
     st.entities = nil
     st.artifact_key = nil
     return
   end
   local key = art and (tostring(art.timestamp) .. "|" .. tostring(art.progress_decimal)) or "-"
-  for _idx, s in ipairs(in_range) do
+  for _idx, s in ipairs(st.sections or {}) do
     key = key .. "|" .. s.key .. ":" .. s.stamp
   end
   key = key .. "|" .. st.stamps
@@ -171,19 +154,43 @@ local function ensureIndex(plugin, pageno)
   local XrayParser = require("koassistant_xray_parser")
   local user_aliases = ActionCache.getUserAliases(st.file)
   local ents = {}
+  local included, skipped = {}, {}
   local function addFrom(result)
     local data = XrayParser.parse(result)
     if not data then return end
     XrayParser.mergeUserAliases(data, user_aliases)
     for _idx, e in ipairs(XrayParser.buildMarkEntities(data)) do
       ents[#ents + 1] = e
+      included[e.category_key] = (included[e.category_key] or 0) + 1
+    end
+    -- Tally what the category gate dropped — the one line that separates
+    -- "entity in a non-marking category" from "entity not in this artifact"
+    -- on the next logged round
+    for _idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
+      if XrayParser.TEXT_MATCH_EXCLUDED[cat.key] and #cat.items > 0 then
+        skipped[cat.key] = (skipped[cat.key] or 0) + #cat.items
+      end
     end
   end
   if art then addFrom(art.result) end
-  for _idx, s in ipairs(in_range) do addFrom(s.data.result) end
+  for _idx, s in ipairs(st.sections or {}) do addFrom(s.data.result) end
   st.entities = #ents > 0 and ents or nil
   st.artifact_key = key
-  logger.dbg("KOAssistant marks: entity index rebuilt,", #ents, "entities")
+  local function tally(t)
+    local parts = {}
+    for k, v in pairs(t) do parts[#parts + 1] = k .. "=" .. v end
+    table.sort(parts)
+    return table.concat(parts, " ")
+  end
+  local src = "none"
+  if art then
+    local pct = art.full_document and 100
+        or math.floor((tonumber(art.progress_decimal) or 0) * 100 + 0.5)
+    src = (art == st.live and "live@" or "checkpoint@") .. pct .. "%"
+  end
+  logger.info("KOAssistant marks: index rebuilt from " .. src
+    .. " +" .. tostring(#(st.sections or {})) .. " sections: "
+    .. tally(included) .. (next(skipped) and (" | skipped: " .. tally(skipped)) or ""))
 end
 
 -- Word-boundary honesty for plain terms (round 3, device: "Kubrick" marked
@@ -202,12 +209,19 @@ end
 
 --- Whole-doc hit list for one term, page precomputed per hit. Memoized by
 --- the caller; runs at most once per term per session.
+--- Search flags are LOAD-BEARING (round 4, the unmarked "Danny Lloyd"):
+--- without them crengine matches nothing across DOM text-node boundaries
+--- (MATCH_ACROSS_TEXT_NODES) and folds no NBSP/soft-hyphen/curly-apostrophe
+--- (FOLD_* / IGNORE_FORMAT_CONTROL_CHARS) — a styled or NBSP-joined name
+--- passes the page-TEXT presence check yet returns zero search hits, and
+--- the empty result memoizes. 0x00FF = stock's default-search flag set;
+--- regex rides 0x0001 exactly like stock's regex search type.
 local function searchTerm(document, term)
   local res
   if term.regex then
-    res = document:findAllText(term.regex, true, 1, 2000, true)
+    res = document:findAllText(term.regex, true, 1, 2000, true, 0x0001)
   else
-    res = document:findAllText(term.text, true, 1, 2000, false)
+    res = document:findAllText(term.text, true, 1, 2000, false, 0x00FF)
   end
   local hits = {}
   if res then

@@ -265,10 +265,16 @@ local function gatherMentionHits(ui, terms)
     for _idx, term in ipairs(terms) do
         local res
         if term.regex and not is_pages then
-            -- Arabic terms: diacritics-tolerant regex (EPUB engine only)
-            res = ui.document:findAllText(term.regex, true, 10, 5000, true)
+            -- Arabic terms: diacritics-tolerant regex (EPUB engine only;
+            -- 0x0001 = MATCH_ACROSS_TEXT_NODES, stock's regex-type flags)
+            res = ui.document:findAllText(term.regex, true, 10, 5000, true, 0x0001)
         else
-            res = ui.document:findAllText(term.text, true, 10, 5000, false)
+            -- 0x00FF = stock's default-search flag set — without it crengine
+            -- matches nothing across DOM node boundaries and folds no
+            -- NBSP/soft-hyphen (the marks round-4 "Danny Lloyd" miss; the
+            -- same latent gap sat here under counts + mention lists). The
+            -- PDF engine takes 5 args and ignores the extra.
+            res = ui.document:findAllText(term.text, true, 10, 5000, false, 0x00FF)
         end
         if res then
             for _idx2, r in ipairs(res) do

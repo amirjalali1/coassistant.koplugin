@@ -777,6 +777,9 @@ local TEXT_MATCH_EXCLUDED = {
     findings = true,
     figures_data = true,
 }
+-- Exported: the marks scan's rebuild diagnostics tally what this gate
+-- skipped (slice 2 round 5)
+XrayParser.TEXT_MATCH_EXCLUDED = TEXT_MATCH_EXCLUDED
 
 --- Resolve a connection/reference string to any X-Ray item
 --- Searches all categories: characters, locations, concepts, themes, etc.
