@@ -5562,21 +5562,37 @@ end
 -- from the input dialogs' gear) but its own hamburger calls this too.
 function PromptsManager:_managerNavButtons(from)
     local self_ref = self
+    -- Grouped by surface family (maintainer pick 2026-08-13, option b): the
+    -- action library | reader popups | the panels (Quick Actions IS the QA
+    -- panel's action list, so it sits beside its utilities) | file browser.
+    -- The empty {} rows render as ButtonTable's double-rule group breaks;
+    -- " →" marks navigate-away rows (every carousel row is one). A trailing
+    -- {} separates the carousel from the view-local rows (Reset etc.) that
+    -- every call site appends.
     local destinations = {
-        { field = "prompts_menu", label = _("Manage Actions"), show = function() self_ref:showPromptsMenu() end },
-        { field = "highlight_menu_manager", label = _("Highlight Menu"), show = function() self_ref:showHighlightMenuManager() end },
-        { field = "dictionary_popup_menu", label = _("Dictionary Popup"), show = function() self_ref:showDictionaryPopupManager() end },
-        { field = "quick_actions_menu", label = _("Quick Actions"), show = function() self_ref:showQuickActionsManager() end },
-        { field = "qa_utilities_menu", label = _("QA Panel Utilities"), show = function() self_ref:showQaUtilitiesManager() end },
-        { field = "qs_items_menu", label = _("QS Panel Items"), show = function() self_ref:showQsItemsManager() end },
-        { field = "file_browser_menu", label = _("File Browser Actions"), show = function() self_ref:showFileBrowserActionsManager() end },
+        { group = 1, field = "prompts_menu", label = _("Manage Actions"), show = function() self_ref:showPromptsMenu() end },
+        { group = 2, field = "highlight_menu_manager", label = _("Highlight Menu"), show = function() self_ref:showHighlightMenuManager() end },
+        { group = 2, field = "dictionary_popup_menu", label = _("Dictionary Popup"), show = function() self_ref:showDictionaryPopupManager() end },
+        { group = 3, field = "quick_actions_menu", label = _("Quick Actions"), show = function() self_ref:showQuickActionsManager() end },
+        { group = 3, field = "qa_utilities_menu", label = _("QA Panel Utilities"), show = function() self_ref:showQaUtilitiesManager() end },
+        { group = 3, field = "qs_items_menu", label = _("QS Panel Items"), show = function() self_ref:showQsItemsManager() end },
+        { group = 4, field = "file_browser_menu", label = _("File Browser Actions"), show = function() self_ref:showFileBrowserActionsManager() end },
     }
     local buttons = {}
+    local last_group
     for _idx, dest in ipairs(destinations) do
         if dest.field ~= from then
-            table.insert(buttons, self:_makeNavButton(dest.label, from, dest.show))
+            -- Break only between two VISIBLE rows of different groups — a group
+            -- emptied by the self-skip (e.g. from = prompts_menu) leaves no
+            -- leading or doubled rule
+            if last_group and dest.group ~= last_group then
+                table.insert(buttons, {})
+            end
+            last_group = dest.group
+            table.insert(buttons, self:_makeNavButton(dest.label .. " →", from, dest.show))
         end
     end
+    table.insert(buttons, {})
     return buttons
 end
 
