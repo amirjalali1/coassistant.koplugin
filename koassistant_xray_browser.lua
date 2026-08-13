@@ -255,7 +255,24 @@ local function collectSearchTerms(item, item_title)
     if type(aliases) == "table" then
         for _idx, a in ipairs(aliases) do add(a) end
     end
-    return terms
+    -- Substring-minimal set: drop any term that CONTAINS another term
+    -- (case-insensitive) — searching the short form already finds every
+    -- occurrence of the long one ("Jean Valjean" ⊇ "Valjean"), and keeping
+    -- both would count the same physical mention twice
+    local minimal = {}
+    for i, t in ipairs(terms) do
+        local contains_other = false
+        local t_lower = t.text:lower()
+        for j, u in ipairs(terms) do
+            if i ~= j and #u.text < #t.text
+                and t_lower:find(u.text:lower(), 1, true) then
+                contains_other = true
+                break
+            end
+        end
+        if not contains_other then table.insert(minimal, t) end
+    end
+    return minimal
 end
 
 --- EPUB regex-OR of every term (so the native search session walks name AND
@@ -271,6 +288,83 @@ local function buildSearchPattern(terms)
         pattern = pattern .. "|" .. one(terms[i])
     end
     return pattern
+end
+
+--- Gather every exact-text hit for an entity across the WHOLE document —
+--- the one native pass that powers the distribution counts AND the mention
+--- lists (slice 4, ref #78): findAllText per term (Arabic regex on EPUB),
+--- position-dedup, doc-order sort, PTF bold-match snippet per hit. Spoiler
+--- gating is applied at DISPLAY time by the consumers (data in memory is
+--- not data shown). Cap: 5000 hits per term (very common terms clip there).
+--- @return table hits Array of {page?, xp?, display_page, row_text, term, order}
+local function gatherMentionHits(ui, terms)
+    local TextBoxWidget = require("ui/widget/textboxwidget")
+    local is_pages = ui.document.info and ui.document.info.has_pages
+    local hits, seen = {}, {}
+    for _idx, term in ipairs(terms) do
+        local res
+        if term.regex and not is_pages then
+            -- Arabic terms: diacritics-tolerant regex (EPUB engine only)
+            res = ui.document:findAllText(term.regex, true, 5, 5000, true)
+        else
+            res = ui.document:findAllText(term.text, true, 5, 5000, false)
+        end
+        if res then
+            for _idx2, r in ipairs(res) do
+                local page, key
+                if is_pages then
+                    -- Paginated: r.start IS the page number
+                    page = r.start
+                    local b = r.boxes and r.boxes[1]
+                    key = tostring(page) .. "|" .. tostring(b and b.x) .. "|" .. tostring(b and b.y)
+                else
+                    page = ui.document:getPageFromXPointer(r.start)
+                    key = tostring(r.start)
+                end
+                if page and not seen[key] then
+                    seen[key] = true
+                    -- Bold-match snippet (readersearch.lua idiom);
+                    -- ellipsized both ends — rows are mid-text fragments
+                    local text = { TextBoxWidget.PTF_HEADER, "… " }
+                    if r.prev_text then
+                        table.insert(text, r.prev_text)
+                        if not r.prev_text:find("%s$") then
+                            table.insert(text, " ")
+                        end
+                    end
+                    table.insert(text, TextBoxWidget.PTF_BOLD_START)
+                    table.insert(text, r.matched_word_prefix or "")
+                    table.insert(text, r.matched_text or term.text)
+                    table.insert(text, r.matched_word_suffix or "")
+                    table.insert(text, TextBoxWidget.PTF_BOLD_END)
+                    if r.next_text then
+                        if not r.next_text:find("^[%s%p]") then
+                            table.insert(text, " ")
+                        end
+                        table.insert(text, r.next_text)
+                    end
+                    table.insert(text, " …")
+                    table.insert(hits, {
+                        page = is_pages and page or nil,
+                        xp = (not is_pages) and r.start or nil,
+                        display_page = page,
+                        row_text = table.concat(text),
+                        term = term,
+                        order = #hits + 1,
+                    })
+                end
+            end
+        end
+    end
+    -- Document order: by page, insertion order breaking ties (table.sort
+    -- is not stable; same-page hits from different terms must not shuffle)
+    table.sort(hits, function(a, b)
+        if a.display_page ~= b.display_page then
+            return a.display_page < b.display_page
+        end
+        return a.order < b.order
+    end)
+    return hits
 end
 
 --- Open KOReader's native search session for the term at the CURRENT
@@ -404,176 +498,21 @@ local function getChapterBoundaries(ui, target_depth)
     }, toc_info
 end
 
---- Get ALL chapter boundaries from TOC at a given depth
---- Unlike getChapterBoundaries() which returns only the current chapter,
---- this returns every chapter for use in distribution views.
---- @param ui table KOReader UI instance
---- @param target_depth number|nil TOC depth filter (nil = deepest)
---- @return table|nil chapters Array of {title, start_page, end_page, depth, is_current}
---- @return table toc_info {max_depth, has_toc, depth_counts, depth_titles}
-local function getAllChapterBoundaries(ui, target_depth, coverage_page, scope)
-    local toc = ui.toc and ui.toc.toc
-    if not toc or #toc == 0 then
-        return nil, { has_toc = false, max_depth = 0, entry_count = 0 }
-    end
-
-    -- Filter out TOC entries from hidden flows
-    local effective_toc = toc
-    if ui.document.hasHiddenFlows and ui.document:hasHiddenFlows() then
-        effective_toc = {}
-        for _idx, entry in ipairs(toc) do
-            if entry.page and ui.document:getPageFlow(entry.page) == 0 then
-                table.insert(effective_toc, entry)
-            end
-        end
-        if #effective_toc == 0 then
-            return nil, { has_toc = false, max_depth = 0, entry_count = 0 }
-        end
-    end
-
-    local total_pages = ui.document.info.number_of_pages or 0
-    local current_page = getCurrentPage(ui)
-    -- Spoiler gate: max of X-Ray coverage and reading position
-    -- Chapters beyond this are marked unread (dimmed + spoiler warning)
-    -- For section X-Rays: scope.end_page replaces coverage_page
-    local gate_page
-    if scope then
-        gate_page = scope.end_page
-    else
-        gate_page = math.max(coverage_page or current_page, current_page)
-    end
-
-    -- First pass: collect depth stats
-    local max_depth = 0
-    local depth_counts = {}
-    local depth_titles = {}
-    for _idx, entry in ipairs(effective_toc) do
-        local d = entry.depth or 1
-        if d > max_depth then max_depth = d end
-        depth_counts[d] = (depth_counts[d] or 0) + 1
-        if entry.page and entry.page <= current_page then
-            depth_titles[d] = entry.title or ""
-        end
-    end
-
-    local toc_info = {
-        has_toc = true,
-        max_depth = max_depth,
-        entry_count = #effective_toc,
-        depth_counts = depth_counts,
-        depth_titles = depth_titles,
-    }
-
-    -- Use deepest depth if not specified
-    local depth = target_depth or max_depth
-
-    -- Filter entries to target depth, but include shallower entries
-    -- that have no children at the target depth (e.g., "Introduction" at depth 1
-    -- when other parts have sub-chapters at depth 3).
-    -- Track parent titles for chapters at target depth (used by distribution view).
-    local filtered = {}
-    local current_parent_title = nil
-    for i, entry in ipairs(effective_toc) do
-        local d = entry.depth or 1
-        if d == depth then
-            entry._parent_title = current_parent_title
-            table.insert(filtered, entry)
-        elseif d < depth then
-            -- Check if this entry has any descendants at the target depth
-            local has_children_at_depth = false
-            for j = i + 1, #effective_toc do
-                local child_depth = effective_toc[j].depth or 1
-                if child_depth <= d then break end  -- Past this entry's subtree
-                if child_depth == depth then
-                    has_children_at_depth = true
-                    break
-                end
-            end
-            if not has_children_at_depth then
-                -- Check if next entry is a child (any depth deeper)
-                local next_entry = effective_toc[i + 1]
-                local has_any_children = next_entry and (next_entry.depth or 1) > d
-                if has_any_children then
-                    current_parent_title = entry.title or ""
-                else
-                    if current_parent_title and d > 1 then
-                        entry._parent_title = current_parent_title
-                    else
-                        current_parent_title = nil
-                    end
-                    table.insert(filtered, entry)
-                end
-            else
-                current_parent_title = entry.title or ""
-            end
-        end
-    end
-
-    if #filtered == 0 then return nil, toc_info end
-
-    -- Build chapter array with boundaries
-    -- Chapters past reading position are included but marked unread (for grayed-out display)
-    local chapters = {}
-    for i, entry in ipairs(filtered) do
-        if not entry.page then goto continue end
-
-        local end_page
-        if filtered[i + 1] and filtered[i + 1].page then
-            end_page = filtered[i + 1].page - 1
-        else
-            end_page = total_pages
-        end
-        -- Skip ghost entries (pointers/markers sharing a page with a real chapter,
-        -- e.g., Juz markers in Quran TOC) — end_page < start_page means no content
-        if end_page < entry.page then goto continue end
-        local is_unread = entry.page > gate_page
-        -- Section scope: chapters outside scope are out_of_scope (not unread)
-        -- A chapter is in-scope only if it starts within [scope.start_page, scope.end_page]
-        -- This ensures sibling chapters at the same depth are properly excluded
-        local is_out_of_scope = false
-        if scope then
-            is_out_of_scope = entry.page < scope.start_page or entry.page > scope.end_page
-            is_unread = false  -- Scope replaces spoiler gating
-        end
-        -- is_current: only within scope (if scoped)
-        local is_current = false
-        if scope then
-            is_current = current_page >= entry.page and current_page <= end_page
-                and current_page >= scope.start_page and current_page <= scope.end_page
-        else
-            is_current = not is_unread and current_page >= entry.page and current_page <= end_page
-        end
-        table.insert(chapters, {
-            title = entry.title or "",
-            start_page = entry.page,
-            end_page = end_page,
-            depth = entry.depth or 1,
-            is_current = is_current or false,
-            unread = is_unread,
-            out_of_scope = is_out_of_scope,
-            parent_title = entry._parent_title,
-        })
-        ::continue::
-    end
-
-    return chapters, toc_info
-end
-
 --- Get ALL page-range chunks for books without usable TOC
---- Chunks past current reading position are marked unread
+--- Chunks past the spoiler gate are marked unread
 --- @param ui table KOReader UI instance
+--- @param gate_page number|nil Spoiler gate (from _spoilerGate; nil = no gating)
 --- @return table chapters Array of {title, start_page, end_page, depth, is_current, unread}
 --- @return table toc_info {has_toc = false, max_depth = 0}
-local function getAllPageRangeChapters(ui, coverage_page)
+local function getAllPageRangeChapters(ui, gate_page)
     local total_pages = ui.document.info.number_of_pages or 0
     local current_page = getCurrentPage(ui)
-    local gate_page = math.max(coverage_page or current_page, current_page)
     local chunk = math.max(20, math.floor(total_pages * 0.05))
     local chapters = {}
     local start = 1
     while start <= total_pages do
         local end_page = math.min(start + chunk - 1, total_pages)
-        local is_unread = start > gate_page
+        local is_unread = (gate_page and start > gate_page) or false
         local is_current = not is_unread and current_page >= start and current_page <= end_page
         table.insert(chapters, {
             title = T(_("Pages %1–%2"), start, end_page),
@@ -589,13 +528,13 @@ local function getAllPageRangeChapters(ui, coverage_page)
 end
 
 --- Get ALL TOC entries hierarchically (all depths) with page ranges and spoiler gating.
---- Unlike getAllChapterBoundaries() which filters to one depth, this returns every entry
---- for use in a KOReader-style hierarchical TOC with expand/collapse.
+--- Returns every entry for use in the hierarchical chapter picker and the
+--- Chapter Appearances tree (slice 4).
 --- @param ui table KOReader UI instance
---- @param coverage_page number|nil X-Ray coverage page
+--- @param gate_page number|nil Spoiler gate (from _spoilerGate; nil = no gating)
 --- @return table|nil entries Array of {title, start_page, end_page, depth, is_current, unread}
 --- @return number max_depth Maximum TOC depth found
-local function getHierarchicalChapters(ui, coverage_page, scope)
+local function getHierarchicalChapters(ui, gate_page, scope)
     local toc = ui.toc and ui.toc.toc
     if not toc or #toc == 0 then return nil, 0 end
 
@@ -613,12 +552,6 @@ local function getHierarchicalChapters(ui, coverage_page, scope)
 
     local total_pages = ui.document.info.number_of_pages or 0
     local current_page = getCurrentPage(ui)
-    local gate_page
-    if scope then
-        gate_page = scope.end_page
-    else
-        gate_page = math.max(coverage_page or current_page, current_page)
-    end
 
     local max_depth = 0
     for _idx, entry in ipairs(effective_toc) do
@@ -640,13 +573,12 @@ local function getHierarchicalChapters(ui, coverage_page, scope)
                 break
             end
         end
-        local is_unread = entry.page > gate_page
+        local is_unread = (not scope and gate_page and entry.page > gate_page) or false
         -- Section scope: a chapter is out_of_scope if it doesn't overlap with the scope
         -- Overlap check: parent chapters that contain the scope stay in-scope (start before, end after)
         local is_out_of_scope = false
         if scope then
             is_out_of_scope = entry.page > scope.end_page or end_page < scope.start_page
-            is_unread = false
         end
         local is_current = false
         if scope then
@@ -1009,35 +941,15 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
     -- Widgets to close when launching book text search (e.g., dictionary popup, cross-section results)
     self._cleanup_widgets = metadata._cleanup_widgets
 
-    -- Compute X-Ray coverage page for spoiler gating
-    -- Text-matching features (Mentions, Chapter Appearances) gate to max(coverage, reading),
-    -- so chapters the reader has physically read OR the X-Ray has analyzed are never spoiler-gated.
-    self.coverage_page = nil
-    self.is_complete = false
-    if ui and ui.document then
-        local total_pages = ui.document.info and ui.document.info.number_of_pages
-        if total_pages and total_pages > 0 then
-            if metadata.full_document then
-                self.coverage_page = total_pages
-            elseif metadata.progress_decimal then
-                self.coverage_page = math.floor(metadata.progress_decimal * total_pages + 0.5)
-                if self.coverage_page > total_pages then self.coverage_page = total_pages end
-            end
-        end
-    end
-    self.is_complete = metadata.full_document == true
-        or (metadata.progress_decimal and metadata.progress_decimal >= 0.995) or false
+    -- Spoiler gating for text-matching features (Mentions, Chapter
+    -- Appearances, the pickers) is resolved per view by _spoilerGate()
+    -- (F2, slice 4): posture-routed (research/finished/book/global), and
+    -- under protection strictly the READING POSITION — X-Ray coverage no
+    -- longer reveals beyond what the reader has read.
 
-    -- Section X-Ray scope: overrides coverage and gating
+    -- Section X-Ray scope: replaces spoiler gating (the scope is consent)
     self.scope = metadata.scope  -- nil for main X-Ray
     if self.scope then
-        self.is_complete = true
-        if ui and ui.document then
-            local total_pages = ui.document.info and ui.document.info.number_of_pages
-            if total_pages and total_pages > 0 then
-                self.coverage_page = math.min(self.scope.end_page, total_pages)
-            end
-        end
         self.scope_start = self.scope.start_page
         self.scope_end = self.scope.end_page
     end
@@ -3427,11 +3339,12 @@ function XrayBrowser:showChapterPicker(current_chapter)
 
     local self_ref = self
 
-    -- Get hierarchical TOC (all depths)
-    local entries, max_depth = getHierarchicalChapters(self.ui, self.coverage_page, self.scope)
+    -- Get hierarchical TOC (all depths), gated by the posture-routed spoiler gate (F2)
+    local picker_gate = self:_spoilerGate()
+    local entries, max_depth = getHierarchicalChapters(self.ui, picker_gate, self.scope)
     if not entries or #entries == 0 then
         -- Fallback: page-range chunks (flat, no hierarchy)
-        local chunks = getAllPageRangeChapters(self.ui, self.coverage_page)
+        local chunks = getAllPageRangeChapters(self.ui, picker_gate)
         if not chunks or #chunks == 0 then return end
         self:_showFlatChapterPicker(chunks, current_chapter)
         return
@@ -3525,17 +3438,18 @@ function XrayBrowser:showChapterPicker(current_chapter)
             separator = true,
             _is_all_reveal = true,
         })
-    elseif self.is_complete then
+    elseif not picker_gate then
+        -- No spoiler gate (protection off, incl. finished/research) — one option
         table.insert(collapsed_toc, 1, {
             text = _("Entire document"),
-            bold = current_chapter == "all",
+            bold = current_chapter == "all" or current_chapter == "all_reveal",
             separator = true,
             _is_all_chapters = true,
         })
     else
-        -- Two options: scoped (spoiler-safe) and reveal-all (entire document)
+        -- Two options: scoped (spoiler-safe, to reading position) and reveal-all
         table.insert(collapsed_toc, 1, {
-            text = T(_("Entire document (to %1)"), self.metadata.progress or "?%"),
+            text = T(_("Entire document (to p. %1)"), picker_gate),
             bold = current_chapter == "all",
             _is_all_chapters = true,
         })
@@ -3945,26 +3859,30 @@ function XrayBrowser:_showFlatChapterPicker(chunks, current_chapter)
             separator = true,
             _is_all_reveal = true,
         })
-    elseif self.is_complete then
-        table.insert(items, {
-            text = _("Entire document"),
-            bold = current_chapter == "all",
-            separator = true,
-            _is_all_chapters = true,
-        })
     else
-        table.insert(items, {
-            text = T(_("Entire document (to %1)"), self.metadata.progress or "?%"),
-            bold = current_chapter == "all",
-            _is_all_chapters = true,
-        })
-        table.insert(items, {
-            text = _("Entire document"),
-            bold = current_chapter == "all_reveal",
-            dim = not self._mentions_spoiler_warned,
-            separator = true,
-            _is_all_reveal = true,
-        })
+        local flat_gate = self:_spoilerGate()
+        if not flat_gate then
+            -- No spoiler gate (protection off, incl. finished/research)
+            table.insert(items, {
+                text = _("Entire document"),
+                bold = current_chapter == "all" or current_chapter == "all_reveal",
+                separator = true,
+                _is_all_chapters = true,
+            })
+        else
+            table.insert(items, {
+                text = T(_("Entire document (to p. %1)"), flat_gate),
+                bold = current_chapter == "all",
+                _is_all_chapters = true,
+            })
+            table.insert(items, {
+                text = _("Entire document"),
+                bold = current_chapter == "all_reveal",
+                dim = not self._mentions_spoiler_warned,
+                separator = true,
+                _is_all_reveal = true,
+            })
+        end
     end
 
     -- Page-range chunks
@@ -4158,10 +4076,12 @@ function XrayBrowser:showMentions(chapter)
     UIManager:scheduleIn(0.2, function()
         local text, chapter_title
         local display_chapter = chapter  -- track what we're showing for the picker
+        local mentions_gate = self_ref:_spoilerGate()  -- F2: posture-routed, position-strict
 
         if is_all then
             -- Aggregate: page range depends on context
-            -- Section X-Ray "all" = scope bounds; main X-Ray "all" = max(coverage, reading)
+            -- Section X-Ray "all" = scope bounds; main X-Ray "all" = the
+            -- spoiler gate (reading position; whole book when protection off)
             -- "all_reveal" = entire book
             local total_pages = self_ref.ui.document.info.number_of_pages or 0
             if total_pages == 0 then
@@ -4180,12 +4100,7 @@ function XrayBrowser:showMentions(chapter)
             elseif chapter == "all_reveal" then
                 end_page = total_pages
             else
-                local current_page = getCurrentPage(self_ref.ui)
-                end_page = current_page
-                if self_ref.coverage_page then
-                    end_page = math.max(self_ref.coverage_page, current_page)
-                end
-                if end_page > total_pages then end_page = total_pages end
+                end_page = mentions_gate or total_pages
             end
             local all_chapter = { start_page = start_page, end_page = end_page }
             text = self_ref:_getChapterText(all_chapter)
@@ -4228,10 +4143,10 @@ function XrayBrowser:showMentions(chapter)
         if is_all then
             if self_ref.scope and chapter ~= "all_reveal" then
                 picker_label = T(_("Entire section (%1) \u{25BE}"), self_ref.scope.page_summary or "")
-            elseif chapter == "all_reveal" or self_ref.is_complete then
+            elseif chapter == "all_reveal" or not mentions_gate then
                 picker_label = _("Entire document \u{25BE}")
             else
-                picker_label = T(_("To %1 \u{25BE}"), self_ref.metadata.progress or "?%")
+                picker_label = T(_("To p. %1 \u{25BE}"), mentions_gate)
             end
         elseif chapter_title and chapter_title ~= "" then
             picker_label = chapter_title .. " \u{25BE}"
@@ -4382,147 +4297,207 @@ function XrayBrowser:showChapterItemsAt(chapter)
     end)
 end
 
---- Build distribution menu items and display them
---- Called by showItemDistribution for both initial render and in-place refresh
+--- Build the Chapter Appearances tree and display it (slice 4, ref #78):
+--- full TOC hierarchy with counts at EVERY level, powered by the one
+--- gatherMentionHits pass — counts and the mention lists are consistent by
+--- construction (per-chapter text extraction is gone from this surface).
+--- Spoiler gating is DISPLAY-only: all hits are in memory; rows beyond the
+--- gate show "···" until revealed (instant — a display flip, one-time
+--- confirm), a node whose span crosses the gate shows its count clipped at
+--- the gate. Called by showItemDistribution for initial render and refresh.
 --- @param item table The X-Ray item
 --- @param category_key string Category key
 --- @param item_title string Display name for the item
---- @param data table Mutable distribution state {chapters, chapter_counts, max_count, ...}
+--- @param data table Mutable distribution state {nodes, hits, gate, revealed, ...}
 --- @param is_refresh boolean If true, update menu in-place; if false, navigateForward
 function XrayBrowser:_buildDistributionView(item, category_key, item_title, data, is_refresh, detail_context)
     local self_ref = self
-    local chapters = data.chapters
-    local chapter_counts = data.chapter_counts
-    local count_width = data.max_count > 0 and #tostring(data.max_count) or 1
+    local nodes = data.nodes
+    local gate = data.gate
+
+    -- Anything still concealed? (unrevealed beyond-gate/out-of-scope rows,
+    -- or an unrevealed node whose span CROSSES the gate — its tail is hidden)
+    local concealed = false
+    for i, n in ipairs(nodes) do
+        if not data.revealed[i] then
+            if n.unread or n.out_of_scope then
+                concealed = true
+                break
+            end
+            if gate and n.start_page <= gate and n.end_page > gate then
+                concealed = true
+                break
+            end
+        end
+    end
 
     local items = {}
 
     -- "All appearances" (rounds 4–5): door to the whole-book mention list —
-    -- no histogram, count on the right, the spoiler clip in parentheses.
-    -- Once every chapter is scanned (Scan entire document, or the gate
-    -- covers the book), the row turns into the complete version and the
-    -- mention page opens unclipped. Not on section browsers (their scope is
-    -- the boundary; the chapter rows already cover it).
+    -- count on the right, the spoiler clip in parentheses. Complete (no
+    -- gate, or everything revealed) → unclipped. Not on section browsers
+    -- (their scope is the boundary; the rows already cover it).
     if not self.scope then
-        local revealed = self.is_complete or not data.has_unread
-        local boundary = (not revealed) and self:_mentionBoundary() or nil
+        local fully = (not gate) or not concealed
         table.insert(items, {
-            text = boundary and T(_("All appearances (up to p. %1)"), boundary)
-                or _("All appearances"),
+            text = fully and _("All appearances")
+                or T(_("All appearances (up to p. %1)"), gate),
             bold = true,
-            mandatory = tostring(data.total_mentions or 0),
+            mandatory = tostring((fully and data.total_full or data.total_gated) or 0),
             mandatory_dim = true,
-            separator = not data.has_unread,
             callback = function()
                 self_ref:_showChapterMentions(item, category_key, item_title, nil,
-                    revealed and { no_clip = true } or nil)
+                    { hits = data.hits, no_clip = fully or nil })
             end,
         })
     end
 
-    -- "Scan entire document / beyond scope" at top when there are unread/out-of-scope chapters
-    if data.has_unread then
-        local scan_text = self.scope and _("Scan beyond scope") or _("Scan entire document")
-        local scan_hint = self.scope and _("outside section scope") or _("may contain spoilers")
+    -- Reveal-all row while anything is concealed (counts are already in
+    -- memory — this is a display flip, not a scan)
+    if concealed then
         table.insert(items, {
-            text = scan_text,
-            mandatory = scan_hint,
+            text = self.scope and _("Reveal beyond scope") or _("Reveal all chapters"),
+            mandatory = self.scope and _("outside section scope") or _("may contain spoilers"),
             mandatory_dim = true,
             bold = true,
-            separator = true,
             callback = function()
-                UIManager:show(Notification:new{
-                    text = _("Scanning all chapters…"),
-                })
-                UIManager:scheduleIn(0.2, function()
-                    for j = 1, #chapters do
-                        if chapter_counts[j] == nil then
-                            local _raw, lower = self_ref:_getChapterText(chapters[j])
-                            local ch_count = 0
-                            if lower ~= "" then
-                                ch_count = XrayParser.countItemOccurrences(item, lower)
-                            end
-                            chapter_counts[j] = ch_count
-                            data.total_mentions = data.total_mentions + ch_count
-                            data.scanned_count = data.scanned_count + 1
-                            if ch_count > data.max_count then
-                                data.max_count = ch_count
-                            end
-                        end
-                    end
-                    data.has_unread = false
-                    data.spoiler_warned = true
-                    data._focus_idx = nil  -- reset to top after scanning all
-                    self_ref:_buildDistributionView(item, category_key, item_title, data, true)
-                end)
+                for j = 1, #nodes do
+                    data.revealed[j] = true
+                end
+                data.spoiler_warned = true
+                data._focus_idx = nil
+                self_ref:_buildDistributionView(item, category_key, item_title, data, true)
             end,
         })
     end
 
-    -- Track parent headers and chapter-to-item index mapping (for focus after reveal)
-    local last_parent = false  -- false distinguishes from nil (no parent)
-    local chapter_to_item = {}
-
-    for i, chapter in ipairs(chapters) do
-        -- Insert parent section header when group changes
-        if chapter.parent_title and chapter.parent_title ~= last_parent then
-            table.insert(items, {
-                text = chapter.parent_title,
-                bold = true,
-                dim = true,
-            })
+    -- Depth control (in-page, per the maintainer's bad-TOCs point): which
+    -- levels the tree shows; the pick sticks per book for this session
+    if (data.max_depth or 0) > 1 then
+        local label
+        if not data.depth_filter then
+            label = _("Levels: all \u{25BE}")
+        elseif data.depth_filter == 1 then
+            label = _("Levels: 1 \u{25BE}")
+        else
+            label = T(_("Levels: 1–%1 \u{25BE}"), data.depth_filter)
         end
-        last_parent = chapter.parent_title
+        table.insert(items, {
+            text = label,
+            callback = function()
+                local dialog
+                local buttons = {}
+                local function dot(active)
+                    return active and "\u{25CF} " or "\u{25CB} "
+                end
+                local function pick(d)
+                    return function()
+                        UIManager:close(dialog)
+                        data.depth_filter = d
+                        XrayBrowser._appearance_depth_prefs = XrayBrowser._appearance_depth_prefs or {}
+                        XrayBrowser._appearance_depth_prefs[self_ref.metadata.book_file or ""] = d or "all"
+                        data._focus_idx = nil
+                        self_ref:_buildDistributionView(item, category_key, item_title, data, true)
+                    end
+                end
+                table.insert(buttons, {{
+                    text = dot(not data.depth_filter) .. _("All levels"),
+                    callback = pick(nil),
+                }})
+                for d = 1, data.max_depth - 1 do
+                    local lbl = d == 1 and _("Level 1 only") or T(_("Levels 1–%1"), d)
+                    table.insert(buttons, {{
+                        text = dot(data.depth_filter == d) .. lbl,
+                        callback = pick(d),
+                    }})
+                end
+                dialog = ButtonDialog:new{ buttons = buttons }
+                UIManager:show(dialog)
+            end,
+        })
+    end
+    if #items > 0 then items[#items].separator = true end
 
-        local count = chapter_counts[i]
-        local display_title = chapter.title or ""
-        local captured_chapter = chapter
+    -- Displayed nodes (depth filter), display counts, per-depth bar maxima
+    -- (bars compare SIBLINGS at a level — a part's roll-up count would dwarf
+    -- every chapter bar under global normalization)
+    local displayed = {}
+    local depth_max = {}
+    local overall_max = 0
+    for i, n in ipairs(nodes) do
+        if not data.depth_filter or (n.depth or 1) <= data.depth_filter then
+            local hidden = (n.unread or n.out_of_scope) and not data.revealed[i]
+            local shown
+            if not hidden then
+                shown = data.revealed[i] and n.count or n.gated_count or n.count
+            end
+            table.insert(displayed, { node = n, idx = i, hidden = hidden, shown = shown })
+            if shown then
+                local d = n.depth or 1
+                if shown > (depth_max[d] or 0) then depth_max[d] = shown end
+                if shown > overall_max then overall_max = shown end
+            end
+        end
+    end
+    local count_width = overall_max > 0 and #tostring(overall_max) or 1
 
-        if not count then
-            -- Unread chapter: dimmed, tap to reveal individually
-            local captured_i = i
-            chapter_to_item[i] = #items + 1
+    -- ▶ marks only the DEEPEST displayed node containing the reading
+    -- position (every ancestor's span contains it too)
+    local current_idx
+    local best_depth = -1
+    for _d, e in ipairs(displayed) do
+        if e.node.is_current and (e.node.depth or 1) >= best_depth then
+            best_depth = e.node.depth or 1
+            current_idx = e.idx
+        end
+    end
+
+    -- Indent unit: width of 4 spaces (the hierarchical picker idiom)
+    local indent_unit = 0
+    if (data.max_depth or 0) > 1 then
+        local Font = require("ui/font")
+        local TextWidget = require("ui/widget/textwidget")
+        local tmp = TextWidget:new{
+            text = "    ",
+            face = Font:getFace("smallinfofont", 18),
+        }
+        indent_unit = tmp:getSize().w
+        tmp:free()
+    end
+
+    local node_to_item = {}
+    for _d, e in ipairs(displayed) do
+        local n = e.node
+        local captured_i = e.idx
+        local indent = indent_unit * ((n.depth or 1) - 1)
+        local node_title = n.title
+        if not node_title or node_title == "" then
+            node_title = T(_("Page %1"), n.start_page)
+        end
+        node_to_item[e.idx] = #items + 1
+        if e.hidden then
+            -- Concealed: dimmed, tap to reveal (one-time confirm); revealing
+            -- a parent reveals its subtree — the consent covers the span
             table.insert(items, {
-                text = display_title,
+                text = node_title,
+                indent = indent,
                 mandatory = "···",
                 mandatory_dim = true,
                 dim = true,
                 callback = function()
                     local function do_reveal()
-                        UIManager:show(Notification:new{
-                            text = _("Scanning…"),
-                        })
-                        UIManager:scheduleIn(0.1, function()
-                            local _raw, lower = self_ref:_getChapterText(captured_chapter)
-                            local ch_count = 0
-                            if lower ~= "" then
-                                ch_count = XrayParser.countItemOccurrences(item, lower)
-                            end
-                            -- Update mutable state
-                            chapter_counts[captured_i] = ch_count
-                            data.total_mentions = data.total_mentions + ch_count
-                            data.scanned_count = data.scanned_count + 1
-                            if ch_count > data.max_count then
-                                data.max_count = ch_count
-                            end
-                            -- Check if any unread/out-of-scope remain
-                            local still_unread = false
-                            for j = 1, #chapters do
-                                if (chapters[j].unread or chapters[j].out_of_scope) and chapter_counts[j] == nil then
-                                    still_unread = true
-                                    break
-                                end
-                            end
-                            data.has_unread = still_unread
-                            -- Rebuild menu in-place, preserving scroll to revealed item
-                            data._focus_idx = captured_i
-                            self_ref:_buildDistributionView(item, category_key, item_title, data, true)
-                        end)
+                        data.revealed[captured_i] = true
+                        for j = captured_i + 1, #nodes do
+                            if (nodes[j].depth or 1) <= (n.depth or 1) then break end
+                            data.revealed[j] = true
+                        end
+                        data._focus_idx = captured_i
+                        self_ref:_buildDistributionView(item, category_key, item_title, data, true)
                     end
                     if not data.spoiler_warned then
                         local warn_text = self_ref.scope
                             and _("This chapter is outside this Section X-Ray's scope.\n\nReveal mentions?")
-                            or _("This chapter is beyond your X-Ray coverage and may contain spoilers.\n\nReveal mentions?")
+                            or _("This chapter is beyond your reading position and may contain spoilers.\n\nReveal mentions?")
                         local confirm_dialog
                         confirm_dialog = ButtonDialog:new{
                             text = warn_text,
@@ -4550,38 +4525,42 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
                 end,
             })
         else
-            -- Mark current chapter with ▶
-            if chapter.is_current then
+            local display_title = node_title
+            if e.idx == current_idx then
                 display_title = "\u{25B6} " .. display_title
             end
-            chapter_to_item[i] = #items + 1
+            local shown = e.shown or 0
             table.insert(items, {
                 text = display_title,
-                mandatory = buildDistributionBar(count, data.max_count, nil, count_width),
-                mandatory_dim = (count == 0),
+                indent = indent,
+                mandatory = buildDistributionBar(shown,
+                    depth_max[n.depth or 1] or 0, nil, count_width),
+                mandatory_dim = (shown == 0),
                 callback = function()
-                    if count > 0 then
-                        -- Mention list (xray_marking_plan.md slice 1 round 3,
-                        -- ref #78): snippets to read in place; tapping one
-                        -- jumps there and enters the native search session
-                        self_ref:_showChapterMentions(item, category_key, item_title, captured_chapter)
+                    if shown > 0 then
+                        -- Mention list scoped to this node's span; a node the
+                        -- user revealed opens unclipped
+                        self_ref:_showChapterMentions(item, category_key, item_title, n,
+                            { hits = data.hits,
+                              no_clip = data.revealed[captured_i] or nil })
                     else
                         UIManager:show(Notification:new{
                             text = T(_("No X-Ray items in \"%1\"."),
-                                captured_chapter.title or _("this chapter")),
+                                n.title or _("this chapter")),
                         })
                     end
                 end,
             })
         end
     end
-    -- Convert focus_idx from chapter index to items index (accounts for headers)
-    if data._focus_idx and chapter_to_item[data._focus_idx] then
-        data._focus_idx = chapter_to_item[data._focus_idx]
+    -- Convert focus from node index to row index (accounts for header rows)
+    if data._focus_idx and node_to_item[data._focus_idx] then
+        data._focus_idx = node_to_item[data._focus_idx]
     end
 
-    local title = T(_("%1: %2 chapters"), item_title,
-        data.has_unread and data.scanned_count or #chapters)
+    -- Name-only title (the round-5 truncation rule); the All row and the
+    -- levels row carry the structure info
+    local title = item_title
 
     if is_refresh then
         -- Update menu in-place, preserving scroll position
@@ -4591,18 +4570,16 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
         -- For section X-Rays, scroll to current chapter (or first in-scope)
         local initial_focus
         if self.scope and not data._focus_idx then
-            -- Prefer current reading chapter
-            for i, chapter in ipairs(chapters) do
-                if chapter.is_current and chapter_to_item[i] then
-                    initial_focus = chapter_to_item[i]
+            for _d, e in ipairs(displayed) do
+                if e.node.is_current and node_to_item[e.idx] then
+                    initial_focus = node_to_item[e.idx]
                     break
                 end
             end
-            -- Fall back to first in-scope chapter
             if not initial_focus then
-                for i, chapter in ipairs(chapters) do
-                    if not chapter.out_of_scope and chapter_to_item[i] then
-                        initial_focus = chapter_to_item[i]
+                for _d, e in ipairs(displayed) do
+                    if not e.node.out_of_scope and node_to_item[e.idx] then
+                        initial_focus = node_to_item[e.idx]
                         break
                     end
                 end
@@ -4634,10 +4611,11 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
         if not pm.book_file or pm.book_file == self.metadata.book_file then
             local target_chapter
             if not pm.whole_book and pm.chapter_start_page then
-                for _idx, ch in ipairs(chapters) do
-                    if ch.start_page == pm.chapter_start_page
-                        and (not pm.chapter_title or ch.title == pm.chapter_title) then
-                        target_chapter = ch
+                for _idx, n in ipairs(nodes) do
+                    if n.start_page == pm.chapter_start_page
+                        and (not pm.chapter_title or n.title == pm.chapter_title)
+                        and (not pm.chapter_depth or (n.depth or 1) == pm.chapter_depth) then
+                        target_chapter = n
                         break
                     end
                 end
@@ -4646,7 +4624,7 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
             end
             if pm then
                 self:_showChapterMentions(item, category_key, item_title, target_chapter,
-                    pm.no_clip and { no_clip = true } or nil)
+                    { hits = data.hits, no_clip = pm.no_clip or nil })
             end
         end
     end
@@ -4665,151 +4643,89 @@ function XrayBrowser:_mentionReturnInfo(category_key, item_title)
     return return_info
 end
 
---- Whole-book mention boundary: the text-matching spoiler gate — max of
---- X-Ray coverage and reading position. nil = no clip (coverage complete,
---- or the boundary reaches the end of the book).
-function XrayBrowser:_mentionBoundary()
+--- THE text-matching spoiler gate (F2, slice 4): routed through the posture
+--- resolver, so research mode, a finished book, and the global/book spoiler
+--- settings all govern it — protection off means NO gating anywhere in the
+--- distribution/mention surfaces. Under protection the gate is strictly the
+--- READING POSITION (not max(coverage, position): an ahead-installed or
+--- complete X-Ray must not reveal where an entity appears beyond what the
+--- reader has read). nil = no gating (protection off, or position at the
+--- end). Section browsers return nil — scope replaces spoiler gating.
+function XrayBrowser:_spoilerGate()
     local ui = self.ui
     if not (ui and ui.document) then return nil end
-    if self.is_complete then return nil end
+    if self.scope then return nil end
+    local BookSettings = require("koassistant_book_settings")
+    local SafeDocSettings = require("koassistant_doc_settings")
+    local ds = SafeDocSettings.resolve(self.metadata and self.metadata.book_file, ui)
+    local features = self.metadata and self.metadata.configuration
+        and self.metadata.configuration.features
+    if not BookSettings.resolveSpoilerFree(ds, features) then return nil end
     local total = ui.document.info and ui.document.info.number_of_pages
-    local boundary = math.max(self.coverage_page or 0, getCurrentPage(ui) or 0)
-    if boundary == 0 or (total and boundary >= total) then return nil end
-    return boundary
+    local pos = getCurrentPage(ui) or 0
+    if pos == 0 or (total and pos >= total) then return nil end
+    return pos
 end
 
---- Mention list (xray_marking_plan.md slice 1, round 4 shape, ref #78): one
---- row per occurrence — page + bold-match context snippet (the exact PTF
---- shape KOReader's own search all-results list renders, ellipsized),
---- readable IN PLACE without touching the book position. Lives IN the
---- browser stack: lower-left up-arrow returns to Chapter Appearances, the
---- hamburger stays the browser's own. Tap = jump to THAT hit and enter the
---- native search session there (built-in highlighting + prev/next — no
---- custom overlay, maintainer verdict). chapter = nil → whole book, clipped
---- by the text-matching spoiler gate (the distribution's "All appearances"
---- row is the entry for that). opts.no_clip = the user revealed everything
---- (Scan entire document) — skip the gate.
+--- Mention list (xray_marking_plan.md slices 1+4, ref #78): one row per
+--- occurrence — page + bold-match context snippet (the exact PTF shape
+--- KOReader's own search all-results list renders, ellipsized), readable IN
+--- PLACE without touching the book position. Lives IN the browser stack:
+--- lower-left up-arrow returns to Chapter Appearances, the hamburger stays
+--- the browser's own. Tap = jump to THAT hit and enter the native search
+--- session there (built-in highlighting + prev/next — no custom overlay,
+--- maintainer verdict). chapter = nil → whole book. Spans are clipped by
+--- the posture-routed spoiler gate (_spoilerGate) unless opts.no_clip (the
+--- user revealed this span, or protection is off). opts.hits = the
+--- distribution's pre-gathered hit list (one pass powers counts AND these
+--- rows — consistent by construction); absent → gather here.
 function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapter, opts)
     local self_ref = self
     local ui = self.ui
     if not (ui and ui.document) then return end
     local terms = collectSearchTerms(item, item_title)
     if #terms == 0 then return end
+    local pre_hits = opts and opts.hits
+    if not pre_hits and not ui.document.findAllText then return end
+    local no_clip = opts and opts.no_clip
 
-    if not ui.document.findAllText and chapter then
-        -- No all-hits API on this engine (base Document stub): fall back to
-        -- the old shape — jump to the chapter start, open a plain search
-        -- session for the primary term
-        if not ui.search then return end
-        if self._cleanup_widgets then
-            for _cw, widget in ipairs(self._cleanup_widgets) do
-                UIManager:close(widget)
-            end
-        end
-        if self.menu then UIManager:close(self.menu) end
-        if ui.link and ui.link.addCurrentLocationToStack then
-            ui.link:addCurrentLocationToStack()
-        end
-        ui:handleEvent(Event:new("GotoPage", chapter.start_page))
-        launchSearchSession(ui, terms[1].text, false,
-            self:_mentionReturnInfo(category_key, item_title))
-        return
-    end
-
-    UIManager:show(Notification:new{ text = _("Finding mentions…") })
-    UIManager:scheduleIn(0.1, function()
-        local TextBoxWidget = require("ui/widget/textboxwidget")
-        local is_pages = ui.document.info and ui.document.info.has_pages
-
-        -- Scope bounds: the chapter's page range, or the whole book clipped
-        -- by the text-matching spoiler gate (_mentionBoundary; skipped when
-        -- the user already revealed everything)
-        local first_page, last_page, boundary
+    local function render(all_hits)
+        -- Span bounds: the chapter's page range, or the whole book — either
+        -- way clipped at the spoiler gate unless no_clip
+        local boundary = (not no_clip) and self_ref:_spoilerGate() or nil
+        local first_page, last_page
         if chapter then
             first_page = chapter.start_page
             last_page = chapter.end_page
+            if boundary and boundary < last_page then
+                -- Crossing span: show up to the gate (an entirely-beyond
+                -- span yields an empty list — reveal is the way in)
+                last_page = math.max(boundary, first_page - 1)
+            else
+                boundary = nil  -- no visible clip on this span
+            end
         else
             first_page = 1
-            if not (opts and opts.no_clip) then
-                boundary = self_ref:_mentionBoundary()
-            end
             last_page = boundary
                 or (ui.document.info and ui.document.info.number_of_pages)
         end
         if not (first_page and last_page) then return end
 
-        local mentions, seen = {}, {}
-        for _idx, term in ipairs(terms) do
-            local res
-            if term.regex and not is_pages then
-                -- Arabic terms: diacritics-tolerant regex (EPUB engine only)
-                res = ui.document:findAllText(term.regex, true, 5, 5000, true)
-            else
-                res = ui.document:findAllText(term.text, true, 5, 5000, false)
-            end
-            if res then
-                for _idx2, r in ipairs(res) do
-                    local page, key
-                    if is_pages then
-                        -- Paginated: r.start IS the page number
-                        page = r.start
-                        local b = r.boxes and r.boxes[1]
-                        key = tostring(page) .. "|" .. tostring(b and b.x) .. "|" .. tostring(b and b.y)
-                    else
-                        page = ui.document:getPageFromXPointer(r.start)
-                        key = tostring(r.start)
-                    end
-                    if page and page >= first_page and page <= last_page
-                        and not seen[key] then
-                        seen[key] = true
-                        -- Bold-match snippet (readersearch.lua idiom);
-                        -- ellipsized both ends — rows are mid-text fragments
-                        local text = { TextBoxWidget.PTF_HEADER, "… " }
-                        if r.prev_text then
-                            table.insert(text, r.prev_text)
-                            if not r.prev_text:find("%s$") then
-                                table.insert(text, " ")
-                            end
-                        end
-                        table.insert(text, TextBoxWidget.PTF_BOLD_START)
-                        table.insert(text, r.matched_word_prefix or "")
-                        table.insert(text, r.matched_text or term.text)
-                        table.insert(text, r.matched_word_suffix or "")
-                        table.insert(text, TextBoxWidget.PTF_BOLD_END)
-                        if r.next_text then
-                            if not r.next_text:find("^[%s%p]") then
-                                table.insert(text, " ")
-                            end
-                            table.insert(text, r.next_text)
-                        end
-                        table.insert(text, " …")
-                        table.insert(mentions, {
-                            page = is_pages and page or nil,
-                            xp = (not is_pages) and r.start or nil,
-                            display_page = page,
-                            row_text = table.concat(text),
-                            term = term,
-                            order = #mentions + 1,
-                        })
-                    end
-                end
+        local mentions = {}
+        for _idx, m in ipairs(all_hits) do
+            if m.display_page and m.display_page >= first_page
+                and m.display_page <= last_page then
+                table.insert(mentions, m)
             end
         end
-        -- Document order: by page, insertion order breaking ties (table.sort
-        -- is not stable; same-page hits from different terms must not shuffle)
-        table.sort(mentions, function(a, b)
-            if a.display_page ~= b.display_page then
-                return a.display_page < b.display_page
-            end
-            return a.order < b.order
-        end)
 
         -- Return descriptor: the search-return button relaunches THIS page
         local mentions_state = {
             whole_book = (not chapter) or nil,
             chapter_start_page = chapter and chapter.start_page or nil,
             chapter_title = chapter and chapter.title or nil,
-            no_clip = (opts and opts.no_clip) or nil,
+            chapter_depth = chapter and chapter.depth or nil,
+            no_clip = no_clip or nil,
         }
         local list_items = {}
         for _i, m in ipairs(mentions) do
@@ -4825,8 +4741,6 @@ function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapte
             })
         end
         if #mentions == 0 then
-            -- Counts come from the extractor scan with looser matching (span
-            -- merge, normalization) — exact search can legitimately find less
             table.insert(list_items, {
                 text = _("No exact text matches in this scope."),
                 dim = true,
@@ -4837,7 +4751,10 @@ function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapte
         -- Scope + count as a header LINE above the entries (round 5: the
         -- menu title truncates — it carries only the entity name now)
         local scope_line
-        if chapter then
+        if chapter and boundary then
+            scope_line = T(_("%1 (up to p. %2) — %3 mentions"),
+                chapter.title or _("Chapter"), boundary, #mentions)
+        elseif chapter then
             scope_line = T(_("%1 — %2 mentions"),
                 chapter.title or _("Chapter"), #mentions)
         elseif boundary then
@@ -4863,7 +4780,16 @@ function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapte
             multilines_forced = true,
             items_max_lines = 3,
         })
-    end)
+    end
+
+    if pre_hits then
+        render(pre_hits)
+    else
+        UIManager:show(Notification:new{ text = _("Finding mentions…") })
+        UIManager:scheduleIn(0.1, function()
+            render(gatherMentionHits(ui, terms))
+        end)
+    end
 end
 
 --- Jump to one mention and enter KOReader's native search session there —
@@ -4915,7 +4841,12 @@ function XrayBrowser:_gotoMentionAndSearch(category_key, item_title, mention, te
     end
 end
 
---- Show distribution of a single item's mentions across all chapters
+--- Show where a single entity appears across the book (Chapter Appearances,
+--- slice 4 shape): the full TOC hierarchy with a count at EVERY level,
+--- computed from ONE gatherMentionHits pass — the same hit list the mention
+--- pages render, so counts and lists always agree. No text extraction on
+--- this surface anymore. Spoiler gating is display-only (see
+--- _buildDistributionView).
 --- Entry point: "Chapter Appearances" button in item detail view
 --- @param item table The X-Ray item
 --- @param category_key string Category key
@@ -4938,18 +4869,46 @@ function XrayBrowser:showItemDistribution(item, category_key, item_title, detail
         return
     end
 
+    if not self.ui.document.findAllText then
+        UIManager:show(InfoMessage:new{
+            text = _("Text search is not supported for this document."),
+            timeout = 3,
+        })
+        return
+    end
+    local terms = collectSearchTerms(item, item_title)
+    if #terms == 0 then
+        UIManager:show(InfoMessage:new{
+            text = T(_("No searchable name for \"%1\"."), item_title),
+            timeout = 3,
+        })
+        return
+    end
+
     UIManager:show(Notification:new{
         text = _("Computing distribution…"),
     })
 
     local self_ref = self
     UIManager:scheduleIn(0.2, function()
-        -- Get all chapters (pass coverage_page for spoiler gating)
-        local chapters, _toc_info = getAllChapterBoundaries(self_ref.ui, nil, self_ref.coverage_page, self_ref.scope)
-        if not chapters then
-            chapters, _toc_info = getAllPageRangeChapters(self_ref.ui, self_ref.coverage_page)
+        local ui = self_ref.ui
+        local gate = self_ref:_spoilerGate()
+
+        -- Structure: the full TOC tree, or flat page-range chunks without a
+        -- usable TOC. Ghost entries (markers sharing a page with a real
+        -- chapter, e.g. Quran Juz pointers — end_page < start_page) carry no
+        -- content and would only render dead 0-rows here (the picker keeps
+        -- them: there they are jump targets).
+        local raw_nodes, max_depth = getHierarchicalChapters(ui, gate, self_ref.scope)
+        if not raw_nodes or #raw_nodes == 0 then
+            raw_nodes = getAllPageRangeChapters(ui, gate)
+            max_depth = 0
         end
-        if not chapters or #chapters == 0 then
+        local nodes = {}
+        for _idx, n in ipairs(raw_nodes or {}) do
+            if n.end_page >= n.start_page then table.insert(nodes, n) end
+        end
+        if #nodes == 0 then
             UIManager:show(InfoMessage:new{
                 text = _("Could not determine chapter structure."),
                 timeout = 3,
@@ -4957,31 +4916,38 @@ function XrayBrowser:showItemDistribution(item, category_key, item_title, detail
             return
         end
 
-        -- Count mentions in each chapter (skip unread/out-of-scope)
-        local chapter_counts = {}
-        local max_count = 0
-        local total_mentions = 0
-        local scanned_count = 0
-        local has_unread = false
-        for _idx, chapter in ipairs(chapters) do
-            if chapter.unread or chapter.out_of_scope then
-                has_unread = true
-                -- chapter_counts[i] left nil implicitly (unread/out_of_scope = not yet scanned)
-            else
-                scanned_count = scanned_count + 1
-                local _raw, lower = self_ref:_getChapterText(chapter)
-                local count = 0
-                if lower ~= "" then
-                    count = XrayParser.countItemOccurrences(item, lower)
-                end
-                chapter_counts[_idx] = count
-                total_mentions = total_mentions + count
-                if count > max_count then max_count = count end
+        -- ONE native pass: every hit, whole book (display gating comes later)
+        local hits = gatherMentionHits(ui, terms)
+
+        -- Per-page prefix sums → a node's count is one subtraction, at any depth
+        local total_pages = ui.document.info.number_of_pages or 0
+        local page_counts = {}
+        for _idx, h in ipairs(hits) do
+            local p = h.display_page
+            if p and p >= 1 and p <= total_pages then
+                page_counts[p] = (page_counts[p] or 0) + 1
             end
         end
+        local prefix = { [0] = 0 }
+        for p = 1, total_pages do
+            prefix[p] = prefix[p - 1] + (page_counts[p] or 0)
+        end
+        local function spanCount(a, b)
+            if b > total_pages then b = total_pages end
+            if a < 1 then a = 1 end
+            if b < a then return 0 end
+            return prefix[b] - prefix[a - 1]
+        end
+        for _idx, n in ipairs(nodes) do
+            n.count = spanCount(n.start_page, n.end_page)
+            -- Clipped count for spans the gate cuts through (nil elsewhere)
+            n.gated_count = (gate and n.start_page <= gate)
+                and spanCount(n.start_page, math.min(n.end_page, gate)) or nil
+        end
+        local total_full = total_pages > 0 and prefix[total_pages] or #hits
 
-        if total_mentions == 0 and scanned_count > 0 and not has_unread then
-            local msg = self_ref.ui.document.info.has_pages
+        if total_full == 0 then
+            local msg = ui.document.info.has_pages
                 and T(_("No mentions of \"%1\" found. PDF text extraction may not be available for this document."), item_title)
                 or T(_("No mentions of \"%1\" found in book text."), item_title)
             UIManager:show(InfoMessage:new{
@@ -4991,14 +4957,24 @@ function XrayBrowser:showItemDistribution(item, category_key, item_title, detail
             return
         end
 
+        -- Session-sticky per-book depth choice (set via the in-page Levels row)
+        local depth_filter
+        local prefs = XrayBrowser._appearance_depth_prefs
+        local pref = prefs and prefs[self_ref.metadata.book_file or ""]
+        if type(pref) == "number" and pref < (max_depth or 0) then
+            depth_filter = pref
+        end
+
         local data = {
-            chapters = chapters,
-            chapter_counts = chapter_counts,
-            max_count = max_count,
-            total_mentions = total_mentions,
-            scanned_count = scanned_count,
-            has_unread = has_unread,
+            nodes = nodes,
+            hits = hits,
+            max_depth = max_depth,
+            gate = gate,
+            total_full = total_full,
+            total_gated = gate and spanCount(1, gate) or nil,
+            revealed = {},
             spoiler_warned = false,
+            depth_filter = depth_filter,
         }
         self_ref._dist_cache[cache_key] = data
         self_ref:_buildDistributionView(item, category_key, item_title, data, false, detail_context)
