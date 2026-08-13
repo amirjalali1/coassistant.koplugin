@@ -2208,11 +2208,16 @@ function ActionCache.searchAllXrays(document_path, query, doc, opts)
     local main = ActionCache.getXrayCache(document_path)
     local current_page = getCurrentPageFromDoc(doc)
     local all_results = {}
+    -- User search terms must match here too, not only in the browser — this is
+    -- the matcher behind highlight-menu lookup AND the #63 conditional bypass
+    -- (F1, xray_marking_plan.md; one sidecar read serves every parse below)
+    local user_aliases = ActionCache.getUserAliases(document_path)
 
     -- Search main X-Ray
     if main and main.result then
         local data = XrayParser.parse(main.result)
         if data then
+            XrayParser.mergeUserAliases(data, user_aliases)
             local results = XrayParser.searchAll(data, query, opts)
             if #results > 0 then
                 table.insert(all_results, {
@@ -2232,6 +2237,7 @@ function ActionCache.searchAllXrays(document_path, query, doc, opts)
     for _idx, sec in ipairs(sections) do
         local data = XrayParser.parse(sec.data.result)
         if data then
+            XrayParser.mergeUserAliases(data, user_aliases)
             local results = XrayParser.searchAll(data, query, opts)
             if #results > 0 then
                 local sp, ep = getSectionPageRange(sec.data, doc)

@@ -73,6 +73,7 @@ XrayDedup.MERGE_PROMPT = [[A reading-companion X-Ray for "{title}"{author_clause
 @@KOA_MERGE_INPUTS@@
 
 Rules:
+- Use ONLY the two entries below — add no facts from outside knowledge, even if you recognize the work
 - Combine complementary details; drop exact repetition
 - Keep roughly the length of the longer of the two descriptions
 - Output ONLY the combined description text — no preamble, no headings, no JSON, no quotation marks]]

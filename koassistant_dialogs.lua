@@ -9979,6 +9979,10 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
         return
     end
 
+    -- User search terms must match in lookup too, not only in the browser
+    -- (F1, xray_marking_plan.md, ref #63)
+    XrayParser.mergeUserAliases(data, ActionCache.getUserAliases(document_path))
+
     -- Search name + alias only (description matches are noise for dictionary lookup)
     local results = XrayParser.searchAll(data, query, { skip_description = true })
 

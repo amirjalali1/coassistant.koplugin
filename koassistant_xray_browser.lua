@@ -92,7 +92,8 @@ local function fitMandatory(name, secondary, opts)
 end
 
 --- Show a floating "Back to X-Ray" button overlay.
---- Appears after navigateAndSearch closes the browser for document text search.
+--- Appears after a mention row / fallback launch closes the browser and
+--- enters the native search session (launchSearchSession).
 --- Tap: reopens the X-Ray browser at the distribution view.
 --- Hold: dismisses the button without navigating.
 --- Uses toast=true so events propagate to widgets below (search dialog stays interactive).
@@ -198,6 +199,81 @@ dismissSearchReturnButton = function()
         UIManager:close(XrayBrowser._search_return_overlay)
         XrayBrowser._search_return_overlay = nil
     end
+end
+
+--- Entity name + aliases as search terms: array of { text, regex } — regex =
+--- the Arabic diacritics-tolerant pattern where applicable (EPUB engine
+--- only). Shared by the mention list and the native-search launches.
+local function collectSearchTerms(item, item_title)
+    local terms, seen = {}, {}
+    local function add(t)
+        if type(t) ~= "string" then return end
+        -- Strip parenthetical: "Theosis (Deification)" → "Theosis"
+        t = t:gsub("%s*%(.-%)%s*", " ")
+        t = t:match("^%s*(.-)%s*$") or ""
+        if #t > 2 then
+            local k = t:lower()
+            if not seen[k] then
+                seen[k] = true
+                table.insert(terms, {
+                    text = t,
+                    regex = XrayParser.buildArabicSearchRegex(t),
+                })
+            end
+        end
+    end
+    add(item.name or item.term or item.event or item_title)
+    local aliases = item.aliases
+    if type(aliases) == "string" then aliases = { aliases } end
+    if type(aliases) == "table" then
+        for _idx, a in ipairs(aliases) do add(a) end
+    end
+    return terms
+end
+
+--- EPUB regex-OR of every term (so the native search session walks name AND
+--- aliases with its own prev/next). nil when a single plain term suffices.
+local function buildSearchPattern(terms)
+    if #terms == 1 and not terms[1].regex then return nil end
+    local function one(term)
+        return term.regex
+            or term.text:gsub("([%.%+%*%?%[%]%^%$%(%)%{%}%|\\])", "\\%1")
+    end
+    local pattern = one(terms[1])
+    for i = 2, #terms do
+        pattern = pattern .. "|" .. one(terms[i])
+    end
+    return pattern
+end
+
+--- Open KOReader's native search session for the term at the CURRENT
+--- position, then float the "Back to X-Ray" button. The built-in search owns
+--- highlighting and prev/next — no custom overlay (maintainer 2026-08-13).
+local function launchSearchSession(ui, term, use_regex, return_info)
+    UIManager:scheduleIn(0.2, function()
+        if use_regex then
+            ui.search.last_search_text = term
+            ui.search.use_regex = true
+            ui.search.case_insensitive = true
+            -- KOReader master changed onShowSearchDialog's 3rd arg from a
+            -- boolean `regex` to a `search_type` table ({flags, regex}); the
+            -- master handler does `search_type.regex`, so a bare boolean
+            -- crashes ("attempt to index a boolean"). Detect the new API via
+            -- default_search_type and pass the matching shape.
+            local regex_arg = true
+            if type(ui.search.default_search_type) == "table" then
+                regex_arg = { flags = 0x0001, regex = true }
+                ui.search.current_search_type = regex_arg
+            end
+            ui.search:onShowSearchDialog(term, 0, regex_arg, true)
+        else
+            ui.search:searchCallback(0, term)
+        end
+        -- Show floating "Back to X-Ray" button after search starts
+        UIManager:scheduleIn(0.3, function()
+            showSearchReturnButton(return_info)
+        end)
+    end)
 end
 
 --- Get current page number from KOReader UI
@@ -4423,138 +4499,10 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
                 mandatory_dim = (count == 0),
                 callback = function()
                     if count > 0 then
-                        local captured_ui = self_ref.ui
-                        -- Build search term: full display name + aliases with regex OR (|)
-                        -- e.g., "Edward Said" with aliases "Said" → Edward Said|Said
-                        local search_name = item.name or item.term or item.event or item_title
-                        -- Strip parenthetical: "Theosis (Deification)" → "Theosis"
-                        search_name = search_name:gsub("%s*%(.-%)%s*", "")
-                        search_name = search_name:match("^%s*(.-)%s*$") or search_name
-                        -- Collect aliases as full terms
-                        -- Deduplicate: skip aliases that match the main search term
-                        local alias_terms = {}
-                        local search_lower = search_name:lower()
-                        if type(item.aliases) == "table" then
-                            for _idx, alias in ipairs(item.aliases) do
-                                if #alias > 2 then
-                                    local clean = alias:gsub("%s*%(.-%)%s*", "")
-                                    clean = clean:match("^%s*(.-)%s*$") or clean
-                                    if #clean > 2 and clean:lower() ~= search_lower then
-                                        table.insert(alias_terms, clean)
-                                    end
-                                end
-                            end
-                        end
-                        if captured_ui.search and #search_name > 2 then
-                            -- Close browser, navigate to chapter, then search
-                            local function navigateAndSearch(term, use_regex)
-                                -- Close underlying widgets that would block search highlights
-                                -- (e.g., dictionary popup, cross-section results menu)
-                                if self_ref._cleanup_widgets then
-                                    for _cw, widget in ipairs(self_ref._cleanup_widgets) do
-                                        UIManager:close(widget)
-                                    end
-                                end
-                                UIManager:close(self_ref.menu)
-                                captured_ui:handleEvent(Event:new("GotoPage", captured_chapter.start_page))
-                                UIManager:scheduleIn(0.2, function()
-                                    if use_regex then
-                                        captured_ui.search.last_search_text = term
-                                        captured_ui.search.use_regex = true
-                                        captured_ui.search.case_insensitive = true
-                                        -- KOReader master changed onShowSearchDialog's 3rd arg from a
-                                        -- boolean `regex` to a `search_type` table ({flags, regex}); the
-                                        -- master handler does `search_type.regex`, so a bare boolean
-                                        -- crashes ("attempt to index a boolean"). Detect the new API via
-                                        -- default_search_type and pass the matching shape.
-                                        local regex_arg = true
-                                        if type(captured_ui.search.default_search_type) == "table" then
-                                            regex_arg = { flags = 0x0001, regex = true }
-                                            captured_ui.search.current_search_type = regex_arg
-                                        end
-                                        captured_ui.search:onShowSearchDialog(term, 0, regex_arg, true)
-                                    else
-                                        captured_ui.search:searchCallback(0, term)
-                                    end
-                                    -- Show floating "Back to X-Ray" button after search starts
-                                    UIManager:scheduleIn(0.3, function()
-                                        local return_info = {
-                                            ui = captured_ui,
-                                            plugin_ref = self_ref.metadata and self_ref.metadata.plugin,
-                                            category_key = category_key,
-                                            item_name = item_title,
-                                        }
-                                        -- Thread section metadata for section X-Rays
-                                        if self_ref.scope then
-                                            return_info.scope = self_ref.scope
-                                        end
-                                        showSearchReturnButton(return_info)
-                                    end)
-                                end)
-                            end
-                            -- PDF documents don't support regex search (no getAndClearRegexSearchError)
-                            local can_regex = not captured_ui.document.info.has_pages
-                            if not can_regex and #alias_terms > 0 then
-                                -- PDF with aliases: show picker for which term to search
-                                -- Count per-term hits (text already cached from distribution scan)
-                                local _raw, ch_text_lower = self_ref:_getChapterText(captured_chapter)
-                                local function countInChapter(term)
-                                    if not ch_text_lower or ch_text_lower == "" then return 0 end
-                                    local tl = term:lower()
-                                    local n, pos = 0, 1
-                                    while true do
-                                        local s = ch_text_lower:find(tl, pos, true)
-                                        if not s then break end
-                                        n = n + 1
-                                        pos = s + #tl
-                                    end
-                                    return n
-                                end
-                                local buttons = {}
-                                -- Main name as first button
-                                local main_hits = countInChapter(search_name)
-                                table.insert(buttons, {{
-                                    text = main_hits > 0 and search_name .. " (" .. main_hits .. ")" or search_name,
-                                    callback = function()
-                                        UIManager:close(self_ref._search_picker)
-                                        navigateAndSearch(search_name, false)
-                                    end,
-                                }})
-                                -- Each alias as a separate button
-                                for _idx2, a in ipairs(alias_terms) do
-                                    local alias_hits = countInChapter(a)
-                                    table.insert(buttons, {{
-                                        text = alias_hits > 0 and a .. " (" .. alias_hits .. ")" or a,
-                                        callback = function()
-                                            UIManager:close(self_ref._search_picker)
-                                            navigateAndSearch(a, false)
-                                        end,
-                                    }})
-                                end
-                                self_ref._search_picker = ButtonDialog:new{
-                                    title = _("Search for:"),
-                                    buttons = buttons,
-                                }
-                                UIManager:show(self_ref._search_picker)
-                            elseif can_regex and (#alias_terms > 0
-                                    or XrayParser.containsArabic(search_name)) then
-                                -- EPUB: build regex pattern
-                                -- For Arabic terms: diacritics-tolerant regex so
-                                -- "الفلق" matches "ٱلْفَلَقِ" in diacritized text
-                                local function buildTerm(s)
-                                    return XrayParser.buildArabicSearchRegex(s)
-                                        or s:gsub("([%.%+%*%?%[%]%^%$%(%)%{%}%|\\])", "\\%1")
-                                end
-                                local pattern = buildTerm(search_name)
-                                for _idx2, a in ipairs(alias_terms) do
-                                    pattern = pattern .. "|" .. buildTerm(a)
-                                end
-                                navigateAndSearch(pattern, true)
-                            else
-                                -- Non-Arabic single term or PDF: plain search
-                                navigateAndSearch(search_name, false)
-                            end
-                        end
+                        -- Mention list (xray_marking_plan.md slice 1 round 3,
+                        -- ref #78): snippets to read in place; tapping one
+                        -- jumps there and enters the native search session
+                        self_ref:_showChapterMentions(item, category_key, item_title, captured_chapter)
                     else
                         UIManager:show(Notification:new{
                             text = T(_("No X-Ray items in \"%1\"."),
@@ -4565,7 +4513,6 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
             })
         end
     end
-
     -- Convert focus_idx from chapter index to items index (accounts for headers)
     if data._focus_idx and chapter_to_item[data._focus_idx] then
         data._focus_idx = chapter_to_item[data._focus_idx]
@@ -4614,6 +4561,257 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
         -- Close the item detail TextViewer now that distribution is ready underneath
         if detail_context and detail_context.dismiss_viewer then
             detail_context.dismiss_viewer:onClose()
+        end
+    end
+end
+
+--- Return-info shape for the floating "Back to X-Ray" button (reopens the
+--- browser at this entity's distribution view).
+function XrayBrowser:_mentionReturnInfo(category_key, item_title)
+    local return_info = {
+        ui = self.ui,
+        plugin_ref = self.metadata and self.metadata.plugin,
+        category_key = category_key,
+        item_name = item_title,
+    }
+    if self.scope then return_info.scope = self.scope end
+    return return_info
+end
+
+--- Mention list (xray_marking_plan.md slice 1 round 3, ref #78): one row per
+--- occurrence — page + bold-match context snippet (the exact PTF shape
+--- KOReader's own search all-results list renders), readable IN PLACE
+--- without touching the book position. Tap = jump to THAT hit and enter the
+--- native search session there (built-in highlighting + prev/next — no
+--- custom overlay, maintainer 2026-08-13). ☰ widens scope from the chapter
+--- to the whole book, spoiler-gated to max(coverage, reading position) —
+--- the same gate every text-matching feature uses. chapter = nil → whole
+--- book directly.
+function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapter)
+    local self_ref = self
+    local ui = self.ui
+    if not (ui and ui.document) then return end
+    local terms = collectSearchTerms(item, item_title)
+    if #terms == 0 then return end
+
+    if not ui.document.findAllText and chapter then
+        -- No all-hits API on this engine (base Document stub): fall back to
+        -- the old shape — jump to the chapter start, open a plain search
+        -- session for the primary term
+        if not ui.search then return end
+        if self._cleanup_widgets then
+            for _cw, widget in ipairs(self._cleanup_widgets) do
+                UIManager:close(widget)
+            end
+        end
+        if self.menu then UIManager:close(self.menu) end
+        if ui.link and ui.link.addCurrentLocationToStack then
+            ui.link:addCurrentLocationToStack()
+        end
+        ui:handleEvent(Event:new("GotoPage", chapter.start_page))
+        launchSearchSession(ui, terms[1].text, false,
+            self:_mentionReturnInfo(category_key, item_title))
+        return
+    end
+
+    UIManager:show(Notification:new{ text = _("Finding mentions…") })
+    UIManager:scheduleIn(0.1, function()
+        local TextBoxWidget = require("ui/widget/textboxwidget")
+        local is_pages = ui.document.info and ui.document.info.has_pages
+
+        -- Scope bounds: the chapter's page range, or the whole book clipped
+        -- by the text-matching spoiler gate (max of X-Ray coverage and
+        -- reading position) unless coverage is complete
+        local first_page, last_page, scope_label
+        if chapter then
+            first_page = chapter.start_page
+            last_page = chapter.end_page
+            scope_label = chapter.title or _("Chapter")
+        else
+            first_page = 1
+            local total = ui.document.info and ui.document.info.number_of_pages
+            local boundary
+            if not self_ref.is_complete then
+                boundary = math.max(self_ref.coverage_page or 0, getCurrentPage(ui) or 0)
+                if boundary == 0 or (total and boundary >= total) then boundary = nil end
+            end
+            last_page = boundary or total
+            scope_label = boundary and T(_("Whole book — up to p. %1"), boundary)
+                or _("Whole book")
+        end
+        if not (first_page and last_page) then return end
+
+        local mentions, seen = {}, {}
+        for _idx, term in ipairs(terms) do
+            local res
+            if term.regex and not is_pages then
+                -- Arabic terms: diacritics-tolerant regex (EPUB engine only)
+                res = ui.document:findAllText(term.regex, true, 5, 5000, true)
+            else
+                res = ui.document:findAllText(term.text, true, 5, 5000, false)
+            end
+            if res then
+                for _idx2, r in ipairs(res) do
+                    local page, key
+                    if is_pages then
+                        -- Paginated: r.start IS the page number
+                        page = r.start
+                        local b = r.boxes and r.boxes[1]
+                        key = tostring(page) .. "|" .. tostring(b and b.x) .. "|" .. tostring(b and b.y)
+                    else
+                        page = ui.document:getPageFromXPointer(r.start)
+                        key = tostring(r.start)
+                    end
+                    if page and page >= first_page and page <= last_page
+                        and not seen[key] then
+                        seen[key] = true
+                        -- Bold-match snippet (readersearch.lua idiom)
+                        local text = { TextBoxWidget.PTF_HEADER }
+                        if r.prev_text then
+                            table.insert(text, r.prev_text)
+                            if not r.prev_text:find("%s$") then
+                                table.insert(text, " ")
+                            end
+                        end
+                        table.insert(text, TextBoxWidget.PTF_BOLD_START)
+                        table.insert(text, r.matched_word_prefix or "")
+                        table.insert(text, r.matched_text or term.text)
+                        table.insert(text, r.matched_word_suffix or "")
+                        table.insert(text, TextBoxWidget.PTF_BOLD_END)
+                        if r.next_text then
+                            if not r.next_text:find("^[%s%p]") then
+                                table.insert(text, " ")
+                            end
+                            table.insert(text, r.next_text)
+                        end
+                        table.insert(mentions, {
+                            page = is_pages and page or nil,
+                            xp = (not is_pages) and r.start or nil,
+                            display_page = page,
+                            row_text = table.concat(text),
+                            term = term,
+                            order = #mentions + 1,
+                        })
+                    end
+                end
+            end
+        end
+        -- Document order: by page, insertion order breaking ties (table.sort
+        -- is not stable; same-page hits from different terms must not shuffle)
+        table.sort(mentions, function(a, b)
+            if a.display_page ~= b.display_page then
+                return a.display_page < b.display_page
+            end
+            return a.order < b.order
+        end)
+
+        local list_items = {}
+        for _i, m in ipairs(mentions) do
+            local captured = m
+            table.insert(list_items, {
+                text = m.row_text,
+                mandatory = T(_("p. %1"), m.display_page),
+                mandatory_dim = true,
+                callback = function()
+                    self_ref:_gotoMentionAndSearch(category_key, item_title,
+                        captured, terms)
+                end,
+            })
+        end
+        if #mentions == 0 then
+            -- Counts come from the extractor scan with looser matching (span
+            -- merge, normalization) — exact search can legitimately find less
+            table.insert(list_items, {
+                text = _("No exact text matches in this scope."),
+                dim = true,
+                callback = function() end,
+            })
+        end
+
+        local Menu = require("ui/widget/menu")
+        -- Overlay Menu above the browser (artifact-browser type-list idiom):
+        -- X/back reveals the distribution view untouched underneath
+        local list_menu
+        local widen = chapter and not self_ref.scope
+        list_menu = Menu:new{
+            title = T(_("%1: %2 mentions"), item_title, #mentions),
+            subtitle = scope_label,
+            item_table = list_items,
+            is_borderless = true,
+            is_popout = false,
+            width = Screen:getWidth(),
+            height = Screen:getHeight(),
+            multilines_forced = true,
+            items_max_lines = 3,
+            -- ☰ = scope widening; only offered chapter → whole book (section
+            -- X-Rays keep their own scope as the boundary)
+            title_bar_left_icon = widen and "appbar.menu" or nil,
+            onLeftButtonTap = widen and function()
+                local scope_dialog
+                scope_dialog = ButtonDialog:new{
+                    buttons = {{{
+                        text = _("Whole book"),
+                        callback = function()
+                            UIManager:close(scope_dialog)
+                            UIManager:close(list_menu)
+                            self_ref._mention_list_menu = nil
+                            self_ref:_showChapterMentions(item, category_key,
+                                item_title, nil)
+                        end,
+                    }}},
+                }
+                UIManager:show(scope_dialog)
+            end or nil,
+            onMenuSelect = function(_menu_self, entry)
+                if entry.callback then entry.callback() end
+                return true
+            end,
+            close_callback = function()
+                self_ref._mention_list_menu = nil
+            end,
+        }
+        self_ref._mention_list_menu = list_menu
+        UIManager:show(list_menu)
+    end)
+end
+
+--- Jump to one mention and enter KOReader's native search session there —
+--- the built-in search owns hit highlighting and prev/next navigation; the
+--- floating "Back to X-Ray" button leads back to the browser. Location-stack
+--- snapshot first, so the native back gesture undoes the jump (A8, ref #78).
+function XrayBrowser:_gotoMentionAndSearch(category_key, item_title, mention, terms)
+    local ui = self.ui
+    if not (ui and ui.document and ui.search) then return end
+    -- Reveal the page: overlay list, covering widgets, then the browser
+    if self._mention_list_menu then
+        UIManager:close(self._mention_list_menu)
+        self._mention_list_menu = nil
+    end
+    if self._cleanup_widgets then
+        for _cw, widget in ipairs(self._cleanup_widgets) do
+            UIManager:close(widget)
+        end
+    end
+    if self.menu then UIManager:close(self.menu) end
+    if ui.link and ui.link.addCurrentLocationToStack then
+        ui.link:addCurrentLocationToStack()
+    end
+    if mention.xp then
+        ui:handleEvent(Event:new("GotoXPointer", mention.xp, mention.xp))
+    elseif mention.page then
+        ui:handleEvent(Event:new("GotoPage", mention.page))
+    end
+    local return_info = self:_mentionReturnInfo(category_key, item_title)
+    if ui.document.info and ui.document.info.has_pages then
+        -- PDF: no regex support — search the term that produced this hit
+        launchSearchSession(ui, mention.term.text, false, return_info)
+    else
+        -- EPUB: regex-OR of every term so prev/next walks aliases too
+        local pattern = buildSearchPattern(terms)
+        if pattern then
+            launchSearchSession(ui, pattern, true, return_info)
+        else
+            launchSearchSession(ui, terms[1].text, false, return_info)
         end
     end
 end
