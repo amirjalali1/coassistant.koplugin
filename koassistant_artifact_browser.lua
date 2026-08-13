@@ -619,7 +619,8 @@ function ArtifactBrowser:showBrowserMenuOptions(opts)
 
     dialog = ButtonDialog:new{
         buttons = {
-            {{ text = _("Chat History"), align = "left", callback = function()
+            -- " →" marks rows that LEAVE this browser (the navClose rows)
+            {{ text = _("Chat History") .. " →", align = "left", callback = function()
                 local mc = navClose()
                 UIManager:nextTick(function()
                     if mc then UIManager:close(mc) end
@@ -627,7 +628,7 @@ function ArtifactBrowser:showBrowserMenuOptions(opts)
                     if AskGPT then AskGPT:showChatHistory() end
                 end)
             end }},
-            {{ text = _("Notebooks"), align = "left", callback = function()
+            {{ text = _("Notebooks") .. " →", align = "left", callback = function()
                 local mc = navClose()
                 UIManager:nextTick(function()
                     if mc then UIManager:close(mc) end
