@@ -619,12 +619,6 @@ function ArtifactBrowser:showBrowserMenuOptions(opts)
 
     dialog = ButtonDialog:new{
         buttons = {
-            -- Stays INSIDE the browser (list overlays it) — no navClose, unlike
-            -- the cross-browser rows below
-            {{ text = _("Browse by type…"), align = "left", callback = function()
-                UIManager:close(dialog)
-                self_ref:showBrowseByType(opts)
-            end }},
             {{ text = _("Chat History"), align = "left", callback = function()
                 local mc = navClose()
                 UIManager:nextTick(function()
@@ -640,6 +634,19 @@ function ArtifactBrowser:showBrowserMenuOptions(opts)
                     local AskGPT = self_ref:getAskGPTInstance()
                     if AskGPT then AskGPT:showNotebookBrowser() end
                 end)
+            end }},
+            -- Group break (device 2026-08-13: hamburger pattern = carousel/nav
+            -- rows first, current-view rows below a separator). An EMPTY row is
+            -- ButtonTable's cheapest double-rule: it contributes only its
+            -- vertical span + row line, so two gray lines with a gap render
+            -- between the groups; column_cnt == 0 keeps it out of DPad focus
+            -- (verified in frontend buttontable.lua, incl. the shrink path).
+            {},
+            -- Stays INSIDE the browser (list overlays it) — no navClose, unlike
+            -- the cross-browser rows above
+            {{ text = _("Browse by type…"), align = "left", callback = function()
+                UIManager:close(dialog)
+                self_ref:showBrowseByType(opts)
             end }},
         },
         shrink_unneeded_width = true,

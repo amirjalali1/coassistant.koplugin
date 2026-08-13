@@ -2853,7 +2853,11 @@ function AskGPT:buildProviderMenu(simplified, show_all)
   do
     local has_real_key = self:hasAnyRealApiKey()
     for _i, prov in ipairs(all_providers) do
-      if has_real_key and not self:isProviderConfigured(prov.id, prov.config) then
+      -- unconfigured drives the select-time key-dialog offer (and its QS
+      -- opens_dialog routing below) on EVERY install state; no_key stays the
+      -- display/filter marker, meaningful only once some real key exists
+      prov.unconfigured = not self:isProviderConfigured(prov.id, prov.config)
+      if has_real_key and prov.unconfigured then
         prov.no_key = true
       end
     end
@@ -2903,6 +2907,12 @@ function AskGPT:buildProviderMenu(simplified, show_all)
       radio = true,
       callback = createProviderCallback(prov_copy.id, prov_copy.display_name),
       keep_menu_open = true,
+      -- QS path (device 2026-08-13): selecting an unconfigured provider opens
+      -- the key dialog, and the QS popup's reopen-after-select buried it —
+      -- opens_dialog is the popup's own close-first-don't-reopen contract for
+      -- exactly this. Build-time state is fine here: the QS popup rebuilds on
+      -- every open. TouchMenu ignores the field.
+      opens_dialog = prov_copy.unconfigured or nil,
     }
 
     -- Add hold callback for custom providers
