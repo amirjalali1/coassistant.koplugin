@@ -1040,6 +1040,27 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
         -- calls close_callback after every item tap, not just on widget close.
         -- Cleanup is done via onCloseWidget instead.
     }
+    -- TOC-style expand/collapse for the appearances tree (readertoc idiom):
+    -- a tap on the state-arrow side of a row with a state button toggles the
+    -- node instead of selecting it; everything else keeps Menu's default
+    -- dispatch (item callbacks).
+    local orig_onMenuSelect = self.menu.onMenuSelect
+    self.menu.onMenuSelect = function(menu_self, sel_item, pos)
+        if sel_item and sel_item.state and pos and pos.x then
+            local BD = require("ui/bidi")
+            local toggle
+            if BD.mirroredUILayout() then
+                toggle = pos.x > 0.7
+            else
+                toggle = pos.x < 0.3
+            end
+            if toggle and sel_item.state.callback then
+                sel_item.state.callback(sel_item.index)
+                return true
+            end
+        end
+        return orig_onMenuSelect(menu_self, sel_item, pos)
+    end
     -- Hook into onCloseWidget for cleanup (only fires when widget is actually removed)
     local orig_onCloseWidget = self.menu.onCloseWidget
     self.menu.onCloseWidget = function(menu_self)
@@ -1813,6 +1834,7 @@ function XrayBrowser:navigateForward(title, items, focus_idx, display)
             single_line = self.menu.single_line,
             multilines_forced = self.menu.multilines_forced,
             items_max_lines = self.menu.items_max_lines,
+            state_w = self.menu.state_w,
         },
     })
     self.current_title = title
@@ -1820,10 +1842,26 @@ function XrayBrowser:navigateForward(title, items, focus_idx, display)
         self.menu.single_line = display.single_line
         self.menu.multilines_forced = display.multilines_forced
         self.menu.items_max_lines = display.items_max_lines
+        self.menu.state_w = display.state_w
     end
 
     -- Add to paths so back arrow becomes enabled via updatePageInfo
     table.insert(self.menu.paths, true)
+    self:_switchMenuItems(title, items, focus_idx)
+end
+
+--- switchItemTable with a fresh multiline page map. Menu:switchItemTable
+--- computes the focus page from `page_items` BEFORE recalculating them —
+--- on a menu born single-line the map is nil (device crash: menu.lua
+--- getPageNumber "bad argument #1 to 'ipairs'" entering the appearances
+--- tree with a focus index), and on a re-entered multiline level it is the
+--- OUTGOING table's stale map. Pre-build it for the new table whenever the
+--- items_max_lines machinery is active and a focus target is given.
+function XrayBrowser:_switchMenuItems(title, items, focus_idx)
+    if focus_idx and self.menu.items_max_lines and self.menu.setupItemHeights then
+        self.menu.item_table = items
+        self.menu:setupItemHeights()
+    end
     self.menu:switchItemTable(title, items, focus_idx)
 end
 
@@ -1854,11 +1892,13 @@ function XrayBrowser:navigateBack()
     self.current_title = prev.title
     -- The group jump follows the reader back out (round 25)
     self.location = prev.location
-    -- Restore the display params saved at push time (multiline levels)
+    -- Restore the display params saved at push time (multiline levels,
+    -- the appearances tree's expand/collapse state column)
     if prev.display then
         self.menu.single_line = prev.display.single_line
         self.menu.multilines_forced = prev.display.multilines_forced
         self.menu.items_max_lines = prev.display.items_max_lines
+        self.menu.state_w = prev.display.state_w
     end
 
     -- Remove from paths so back arrow disables when we reach root
@@ -4208,8 +4248,14 @@ function XrayBrowser:showMentions(chapter)
         end
 
         -- Title: just "Mentions (N)" — the scope already lives in the picker
-        -- row right below, naming it twice cramped the title bar (round 5)
-        self_ref:navigateForward(T(_("Mentions (%1)"), #found), items)
+        -- row right below, naming it twice cramped the title bar (round 5).
+        -- Two-line rows: a long chapter name in the picker row wraps instead
+        -- of truncating its "▾" away (device round 2026-08-13)
+        self_ref:navigateForward(T(_("Mentions (%1)"), #found), items, nil, {
+            single_line = false,
+            multilines_forced = true,
+            items_max_lines = 2,
+        })
     end)
 end
 
@@ -4297,18 +4343,24 @@ function XrayBrowser:showChapterItemsAt(chapter)
     end)
 end
 
---- Build the Chapter Appearances tree and display it (slice 4, ref #78):
---- full TOC hierarchy with counts at EVERY level, powered by the one
---- gatherMentionHits pass — counts and the mention lists are consistent by
---- construction (per-chapter text extraction is gone from this surface).
---- Spoiler gating is DISPLAY-only: all hits are in memory; rows beyond the
---- gate show "···" until revealed (instant — a display flip, one-time
---- confirm), a node whose span crosses the gate shows its count clipped at
---- the gate. Called by showItemDistribution for initial render and refresh.
+--- Build the Chapter Appearances tree and display it (slice 4 + TOC-mimic
+--- round, ref #78): the full TOC hierarchy in KOReader's OWN TOC shape —
+--- expand/collapse arrows on parent rows (left-zone tap toggles, readertoc
+--- idiom via the shared menu's onMenuSelect wrap), no arrows on terminal
+--- nodes, top level collapsed on entry with the reader's current chain
+--- auto-expanded, the current node BOLD — with a mention count + histogram
+--- bar at the end of every row, powered by the one gatherMentionHits pass
+--- (counts and mention lists consistent by construction). Rows wrap to two
+--- lines instead of truncating. Bars normalize GLOBALLY (monotone: a bigger
+--- count is never a shorter bar; parents are roll-ups so theirs dominate).
+--- Spoiler gating is DISPLAY-only: all hits are in memory; concealed rows
+--- show "···" until revealed (instant flip, one-time confirm; revealing a
+--- parent reveals its subtree), a node whose span crosses the gate shows
+--- its count clipped at the gate.
 --- @param item table The X-Ray item
 --- @param category_key string Category key
 --- @param item_title string Display name for the item
---- @param data table Mutable distribution state {nodes, hits, gate, revealed, ...}
+--- @param data table Mutable distribution state {nodes, hits, gate, revealed, expanded, ...}
 --- @param is_refresh boolean If true, update menu in-place; if false, navigateForward
 function XrayBrowser:_buildDistributionView(item, category_key, item_title, data, is_refresh, detail_context)
     local self_ref = self
@@ -4370,85 +4422,105 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
             end,
         })
     end
-
-    -- Depth control (in-page, per the maintainer's bad-TOCs point): which
-    -- levels the tree shows; the pick sticks per book for this session
-    if (data.max_depth or 0) > 1 then
-        local label
-        if not data.depth_filter then
-            label = _("Levels: all \u{25BE}")
-        elseif data.depth_filter == 1 then
-            label = _("Levels: 1 \u{25BE}")
-        else
-            label = T(_("Levels: 1–%1 \u{25BE}"), data.depth_filter)
-        end
-        table.insert(items, {
-            text = label,
-            callback = function()
-                local dialog
-                local buttons = {}
-                local function dot(active)
-                    return active and "\u{25CF} " or "\u{25CB} "
-                end
-                local function pick(d)
-                    return function()
-                        UIManager:close(dialog)
-                        data.depth_filter = d
-                        XrayBrowser._appearance_depth_prefs = XrayBrowser._appearance_depth_prefs or {}
-                        XrayBrowser._appearance_depth_prefs[self_ref.metadata.book_file or ""] = d or "all"
-                        data._focus_idx = nil
-                        self_ref:_buildDistributionView(item, category_key, item_title, data, true)
-                    end
-                end
-                table.insert(buttons, {{
-                    text = dot(not data.depth_filter) .. _("All levels"),
-                    callback = pick(nil),
-                }})
-                for d = 1, data.max_depth - 1 do
-                    local lbl = d == 1 and _("Level 1 only") or T(_("Levels 1–%1"), d)
-                    table.insert(buttons, {{
-                        text = dot(data.depth_filter == d) .. lbl,
-                        callback = pick(d),
-                    }})
-                end
-                dialog = ButtonDialog:new{ buttons = buttons }
-                UIManager:show(dialog)
-            end,
-        })
-    end
     if #items > 0 then items[#items].separator = true end
 
-    -- Displayed nodes (depth filter), display counts, per-depth bar maxima
-    -- (bars compare SIBLINGS at a level — a part's roll-up count would dwarf
-    -- every chapter bar under global normalization)
-    local displayed = {}
-    local depth_max = {}
+    -- Expand/collapse machinery (only when the TOC actually has parents) —
+    -- the readertoc prototypes: one expand + one collapse button, items get
+    -- an instance as their state widget; the shared menu's onMenuSelect wrap
+    -- routes left-zone taps to state.callback(index)
+    local has_parents = false
+    for i, n in ipairs(nodes) do
+        if n._is_parent then
+            has_parents = true
+            break
+        end
+    end
+    local expand_proto, collapse_proto
+    local button_width = 0
+    if has_parents then
+        local Button = require("ui/widget/button")
+        local BD = require("ui/bidi")
+        local icon_size = math.floor(Screen:getHeight() / 14 * 2 / 5)
+        button_width = icon_size * 2
+        local function toggleNode(idx)
+            if not idx then return end
+            if data.expanded[idx] then
+                data.expanded[idx] = nil
+            else
+                data.expanded[idx] = true
+            end
+            data._focus_idx = idx
+            self_ref:_buildDistributionView(item, category_key, item_title, data, true)
+        end
+        expand_proto = Button:new{
+            icon = "control.expand",
+            icon_rotation_angle = BD.mirroredUILayout() and 180 or 0,
+            width = button_width,
+            icon_width = icon_size,
+            icon_height = icon_size,
+            bordersize = 0,
+            show_parent = self.menu,
+            callback = toggleNode,
+            onTapSelectButton = function() end, -- pass through to onMenuSelect
+        }
+        collapse_proto = Button:new{
+            icon = "control.collapse",
+            width = button_width,
+            icon_width = icon_size,
+            icon_height = icon_size,
+            bordersize = 0,
+            show_parent = self.menu,
+            callback = toggleNode,
+            onTapSelectButton = function() end, -- pass through to onMenuSelect
+        }
+    end
+
+    -- Visible set under the expand/collapse state (a node shows only while
+    -- every ancestor is expanded)
+    local visible = {}
+    do
+        local skip_deeper_than
+        for i, n in ipairs(nodes) do
+            local d = n.depth or 1
+            if skip_deeper_than and d > skip_deeper_than then
+                -- inside a collapsed subtree
+            else
+                skip_deeper_than = nil
+                table.insert(visible, i)
+                if n._is_parent and not data.expanded[i] then
+                    skip_deeper_than = d
+                end
+            end
+        end
+    end
+
+    -- Display counts + GLOBAL bar maximum over ALL nodes (visible or not, so
+    -- bars keep their meaning across expand/collapse; reveals can raise it,
+    -- like the old scan did)
+    local shown_counts = {}
+    local hidden_flags = {}
     local overall_max = 0
     for i, n in ipairs(nodes) do
-        if not data.depth_filter or (n.depth or 1) <= data.depth_filter then
-            local hidden = (n.unread or n.out_of_scope) and not data.revealed[i]
-            local shown
-            if not hidden then
-                shown = data.revealed[i] and n.count or n.gated_count or n.count
-            end
-            table.insert(displayed, { node = n, idx = i, hidden = hidden, shown = shown })
-            if shown then
-                local d = n.depth or 1
-                if shown > (depth_max[d] or 0) then depth_max[d] = shown end
-                if shown > overall_max then overall_max = shown end
-            end
+        local hidden = (n.unread or n.out_of_scope) and not data.revealed[i]
+        hidden_flags[i] = hidden
+        if not hidden then
+            local shown = data.revealed[i] and n.count or n.gated_count or n.count
+            shown_counts[i] = shown
+            if shown > overall_max then overall_max = shown end
         end
     end
     local count_width = overall_max > 0 and #tostring(overall_max) or 1
 
-    -- ▶ marks only the DEEPEST displayed node containing the reading
-    -- position (every ancestor's span contains it too)
-    local current_idx
+    -- Bold = the deepest VISIBLE node containing the reading position (the
+    -- KOReader TOC current-entry idiom; collapsed deeper levels bold their
+    -- visible ancestor)
+    local bold_idx
     local best_depth = -1
-    for _d, e in ipairs(displayed) do
-        if e.node.is_current and (e.node.depth or 1) >= best_depth then
-            best_depth = e.node.depth or 1
-            current_idx = e.idx
+    for _v, i in ipairs(visible) do
+        local n = nodes[i]
+        if n.is_current and (n.depth or 1) >= best_depth then
+            best_depth = n.depth or 1
+            bold_idx = i
         end
     end
 
@@ -4466,21 +4538,28 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
     end
 
     local node_to_item = {}
-    for _d, e in ipairs(displayed) do
-        local n = e.node
-        local captured_i = e.idx
-        local indent = indent_unit * ((n.depth or 1) - 1)
+    for _v, i in ipairs(visible) do
+        local n = nodes[i]
+        local captured_i = i
         local node_title = n.title
         if not node_title or node_title == "" then
             node_title = T(_("Page %1"), n.start_page)
         end
-        node_to_item[e.idx] = #items + 1
-        if e.hidden then
+        local st
+        if n._is_parent and expand_proto then
+            st = (data.expanded[i] and collapse_proto or expand_proto):new{}
+        end
+        node_to_item[i] = #items + 1
+        if hidden_flags[i] then
             -- Concealed: dimmed, tap to reveal (one-time confirm); revealing
-            -- a parent reveals its subtree — the consent covers the span
+            -- a parent reveals its subtree — the consent covers the span.
+            -- The arrow still expands without revealing (titles are TOC
+            -- data, never gated — only counts are)
             table.insert(items, {
                 text = node_title,
-                indent = indent,
+                indent = indent_unit * ((n.depth or 1) - 1),
+                state = st,
+                index = i,
                 mandatory = "···",
                 mandatory_dim = true,
                 dim = true,
@@ -4525,16 +4604,14 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
                 end,
             })
         else
-            local display_title = node_title
-            if e.idx == current_idx then
-                display_title = "\u{25B6} " .. display_title
-            end
-            local shown = e.shown or 0
+            local shown = shown_counts[i] or 0
             table.insert(items, {
-                text = display_title,
-                indent = indent,
-                mandatory = buildDistributionBar(shown,
-                    depth_max[n.depth or 1] or 0, nil, count_width),
+                text = node_title,
+                bold = (i == bold_idx) or nil,
+                indent = indent_unit * ((n.depth or 1) - 1),
+                state = st,
+                index = i,
+                mandatory = buildDistributionBar(shown, overall_max, nil, count_width),
                 mandatory_dim = (shown == 0),
                 callback = function()
                     if shown > 0 then
@@ -4553,39 +4630,27 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
             })
         end
     end
-    -- Convert focus from node index to row index (accounts for header rows)
+    -- Convert focus from node index to row index (accounts for header rows;
+    -- a toggled-collapsed target still maps — it stays visible itself)
     if data._focus_idx and node_to_item[data._focus_idx] then
         data._focus_idx = node_to_item[data._focus_idx]
     end
 
-    -- Name-only title (the round-5 truncation rule); the All row and the
-    -- levels row carry the structure info
+    -- Name-only title (the round-5 truncation rule); the All row carries the
+    -- total
     local title = item_title
 
     if is_refresh then
         -- Update menu in-place, preserving scroll position
         self.current_title = title
-        self.menu:switchItemTable(title, items, data._focus_idx)
+        self:_switchMenuItems(title, items, data._focus_idx)
     else
-        -- For section X-Rays, scroll to current chapter (or first in-scope)
-        local initial_focus
-        if self.scope and not data._focus_idx then
-            for _d, e in ipairs(displayed) do
-                if e.node.is_current and node_to_item[e.idx] then
-                    initial_focus = node_to_item[e.idx]
-                    break
-                end
-            end
-            if not initial_focus then
-                for _d, e in ipairs(displayed) do
-                    if not e.node.out_of_scope and node_to_item[e.idx] then
-                        initial_focus = node_to_item[e.idx]
-                        break
-                    end
-                end
-            end
-        end
-        self:navigateForward(title, items, initial_focus or data._focus_idx)
+        self:navigateForward(title, items, data._focus_idx, {
+            single_line = false,
+            multilines_forced = true,
+            items_max_lines = 2,
+            state_w = has_parents and button_width or nil,
+        })
         -- Stash item detail info so back from distribution reopens the TextViewer
         local top = self.nav_stack[#self.nav_stack]
         if top then
@@ -4646,11 +4711,15 @@ end
 --- THE text-matching spoiler gate (F2, slice 4): routed through the posture
 --- resolver, so research mode, a finished book, and the global/book spoiler
 --- settings all govern it — protection off means NO gating anywhere in the
---- distribution/mention surfaces. Under protection the gate is strictly the
---- READING POSITION (not max(coverage, position): an ahead-installed or
---- complete X-Ray must not reveal where an entity appears beyond what the
---- reader has read). nil = no gating (protection off, or position at the
---- end). Section browsers return nil — scope replaces spoiler gating.
+--- distribution/mention surfaces. Under protection the gate is
+--- max(INSTALLED X-Ray coverage, reading position) — the installed
+--- artifact's content already reveals through its coverage (maintainer
+--- 2026-08-13: an entry can say "dies in chapter 12", so gating the
+--- appearance surfaces below the version the reader chose to install
+--- protects nothing), and a reader flipping BACK to re-read must not lose
+--- spans they have already read. A complete install reveals everything.
+--- nil = no gating. Section browsers return nil — scope replaces spoiler
+--- gating (picking the section was the consent).
 function XrayBrowser:_spoilerGate()
     local ui = self.ui
     if not (ui and ui.document) then return nil end
@@ -4661,10 +4730,16 @@ function XrayBrowser:_spoilerGate()
     local features = self.metadata and self.metadata.configuration
         and self.metadata.configuration.features
     if not BookSettings.resolveSpoilerFree(ds, features) then return nil end
+    local md = self.metadata
+    if md and md.full_document then return nil end
     local total = ui.document.info and ui.document.info.number_of_pages
-    local pos = getCurrentPage(ui) or 0
-    if pos == 0 or (total and pos >= total) then return nil end
-    return pos
+    local gate = getCurrentPage(ui) or 0
+    if total and md and md.progress_decimal then
+        local coverage = math.floor(md.progress_decimal * total + 0.5)
+        if coverage > gate then gate = coverage end
+    end
+    if gate == 0 or (total and gate >= total) then return nil end
+    return gate
 end
 
 --- Mention list (xray_marking_plan.md slices 1+4, ref #78): one row per
@@ -4957,12 +5032,47 @@ function XrayBrowser:showItemDistribution(item, category_key, item_title, detail
             return
         end
 
-        -- Session-sticky per-book depth choice (set via the in-page Levels row)
-        local depth_filter
-        local prefs = XrayBrowser._appearance_depth_prefs
-        local pref = prefs and prefs[self_ref.metadata.book_file or ""]
-        if type(pref) == "number" and pref < (max_depth or 0) then
-            depth_filter = pref
+        -- Parent flags for the expand/collapse arrows (reverse pass — a node
+        -- followed by a deeper node is a parent; the picker's idiom)
+        do
+            local depth = 0
+            for i = #nodes, 1, -1 do
+                if (nodes[i].depth or 1) < depth then
+                    nodes[i]._is_parent = true
+                end
+                depth = nodes[i].depth or 1
+            end
+        end
+
+        -- TOC-style initial view (maintainer round 2026-08-13): top level
+        -- collapsed, the reader's current chain auto-expanded and focused
+        local expanded = {}
+        local cur_i, cur_depth = nil, -1
+        for i, n in ipairs(nodes) do
+            if n.is_current and (n.depth or 1) >= cur_depth then
+                cur_depth = n.depth or 1
+                cur_i = i
+            end
+        end
+        -- Section browser with the reader outside the section: land on the
+        -- first in-scope node instead
+        if not cur_i and self_ref.scope then
+            for i, n in ipairs(nodes) do
+                if not n.out_of_scope then
+                    cur_i = i
+                    break
+                end
+            end
+        end
+        if cur_i then
+            local d = nodes[cur_i].depth or 1
+            for i = cur_i, 1, -1 do
+                local nd = nodes[i].depth or 1
+                if nd < d then
+                    expanded[i] = true
+                    d = nd
+                end
+            end
         end
 
         local data = {
@@ -4973,8 +5083,9 @@ function XrayBrowser:showItemDistribution(item, category_key, item_title, detail
             total_full = total_full,
             total_gated = gate and spanCount(1, gate) or nil,
             revealed = {},
+            expanded = expanded,
             spoiler_warned = false,
-            depth_filter = depth_filter,
+            _focus_idx = cur_i,
         }
         self_ref._dist_cache[cache_key] = data
         self_ref:_buildDistributionView(item, category_key, item_title, data, false, detail_context)

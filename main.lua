@@ -16703,14 +16703,17 @@ function AskGPT:syncDictionaryBypass()
         end
         -- Word-level conditional (#63): with the X-Ray lookup as the bypass action,
         -- a word no X-Ray knows falls through to the normal dictionary instead of a
-        -- dead-end "no results" message. Same name+alias matcher the handler uses,
-        -- across main + section X-Rays; costs one cache parse per tapped word.
+        -- dead-end "no results" message. EXACT identity only (device round
+        -- 2026-08-13): the gate asks "is this word an entity?" — substring
+        -- matching had "of"/"and" hitting inside names, and a bypass that
+        -- steals every word from the dictionary is broken. Across main +
+        -- section X-Rays; costs one cache parse per tapped word.
         if bypass_action.local_handler == "xray_lookup" then
           -- Live doc informs page context only when it IS the target book
           local doc = self_ref.ui and self_ref.ui.document
           if doc and doc.file ~= file then doc = nil end
           local hits = ActionCache.searchAllXrays(file, word,
-            doc, { skip_description = true })
+            doc, { skip_description = true, exact = true })
           if #hits == 0 then
             logger.info("KOAssistant: Dictionary bypass - no X-Ray entry for word, falling through to dictionary")
             if dictionary._koassistant_original_onLookupWord then

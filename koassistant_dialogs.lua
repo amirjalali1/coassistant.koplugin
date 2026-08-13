@@ -10011,17 +10011,52 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
             timeout = 5,
         })
     else
+        -- Exact-identity fast path (device round 2026-08-13, ref #63): a query
+        -- that IS an entity's name or alias goes straight to that entity —
+        -- searchAll matches by substring, so "Stanley Kubrick" also hits every
+        -- entry whose name/alias CONTAINS it and the lookup landed on a results
+        -- list instead of the obvious entry. Exactness outranks fuzzy hits;
+        -- the results list remains for fuzzy-only matches and for
+        -- disambiguation when several entities share the exact name.
+        local query_exact = XrayParser.normalizeArabic(
+            (query:lower():gsub("^%s+", ""):gsub("%s+$", "")))
+        local exact = {}
+        for _idx, r in ipairs(results) do
+            local handles = { XrayParser.getItemName(r.item, r.category_key) }
+            local r_aliases = r.item.aliases
+            if type(r_aliases) == "string" then r_aliases = { r_aliases } end
+            if type(r_aliases) == "table" then
+                for _idx2, a in ipairs(r_aliases) do table.insert(handles, a) end
+            end
+            for _idx2, h in ipairs(handles) do
+                if type(h) == "string"
+                    and XrayParser.normalizeArabic(h:lower()) == query_exact then
+                    table.insert(exact, r)
+                    break
+                end
+            end
+        end
+
         -- Open X-Ray browser directly
         local XrayBrowser = openXrayBrowserFromCache(ui, data, cached, config, plugin, book_metadata, best,
             #cleanup_widgets > 0 and cleanup_widgets or nil, document_path)
 
-        if #results == 1 then
-            -- Single result: navigate directly to item detail
-            local result = results[1]
+        if #exact == 1 or #results == 1 then
+            -- One clear target: the entity page, stacked on its home
+            -- category so the back arrow lands in the entry's natural group
+            -- (not the search carousel — maintainer 2026-08-13)
+            local result = exact[1] or results[1]
             local name = XrayParser.getItemName(result.item, result.category_key)
+            for _idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
+                if cat.key == result.category_key then
+                    XrayBrowser:showCategoryItems(cat)
+                    break
+                end
+            end
             XrayBrowser:showItemDetail(result.item, result.category_key, name)
         else
-            -- Multiple results: show search results in browser
+            -- Fuzzy-only matches, or several entities sharing the exact
+            -- name: show search results in browser
             -- Skip "Search other X-Rays" button — cross-section search already ran
             XrayBrowser:showSearchResults(query, true)
         end

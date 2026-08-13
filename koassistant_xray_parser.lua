@@ -1597,6 +1597,12 @@ end
 function XrayParser.searchAll(data, query, opts)
     if not query or query == "" then return {} end
     local skip_description = opts and opts.skip_description
+    -- exact: a handle must BE the query, not merely contain it — the #63
+    -- conditional bypass gate ("of" substring-hits inside names, and a
+    -- bypass that steals every word from the dictionary is broken); implies
+    -- descriptions never match
+    local exact = opts and opts.exact
+    if exact then skip_description = true end
 
     local categories = XrayParser.getCategories(data)
     local query_lower = XrayParser.normalizeArabic(query:lower())
@@ -1619,7 +1625,12 @@ function XrayParser.searchAll(data, query, opts)
                 local name = item.name or item.term or item.event or ""
                 if name ~= "" then
                     local n = normalize(name:lower())
-                    if n:find(query_lower, 1, true)
+                    if exact then
+                        if n == query_lower
+                            or (query_stripped and n == query_stripped) then
+                            match_field = "name"
+                        end
+                    elseif n:find(query_lower, 1, true)
                         or (query_stripped and n:find(query_stripped, 1, true)) then
                         match_field = "name"
                     end
@@ -1629,7 +1640,13 @@ function XrayParser.searchAll(data, query, opts)
                 if not match_field and i_aliases then
                     for _idx3, alias in ipairs(i_aliases) do
                         local a = normalize(alias:lower())
-                        if a:find(query_lower, 1, true)
+                        if exact then
+                            if a == query_lower
+                                or (query_stripped and a == query_stripped) then
+                                match_field = "alias"
+                                break
+                            end
+                        elseif a:find(query_lower, 1, true)
                             or (query_stripped and a:find(query_stripped, 1, true)) then
                             match_field = "alias"
                             break
