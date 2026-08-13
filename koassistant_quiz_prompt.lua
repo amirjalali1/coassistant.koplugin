@@ -75,11 +75,14 @@ function QuizPrompt.build(quiz)
         table.insert(rules, '- Discussion/essay: include "key_points" array (3-5 points a good answer should cover)')
     end
 
-    -- Distribution instruction
+    -- Distribution instruction. "Distribute across" invited interleaving the
+    -- types (device 2026-08-13: MC scattered through the quiz) — the mix is
+    -- wanted, the ordering is ours: grouped, in type_list order (MC first).
     if #type_list == 1 then
         table.insert(parts, "All " .. count .. ' questions must be type "' .. type_list[1] .. '".')
     else
-        table.insert(parts, "Distribute questions across these types: " .. table.concat(type_list, ", ") .. ".")
+        table.insert(parts, "Include a mix of these types: " .. table.concat(type_list, ", ") .. ".")
+        table.insert(parts, "Order the questions grouped by type, in exactly that order -- all " .. type_list[1] .. " questions first. Never interleave types.")
         table.insert(parts, "Do NOT include any other question types.")
     end
 
