@@ -17123,9 +17123,30 @@ function AskGPT:syncXrayMarks()
   local search = self.ui and self.ui.search
   if search and not search._koassistant_original_onShowSearchDialog then
     search._koassistant_original_onShowSearchDialog = search.onShowSearchDialog
+    local marks_self = self
     search.onShowSearchDialog = function(s_self, ...)
       s_self._koassistant_search_session = true
-      return search._koassistant_original_onShowSearchDialog(s_self, ...)
+      local ret = search._koassistant_original_onShowSearchDialog(s_self, ...)
+      -- Round 6: marks must RETURN when the session ends, not wait for the
+      -- next page turn (closing the search often restores the origin page
+      -- with no PageUpdate at all, and the close can race the final scan
+      -- while the dialog still counts as shown). Hook THIS session dialog's
+      -- teardown — onCloseWidget covers every close path (tap-outside,
+      -- buttons, the X-Ray return button's UIManager:close) — clear the
+      -- flag and rescan on the next tick.
+      local sd = s_self.search_dialog
+      if sd and not sd._koassistant_close_wrapped then
+        sd._koassistant_close_wrapped = true
+        local orig_close = sd.onCloseWidget
+        sd.onCloseWidget = function(d_self, ...)
+          s_self._koassistant_search_session = nil
+          UIManager:nextTick(function()
+            marks_self:syncXrayMarks()
+          end)
+          if orig_close then return orig_close(d_self, ...) end
+        end
+      end
+      return ret
     end
   end
 end
