@@ -586,11 +586,21 @@ end
 --- `step` is the display step number. { silent = true } (round 21) → an auto
 --- scheduler chain: routine progress/completion toasts are gated on the
 --- xray_auto_notify opt-in (failures stay visible either way).
+--- { rebuild = true } (deferred-rebuild fix 2026-08-14) → this chain REPLACES
+--- the current X-Ray lineage, but touches NOTHING until its first rung
+--- succeeds: the rung fire plans from scratch (ignoring the live artifact and
+--- old rungs), and the rung WRITE performs the swap exactly once — archive
+--- the outgoing live, clear the old ladder, then store (`rebuild_swapped`
+--- flips there). A chain cancelled or failed before that leaves the book
+--- exactly as it was. The old eager archive+clear at the confirm destroyed a
+--- live X-Ray and an unarchived checkpoint on a build the user then DECLINED
+--- (device 2026-08-14) — nothing may be destroyed before a run completes.
 function XrayAuto.beginLadderBuild(file, rungs, labels, opts)
   ladder_build = { file = file, rungs = rungs, labels = labels, idx = 1,
     total = #rungs + ((opts and opts.intro) and 1 or 0),
     intro_pending = (opts and opts.intro) or nil,
     silent = (opts and opts.silent) or nil,
+    rebuild = (opts and opts.rebuild) or nil,
     step = 1 }
   -- A (re)start supersedes the last pause reason (item 45)
   if last_ladder_stop and last_ladder_stop.file == file then

@@ -832,7 +832,24 @@ TestRunner:test("KEY_WEB_SEARCH and KEY_DOMAIN/KEY_RESEARCH are in SIDECAR_KEYS"
         "koassistant_book_xray_goal missing from SIDECAR_KEYS (round 21)")
     TestRunner:assertEqual(found[BookSettings.KEY_BACKGROUND] == true, true,
         "koassistant_book_background missing from SIDECAR_KEYS (book_background_plan.md)")
-    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 25, "25 per-book keys expected (incl. 4 privacy overrides + xray promotion hold)")
+    TestRunner:assertEqual(found[BookSettings.KEY_XRAY_SPACING] == true, true,
+        "koassistant_book_xray_spacing missing from SIDECAR_KEYS (spacing slice)")
+    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 26, "26 per-book keys expected (incl. 4 privacy overrides + xray promotion hold + checkpoint spacing)")
+end)
+
+TestRunner:test("xraySpacingOverride: valid ratio passes, junk and out-of-range are nil", function()
+    local function ds_with(v)
+        return { readSetting = function(_, key)
+            if key == BookSettings.KEY_XRAY_SPACING then return v end
+        end }
+    end
+    TestRunner:assertEqual(BookSettings.xraySpacingOverride(ds_with(0.05)), 0.05, "5% override")
+    TestRunner:assertEqual(BookSettings.xraySpacingOverride(ds_with(0.025)), 0.025, "2.5% override")
+    TestRunner:assertEqual(BookSettings.xraySpacingOverride(ds_with(nil)), nil, "unset = formula")
+    TestRunner:assertEqual(BookSettings.xraySpacingOverride(ds_with(0)), nil, "zero rejected")
+    TestRunner:assertEqual(BookSettings.xraySpacingOverride(ds_with(0.9)), nil, "above half rejected")
+    TestRunner:assertEqual(BookSettings.xraySpacingOverride(ds_with("junk")), nil, "junk rejected")
+    TestRunner:assertEqual(BookSettings.xraySpacingOverride(nil), nil, "no doc_settings")
 end)
 
 TestRunner:suite("Quick Answer default (controls_parity_plan.md §8c.7)")

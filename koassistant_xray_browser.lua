@@ -963,13 +963,13 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
         -- through the SAME dual-mode form as the popup (extend /
         -- rebuild-from-scratch / checkpoints / background delivery) instead of
         -- firing a raw foreground update
-        self.on_extend_rebuild = function()
+        self.on_extend_rebuild = function(force_rebuild)
             local action = plugin_ref.action_service:getAction("book", "xray")
             if action then
                 if plugin_ref:_checkRequirements(action) then return end
                 plugin_ref:_showXrayCreationChooser(action, "xray", function()
                     plugin_ref:_executeBookLevelActionDirect(action, "xray")
-                end, nil)
+                end, nil, force_rebuild)
             end
         end
     end
@@ -5628,29 +5628,48 @@ function XrayBrowser:showOptions()
         end
 
         -- The authoring form (extend / rebuild-from-scratch / checkpoints /
-        -- background delivery) — label mirrors the popup's row for this state
+        -- background delivery) — mirrors the popup's entry for this state.
+        -- Spacing slice: extend-mode books get the SPLIT row ([Extend…]
+        -- [Rebuild…], build-shapes decision) — before it, a mid-book
+        -- incremental book had no whole-book from-scratch path at all
+        -- (whole-book in extend mode is an update)
         if self.on_extend_rebuild then
             local a_mode, a_base
             local am_plugin = self.metadata.plugin
             if am_plugin and am_plugin._xrayAuthoringMode and self.metadata.book_file then
                 a_mode, a_base = am_plugin:_xrayAuthoringMode(self.metadata.book_file)
             end
-            local er_label
-            if a_mode == "rebuild" or (a_mode == "extend" and (a_base or 0) >= 0.995) then
-                er_label = _("Rebuild X-Ray…")
-            elseif a_mode == "create" then
-                er_label = _("Create X-Ray…")
+            if a_mode == "extend" and (a_base or 0) < 0.995 then
+                table.insert(buttons, {
+                    { text = _("Extend…"), align = "left",
+                        callback = function()
+                            closeOptions()
+                            if self_ref.menu then UIManager:close(self_ref.menu) end
+                            self_ref.on_extend_rebuild()
+                        end },
+                    { text = _("Rebuild…"), align = "left",
+                        callback = function()
+                            closeOptions()
+                            if self_ref.menu then UIManager:close(self_ref.menu) end
+                            self_ref.on_extend_rebuild(true)
+                        end },
+                })
             else
-                er_label = _("Extend or rebuild…")
+                local er_label
+                if a_mode == "rebuild" or a_mode == "extend" then
+                    er_label = _("Rebuild X-Ray…")
+                else
+                    er_label = _("Create X-Ray…")
+                end
+                table.insert(buttons, {{
+                    text = er_label, align = "left",
+                    callback = function()
+                        closeOptions()
+                        if self_ref.menu then UIManager:close(self_ref.menu) end
+                        self_ref.on_extend_rebuild()
+                    end,
+                }})
             end
-            table.insert(buttons, {{
-                text = er_label, align = "left",
-                callback = function()
-                    closeOptions()
-                    if self_ref.menu then UIManager:close(self_ref.menu) end
-                    self_ref.on_extend_rebuild()
-                end,
-            }})
         end
     end
 
@@ -5658,6 +5677,10 @@ function XrayBrowser:showOptions()
     -- also brings the 50(f) posture gate this row previously lacked here)
     if vr and vr.switch_back then
         table.insert(buttons, vr.switch_back)
+    end
+    -- One-tap built-ahead install (spacing slice; shared builder gates it)
+    if vr and vr.install_ahead then
+        table.insert(buttons, vr.install_ahead)
     end
 
     -- Delete option

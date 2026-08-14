@@ -47,7 +47,7 @@ local XrayRows = {}
 ---   retire             fn|nil: retire the host view before data-replacing ops
 ---   align              "left" on list-style surfaces
 --- @return table { update, instant, switch_complete, switch_back,
----   all_versions, promotable, next_ahead } — each row a ButtonDialog row
+---   install_ahead, all_versions, promotable, next_ahead } — each row a ButtonDialog row
 function XrayRows.versionRows(ctx)
     local out = {}
     local plugin, file, entry = ctx.plugin, ctx.file, ctx.entry
@@ -108,7 +108,9 @@ function XrayRows.versionRows(ctx)
         and cur.decimal > cached_dec + 0.01
     local spacing = XrayAuto.LADDER_SPACING
     if open_here and not (plugin.ui.document.info and plugin.ui.document.info.has_pages) then
-        spacing = XrayAuto.ladderSpacingFor(plugin.ui.document:getPageCount())
+        -- Spacing slice: the demote window honors the per-book override too
+        spacing = plugin._xrayLadderSpacing and plugin:_xrayLadderSpacing()
+            or XrayAuto.ladderSpacingFor(plugin.ui.document:getPageCount())
     end
     local demote_paid = update_case and (promotable ~= nil
         or (next_ahead ~= nil and next_ahead - cur.decimal <= spacing + 0.005))
@@ -234,6 +236,23 @@ function XrayRows.versionRows(ctx)
                     plugin:_switchBackToPositionRung(list_opts)
                 end)
         end
+    end
+
+    -- One-tap install of the built-ahead rung (spacing slice; was All-versions
+    -- only). Deliberate spoiler-side pick, so only where promotion would NOT
+    -- install it by itself anyway (track posture, or full pinned by the hold);
+    -- never during a build/flight (the card blocks that too — race/clobber).
+    if next_ahead and (posture ~= "full" or hold)
+        and not ladder_building and not in_flight_here
+        and plugin._installAheadXrayRung
+        and entry.source_mode ~= "ai_knowledge" then
+        out.install_ahead = row(T(_("Install checkpoint to %1% (ahead), instant"),
+            math.floor(next_ahead * 100 + 0.5)),
+            function()
+                pre()
+                if retire then retire() end
+                plugin:_installAheadXrayRung(list_opts)
+            end)
     end
 
     -- All versions (ring + ladder; O(1) header counts — a menu row must not

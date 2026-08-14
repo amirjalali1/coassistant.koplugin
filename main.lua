@@ -8221,11 +8221,19 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     local nc_xa = require("koassistant_xray_auto")
     local nc_build = nc_xa.ladderBuild()
     if nc_build then
+      -- Name the step's target — "no idea what the scope is" when the start
+      -- toast was missed (device round 2)
+      local nc_step = nc_xa.currentLadderStep()
+      local nc_tgt = nc_step and tonumber(nc_step.target)
+        and math.floor(nc_step.target * 100 + 0.5) or nil
       table.insert(buttons, {{
         text = nc_build.total == 1
-            and _("Generating X-Ray in the background… (tap to cancel)")
-          or T(_("Building checkpoints: %1 of %2… (tap to cancel)"),
-            nc_build.step or nc_build.idx, nc_build.total),
+            and (nc_tgt and T(_("Generating X-Ray to %1% in the background… (tap to cancel)"), nc_tgt)
+              or _("Generating X-Ray in the background… (tap to cancel)"))
+          or (nc_tgt and T(_("Building checkpoints: %1 of %2, to %3%… (tap to cancel)"),
+              nc_build.step or nc_build.idx, nc_build.total, nc_tgt)
+            or T(_("Building checkpoints: %1 of %2… (tap to cancel)"),
+              nc_build.step or nc_build.idx, nc_build.total)),
         callback = function()
           UIManager:close(dialog)
           self_ref:_cancelXrayLadderBuild()
@@ -8527,11 +8535,18 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     })
     local promotable, next_ahead = vr.promotable, vr.next_ahead
     if ladder_building then
+      -- Name the step's target (round 2, same as the no-cache branch)
+      local lb_step = XrayAuto.currentLadderStep()
+      local lb_tgt = lb_step and tonumber(lb_step.target)
+        and math.floor(lb_step.target * 100 + 0.5) or nil
       table.insert(buttons, {{
         text = ladder_building.total == 1
-            and _("Generating X-Ray in the background… (tap to cancel)")
-          or T(_("Building checkpoints: %1 of %2… (tap to cancel)"),
-            ladder_building.step or ladder_building.idx, ladder_building.total),
+            and (lb_tgt and T(_("Generating X-Ray to %1% in the background… (tap to cancel)"), lb_tgt)
+              or _("Generating X-Ray in the background… (tap to cancel)"))
+          or (lb_tgt and T(_("Building checkpoints: %1 of %2, to %3%… (tap to cancel)"),
+              ladder_building.step or ladder_building.idx, ladder_building.total, lb_tgt)
+            or T(_("Building checkpoints: %1 of %2… (tap to cancel)"),
+              ladder_building.step or ladder_building.idx, ladder_building.total)),
         callback = function()
           UIManager:close(dialog)
           self_ref:_cancelXrayLadderBuild()
@@ -8569,6 +8584,10 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
     end
     if vr.switch_back then
       table.insert(c_ver_rows, vr.switch_back)
+    end
+    -- One-tap built-ahead install (spacing slice; deliberate spoiler-side pick)
+    if vr.install_ahead then
+      table.insert(c_ver_rows, vr.install_ahead)
     end
     -- The cached-book authoring entry (round 23, item 30 — ONE surface): the
     -- dual-mode creation chooser, labeled by what it will actually do
@@ -8625,23 +8644,35 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         -- redo replacement: below-coverage rebuilds) apply to PDFs too; the
         -- checkpoint/follow rows gate themselves on flowing inside the form
         local a_mode, a_base = self:_xrayAuthoringMode(sx_file)
-        -- Fully covered incremental (100%): "Extend" would be a lie; the row
-        -- reads "Rebuild X-Ray…" and the form's picks all rebuild from scratch
-        local a_label
-        if a_mode == "rebuild" or (a_mode == "extend" and (a_base or 0) >= 0.995) then
-          a_label = _("Rebuild X-Ray…")
-        elseif a_mode == "create" then
-          a_label = _("Create X-Ray…")
+        if a_mode == "extend" and (a_base or 0) < 0.995 then
+          -- Spacing slice (build-shapes): the SPLIT entry — [Extend…] grows
+          -- forward from the base, [Rebuild…] opens the same form forced
+          -- from-scratch. Before it, a mid-book incremental book had no
+          -- whole-book from-scratch path at all (whole-book in extend mode
+          -- is an update; only below-base picks rebuilt).
+          table.insert(buttons, {
+            { text = _("Extend…"), callback = function()
+              UIManager:close(dialog)
+              self_ref:_showXrayCreationChooser(action, action_id, on_update, opts)
+            end },
+            { text = _("Rebuild…"), callback = function()
+              UIManager:close(dialog)
+              self_ref:_showXrayCreationChooser(action, action_id, on_update, opts, true)
+            end },
+          })
         else
-          a_label = _("Extend or rebuild…")
+          -- Fully covered incremental (100%): "Extend" would be a lie; the row
+          -- reads "Rebuild X-Ray…" and the form's picks all rebuild from scratch
+          local a_label = (a_mode == "rebuild" or a_mode == "extend")
+            and _("Rebuild X-Ray…") or _("Create X-Ray…")
+          table.insert(buttons, {{
+            text = a_label,
+            callback = function()
+              UIManager:close(dialog)
+              self_ref:_showXrayCreationChooser(action, action_id, on_update, opts)
+            end,
+          }})
         end
-        table.insert(buttons, {{
-          text = a_label,
-          callback = function()
-            UIManager:close(dialog)
-            self_ref:_showXrayCreationChooser(action, action_id, on_update, opts)
-          end,
-        }})
       end
     end
     -- Section X-Rays: list existing + new
@@ -9343,7 +9374,10 @@ end
 --- disables already-covered picks; rebuild archives the foreign-lineage live
 --- X-Ray (ring) and starts from scratch — closing the item-30 dead end where
 --- complete-track/AI-knowledge books could only "Delete it first".
-function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
+--- Spacing slice: force_rebuild (the split entry's [Rebuild…] button) keeps
+--- mode "extend" for anchoring but makes EVERY pick a from-scratch rebuild —
+--- the only whole-book from-scratch path on a mid-book incremental base.
+function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, force_rebuild)
   local ButtonDialog = require("ui/widget/buttondialog")
   local XrayAuto = require("koassistant_xray_auto")
   local self_ref = self
@@ -9413,6 +9447,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   -- mode "rebuild". This absorbs the popup's old redo and
   -- rebuild-to-your-position rows.
   local function pickIsRebuild()
+    if force_rebuild then return true end
     if mode == "rebuild" then return true end
     if mode ~= "extend" then return false end
     if cr.coverage == "position" then
@@ -9434,7 +9469,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
 
   local function stepsFor()
     if not flowing then return 0 end
-    local spacing = XrayAuto.ladderSpacingFor(total_pages)
+    local spacing = self_ref:_xrayLadderSpacing()
     -- Seed-aware (round 19): whole-book/target builds gain a first checkpoint
     -- at the reading position, and the shown step count must match the plan.
     -- Extend picks plan FROM the disk base (round 23); rebuild picks plan
@@ -9457,6 +9492,10 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   -- has nothing to start (2026-08-14 device round — a pickable row that did
   -- nothing); it renders as a disabled state row and is never a default
   local function followIdle()
+    -- A rebuild's follow pick is never "already on" — it starts a from-scratch
+    -- catch-up chain regardless of what the old lineage covers (device round 2:
+    -- the idle label on a rebuild read as nonsense and disabled the commit)
+    if force_rebuild then return false end
     return (auto_on and (base_progress or 0) >= decimal - 0.01) and true or false
   end
 
@@ -9490,19 +9529,16 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
 
   local function dispatch()
     local rebuild_pick = pickIsRebuild()
-    -- Round 25 (device report 2026-08-06 — data loss): a rebuild's DESTRUCTIVE
-    -- half is deferred to the successful write wherever the create runs in the
-    -- foreground. Archiving+clearing inside this confirm meant every abort
-    -- after it (a dismissed dialog, a declined size warning, a failed request,
-    -- a quit mid-stream) left the book with NO live X-Ray — and the archive it
-    -- promised was itself unreachable, because the "All versions" row hangs
-    -- under the X-Ray row. The eager archive was redundant anyway: the success
-    -- write already ring-archives the outgoing version (koassistant_dialogs
-    -- handleResponse + WriteBack.commitXray). Ladder deliveries keep the eager
-    -- clear — their builds re-plan lineage from the cleared state.
-    local defer_destroy = rebuild_pick and cr.coverage == "whole"
-      and cr.delivery ~= "checkpoints" and cr.delivery ~= "one_bg"
-      and cr.delivery ~= "follow"
+    -- DEFERRED DESTRUCTION, NO EXCEPTIONS (2026-08-14 device disaster: the
+    -- old "ladder deliveries keep the eager clear" branch archived a live
+    -- X-Ray and silently deleted an UNARCHIVED checkpoint at this confirm —
+    -- on a build the user then DECLINED at the next screen). The round-25
+    -- rule is absolute now: NOTHING is archived, cleared or replaced before
+    -- a run has actually succeeded. Foreground whole-book rebuilds keep the
+    -- existing xray_rebuild success-write defer; every ladder delivery
+    -- (checkpoints / one_bg / follow catch-up / bounded one-shots) carries
+    -- rebuild=true on the build session instead, and the FIRST successful
+    -- rung write performs the swap (archive live, clear old ladder, store).
     local function go()
       -- Round 21: the coverage goal is a BOOK property bounding the auto
       -- scheduler — target picks store it, whole-book picks clear it (position
@@ -9514,7 +9550,15 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
           cr.coverage == "target" and cr.target or nil)
       end
       if cr.delivery == "follow" then
-        if auto_on then
+        if rebuild_pick then
+          -- Rebuild catch-up: the same auto chain, planned from scratch with
+          -- the deferred swap; auto continues on the new lineage afterwards
+          if not auto_on then
+            self_ref:_enableXrayFollowForBook(decimal, { rebuild = true })
+          else
+            self_ref:_xrayFollowCatchUp(decimal, { rebuild = true })
+          end
+        elseif auto_on then
           -- Round 22 (D5): already on (per-book or via the global master) —
           -- don't re-pin the per-book key, just start the engine now
           self_ref:_xrayFollowCatchUp(decimal)
@@ -9522,11 +9566,11 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
           self_ref:_enableXrayFollowForBook(decimal)
         end
       elseif cr.delivery == "checkpoints" then
-        local bo
+        local bo = { rebuild = rebuild_pick or nil }
         if cr.coverage == "position" then
-          bo = { target = decimal }
+          bo.target = decimal
         elseif cr.coverage == "target" then
-          bo = { target = cr.target, target_label = cr.target_label }
+          bo.target, bo.target_label = cr.target, cr.target_label
         end
         self_ref:_startXrayLadderBuild(bo)
       elseif cr.delivery == "one_bg" then
@@ -9541,12 +9585,21 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
           -- a build)
           self_ref:_startXrayLadderBuild({
             one_shot = true,
+            rebuild = rebuild_pick or nil,
             target = cr.coverage == "position" and decimal or nil,
           })
         end
       else
         if cr.coverage == "position" then
-          on_update()
+          if rebuild_pick then
+            -- From-scratch to position: the bounded one-shot with the
+            -- deferred swap (the old path cleared eagerly then ran the
+            -- foreground update against the void)
+            self_ref:_startXrayLadderBuild({
+              one_shot = true, rebuild = true, target = decimal })
+          else
+            on_update()
+          end
         elseif cr.coverage == "whole" then
           if mode == "extend" and not rebuild_pick then
             -- Round 23: extending an incremental base to 100% is an UPDATE,
@@ -9554,57 +9607,41 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
             self_ref:_executeBookLevelActionDirect(action, action_id, { update_to_full = true })
           else
             self_ref:_executeBookLevelActionDirect(action, action_id,
-              { full_document = true, xray_rebuild = defer_destroy or nil })
+              { full_document = true, xray_rebuild = rebuild_pick or nil })
           end
         else
           self_ref:_startXrayLadderBuild({
-            target = cr.target, target_label = cr.target_label, one_shot = true })
+            target = cr.target, target_label = cr.target_label, one_shot = true,
+            rebuild = rebuild_pick or nil })
         end
       end
     end
     if not rebuild_pick then return go() end
-    -- Round 23/24 (item 30): rebuild = archive the live X-Ray to the ring,
-    -- clear it AND the ladder (old-lineage rungs must never promote over the
-    -- new lineage), then every downstream path behaves as from-nothing.
-    -- Covers mode "rebuild" (foreign lineage) and extend-mode picks at or
-    -- below the base (the old redo / rebuild-to-your-position rows).
+    -- Ladder deliveries carry their own honest replace line inside the build
+    -- confirm — stacking a second ConfirmBox here was part of the 2026-08-14
+    -- confusion (two screens, and the first one used to destroy data).
+    if cr.delivery == "checkpoints" or cr.delivery == "one_bg"
+        or cr.delivery == "follow"
+        or (cr.delivery == "one" and cr.coverage ~= "whole") then
+      return go()
+    end
+    -- Foreground whole-book rebuild: one confirm, nothing touched until the
+    -- new X-Ray is saved (xray_rebuild success-write defer, round 25)
     local ConfirmBox = require("ui/widget/confirmbox")
     local ActionCache = require("koassistant_action_cache")
     local limit = ActionCache.checkpointLimitFromFeatures(features)
-    local confirm_text
-    if defer_destroy then
-      -- Honest wording for the deferred path: nothing is touched until the new
-      -- X-Ray arrives, so a cancelled rebuild costs nothing
-      confirm_text = limit ~= 0
-        and _("Rebuild from scratch, replacing the current X-Ray? The current one is kept until the new one arrives, then archived under \"All versions\".")
-        or _("Rebuild from scratch, replacing the current X-Ray? The current one is kept until the new one arrives, then replaced — version archiving is off, so it will be gone.")
-    else
-      confirm_text = limit ~= 0
-        and _("Rebuild from scratch, replacing the current X-Ray? The outgoing version is archived under \"All versions\".")
-        or _("Rebuild from scratch, replacing the current X-Ray? Version archiving is off, so the current one will be gone.")
-    end
+    local confirm_text = limit ~= 0
+      and _("Rebuild from scratch, replacing the current X-Ray? The current one is kept until the new one arrives, then archived under \"All versions\".")
+      or _("Rebuild from scratch, replacing the current X-Ray? The current one is kept until the new one arrives, then replaced. Version archiving is off, so it will be gone.")
     local n_rungs = ActionCache.getXrayLadderCount(cc_file)
     if n_rungs > 0 then
       confirm_text = confirm_text .. "\n"
-        .. (defer_destroy
-          and T(_("Its %1 checkpoints belong to the old version and are deleted when the new one is saved."), n_rungs)
-          or T(_("Its %1 checkpoints belong to the old version and are deleted with it."), n_rungs))
+        .. T(_("Its %1 checkpoints belong to the old version and are deleted when the new one is saved."), n_rungs)
     end
     UIManager:show(ConfirmBox:new{
       text = confirm_text,
       ok_text = _("Rebuild"),
       ok_callback = function()
-        if not defer_destroy then
-          local live = ActionCache.getXrayCache(cc_file)
-          if live and live.result and limit ~= 0 then
-            ActionCache.pushXrayCheckpoint(cc_file, live, limit)
-          end
-          ActionCache.clearXrayCache(cc_file)
-          ActionCache.clear(cc_file, "xray")
-          ActionCache.clearXrayLadder(cc_file)
-          self_ref._file_dialog_row_cache = { file = nil, rows = nil }
-          self_ref:_refreshXrayAutoState()
-        end
         go()
       end,
     })
@@ -9640,7 +9677,8 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       width = dialog_width,
       align = "left",
       with_bottom_line = true,
-      title = (mode == "rebuild" or (mode == "extend" and (base_progress or 0) >= 0.995))
+      title = (force_rebuild or mode == "rebuild"
+            or (mode == "extend" and (base_progress or 0) >= 0.995))
           and _("Rebuild X-Ray")
         or mode == "extend" and _("Extend X-Ray")
         or _("Create X-Ray"),
@@ -9658,7 +9696,10 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
 
     -- Round 23: state line — what exists, and what picking here does to it
     local state_line
-    if mode == "extend" then
+    if force_rebuild then
+      state_line = T(_("Your X-Ray covers to %1%. Building here replaces it from scratch (the outgoing version is archived under \"All versions\")."),
+        math.floor((base_progress or 0) * 100 + 0.5))
+    elseif mode == "extend" then
       -- Name BOTH numbers when they differ (device 2026-08-14: "covers to
       -- 60%" while the reader's viewer showed the installed 50% read as a
       -- contradiction)
@@ -9679,6 +9720,19 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
         or _("in an older format")
       state_line = T(_("Your current X-Ray was %1, so it can't be extended. Building here replaces it (the outgoing version is archived under \"All versions\")."), flavor)
     end
+    -- Round 2 (device: "it says auto is on, but no next checkpoint or
+    -- anything"): with automatic building on, the state line names where the
+    -- next checkpoint will land under the current spacing
+    if state_line and auto_on and mode == "extend" and not force_rebuild then
+      local nxt = XrayAuto.planBuildRungs(base_progress or 0,
+        self_ref:_xrayLadderSpacing(), 1.0, decimal)[1]
+      if nxt and nxt < 1.0 - 0.005 then
+        state_line = state_line .. " " .. T(_("Automatic building is on; the next checkpoint arrives at %1%."),
+          math.floor(nxt * 100 + 0.5))
+      elseif nxt then
+        state_line = state_line .. " " .. _("Automatic building is on; the next checkpoint completes the book.")
+      end
+    end
     if state_line then
       table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
       table.insert(vgroup, TextBoxWidget:new{
@@ -9696,19 +9750,23 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     -- value too: a book displayed at "1%" must never show the row (0.015
     -- rounds to 2%, the lowest percent that does)
     if progress and decimal >= 0.015 then
-      -- Round 24 (extend mode): a position at or below the base is a REBUILD
-      -- from scratch — pickable and labeled, no longer disabled (this absorbs
-      -- the old popup redo / rebuild-to-your-position rows)
-      local pos_rebuild = mode == "extend" and decimal <= (pos_anchor or 0) + 0.01
-      cov_rows[#cov_rows + 1] = { { text = pos_rebuild
-          and T(_("Up to where I am (%1), from scratch"), progress.formatted)
-          or T(_("Up to where I am (%1)"), progress.formatted),
-        provider = "position",
-        checked = cr.coverage == "position" } }
+      -- Round 2 (device): plain-extend mode DROPS the ", from scratch"
+      -- position variant — redo lives under [Rebuild…] now. The row exists
+      -- in plain extend only when it is a real update past the installed
+      -- coverage; the rebuild form keeps it with the from-scratch marker.
+      local pos_is_update = mode ~= "extend"
+        or decimal > (pos_anchor or 0) + 0.01
+      if force_rebuild or pos_is_update then
+        cov_rows[#cov_rows + 1] = { { text = force_rebuild
+            and T(_("Up to where I am (%1), from scratch"), progress.formatted)
+            or T(_("Up to where I am (%1)"), progress.formatted),
+          provider = "position",
+          checked = cr.coverage == "position" } }
+      end
     end
     if flowing and self.ui.toc and self.ui.toc.toc and #self.ui.toc.toc > 0 then
       local tgt_rebuild = mode == "extend" and cr.target
-        and cr.target <= (base_progress or 0) + 0.01
+        and (force_rebuild or cr.target <= (base_progress or 0) + 0.01)
       local target_text = cr.coverage == "target" and cr.target
         and (tgt_rebuild
           and T(_("To the end of \"%1\" (%2%), from scratch"), cr.target_label or "?",
@@ -9769,6 +9827,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       one_label = (mode == "extend" and not pick_rebuild)
         and _("In one request, in background (update)")
         or _("In one request, in background")
+    elseif pick_rebuild and cr.coverage == "position" then
+      -- From-scratch to position rides the deferred one-shot (background)
+      one_label = _("In one request, in background (from scratch)")
     elseif mode == "extend" and not pick_rebuild then
       one_label = cr.coverage == "whole" and _("In one request now (update to 100%)")
         or _("In one request now (update to your position)")
@@ -9784,8 +9845,10 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     }
     -- Item 50(a): the background single request — same request, silent ladder
     -- machinery, one step. Flowing docs only (the machinery's gate); target
-    -- coverage's "one" row IS this already, so no second row there.
-    if flowing and cr.coverage ~= "target" then
+    -- coverage's "one" row IS this already, so no second row there — nor for
+    -- the position rebuild, whose "one" row is already the background one-shot.
+    if flowing and cr.coverage ~= "target"
+        and not (pick_rebuild and cr.coverage == "position") then
       local bg_label = (mode == "extend" and not pick_rebuild
           and cr.coverage == "position")
         and _("In one request, in background (update)")
@@ -9809,7 +9872,8 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       -- with the hint saying why
       del_rows[#del_rows + 1] = { { text = followIdle()
           and _("In checkpoints, as I read (already on)")
-          or auto_on and _("In checkpoints, as I read (already on; start now)")
+          or (auto_on and not force_rebuild)
+            and _("In checkpoints, as I read (already on; start now)")
           or _("In checkpoints, as I read (automatic)"),
         provider = "follow", checked = cr.delivery == "follow" } }
     end
@@ -9828,6 +9892,61 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       end,
     }
     table.insert(vgroup, del_table)
+
+    -- Spacing slice (2026-08-14): the up-front spacing ask lives HERE — a
+    -- checkpoint-family delivery pick shows the sticky per-book spacing with
+    -- its change affordance (picker writes KEY_XRAY_SPACING; step counts and
+    -- the auto engine re-resolve through _xrayLadderSpacing, and a change
+    -- only affects rungs planned from now on — plans start at the ladder top)
+    if flowing and (cr.delivery == "checkpoints" or cr.delivery == "follow") then
+      local sp_now = self_ref:_xrayLadderSpacing()
+      local ButtonTableS = require("ui/widget/buttontable")
+      local sp_table = ButtonTableS:new{
+        width = content_width,
+        buttons = {{
+          {
+            -- Verb-first so it reads as a BUTTON, not a state line (device
+            -- round 2: "not clear that it is a button"; no dashes in UI text)
+            text = T(_("Change checkpoint spacing (every %1%)…"),
+              self_ref:_xraySpacingPctLabel(sp_now)),
+            callback = function()
+              UIManager:close(current_dialog)
+              self_ref:_showXraySpacingPicker{
+                current = sp_now,
+                title = _("Checkpoint spacing for this book:"),
+                count_for = function(s)
+                  local rungs = XrayAuto.planBuildRungs(
+                    (mode == "extend" and not pickIsRebuild()) and base_progress or 0,
+                    s, goalFor(), decimal)
+                  return #rungs
+                end,
+                on_pick = function(s)
+                  if self_ref.ui and self_ref.ui.doc_settings then
+                    self_ref.ui.doc_settings:saveSetting(
+                      require("koassistant_book_settings").KEY_XRAY_SPACING, s)
+                    self_ref.ui.doc_settings:flush()
+                    -- A sticky per-book write must never be silent — a stray
+                    -- tap on "Every 50%" here is how the 2026-08-14 device
+                    -- round ended up planning one giant rung to 100%
+                    UIManager:show(Notification:new{
+                      text = T(_("Checkpoint spacing for this book: every %1%"),
+                        self_ref:_xraySpacingPctLabel(s)),
+                    })
+                  end
+                  fixDelivery()
+                  buildAndShow()
+                end,
+                on_back = function() buildAndShow() end,
+              }
+            end,
+          },
+        }},
+        zero_sep = true,
+        show_parent = self_ref,
+      }
+      table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
+      table.insert(vgroup, sp_table)
+    end
 
     -- Gray hint under the Build group — every pick explains itself up front
     -- (round 22, §25(f); previously only the follow pick had one)
@@ -9875,7 +9994,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
         .. " " .. later_line
     end
     -- Round 24: rebuild picks carry the replacement fact in the hint too
-    if pick_rebuild and mode == "extend" then
+    -- (forced rebuilds skip it — "already covered" would be wrong for a
+    -- whole-book force, and the state line above already names replacement)
+    if pick_rebuild and mode == "extend" and not force_rebuild then
       hint = hint .. " " .. _("This range is already covered, so the X-Ray is rebuilt from scratch and replaces the current one (the outgoing version is archived).")
     end
     -- With a checkpoint already built ahead, "update to where I am" can read
@@ -9934,10 +10055,21 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     }
     local movable = MovableContainer:new{ widget_frame }
     -- Top-anchor on rebuilds (same trick as _showUnifiedActionPopup): no
-    -- vertical jump as rows change between selections
+    -- vertical jump as rows change between selections. Round 2 (device): a
+    -- pick can grow the form well past the first frame's height, pushing the
+    -- bottom off screen — clamp the offset so the bottom edge stays visible
+    -- (and the top never leaves the screen either).
     local frame_h = widget_frame:getSize().h
     if not first_frame_h then first_frame_h = frame_h end
-    movable:setMovedOffset({ x = 0, y = math.floor((frame_h - first_frame_h) / 2) })
+    local y_off = math.floor((frame_h - first_frame_h) / 2)
+    local top = math.floor((screen_height - frame_h) / 2) + y_off
+    local overflow = top + frame_h - screen_height
+    if overflow > 0 then
+      y_off = y_off - overflow
+      top = top - overflow
+    end
+    if top < 0 then y_off = y_off - top end
+    movable:setMovedOffset({ x = 0, y = y_off })
 
     local InputContainer = require("ui/widget/container/inputcontainer")
     current_dialog = InputContainer:new{
@@ -9975,7 +10107,7 @@ end
 --- engine start (round 21/22: establishment = intro + missing checkpoints to
 --- the reader's position + one ahead, each installing as built; a large
 --- catch-up names its cost first).
-function AskGPT:_enableXrayFollowForBook(decimal)
+function AskGPT:_enableXrayFollowForBook(decimal, opts)
   if not self.ui or not self.ui.doc_settings then return end
   local BookSettings = require("koassistant_book_settings")
   -- "on" string, NOT boolean true (round-19 bug fix): the P1 tri-state resolver
@@ -9984,14 +10116,15 @@ function AskGPT:_enableXrayFollowForBook(decimal)
   self.ui.doc_settings:saveSetting(BookSettings.KEY_XRAY_AUTO, "on")
   self.ui.doc_settings:flush()
   self:_refreshXrayAutoState()
-  self:_xrayFollowCatchUp(decimal)
+  self:_xrayFollowCatchUp(decimal, opts)
 end
 
 --- Size of the establishment chain the engine would run right now: intro +
 --- missing checkpoints to the position + one ahead. Mirrors the fire path's
 --- planning exactly (planAutoWork + shared grid + truncation). nil when
---- nothing would build.
-function AskGPT:_xrayEstablishmentSteps()
+--- nothing would build. opts.rebuild (deferred rebuild): from-scratch plan,
+--- ignoring the disk lineage entirely (no intro — rebuild chains skip it).
+function AskGPT:_xrayEstablishmentSteps(opts)
   if not self.ui or not self.ui.document or not self.ui.document.file
       or not self.ui.doc_settings then return nil end
   local doc_info = self.ui.document.info
@@ -10004,6 +10137,7 @@ function AskGPT:_xrayEstablishmentSteps()
   local progress = require("koassistant_context_extractor"):new(self.ui):getReadingProgress()
   local decimal = progress and tonumber(progress.decimal)
   if not decimal then return nil end
+  local rebuild = opts and opts.rebuild or nil
   local ladder = ActionCache.getXrayLadder(file)
   local work = XrayAuto.planAutoWork{
     entry = ActionCache.get(file, "xray"),
@@ -10013,15 +10147,16 @@ function AskGPT:_xrayEstablishmentSteps()
     goal = tonumber(self.ui.doc_settings:readSetting(BookSettings.KEY_XRAY_GOAL)),
     is_json = XrayParser.isJSON,
   }
-  if work.lineage_blocked or not work.build then return nil end
+  if not rebuild and (work.lineage_blocked or not work.build) then return nil end
   local features = self.settings:readSetting("features") or {}
-  local spacing = XrayAuto.ladderSpacingFor(self.ui.document:getPageCount())
+  local spacing = self:_xrayLadderSpacing()
   local boundaries = features.xray_ladder_chapter_snap ~= false
     and self:_ladderChapterBoundaries() or nil
-  local rungs, labels = self:_planXrayGrid(work.base, spacing, work.goal, decimal, boundaries)
+  local rungs, labels = self:_planXrayGrid(rebuild and nil or work.base,
+    spacing, work.goal, decimal, boundaries)
   rungs = XrayAuto.truncateToOneAhead(rungs, decimal, labels)
   if #rungs == 0 then return nil end
-  return #rungs + (work.plan_intro and 1 or 0)
+  return #rungs + ((not rebuild and work.plan_intro) and 1 or 0)
 end
 
 --- The follow pick's engine start, shared with the tri-state picker's "On"
@@ -10032,7 +10167,7 @@ end
 --- seed ceiling): a catch-up of more than a few requests names its cost
 --- before the chain starts; declining pauses automatic building for this
 --- book this session (the setting stays on).
-function AskGPT:_xrayFollowCatchUp(_decimal)
+function AskGPT:_xrayFollowCatchUp(_decimal, opts)
   -- An explicit follow choice answers the coverage ask — never re-ask this book
   if self.ui and self.ui.doc_settings then
     self.ui.doc_settings:saveSetting(
@@ -10041,14 +10176,17 @@ function AskGPT:_xrayFollowCatchUp(_decimal)
   end
   local XrayAuto = require("koassistant_xray_auto")
   local file = self.ui and self.ui.document and self.ui.document.file
+  local rebuild = opts and opts.rebuild or nil
   local self_ref = self
   local function start()
     UIManager:show(Notification:new{
-      text = _("Automatic X-Ray on: building as you read."),
+      text = rebuild and _("Automatic X-Ray on: rebuilding as you read.")
+        or _("Automatic X-Ray on: building as you read."),
     })
-    self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true })
+    self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true,
+      rebuild = rebuild })
   end
-  local n = self:_xrayEstablishmentSteps()
+  local n = self:_xrayEstablishmentSteps(rebuild and { rebuild = true } or nil)
   if n and n > 3 then
     local confirm
     confirm = ButtonDialog:new{
@@ -12294,7 +12432,12 @@ function AskGPT:_xrayAutoOnPageUpdate(pageno)
   -- Never contend with an active chain: it is already building this grid
   if require("koassistant_xray_auto").ladderBuild() then return end
   if self._xray_auto_pending then
-    if state.debug then logger.info("KOAssistant: automatic X-Ray: fire already scheduled") end
+    -- Log once per pending window — this runs per page-turn tick and flooded
+    -- the log at ~25 lines/second on the 2026-08-14 device round
+    if state.debug and not self._xray_auto_pending_logged then
+      self._xray_auto_pending_logged = true
+      logger.info("KOAssistant: automatic X-Ray: fire already scheduled")
+    end
     return
   end
   local XrayAuto = require("koassistant_xray_auto")
@@ -12348,6 +12491,7 @@ function AskGPT:_scheduleXrayAutoFire()
   local self_ref = self
   local fire = function()
     self_ref._xray_auto_pending = nil
+    self_ref._xray_auto_pending_logged = nil
     self_ref:_fireXrayAutoCheckpoints()
   end
   self._xray_auto_pending = fire
@@ -12385,7 +12529,6 @@ function AskGPT:_xrayCoverageAskBeforeCreate(file, features, decimal, has_intro)
     return true
   end
   local XrayAuto = require("koassistant_xray_auto")
-  local spacing = XrayAuto.ladderSpacingFor(self.ui.document and self.ui.document:getPageCount())
   local boundaries = features.xray_ladder_chapter_snap ~= false
     and self:_ladderChapterBoundaries() or nil
   -- The ask only fires for from-nothing books: base nil. Counts mirror the
@@ -12394,12 +12537,15 @@ function AskGPT:_xrayCoverageAskBeforeCreate(file, features, decimal, has_intro)
   local goal = tonumber(self.ui.doc_settings:readSetting(BookSettings.KEY_XRAY_GOAL))
   if goal and (goal <= 0.01 or goal >= 0.995) then goal = nil end
   local intro_extra = has_intro and 0 or 1
-  local follow_rungs, follow_labels = self:_planXrayGrid(nil, spacing, goal, decimal, boundaries)
-  local n_follow = #(XrayAuto.truncateToOneAhead(follow_rungs, decimal, follow_labels)) + intro_extra
-  local n_all = #(self:_planXrayGrid(nil, spacing, nil, decimal, boundaries)) + intro_extra
   local remember = false
   local ask
   local function showAsk()
+    -- Counts recompute per show — the spacing row below changes them
+    -- (spacing slice: the ask IS the once-per-book up-front spacing moment)
+    local spacing = self_ref:_xrayLadderSpacing()
+    local follow_rungs, follow_labels = self_ref:_planXrayGrid(nil, spacing, goal, decimal, boundaries)
+    local n_follow = #(XrayAuto.truncateToOneAhead(follow_rungs, decimal, follow_labels)) + intro_extra
+    local n_all = #(self_ref:_planXrayGrid(nil, spacing, nil, decimal, boundaries)) + intro_extra
     ask = ButtonDialog:new{
       title = _("This book has no X-Ray yet. How should it be created?"),
       buttons = {
@@ -12416,6 +12562,29 @@ function AskGPT:_xrayCoverageAskBeforeCreate(file, features, decimal, has_intro)
             stamp()
             if remember then self_ref:_setXrayCoverageMode("build") end
             self_ref:_startXrayLadderBuild()
+          end }},
+        {{ text = T(_("Change checkpoint spacing (every %1%)…"),
+            self_ref:_xraySpacingPctLabel(spacing)),
+          callback = function()
+            UIManager:close(ask)
+            self_ref:_showXraySpacingPicker{
+              current = spacing,
+              title = _("Checkpoint spacing for this book:"),
+              count_for = function(s)
+                return #(self_ref:_planXrayGrid(nil, s, nil, decimal, boundaries)) + intro_extra
+              end,
+              on_pick = function(s)
+                self_ref.ui.doc_settings:saveSetting(
+                  BookSettings.KEY_XRAY_SPACING, s)
+                self_ref.ui.doc_settings:flush()
+                UIManager:show(Notification:new{
+                  text = T(_("Checkpoint spacing for this book: every %1%"),
+                    self_ref:_xraySpacingPctLabel(s)),
+                })
+                showAsk()
+              end,
+              on_back = function() showAsk() end,
+            }
           end }},
         {{ text = (remember and "● " or "○ ") .. _("Always do this, for every book"),
           callback = function()
@@ -12523,28 +12692,37 @@ function AskGPT:_fireXrayAutoCheckpoints(opts)
     goal = tonumber(self.ui.doc_settings:readSetting(BookSettings.KEY_XRAY_GOAL)),
     is_json = XrayParser.isJSON,
   }
-  if work.lineage_blocked or not work.build then return end
-  -- Follow-global books keep the separate create guard (P1): the FIRST build
-  -- for a book needs create_allowed unless the enable was explicit
-  if not work.has_any and not create_allowed and not (opts and opts.explicit) then return end
-  -- First-ever spend goes through the coverage ask (round 19; once per book)
-  if not work.has_any and not (opts and opts.asked)
-      and self:_xrayCoverageAskBeforeCreate(file, features, decimal, work.has_intro) then
-    return
+  -- Deferred rebuild catch-up (2026-08-14): an explicit rebuild-follow pick
+  -- plans from scratch and marks the chain — the old lineage stays untouched
+  -- until the first new rung lands (the write-seam swap). The planAutoWork
+  -- early-outs don't apply: replacing a blocked/complete lineage is exactly
+  -- what the rebuild is for.
+  local chain_rebuild = opts and opts.rebuild or nil
+  if not chain_rebuild then
+    if work.lineage_blocked or not work.build then return end
+    -- Follow-global books keep the separate create guard (P1): the FIRST build
+    -- for a book needs create_allowed unless the enable was explicit
+    if not work.has_any and not create_allowed and not (opts and opts.explicit) then return end
+    -- First-ever spend goes through the coverage ask (round 19; once per book)
+    if not work.has_any and not (opts and opts.asked)
+        and self:_xrayCoverageAskBeforeCreate(file, features, decimal, work.has_intro) then
+      return
+    end
   end
 
-  local spacing = XrayAuto.ladderSpacingFor(self.ui.document:getPageCount())
+  local spacing = self:_xrayLadderSpacing()
   local boundaries = features.xray_ladder_chapter_snap ~= false
     and self:_ladderChapterBoundaries() or nil
-  local rungs, labels = self:_planXrayGrid(work.base, spacing, work.goal, decimal, boundaries)
+  local rungs, labels = self:_planXrayGrid(chain_rebuild and nil or work.base,
+    spacing, work.goal, decimal, boundaries)
   rungs, labels = XrayAuto.truncateToOneAhead(rungs, decimal, labels)
   if #rungs == 0 then return end
-  local plan_intro = work.plan_intro
+  local plan_intro = not chain_rebuild and work.plan_intro
   XrayAuto.markScheduled(os.time())
   logger.info("KOAssistant: automatic X-Ray building", #rungs + (plan_intro and 1 or 0),
-    "checkpoint(s) to", rungs[#rungs])
+    "checkpoint(s) to", rungs[#rungs], chain_rebuild and "(rebuild)" or "")
   XrayAuto.beginLadderBuild(file, rungs, labels,
-    { intro = plan_intro, silent = not (opts and opts.notify) })
+    { intro = plan_intro, silent = not (opts and opts.notify), rebuild = chain_rebuild })
   self:_fireXrayLadderRung()
 end
 
@@ -13000,6 +13178,80 @@ function AskGPT:_switchBackToPositionRung(opts)
   end
 end
 
+--- One-tap install of the nearest checkpoint built AHEAD of the reader
+--- (spacing slice, build-shapes list item "install built-ahead rung" — was
+--- reachable only through the All-versions cards). Deliberate spoiler-side
+--- choice: always behind the same confirm the version card uses, with the
+--- same posture/hold discipline (a deliberate ahead install never
+--- auto-reverts — item 40; under FULL posture with the hold pinned,
+--- installing the newest rung releases the hold like the card does).
+function AskGPT:_installAheadXrayRung(opts)
+  local XrayAuto = require("koassistant_xray_auto")
+  local ActionCache = require("koassistant_action_cache")
+  if XrayAuto.ladderBuild() or XrayAuto.isInFlight() then
+    UIManager:show(InfoMessage:new{ text = _("An X-Ray task is already running."), timeout = 2 })
+    return
+  end
+  local file = (self.ui and self.ui.document and self.ui.document.file) or (opts and opts.file)
+  if not file or not self.ui or not self.ui.document or self.ui.document.file ~= file then return end
+  local live = ActionCache.getXrayCache(file)
+  if live and live.result and live.source_mode == "ai_knowledge" then return end
+  local live_dec = live and tonumber(live.progress_decimal) or 0
+  local ContextExtractor = require("koassistant_context_extractor")
+  local progress = ContextExtractor:new(self.ui):getReadingProgress()
+  local decimal = progress and tonumber(progress.decimal)
+  if not decimal then return end
+  -- Nearest rung past BOTH the reader and live coverage — the versionRows
+  -- next_ahead rule, re-derived from disk at tap time
+  local rungs = ActionCache.getXrayLadder(file)
+  local rung
+  for _idx, r in ipairs(rungs) do
+    local p = tonumber(r.progress_decimal)
+    if p and not r.full_document and p > decimal + 0.005 and p > live_dec + 0.005 then
+      if not rung or p < tonumber(rung.progress_decimal) then rung = r end
+    end
+  end
+  if not rung then
+    UIManager:show(InfoMessage:new{ text = _("No checkpoint is built ahead of your position."), timeout = 3 })
+    return
+  end
+  local p = tonumber(rung.progress_decimal) or 0
+  local self_ref = self
+  local function doInstall()
+    local features = self_ref.settings:readSetting("features") or {}
+    local ok = ActionCache.promoteXrayLadderRung(file, rung,
+      ActionCache.checkpointLimitFromFeatures(features), { manual = true })
+    if not ok then
+      UIManager:show(InfoMessage:new{ text = _("Install failed. This checkpoint is no longer on disk."), timeout = 3 })
+      return
+    end
+    if self_ref:_xrayPosture() == "full" then
+      local highest = ActionCache.highestXrayLadderProgress(
+        ActionCache.getXrayLadder(file)) or 0
+      self_ref:_setXrayPromotionHold(file, p < highest - XrayAuto.LADDER_TOLERANCE)
+    end
+    self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+    self_ref:_refreshXrayAutoState()
+    UIManager:show(Notification:new{
+      text = T(_("Checkpoint installed (%1%)"), math.floor(p * 100 + 0.5)),
+      timeout = 2,
+    })
+    self_ref:_reopenLiveXrayAfterInstall(file, opts)
+    if self_ref.maybeOfferDedupAsk then
+      UIManager:scheduleIn(1, function() self_ref:maybeOfferDedupAsk(file) end)
+    end
+  end
+  local ConfirmBox = require("ui/widget/confirmbox")
+  UIManager:show(ConfirmBox:new{
+    -- The version card's ahead wording (device round 2026-08-05): name what
+    -- happens NEXT — free position swaps pause until the reader passes it
+    text = T(_("Install the checkpoint to %1%? It reaches past your reading position (%2%), so its entries may mention people and events you have not reached yet. Your current version stays in the version list. Free checkpoint swaps pause until you read past it; the X-Ray popup offers a switch back to your position."),
+      math.floor(p * 100 + 0.5), math.floor(decimal * 100 + 0.5)),
+    ok_text = _("Install"),
+    ok_callback = doInstall,
+  })
+end
+
 --- Chapter-end boundaries for ladder rung snapping (P3): ascending
 --- { ratio, title } where ratio = the chapter's last page over the page count
 --- and title = the chapter that ENDS there. Chapter set = the quiz auto-level
@@ -13029,6 +13281,87 @@ function AskGPT:_ladderChapterBoundaries()
   end
   if #out < 3 then return nil end
   return out
+end
+
+--- Effective checkpoint spacing for the open book (spacing slice 2026-08-14):
+--- per-book override (KEY_XRAY_SPACING — the authoring form's spacing row and
+--- the first-spend ask write it) over the pages-per-rung formula. ONE resolver
+--- for every planning/count site, so a spacing change reaches the auto engine,
+--- the build-all plan, the form's step counts and the coverage ask alike.
+--- Change-forward is free by construction: plans start at the ladder top, so
+--- built rungs keep their spans whatever the new value.
+--- @return number spacing ratio
+function AskGPT:_xrayLadderSpacing()
+  local XrayAuto = require("koassistant_xray_auto")
+  local override = self.ui and self.ui.doc_settings
+    and require("koassistant_book_settings").xraySpacingOverride(self.ui.doc_settings)
+  if override then return override end
+  return XrayAuto.ladderSpacingFor(
+    self.ui and self.ui.document and self.ui.document:getPageCount())
+end
+
+--- Spacing as a display percent ("10", "2.5") — shared by every row naming it.
+function AskGPT:_xraySpacingPctLabel(s)
+  local pct = (tonumber(s) or 0) * 100
+  return pct % 1 == 0 and tostring(math.floor(pct)) or string.format("%.1f", pct)
+end
+
+--- Shared checkpoint-spacing picker (spacing slice). Options 2.5–50% plus the
+--- formula recommendation; each row may carry a live step count via
+--- opts.count_for. The caller decides persistence in opts.on_pick — the form
+--- and the coverage ask write the per-book key, the build confirm stays
+--- per-run.
+--- @param opts table { current, title, count_for(spacing)->n|nil,
+---   on_pick(spacing), on_back() }
+function AskGPT:_showXraySpacingPicker(opts)
+  local ButtonDialog = require("ui/widget/buttondialog")
+  local XrayAuto = require("koassistant_xray_auto")
+  local recommended = XrayAuto.ladderSpacingFor(
+    self.ui and self.ui.document and self.ui.document:getPageCount())
+  local choices, seen = {}, {}
+  for _idx, s in ipairs({ 0.025, 0.05, 0.10, 0.15, 0.20, 0.25, 0.50, recommended }) do
+    -- Half-percent resolution so 2.5% survives the dedupe rounding
+    local key = math.floor(s * 200 + 0.5)
+    if not seen[key] then
+      seen[key] = true
+      choices[#choices + 1] = { spacing = s }
+    end
+  end
+  table.sort(choices, function(a, b) return a.spacing < b.spacing end)
+  local picker
+  local rows = {}
+  for _idx, c in ipairs(choices) do
+    local n = opts.count_for and opts.count_for(c.spacing) or nil
+    local label
+    if n then
+      label = T(_("Every %1%: %2 checkpoints"), self:_xraySpacingPctLabel(c.spacing), n)
+    else
+      label = T(_("Every %1%"), self:_xraySpacingPctLabel(c.spacing))
+    end
+    if math.floor(c.spacing * 200 + 0.5) == math.floor(recommended * 200 + 0.5) then
+      label = label .. " " .. _("(recommended)")
+    end
+    local captured = c.spacing
+    rows[#rows + 1] = {{
+      text = label,
+      callback = function()
+        UIManager:close(picker)
+        opts.on_pick(captured)
+      end,
+    }}
+  end
+  rows[#rows + 1] = {{
+    text = _("Back"),
+    callback = function()
+      UIManager:close(picker)
+      if opts.on_back then opts.on_back() end
+    end,
+  }}
+  picker = ButtonDialog:new{
+    title = opts.title or _("Checkpoint spacing:"),
+    buttons = rows,
+  }
+  UIManager:show(picker)
 end
 
 --- Entry point for the ladder build/resume (X-Ray popup rows). Explicit user
@@ -13077,26 +13410,34 @@ function AskGPT:_startXrayLadderBuild(build_opts)
       live_ok_base, live_progress = true, p
     end
   end
-  if entry and entry.result and not live_ok_base and base_progress == nil then
-    UIManager:show(InfoMessage:new{
-      text = _("This X-Ray can't build checkpoints (complete-track, AI-knowledge, or legacy format). Delete it first to build from scratch."),
-      timeout = 5,
-    })
-    return
-  end
-  -- A live INTRO X-Ray (round 20: premise-only, progress 0) is not a build
-  -- base — the chain must still create rung 1 from scratch, not "extend" a
-  -- deliberately censored artifact
-  if live_ok_base and not (entry and entry.intro)
-      and (base_progress == nil or (live_progress or 0) > base_progress) then
-    base_progress = live_progress
+  -- Deferred rebuild (2026-08-14): the chain replaces the lineage at its
+  -- FIRST successful rung — so planning ignores the disk state entirely
+  -- (from-scratch grid), and the foreign-lineage bail below does not apply
+  -- (replacing such a lineage is exactly what a rebuild is for)
+  local chain_rebuild = build_opts and build_opts.rebuild or nil
+  if not chain_rebuild then
+    if entry and entry.result and not live_ok_base and base_progress == nil then
+      UIManager:show(InfoMessage:new{
+        text = _("This X-Ray can't build checkpoints (complete-track, AI-knowledge, or legacy format). Delete it first to build from scratch."),
+        timeout = 5,
+      })
+      return
+    end
+    -- A live INTRO X-Ray (round 20: premise-only, progress 0) is not a build
+    -- base — the chain must still create rung 1 from scratch, not "extend" a
+    -- deliberately censored artifact
+    if live_ok_base and not (entry and entry.intro)
+        and (base_progress == nil or (live_progress or 0) > base_progress) then
+      base_progress = live_progress
+    end
+  else
+    base_progress = nil
   end
 
   -- P2(a): spacing adapts to book length (min-pages floor); P3: targets snap
   -- to chapter ends when a usable TOC exists (labels ride into the rung entries).
-  -- Round 11: the formula is a DEFAULT, not a decree — "Adjust spacing…" on the
-  -- confirm re-plans this ONE run at a user-picked spacing (dense material can
-  -- warrant closer versions than the length formula; nothing is persisted).
+  -- Spacing slice round 2: the per-run adjust row is retired — the resolved
+  -- per-book spacing (form/ask pickers write it) is the run's spacing.
   -- Round 16: build_opts.target (+ target_label) bounds the build below 100%
   -- (unified creation flow: cover one huge section in prefix steps).
   local goal = build_opts and tonumber(build_opts.target) or nil
@@ -13113,7 +13454,6 @@ function AskGPT:_startXrayLadderBuild(build_opts)
     goal = nil
   end
   local goal_label = goal and build_opts and build_opts.target_label or nil
-  local recommended = XrayAuto.ladderSpacingFor(self.ui.document:getPageCount())
   local features = self.settings:readSetting("features") or {}
   local boundaries = features.xray_ladder_chapter_snap ~= false
     and self:_ladderChapterBoundaries() or nil
@@ -13123,6 +13463,13 @@ function AskGPT:_startXrayLadderBuild(build_opts)
   local resume, has_intro = false, false
   for _idx, r in ipairs(ladder) do
     if r.intro then has_intro = true else resume = true end
+  end
+  -- Rebuild chains: old rungs are the OLD lineage (they die at the swap), so
+  -- this is never a resume; no intro either — the reader keeps the old live
+  -- X-Ray until rung 1 lands, which then covers to their position (seed), so
+  -- a premise-only step would buy nothing and complicate the swap ordering
+  if chain_rebuild then
+    resume, has_intro = false, true
   end
   local plan_intro = base_progress == nil and not has_intro and not one_shot
   -- Round 19: a from-nothing build seeds its first checkpoint AT the reading
@@ -13139,47 +13486,11 @@ function AskGPT:_startXrayLadderBuild(build_opts)
     return self_ref:_planXrayGrid(base_progress, spacing, goal, seed_position, boundaries)
   end
 
-  local showConfirm -- forward decl: the spacing picker re-invokes it
-  local function showSpacingPicker(current)
-    local opts, seen = {}, {}
-    for _idx, s in ipairs({ 0.05, 0.10, 0.15, 0.20, 0.25, 0.50, recommended }) do
-      local pct = math.floor(s * 100 + 0.5)
-      if not seen[pct] then
-        seen[pct] = true
-        opts[#opts + 1] = { pct = pct, spacing = s }
-      end
-    end
-    table.sort(opts, function(a, b) return a.pct < b.pct end)
-    local picker
-    local rows = {}
-    for _idx, opt in ipairs(opts) do
-      local rungs = planFor(opt.spacing)
-      local row_text = opt.pct == math.floor(recommended * 100 + 0.5)
-        and T(_("Every %1%: %2 checkpoints (recommended)"), opt.pct, #rungs)
-        or T(_("Every %1%: %2 checkpoints"), opt.pct, #rungs)
-      rows[#rows + 1] = {{
-        text = row_text,
-        callback = function()
-          UIManager:close(picker)
-          showConfirm(opt.spacing)
-        end,
-      }}
-    end
-    rows[#rows + 1] = {{
-      text = _("Back"),
-      callback = function()
-        UIManager:close(picker)
-        showConfirm(current)
-      end,
-    }}
-    picker = ButtonDialog:new{
-      title = _("Checkpoint spacing for this run:"),
-      buttons = rows,
-    }
-    UIManager:show(picker)
-  end
-
-  showConfirm = function(spacing)
+  -- Round 2 of the spacing slice (device: the confirm "fills the whole
+  -- screen"): the text is THREE short lines now — what happens, the plan,
+  -- the cost. The per-run "Adjust spacing…" row is RETIRED (redundant with
+  -- the form's spacing button; it also stacked a fourth screen).
+  local function showConfirm(spacing)
     local rungs, rung_labels, seed = planFor(spacing)
     if #rungs == 0 then
       -- Also the no-ladder-but-live-at-100% case — say why, not "complete"
@@ -13187,121 +13498,86 @@ function AskGPT:_startXrayLadderBuild(build_opts)
       return
     end
     local snapped = next(rung_labels) ~= nil
-    -- Round 15 (maintainer): the confirm is DYNAMIC — it states what this build
-    -- will actually do given the current X-Ray state ("ahead" was wrong: a
-    -- from-nothing build starts at the beginning, and a build over an existing
-    -- X-Ray continues from its coverage). Full sentences, no dashes.
     local base_pct = math.floor((base_progress or 0) * 100 + 0.5)
+    local goal_text
+    if goal then
+      goal_text = goal_label
+        and T(_("%1% (end of \"%2\")"), math.floor(goal * 100 + 0.5), goal_label)
+        or T(_("%1%"), math.floor(goal * 100 + 0.5))
+    end
     local state_line
-    if one_shot then
-      -- Item 50(a): a one-shot is not a checkpoint plan — say what it does
-      local goal_text = goal_label
-        and T(_("%1% (end of \"%2\")"), math.floor(goal * 100 + 0.5), goal_label)
-        or T(_("%1%"), math.floor(goal * 100 + 0.5))
-      if (base_progress or 0) > 0.005 then
-        state_line = T(_("Your X-Ray covers to %1%. It will be extended to %2."), base_pct, goal_text)
-      else
-        state_line = T(_("There is no X-Ray yet. It will cover the book from the beginning to %1."), goal_text)
-      end
-    elseif goal then
-      local goal_text = goal_label
-        and T(_("%1% (end of \"%2\")"), math.floor(goal * 100 + 0.5), goal_label)
-        or T(_("%1%"), math.floor(goal * 100 + 0.5))
-      if resume then
-        state_line = T(_("Checkpoints built so far reach %1%. Building will continue from there to %2."), base_pct, goal_text)
-      elseif (base_progress or 0) > 0.005 then
-        state_line = T(_("Your X-Ray covers to %1%. Checkpoints will continue from there to %2."), base_pct, goal_text)
-      else
-        state_line = T(_("There is no X-Ray yet. Checkpoints will cover the book from the beginning to %1."), goal_text)
-      end
-    elseif resume then
-      state_line = T(_("Checkpoints built so far reach %1%. Building will continue from there to 100%."), base_pct)
-    elseif (base_progress or 0) > 0.005 then
-      state_line = T(_("Your X-Ray covers to %1%. Checkpoints will continue from there to 100%."), base_pct)
+    if chain_rebuild then
+      state_line = _("Replaces your current X-Ray from scratch. Nothing is touched until the first new checkpoint arrives; the outgoing version is archived then.")
+    elseif one_shot then
+      state_line = (base_progress or 0) > 0.005
+        and T(_("Extends your X-Ray from %1% to %2."), base_pct, goal_text or "100%")
+        or T(_("Covers the book from the beginning to %1."), goal_text or "100%")
+    elseif resume or (base_progress or 0) > 0.005 then
+      state_line = T(_("Continues from %1% to %2."), base_pct, goal_text or "100%")
     else
-      state_line = _("There is no X-Ray yet. Checkpoints will cover the whole book from the beginning.")
+      state_line = goal_text
+        and T(_("Covers the book from the beginning to %1."), goal_text)
+        or _("Covers the whole book from the beginning.")
     end
     local plan_line, cost_line
     if one_shot then
-      plan_line = _("It will be generated in one background request.")
-      cost_line = _("The book must stay open; you can keep reading. A notification arrives when it is ready.")
+      plan_line = _("One background request.")
+      cost_line = _("Keep reading; the book must stay open. A notification arrives when it is ready.")
     else
-      -- Session-2 device finding (item 38): a seeded plan must describe its
-      -- ACTUAL grid. The tail is planned FROM the seed (half-spacing rule), so
-      -- "every N%" is false for the run — worst on tiny books, where spacing
-      -- clamps to 50% and a 48% reader saw "every 50%" PLUS a 48% seed and
-      -- read it as two near-duplicate checkpoints. The real grid was 48+100.
       if seed and #rungs == 2 then
-        -- Seed + final only: no spacing grid exists, name the two points
-        plan_line = goal
-          and T(_("2 checkpoints are planned: the first stops at your position (%1%) so a usable X-Ray installs right away, and the final one covers the rest of the range."),
-            math.floor(seed * 100 + 0.5))
-          or T(_("2 checkpoints are planned: the first stops at your position (%1%) so a usable X-Ray installs right away, and the final one covers the rest of the book."),
-            math.floor(seed * 100 + 0.5))
+        plan_line = T(_("2 checkpoints: one at your position (%1%), one at the end."),
+          math.floor(seed * 100 + 0.5))
       elseif seed then
         plan_line = snapped
-          and T(_("%1 checkpoints are planned: the first stops at your position (%2%) so a usable X-Ray installs right away, and the rest follow at chapter ends roughly every %3% of the book."),
+          and T(_("%1 checkpoints: the first at your position (%2%), then chapter ends roughly every %3%."),
             #rungs, math.floor(seed * 100 + 0.5), math.floor(spacing * 100 + 0.5))
-          or T(_("%1 checkpoints are planned: the first stops at your position (%2%) so a usable X-Ray installs right away, and the rest follow every %3% of the book."),
+          or T(_("%1 checkpoints: the first at your position (%2%), then every %3%."),
             #rungs, math.floor(seed * 100 + 0.5), math.floor(spacing * 100 + 0.5))
       else
         plan_line = snapped
-          and T(_("%1 checkpoints are planned, at chapter ends roughly every %2% of the book."),
+          and T(_("%1 checkpoints, at chapter ends roughly every %2%."),
             #rungs, math.floor(spacing * 100 + 0.5))
-          or T(_("%1 checkpoints are planned, every %2% of the book."),
+          or T(_("%1 checkpoints, every %2%."),
             #rungs, math.floor(spacing * 100 + 0.5))
       end
       if plan_intro then
-        -- Round 22 (D6): name the total so the confirm agrees with the
-        -- progress toast's "1 of N+1"
-        plan_line = plan_line .. " " .. T(_("An introductory version is generated first (spoiler-free and readable from the very start of the book), so the build runs %1 background requests in total."), #rungs + 1)
+        plan_line = plan_line .. " " .. T(_("An introduction is generated first (%1 requests in total)."), #rungs + 1)
       end
-      -- Round 22 (D6): "read once" was false with an intro planned — the
-      -- introduction re-reads the first checkpoint's slice
-      cost_line = plan_intro
-        and _("Each is generated in the background from the next slice of the text, so every individual request stays small, with no further prompts. The text is read once in total, plus the introduction re-reading the opening slice and a small per-checkpoint overhead. The book must stay open; you can keep reading, cancel anytime, and resume later.")
-        or _("Each is generated in the background from the next slice of the text, so every individual request stays small, with no further prompts. The text is read once in total, plus a small per-checkpoint overhead. The book must stay open; you can keep reading, cancel anytime, and resume later.")
+      cost_line = _("Small background requests; keep reading, cancel anytime, resume later.")
     end
     local confirm
     confirm = ButtonDialog:new{
       title = (one_shot and _("Generate the X-Ray?")
           or resume and _("Resume building X-Ray checkpoints?")
           or _("Build X-Ray checkpoints?"))
-        .. "\n" .. state_line .. " " .. plan_line
+        .. "\n" .. state_line
+        .. "\n" .. plan_line
         .. "\n" .. cost_line,
-      buttons = (function()
-        local rows = {}
-        rows[#rows + 1] = {{
+      buttons = {
+        {{
           text = one_shot and _("Generate") or resume and _("Resume") or _("Build"),
           callback = function()
             UIManager:close(confirm)
             -- Round 22 (D3): an explicit build start ends any cancel pause
             XrayAuto.clearAutoSuppression(file)
-            XrayAuto.beginLadderBuild(file, rungs, rung_labels, { intro = plan_intro })
+            XrayAuto.beginLadderBuild(file, rungs, rung_labels,
+              { intro = plan_intro, rebuild = chain_rebuild })
             self_ref:_fireXrayLadderRung()
           end,
-        }}
-        if not one_shot then
-          rows[#rows + 1] = {{
-            text = _("Adjust spacing for this run…"),
-            callback = function()
-              UIManager:close(confirm)
-              showSpacingPicker(spacing)
-            end,
-          }}
-        end
-        rows[#rows + 1] = {{
+        }},
+        {{
           text = _("Cancel"),
           callback = function()
             UIManager:close(confirm)
           end,
-        }}
-        return rows
-      end)(),
+        }},
+      },
     }
     UIManager:show(confirm)
   end
-  showConfirm(recommended)
+  -- The run uses the RESOLVED spacing (per-book value or formula); spacing is
+  -- changed via the form's spacing button, not here
+  showConfirm(self:_xrayLadderSpacing())
 end
 
 -- (Round 21's lean Extend chooser retired in round 23 — the dual-mode
@@ -13425,6 +13701,12 @@ function AskGPT:_fireXrayLadderRung()
     end
   end
   if is_intro then
+    base, base_progress = nil, nil
+  end
+  -- Deferred rebuild: the old lineage stays UNTOUCHED on disk until the first
+  -- new rung lands, so it must not seed this chain either — pre-swap steps
+  -- create from scratch; post-swap steps chain on the new rungs normally
+  if build.rebuild and not build.rebuild_swapped then
     base, base_progress = nil, nil
   end
   -- Skip threshold MUST be at least the incremental path's engagement threshold
@@ -13705,6 +13987,7 @@ function AskGPT:onCloseDocument()
   if self._xray_auto_pending then
     UIManager:unschedule(self._xray_auto_pending)
     self._xray_auto_pending = nil
+    self._xray_auto_pending_logged = nil
   end
   if self._xray_ladder_promo_pending then
     UIManager:unschedule(self._xray_ladder_promo_pending)

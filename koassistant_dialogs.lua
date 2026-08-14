@@ -5242,6 +5242,27 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     -- the live cache — the live X-Ray keeps tracking the reader while the
                     -- chain runs ahead; promotion swaps rungs in locally later. Same
                     -- sticky-true permission reconciliation as the live write below.
+                    -- DEFERRED REBUILD SWAP (2026-08-14, the absolute round-25 rule):
+                    -- a rebuild chain touches nothing until THIS moment — its first
+                    -- successful real rung. Archive the outgoing live (even a promoted
+                    -- rung: the old ladder dies in the same breath, so this is the only
+                    -- copy kept), clear the live cache and the OLD ladder, then store
+                    -- the new rung below. A chain cancelled or failed before this point
+                    -- leaves the book exactly as it was.
+                    local xa_build = require("koassistant_xray_auto").ladderBuild()
+                    if xa_build and xa_build.rebuild and not xa_build.rebuild_swapped
+                        and cache_answer and not message_data._ladder_intro then
+                        local prev_live = ActionCache.getXrayCache(cache_file)
+                        if prev_live and prev_live.result then
+                            ActionCache.pushXrayCheckpoint(cache_file, prev_live,
+                                ActionCache.checkpointLimitFromFeatures(config.features))
+                        end
+                        ActionCache.clearXrayCache(cache_file)
+                        ActionCache.clear(cache_file, "xray")
+                        ActionCache.clearXrayLadder(cache_file)
+                        xa_build.rebuild_swapped = true
+                        logger.info("KOAssistant: rebuild swap - outgoing X-Ray archived, old checkpoints cleared")
+                    end
                     local rung_used_highlights = (message_data.highlights and message_data.highlights ~= "")
                     if using_cache and (message_data.cached_used_highlights == true
                         or (message_data.cached_used_highlights == nil and message_data.cached_used_annotations == true)) then

@@ -154,11 +154,26 @@ BookSettings.KEY_XRAY_GOAL = "koassistant_book_xray_goal"
 -- below-newest installs/switches, cleared by deliberate newest/complete
 -- installs and by X-Ray deletion.
 BookSettings.KEY_XRAY_PROMOTION = "koassistant_book_xray_promotion"
+-- Spacing slice (2026-08-14): per-book checkpoint spacing (a ratio, e.g. 0.10).
+-- nil = the pages-per-rung formula (XrayAuto.ladderSpacingFor). Written by the
+-- authoring form's spacing row and the first-spend coverage ask; read through
+-- AskGPT:_xrayLadderSpacing at every planning site. A change only affects
+-- checkpoints planned from now on — plans always start at the ladder top, so
+-- built rungs keep their spans by construction.
+BookSettings.KEY_XRAY_SPACING = "koassistant_book_xray_spacing"
 
 --- X-Ray promotion hold. Pure.
 --- @return boolean true = promotion follows the reading position for this book
 function BookSettings.xrayPromotionHold(doc_settings)
     return (doc_settings and doc_settings:readSetting(BookSettings.KEY_XRAY_PROMOTION)) == "position"
+end
+
+--- Per-book checkpoint spacing override. Pure.
+--- @return number|nil ratio in (0, 0.5], or nil = follow the formula
+function BookSettings.xraySpacingOverride(doc_settings)
+    local v = doc_settings and tonumber(doc_settings:readSetting(BookSettings.KEY_XRAY_SPACING))
+    if v and v > 0.005 and v <= 0.5 then return v end
+    return nil
 end
 
 --- Per-book Automatic X-Ray override. Pure.
@@ -579,6 +594,7 @@ BookSettings.SIDECAR_KEYS = {
     BookSettings.KEY_XRAY_AUTO,
     BookSettings.KEY_XRAY_GOAL,
     BookSettings.KEY_XRAY_PROMOTION,
+    BookSettings.KEY_XRAY_SPACING,
     -- (KEY_XRAY_COVERAGE_ASKED is deliberately NOT here: a stamp, not an
     -- override — it must not count as "customized" nor block on reset;
     -- registered as its own storage-registry entry like the last-opened stamp)
