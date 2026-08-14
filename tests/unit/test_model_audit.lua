@@ -345,6 +345,9 @@ end)())
 TestRunner:check("reasons by default but profile axis none -> drift",
     rlevel({ served = true, default_reasoning = true, temp_ok = true },
         { profile = { axis = "none" }, temp_after_apply = 0.7 }) == "drift")
+TestRunner:check("always-on documented via axis none + default on -> ok (magistral/grok-build class)",
+    rlevel({ served = true, default_reasoning = true, temp_ok = true },
+        { profile = { axis = "none", default_state = "on" }, temp_after_apply = 0.7 }) == "ok")
 TestRunner:check("reasons by default but profile default off -> drift",
     rlevel({ served = true, default_reasoning = true, temp_ok = true },
         { profile = { axis = "effort", default_state = "off" }, temp_after_apply = 0.7 }) == "drift")
@@ -369,6 +372,20 @@ TestRunner:check("temp inconclusive (quota) -> warn, never drift",
 TestRunner:check("nil profile tolerated (unknown model)",
     rlevel({ served = true, default_reasoning = false, temp_ok = true },
         { temp_after_apply = 0.7 }) == "ok")
+TestRunner:check("temp rejected under no_sampling_params cap -> consistent ok (opus-5/fable class)",
+    rlevel({ served = true, default_reasoning = true, temp_ok = false },
+        { profile = { axis = "adaptive_effort", default_state = "on" },
+          temp_after_apply = 0.7, caps = { no_sampling_params = true } }) == "ok")
+TestRunner:check("quota-blocked model -> warn not drift (free-key paid-only class)",
+    rlevel({ served = nil, err = "You exceeded your current quota, please check your plan and billing details." },
+        {}) == "warn")
+TestRunner:check("permission-blocked model -> warn not drift (staged rollout class)",
+    rlevel({ served = nil, err = "You do not have permission to access glm-5.3" }, {}) == "warn")
+TestRunner:check("model_not_found stays drift",
+    rlevel({ served = nil, err = "The model `gone-1` does not exist" }, {}) == "drift")
+TestRunner:check("weak evidence on default-off profile -> warn (terra class)",
+    rlevel({ served = true, default_reasoning = false, weak_evidence = 12, temp_ok = false },
+        { profile = { axis = "effort", default_state = "off" }, temp_after_apply = 1.0 }) == "warn")
 
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))

@@ -1399,7 +1399,15 @@ end
 -- the model accepts) is only a WARN.
 function ModelAudit.recheckCompare(obs, current)
     if not obs.served then
-        return "drift", { "not served: " .. tostring(obs.err or "?"):sub(1, 120) }
+        -- Key-tier limitations (free-tier quota on paid-only models, staged
+        -- rollouts) are about OUR key, not the curation - warn, don't drift.
+        local err = tostring(obs.err or "?")
+        local lower = err:lower()
+        if lower:find("quota", 1, true) or lower:find("permission", 1, true)
+                or lower:find("billing", 1, true) then
+            return "warn", { "not probeable with this key (quota/permission): " .. err:sub(1, 100) }
+        end
+        return "drift", { "not served: " .. err:sub(1, 120) }
     end
     local reasons, level = {}, "ok"
     local function drift(msg) level = "drift"; table.insert(reasons, msg) end
@@ -1411,7 +1419,11 @@ function ModelAudit.recheckCompare(obs, current)
     local pstate = profile.default_state
     if obs.default_reasoning then
         if (profile.axis or "none") == "none" then
-            drift("reasons by default, profile axis is none")
+            -- axis none + default_state "on" = documented always-on with no
+            -- controls (the magistral / grok-build class) - consistent.
+            if pstate ~= "on" then
+                drift("reasons by default, profile axis is none")
+            end
         elseif pstate ~= "on" then
             drift("reasons by default, profile default_state is " .. tostring(pstate))
         end
@@ -1419,8 +1431,15 @@ function ModelAudit.recheckCompare(obs, current)
         -- Some wires report no reasoning evidence even when thinking ran, so
         -- absence alone never claims drift.
         warn("no reasoning evidence on math prompt (profile default on) - verify")
+    elseif obs.weak_evidence then
+        warn("weak reasoning evidence (" .. tostring(obs.weak_evidence)
+            .. " tokens) on a default-off profile - verify")
     end
+    -- "What we'd send": apply() passing 0.7 through, UNLESS the handler strips
+    -- sampling params entirely (no_sampling_params lives in the request
+    -- builder, not in apply() - the Opus 4.7+/5-family class).
     local we_send_temp = current.temp_after_apply == 0.7
+        and not (current.caps and current.caps.no_sampling_params)
     if obs.temp_ok == false then
         if we_send_temp then
             drift("temperature=0.7 rejected but constraints pass it through (field 400s)")
@@ -1493,7 +1512,16 @@ local function recheckObserve(provider, model, api_key)
         end
         if code ~= 200 then obs.err = ModelAudit.errText(decoded, raw); return obs end
         obs.served = true
-        obs.default_reasoning = ModelAudit.reasoningEvidence(decoded) ~= nil
+        -- Same weak-signal rule as the full battery: a handful of reasoning
+        -- tokens on a math prompt is bookkeeping noise, not a reasoning default.
+        local evidence = ModelAudit.reasoningEvidence(decoded)
+        local rt = evidence and tonumber(evidence:match("^reasoning_tokens=(%d+)$"))
+        if rt and rt < 64 then
+            obs.weak_evidence = rt
+            obs.default_reasoning = false
+        else
+            obs.default_reasoning = evidence ~= nil
+        end
         local tcode, tdec, traw = req({ temperature = 0.7 }, 32)
         obs.temp_ok = verdict(tcode)
         if obs.temp_ok == false then obs.temp_err = ModelAudit.errText(tdec, traw) end

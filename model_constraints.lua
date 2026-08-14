@@ -598,9 +598,12 @@ ModelConstraints.reasoning_profiles = {
           can_disable = true, can_enable = true,
           options = { "minimal", "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "high" } } },
-        -- Gemini 2.5 (thinkingBudget): thinks by default (dynamic), can disable via 0.
+        -- Gemini 2.5 (thinkingBudget): flash/pro think by default (dynamic), can
+        -- disable via 0. flash-lite is OFF by default (Google docs + live recheck
+        -- 2026-08-14: 0 thought tokens on the math prompt — same class as the
+        -- 3.5/3.1 lite correction of 2026-07-25); thinking opt-in via budget.
         -- flash-lite listed before flash so the more-specific id matches first.
-        { match = "gemini-2.5-flash-lite", axis = "budget", default_state = "on",
+        { match = "gemini-2.5-flash-lite", axis = "budget", default_state = "off",
           can_disable = true, can_enable = true,
           options = { "dynamic", "low", "medium", "high", "max" }, default_option = "dynamic",
           budget_map = { dynamic = -1, low = 1024, medium = 8192, high = 16384, max = 24576 },
@@ -749,6 +752,10 @@ ModelConstraints.reasoning_profiles = {
         -- Shim: the bare grok-4.20-0309 slug is NON-reasoning — must sit before the
         -- family fallback below or it would inherit an effort profile it rejects.
         { match = "grok-4.20-0309", axis = "none", default_state = "off",
+          can_disable = false, can_enable = false },
+        -- grok-build: thinks by default but rejects EVERY reasoningEffort value
+        -- (probe 2026-08-14) — always-on with no knob, magistral-style shape.
+        { match = "grok-build", axis = "none", default_state = "on",
           can_disable = false, can_enable = false },
         -- FAMILY FALLBACK (item 19a): new grok-4.x ids inherit the effort profile.
         { match = "grok-4", axis = "effort", default_state = "on", can_disable = true, can_enable = true,
