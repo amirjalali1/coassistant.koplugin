@@ -9281,9 +9281,6 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     if cr.delivery == "follow" and cr.coverage == "position" then
       cr.delivery = "one"
     end
-    if cr.delivery == "follow" and followIdle() then
-      cr.delivery = "one"
-    end
     if cr.delivery == "checkpoints" and stepsFor() <= 1 then
       cr.delivery = "one"
     end
@@ -9621,14 +9618,15 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
         provider = "checkpoints", checked = cr.delivery == "checkpoints" } }
     end
     if flowing and (cr.coverage == "whole" or cr.coverage == "target") then
-      local f_idle = followIdle()
-      del_rows[#del_rows + 1] = { { text = f_idle
+      -- The idle state row stays SELECTABLE and black (round 12 device: a
+      -- grayed radio still took the tap, and its gray bled into the gray
+      -- hint below it) — selecting it disables the commit button instead,
+      -- with the hint saying why
+      del_rows[#del_rows + 1] = { { text = followIdle()
           and _("In checkpoints, as I read (already on)")
           or auto_on and _("In checkpoints, as I read (already on; start now)")
           or _("In checkpoints, as I read (automatic)"),
-        provider = "follow", checked = cr.delivery == "follow",
-        enabled = f_idle and false or nil,
-        fgcolor = f_idle and Blitbuffer.COLOR_DARK_GRAY or nil } }
+        provider = "follow", checked = cr.delivery == "follow" } }
     end
     local del_table = RadioButtonTable:new{
       radio_buttons = del_rows,
@@ -9651,7 +9649,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     local hint
     -- Item 50(c): the forward story every extendable one-request pick carries
     local later_line = _("You can update it manually anytime, or turn on automatic updates later; both build on top of what you have.")
-    if cr.delivery == "follow" then
+    if cr.delivery == "follow" and followIdle() then
+      hint = _("Automatic building is already on and caught up — there is nothing to start right now. The next checkpoint builds by itself as you read on.")
+    elseif cr.delivery == "follow" then
       hint = _("Builds checkpoints in the background as you read, always keeping the next one ready ahead of you. Each checkpoint is one small request. Missing checkpoints up to your position build right away.")
       if cr.coverage == "whole" then
         hint = hint .. " " .. _("Coverage reaches 100% when you finish the book.")
@@ -9713,6 +9713,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
           text = (mode == "rebuild" or pick_rebuild) and _("Rebuild")
             or mode == "extend" and _("Extend")
             or _("Create"),
+          -- Idle follow pick: nothing to start — the commit button is what
+          -- disables (round 12; the row itself stays selectable and black)
+          enabled = not (cr.delivery == "follow" and followIdle()),
           callback = function()
             UIManager:close(current_dialog)
             dispatch()
