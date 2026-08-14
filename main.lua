@@ -2938,23 +2938,17 @@ function AskGPT:buildProviderMenu(simplified, show_all, hub)
       radio = true,
     }
     if hub then
-      -- One-tap semantics (maintainer 2026-08-14 round 2): entering a
-      -- provider's panel IS picking it — switch to it (default model baked,
-      -- radio lands on it; same key-setup offer as before) and push the panel.
-      -- The push is MANUAL (mirrors TouchMenu:onMenuSelect's stack mechanics)
-      -- because the switch must never live in sub_item_table_func: KOReader's
-      -- menu SEARCH evaluates every sub_item_table_func while indexing, and a
-      -- side effect there would switch providers during a settings search.
-      item.keep_menu_open = true
-      item.callback = function(touchmenu_instance)
-        if self_ref:getCurrentProvider() ~= prov_copy.id then
-          createProviderCallback(prov_copy.id, prov_copy.display_name)(touchmenu_instance)
-        end
-        if touchmenu_instance and touchmenu_instance.item_table_stack then
-          table.insert(touchmenu_instance.item_table_stack, touchmenu_instance.item_table)
-          touchmenu_instance.item_table = self_ref:buildModelMenu(false, prov_copy.id)
-          touchmenu_instance:updateItems(1)
-        end
+      -- Round 3 (maintainer 2026-08-14): provider rows are PLAIN submenus —
+      -- entering a panel never switches anything (the panel hosts settings:
+      -- key, tiers, fetch/test, later capabilities). The models inside are
+      -- the radio rows; picking one switches provider+model together and is
+      -- the ONLY switch path. The checkmark (checked_func, re-evaluated per
+      -- repaint) just marks the active provider. sub_item_table_func stays
+      -- side-effect-free, so KOReader's menu-search indexing (which evaluates
+      -- every sub_item_table_func) is safe here.
+      item.radio = nil
+      item.sub_item_table_func = function()
+        return self_ref:buildModelMenu(false, prov_copy.id)
       end
     else
       item.callback = createProviderCallback(prov_copy.id, prov_copy.display_name)
@@ -3673,6 +3667,41 @@ function AskGPT:buildModelMenu(simplified, provider_override)
   if not simplified then
     -- Split line on the last model row instead of a padded dash row
     if #items > 0 then items[#items].separator = true end
+
+    -- Per-provider auth, right where you're looking at the provider (round 3;
+    -- the top-level API Keys overview stays as the cross-provider view)
+    if provider == "openai_codex" then
+      table.insert(items, {
+        text = _("Connect / manage subscription..."),
+        keep_menu_open = true,
+        callback = function()
+          require("koassistant_openai_codex_oauth").showManageDialog(self_ref)
+        end,
+      })
+    elseif provider ~= "ollama"
+        and not (is_custom_provider and custom_provider_config
+                 and custom_provider_config.api_key_required == false) then
+      table.insert(items, {
+        text = _("API key..."),
+        keep_menu_open = true, -- dialog stacks on top
+        callback = function(touchmenu_instance)
+          self_ref:showApiKeyDialog(provider, provider_display_name, false,
+            menuRefresher(touchmenu_instance))
+        end,
+      })
+    end
+
+    -- Custom providers: endpoint/name/etc. editor (also on hold at hub level)
+    if is_custom_provider and custom_provider_config then
+      table.insert(items, {
+        text = _("Edit provider..."),
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+          self_ref:showCustomProviderOptions(custom_provider_config,
+            menuRefresher(touchmenu_instance))
+        end,
+      })
+    end
 
     -- Add custom model input option (now saves to list)
     table.insert(items, {
@@ -10546,6 +10575,68 @@ function AskGPT:_startXrayDedupFlow(file, opts)
     title = opts and opts.book_title, author = opts and opts.book_author,
     close_browser = opts and opts.close_browser,
   })
+end
+
+--- Post-update dedup ask (round 18, maintainer-approved): after an ATTENDED
+--- X-Ray change (manual update/create, manual instant install), scan the
+--- installed artifact for duplicate suggestions and offer the review ONCE
+--- per pair — offered pairs are remembered in the aliases sidecar
+--- (__dedup_offered) and never re-asked; the manual scan stays available.
+--- Background builds/promotions never ask (no dialog mid-reading).
+function AskGPT:maybeOfferDedupAsk(file)
+  if not file then return end
+  local self_ref = self
+  pcall(function()
+    local ActionCache = require("koassistant_action_cache")
+    local XrayParser = require("koassistant_xray_parser")
+    local XrayDedup = require("koassistant_xray_dedup")
+    local entry = ActionCache.getXrayCache(file)
+    if not (entry and entry.result) or entry.source_mode == "ai_knowledge" then return end
+    local data = XrayParser.parse(entry.result)
+    if not data or data.error then return end
+    local user_aliases = ActionCache.getUserAliases(file)
+    if next(user_aliases) then
+      XrayParser.mergeUserAliases(data, user_aliases)
+    end
+    local never = ActionCache.neverMergePairsFrom(user_aliases)
+    local found = XrayDedup.findDuplicates(data, never)
+    if not found or #found == 0 then return end
+    local offered_set = {}
+    for _idx, p in ipairs(ActionCache.dedupOfferedPairsFrom(user_aliases)) do
+      local a, b = p[1]:lower(), p[2]:lower()
+      if a > b then a, b = b, a end
+      offered_set[a .. "\0" .. b] = true
+    end
+    local fresh = {}
+    for _idx, pr in ipairs(found) do
+      if type(pr.name_a) == "string" and type(pr.name_b) == "string" then
+        local a, b = pr.name_a:lower(), pr.name_b:lower()
+        if a > b then a, b = b, a end
+        if not offered_set[a .. "\0" .. b] then
+          fresh[#fresh + 1] = { pr.name_a, pr.name_b }
+        end
+      end
+    end
+    if #fresh == 0 then return end
+    -- Stamped at ASK time: one ask per pair, ever — dismissing is an answer
+    ActionCache.addDedupOfferedPairs(file, fresh)
+    local text
+    if #fresh == 1 then
+      text = T(_("The updated X-Ray may list the same entity twice: \"%1\" and \"%2\".\n\nReview the suggestion?"),
+        fresh[1][1], fresh[1][2])
+    else
+      text = T(_("The updated X-Ray has %1 possible duplicate entity pairs.\n\nReview the suggestions?"), #fresh)
+    end
+    local ConfirmBox = require("ui/widget/confirmbox")
+    UIManager:show(ConfirmBox:new{
+      text = text,
+      ok_text = _("Review"),
+      ok_callback = function()
+        self_ref:_startXrayDedupFlow(file)
+      end,
+      cancel_text = _("Not now"),
+    })
+  end)
 end
 
 --- Show options (rename/delete) for a section X-Ray.

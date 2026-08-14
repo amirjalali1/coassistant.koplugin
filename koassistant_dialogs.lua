@@ -5321,6 +5321,16 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     end
                     local xray_success = ActionCache.setXrayCache(cache_file, cache_answer, progress, xray_metadata)
                     if xray_success then
+                        -- Post-update dedup ask (round 18): ATTENDED X-Ray
+                        -- writes offer a duplicate review when the scan finds
+                        -- pairs never offered before (background/ladder runs
+                        -- stay silent — xray_producer gates them out)
+                        if xray_producer == "manual" and plugin and plugin.maybeOfferDedupAsk then
+                            local ask_file = cache_file
+                            UIManager:scheduleIn(1, function()
+                                plugin:maybeOfferDedupAsk(ask_file)
+                            end)
+                        end
                         -- Old-lineage rungs die WITH the successful write, never
                         -- before it (must precede this run's own rung push)
                         if rebuilding then
