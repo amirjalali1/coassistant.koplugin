@@ -1863,6 +1863,15 @@ function XrayBrowser:navigateForward(title, items, focus_idx, display)
         self.menu.items_font_size = display.items_font_size or base.items_font_size
         self.menu.items_mandatory_font_size = display.items_mandatory_font_size
             or base.items_mandatory_font_size
+        -- Metrics must be LIVE before switchItemTable computes the focus
+        -- page: getPageNumber divides by self.perpage, which only updates
+        -- inside updateItems' recalc — AFTER the page pick. With the stale
+        -- divisor the result then clamps to the new page count (device
+        -- round 8: the appearances tree opened on its LAST page, current
+        -- chapter off-screen).
+        if self.menu._recalculateDimen then
+            self.menu:_recalculateDimen()
+        end
     end
 
     -- Add to paths so back arrow becomes enabled via updatePageInfo
@@ -4397,6 +4406,23 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
     local nodes = data.nodes
     local gate = data.gate
 
+    -- Tree row metrics (round 8): our compact 20-row default, or the
+    -- reader's own KOReader ToC settings when opted in — screens vary too
+    -- much for one number to be right everywhere, but most users never
+    -- touch KOReader's ToC density, so following it by default would undo
+    -- the compact look
+    local br_features = (self.metadata and self.metadata.configuration
+        and self.metadata.configuration.features) or {}
+    local tree_perpage = TREE_PERPAGE
+    local tree_font
+    if br_features.xray_appearances_rows == "follow_toc" then
+        tree_perpage = G_reader_settings:readSetting("toc_items_per_page") or 14
+        tree_font = G_reader_settings:readSetting("toc_items_font_size")
+            or Menu.getItemFontSize(tree_perpage)
+    else
+        tree_font = Menu.getItemFontSize(tree_perpage)
+    end
+
     -- Anything still concealed? (unrevealed beyond-gate/out-of-scope rows,
     -- or an unrevealed node whose span CROSSES the gate — its tail is hidden)
     local concealed = false
@@ -4470,7 +4496,7 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
     if has_parents then
         local Button = require("ui/widget/button")
         local BD = require("ui/bidi")
-        local icon_size = math.floor(Screen:getHeight() / TREE_PERPAGE * 2 / 5)
+        local icon_size = math.floor(Screen:getHeight() / tree_perpage * 2 / 5)
         button_width = icon_size * 2
         local function toggleNode(idx)
             if not idx then return end
@@ -4562,7 +4588,7 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
         local TextWidget = require("ui/widget/textwidget")
         local tmp = TextWidget:new{
             text = "    ",
-            face = Font:getFace("smallinfofont", Menu.getItemFontSize(TREE_PERPAGE)),
+            face = Font:getFace("smallinfofont", tree_font),
         }
         indent_unit = tmp:getSize().w
         tmp:free()
@@ -4686,9 +4712,9 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
             align_baselines = true,
             line_color = require("ffi/blitbuffer").COLOR_WHITE,
             state_w = has_parents and button_width or nil,
-            items_per_page = TREE_PERPAGE,
-            items_font_size = Menu.getItemFontSize(TREE_PERPAGE),
-            items_mandatory_font_size = Menu.getItemFontSize(TREE_PERPAGE) - 4,
+            items_per_page = tree_perpage,
+            items_font_size = tree_font,
+            items_mandatory_font_size = tree_font - 4,
         })
         -- Stash item detail info so back from distribution reopens the TextViewer
         local top = self.nav_stack[#self.nav_stack]

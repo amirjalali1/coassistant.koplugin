@@ -1103,6 +1103,23 @@ local SettingsSchema = {
                                     end)
                                 end
                             end,
+                        },
+                        {
+                            id = "xray_appearances_rows",
+                            type = "radio",
+                            text_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                local mode = f.xray_appearances_rows or "compact"
+                                return T(_("Chapter Appearances Rows: %1"),
+                                    mode == "follow_toc" and _("KOReader ToC Settings") or _("Compact"))
+                            end,
+                            path = "features.xray_appearances_rows",
+                            default = "compact",
+                            options = {
+                                { value = "compact", text = _("Compact (20 rows per page)") },
+                                { value = "follow_toc", text = _("Follow KOReader's ToC settings") },
+                            },
+                            help_text = _("Row density for the Chapter Appearances tree in the X-Ray browser. Compact fits 20 rows per page; the other option follows KOReader's own Table of Contents items-per-page and font-size settings."),
                             separator = true,
                         },
                         {

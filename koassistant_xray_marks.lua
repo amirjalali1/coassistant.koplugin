@@ -485,8 +485,13 @@ function XrayMarks._scanTick(plugin, pageno, token, hay)
         logger.info("KOAssistant marks dbg hay: " .. hay)
       end
     end
-    -- One targeted partial refresh over the union of the strips
-    if st.paint_boxes and ui.dialog then
+    -- One targeted partial refresh over the union of the strips — except
+    -- after a settings change (sync sets full_refresh), where the whole
+    -- page repaints once so removed marks can't linger outside the region
+    if st.full_refresh and ui.dialog then
+      st.full_refresh = nil
+      UIManager:setDirty(ui.dialog, "ui")
+    elseif st.paint_boxes and ui.dialog then
       local Geom = require("ui/geometry")
       local first = st.paint_boxes[1]
       local rx, ry = first.x, first.y
@@ -610,6 +615,10 @@ function XrayMarks.sync(plugin)
     st.spacing = tonumber(density) or 1
   end
   st.debug = features.debug and true or nil
+  -- Settings changed: the next completed scan must repaint the WHOLE page —
+  -- its region refresh is sized to the NEW marks, and a mode change that
+  -- shrinks the set would leave removed marks visible outside it
+  st.full_refresh = true
   local fam = features.xray_marking_families or "all"
   if fam == "people" then
     st.families = { people = true }
