@@ -2921,12 +2921,16 @@ function AskGPT:buildProviderMenu(simplified, show_all, hub)
     end
   end
 
-  -- Community-set legend up top (only when a marked row can appear below it)
+  -- Community-set legend up top (only when a marked row can appear below it).
+  -- Full settings mode only (maintainer 2026-08-14): the QS popup keeps the *
+  -- markers but not the legend row — the main menu is where the set is explained.
   local has_community = false
-  for _i, prov in ipairs(all_providers) do
-    if not prov.is_custom and ModelLists.isCommunity(prov.id) then
-      has_community = true
-      break
+  if not simplified then
+    for _i, prov in ipairs(all_providers) do
+      if not prov.is_custom and ModelLists.isCommunity(prov.id) then
+        has_community = true
+        break
+      end
     end
   end
   if has_community then
