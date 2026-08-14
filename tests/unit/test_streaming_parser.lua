@@ -333,7 +333,7 @@ end)
 TestRunner:suite("Trailing API error detection (provider-shape-agnostic)")
 
 -- An answer streamed, then the provider appended an error object and hung up.
-local ANSWER = 'The first Kubrick film I saw was Spartacus.\n'
+local ANSWER = 'The first thing the stream said arrived intact.\n'
 
 local SHAPES = {
     -- Gemini: `code` first — the ONLY shape the old '"error":{"code"' gate matched.

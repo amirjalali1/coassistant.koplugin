@@ -83,8 +83,9 @@ local SCAN_SETTLE_S = 0.3
 --                      -- boxes, the tap targets (round 2, d2)
 --   paint_boxes,       -- same-line-merged union rects the strips paint from
 --                      -- (round 3: overlapping strips double-painted each
---                      -- other — "only 'on' of Kubrickon"; still wanted for
---                      -- dotted paint so overlapping dot grids never clash)
+--                      -- other — only a word's tail stayed marked; still
+--                      -- wanted for dotted paint so overlapping dot grids
+--                      -- never clash)
 -- }
 local st = nil
 
@@ -275,11 +276,12 @@ local function ensureIndex(plugin, pageno)
     .. (next(skipped) and (" | skipped: " .. tally(skipped)) or ""))
 end
 
--- Word-boundary honesty for plain terms (round 3, device: "Kubrick" marked
--- inside "Kubrickon"): crengine's own word segmentation arrives as
--- matched_word_prefix/suffix — leftover LETTERS in the same word mean a
--- mid-word substring match, dropped for marking. Possessive tails ('s) and
--- pure punctuation stay markable ("Kubrick's" must mark). Arabic regex
+-- Word-boundary honesty for plain terms (round 3, device: an entity name
+-- marked inside a longer word containing it): crengine's own word
+-- segmentation arrives as matched_word_prefix/suffix — leftover LETTERS in
+-- the same word mean a mid-word substring match, dropped for marking.
+-- Possessive tails ('s) and pure punctuation stay markable (a possessive
+-- "name's" must mark). Arabic regex
 -- terms are exempt: their pattern already consumes article/diacritic
 -- variants, and attached-prefix morphology needs the looseness.
 local function blockingAffix(s)
@@ -294,7 +296,8 @@ end
 --- Memoized by the caller; runs at most once per term per session — this is
 --- THE expensive call (whole-book search), which is why the scan chain
 --- budgets it to one per tick.
---- Search flags are LOAD-BEARING (round 4, the unmarked "Danny Lloyd"):
+--- Search flags are LOAD-BEARING (round 4, a styled two-word name went
+--- unmarked):
 --- without them crengine matches nothing across DOM text-node boundaries
 --- (MATCH_ACROSS_TEXT_NODES) and folds no NBSP/soft-hyphen/curly-apostrophe
 --- (FOLD_* / IGNORE_FORMAT_CONTROL_CHARS) — a styled or NBSP-joined name
@@ -349,7 +352,7 @@ end
 -- Union overlapping same-line boxes into single paint rects (round 3):
 -- invertRect is self-cancelling, so two entities matching overlapping spans
 -- (Arabic article variants, main+section duplicates) XOR each other back to
--- normal — the "only the 'on' of Kubrickon marked" artifact. Tap targets
+-- normal — the only-the-word-tail-marked artifact. Tap targets
 -- keep the raw per-entity boxes; only the painted strips merge.
 local function mergeLineBoxes(marks)
   local rows = {}

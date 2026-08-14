@@ -10141,7 +10141,7 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
     else
         -- Exact-identity fast path (device round 2026-08-13, ref #63): a query
         -- that IS an entity's name or alias goes straight to that entity —
-        -- searchAll matches by substring, so "Stanley Kubrick" also hits every
+        -- searchAll matches by substring, so a full name also hits every
         -- entry whose name/alias CONTAINS it and the lookup landed on a results
         -- list instead of the obvious entry. Exactness outranks fuzzy hits;
         -- the results list remains for fuzzy-only matches and for

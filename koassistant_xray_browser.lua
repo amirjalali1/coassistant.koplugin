@@ -271,7 +271,7 @@ local function gatherMentionHits(ui, terms)
         else
             -- 0x00FF = stock's default-search flag set — without it crengine
             -- matches nothing across DOM node boundaries and folds no
-            -- NBSP/soft-hyphen (the marks round-4 "Danny Lloyd" miss; the
+            -- NBSP/soft-hyphen (the marks round-4 styled-name miss; the
             -- same latent gap sat here under counts + mention lists). The
             -- PDF engine takes 5 args and ignores the extra.
             res = ui.document:findAllText(term.text, true, 10, 5000, false, 0x00FF)

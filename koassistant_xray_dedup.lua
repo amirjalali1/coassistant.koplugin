@@ -669,6 +669,69 @@ function XrayDedup.startFlow(opts)
                 end,
             }}
         end
+        -- Deciding needs the WHOLE text — the title snippets clip at ~120
+        -- chars (device ask 2026-08-14). Viewer opens ON TOP so Close lands
+        -- back on this dialog.
+        rows[#rows + 1] = {{
+            text = _("Full descriptions…"),
+            align = "left",
+            callback = function()
+                local TextViewer = require("ui/widget/textviewer")
+                local function fullText(item)
+                    for _i, f in ipairs({ "description", "definition", "significance", "summary" }) do
+                        if type(item[f]) == "string" and item[f] ~= "" then return item[f] end
+                    end
+                    return _("(no description)")
+                end
+                local function block(name, item)
+                    local head = name
+                    if type(item.role) == "string" and item.role ~= "" then
+                        head = head .. " (" .. item.role .. ")"
+                    end
+                    if type(item.aliases) == "table" and #item.aliases > 0 then
+                        head = head .. "\n" .. T(_("Also known as: %1"), table.concat(item.aliases, ", "))
+                    end
+                    return head .. "\n\n" .. fullText(item)
+                end
+                UIManager:show(TextViewer:new{
+                    title = T(_("%1 ↔ %2"), pair.name_a, pair.name_b),
+                    text = block(pair.name_a, pair.item_a)
+                        .. "\n\n――――――――\n\n"
+                        .. block(pair.name_b, pair.item_b)
+                        -- Provenance is uniform by construction: the scan reads
+                        -- only the installed X-Ray, never checkpoints/sections
+                        .. "\n\n" .. _("Both entries are from your installed X-Ray."),
+                    justified = false,
+                })
+            end,
+        }}
+        -- Lossless mechanical merge (device ask 2026-08-14): the survivor
+        -- keeps its own text with the other entry's appended as a labeled
+        -- block — nothing paid, nothing lost; the next update's replace pass
+        -- consolidates the prose
+        local function mergeBothRow(keep_side, label)
+            local keep_name = keep_side == "b" and pair.name_b or pair.name_a
+            local drop_name = keep_side == "b" and pair.name_a or pair.name_b
+            local keep_item = keep_side == "b" and pair.item_b or pair.item_a
+            local drop_item = keep_side == "b" and pair.item_a or pair.item_b
+            return {{
+                text = label or T(_("Merge, keep both texts: \"%1\" first"), keep_name),
+                align = "left",
+                callback = function()
+                    UIManager:close(dialog)
+                    local keep_d = type(keep_item.description) == "string" and keep_item.description or ""
+                    local drop_d = type(drop_item.description) == "string" and drop_item.description or ""
+                    local combined
+                    if keep_d ~= "" and drop_d ~= "" then
+                        combined = keep_d .. "\n\n" .. T(_("[Merged from \"%1\"]: %2"), drop_name, drop_d)
+                    elseif keep_d ~= "" or drop_d ~= "" then
+                        combined = keep_d ~= "" and keep_d or drop_d
+                    end
+                    local ok, err = commitEntityMerge(opts, state, pair, keep_side, combined)
+                    afterCommit(ok, err, T(_("Merged \"%1\" into \"%2\", both texts kept"), drop_name, keep_name))
+                end,
+            }}
+        end
         if pair.reason == "exact" then
             -- Identical names: two "keep X" rows would be indistinguishable —
             -- one row, keep-first (side "a" = the earlier entry)
@@ -681,9 +744,16 @@ function XrayDedup.startFlow(opts)
                     afterCommit(ok, err, T(_("Merged duplicate \"%1\""), pair.name_a))
                 end,
             }}
+            if AI_MERGE_CATEGORIES[pair.cat_key] then
+                rows[#rows + 1] = mergeBothRow("a", _("Merge duplicates, keep both texts"))
+            end
         else
             rows[#rows + 1] = mergeRow("a")
             rows[#rows + 1] = mergeRow("b")
+            if AI_MERGE_CATEGORIES[pair.cat_key] then
+                rows[#rows + 1] = mergeBothRow("a")
+                rows[#rows + 1] = mergeBothRow("b")
+            end
         end
         if AI_MERGE_CATEGORIES[pair.cat_key] then
             rows[#rows + 1] = {{

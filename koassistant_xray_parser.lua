@@ -1701,8 +1701,8 @@ end
 --- parenthetical-stripped form — the SAME reduction collectSearchTerms
 --- applies for marking/searching, so anything the marks layer underlines is
 --- reachable by selecting exactly the underlined words (device 2026-08-14:
---- entity "Poison container (giftbeholder)" was marked as "Poison
---- container" but the raw-handle-only set refused the selection). Skips the
+--- a parenthetical-suffixed entity was marked via its stripped form but the
+--- raw-handle-only set refused the selection). Skips the
 --- singleton categories searchAll skips. Feeds the memoized route index
 --- behind the selection intercept (slice 2, ref #63).
 --- @param data table Parsed X-Ray data (user aliases already merged)
@@ -2201,8 +2201,8 @@ local function unionStringArrays(new_list, keep_list)
     end
     addAll(new_list)
     addAll(keep_list)
-    -- Connection strings carry relationship annotations — "Saladin Chamcha
-    -- (husband)" — so a bare mention and an annotated one of the same person
+    -- Connection strings carry relationship annotations — "Anna Reyes
+    -- (sister)" — so a bare mention and an annotated one of the same person
     -- survive exact-string dedupe as a pair (observed on the first live fold).
     -- A bare "X" yields to any "X (role)" variant; distinct annotations both
     -- stay (they say different things).
@@ -2222,15 +2222,16 @@ local function unionStringArrays(new_list, keep_list)
     return #filtered > 0 and filtered or nil
 end
 
---- Reverse-alias rename detection (2026-08-14, the Pamela Lovelace → Pamela
---- Chamcha case): the delta protocol has no rename verb — a character whose
---- primary name changes can only arrive as a NEW entry carrying the old
---- primary name among its aliases (the model's explicit identity bridge).
---- Find the old entry that bridge points at. Guards: the bridging alias must
---- be MULTI-WORD (short forms like "Khalid" routinely collide with unrelated
---- minor characters — those stay dedup-scan material), must match exactly ONE
---- existing entry's primary name (ambiguity → append, the scan's case), and
---- the pair must not be on the reader's never-merge list.
+--- Reverse-alias rename detection (2026-08-14, a married-name
+--- reintroduction caught on device): the delta protocol has no rename verb —
+--- a character whose primary name changes can only arrive as a NEW entry
+--- carrying the old primary name among its aliases (the model's explicit
+--- identity bridge). Find the old entry that bridge points at. Guards: the
+--- bridging alias must be MULTI-WORD (short forms — a bare first name —
+--- routinely collide with unrelated minor characters; those stay dedup-scan
+--- material), must match exactly ONE existing entry's primary name
+--- (ambiguity → append, the scan's case), and the pair must not be on the
+--- reader's never-merge list.
 --- @return number|nil index into old_items
 local function renameTarget(new_item, lookup, never_set, new_key)
     if type(new_item) ~= "table" or type(new_item.aliases) ~= "table" then return nil end
@@ -2317,7 +2318,7 @@ local function mergeArrayCategory(old_items, new_items, never_set)
                 -- (the old one rides in aliases, it is the bridge we matched
                 -- on). The model writes the fresh entry unaware it must carry
                 -- the old entry's relational data, so union it mechanically —
-                -- the Pamela case shipped with her husband connection
+                -- the first live case shipped with a relationship connection
                 -- stranded on the dead duplicate.
                 new_item.connections = unionStringArrays(new_item.connections, keep.connections)
                 new_item.references = unionStringArrays(new_item.references, keep.references)
