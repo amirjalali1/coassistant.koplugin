@@ -1340,21 +1340,25 @@ end
 -- detect it and stay quiet — one error should never carry two tips saying the same thing.
 local GROUNDING_TIP_HEAD = "Tip: This is a Google quota limit"
 
---- Append an actionable tip when a Gemini-3 grounded (web-search) request fails with a
---- 429/quota error. Gemini-3 grounding uses a separate monthly quota shared across all
---- Gemini-3 models, independent of 2.5's daily quota, so it can be exhausted while 2.5
---- grounding still works on the same key. Plain text (emoji don't render in MuPDF).
---- Returns err_msg unchanged unless every condition holds.
+--- Append an actionable tip when a Gemini-3 request carrying web search (grounding)
+--- or book tools (function calling) fails with a 429/quota error. Probed live
+--- 2026-08-14 on a free-tier key (provider_landscape doc 7b): Gemini 3.x rejects
+--- requests that include EITHER extra — googleSearch and functionDeclarations both
+--- 429 while the same model answers plain requests, and both work on 2.5 models with
+--- the same key. The gating quota is separate from the per-model daily request quota
+--- and can sit at 0 even with billing attached (paid tier not provisioned for it).
+--- Plain text (emoji don't render in MuPDF). Returns err_msg unchanged unless every
+--- condition holds.
 --- @param err_msg string: user-facing error message already built
 --- @param provider string|nil: provider id
 --- @param model string|nil: model id
---- @param config table|nil: unified request config (for web-search gating)
+--- @param config table|nil: unified request config (for web-search/tools gating)
 --- @return string
 function ModelConstraints.maybeAppendGemini3GroundingHint(err_msg, provider, model, config)
     if type(err_msg) ~= "string" or err_msg == "" then return err_msg end
     if provider ~= "gemini" then return err_msg end
     if not (model and model:match("^gemini%-3")) then return err_msg end
-    -- web search enabled? per-action override > global (mirrors gemini.lua:146-153)
+    -- web search enabled? per-action override > global (mirrors gemini.lua)
     local ws = false
     if config then
         if config.enable_web_search ~= nil then
@@ -1363,7 +1367,10 @@ function ModelConstraints.maybeAppendGemini3GroundingHint(err_msg, provider, mod
             ws = true
         end
     end
-    if not ws then return err_msg end
+    -- book tools on this request? (the gather/tool-turn config carries the specs)
+    local tools = config and type(config.tools) == "table"
+        and type(config.tools.specs) == "table" and #config.tools.specs > 0
+    if not (ws or tools) then return err_msg end
     local lowered = err_msg:lower()
     if not (lowered:find("429", 1, true)
             or lowered:find("resource_exhausted", 1, true)
@@ -1371,10 +1378,12 @@ function ModelConstraints.maybeAppendGemini3GroundingHint(err_msg, provider, mod
         return err_msg
     end
     return err_msg .. "\n\n" ..
-        GROUNDING_TIP_HEAD .. ", not a plugin error. Gemini 3 grounding can hit a " ..
-        "free-tier limit of 0 even with billing attached, when your project's paid tier isn't " ..
-        "provisioned for it. Workarounds: use a Gemini 2.5 model for web search, switch to " ..
-        "Anthropic/Perplexity/OpenRouter, or enable paid-tier quota for Gemini 3 in Google AI Studio."
+        GROUNDING_TIP_HEAD .. ", not a plugin error. On free-tier keys, Gemini 3 models " ..
+        "reject requests that include web search or book tools, even though plain requests " ..
+        "work (the limit for those can be 0, even with billing attached). Options: turn off " ..
+        "web search and book tools for this chat, use a Gemini 2.5 model (both work there " ..
+        "on free keys), switch to another provider, or enable paid-tier quota for Gemini 3 " ..
+        "in Google AI Studio."
 end
 
 --- Append an actionable tip when a request fails because the prompt (usually

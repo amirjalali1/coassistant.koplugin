@@ -86,11 +86,10 @@ local function closeLoadingDialog()
 end
 
 -- ButtonDialog sizes its title to the text with no max-height clamp, so a long message
--- would run off a small e-ink screen (InfoMessage instead shrinks the font to fit 95% of
--- the screen). Past this length we keep the toast and lose the retry button rather than
--- render a clipped, unreadable dialog. Sized for the worst realistic decorated 429
--- (provider message + quota facts + retry delay + tip) on a 600x800 device.
-local ERROR_DIALOG_MAX_CHARS = 700
+-- runs the buttons off the screen (confirmed on device: a fully decorated 429 filled
+-- the screen and the buttons were unreachable). Past this length the rate-limit dialog
+-- becomes a scrollable TextViewer carrying the same buttons instead.
+local ERROR_DIALOG_MAX_CHARS = 400
 
 --- Show a failed request. Rate/quota refusals get a persistent dialog with a retry
 --- button instead of the usual 3-second toast: they are the one failure class where
@@ -99,29 +98,70 @@ local ERROR_DIALOG_MAX_CHARS = 700
 --- with nothing to act on. Every other error keeps the toast — making all of them
 --- unmissable would be worse. `retry_fn` is optional; without one this is just a toast.
 --- @param err_text string: message to display (already decorated by ModelConstraints)
---- @param retry_fn function|nil: re-runs the same request
+--- @param retry_fn function|nil: re-runs the same request; called as retry_fn() for a
+---        plain retry, retry_fn(true) to retry with the offered extras dropped (the
+---        call site knows which were active and builds the stripped request)
 --- @param timeout number|nil: toast timeout in seconds (default 3; ignored by the dialog)
-local function showRequestError(err_text, retry_fn, timeout)
-    if retry_fn and type(err_text) == "string" and #err_text <= ERROR_DIALOG_MAX_CHARS
+--- @param drop_offer table|nil: { web = bool, tools = bool } — which optional request
+---        extras were active on the failed request. When either is true, a labelled
+---        "Try again without …" row re-runs via retry_fn(true). Free-tier Gemini 3.x
+---        rejects requests carrying web search (grounding) OR book tools (function
+---        calling) even when plain requests work (probed 2026-08-14), so the identical
+---        request minus the extras often succeeds; the drop is one-shot, the chat's
+---        settings are untouched.
+local function showRequestError(err_text, retry_fn, timeout, drop_offer)
+    if retry_fn and type(err_text) == "string"
             and ModelConstraints.isRateLimitError(err_text) then
         local dialog
-        dialog = ButtonDialog:new{
-            title = err_text,
-            title_align = "left",
-            buttons = {{
+        local buttons = {{
+            {
+                text = _("Close"),
+                callback = function() UIManager:close(dialog) end,
+            },
+            {
+                text = _("Try again"),
+                callback = function()
+                    UIManager:close(dialog)
+                    retry_fn()
+                end,
+            },
+        }}
+        if drop_offer and (drop_offer.web or drop_offer.tools) then
+            local label
+            if drop_offer.web and drop_offer.tools then
+                label = _("Try again without web search or book tools")
+            elseif drop_offer.web then
+                label = _("Try again without web search")
+            else
+                label = _("Try again without book tools")
+            end
+            table.insert(buttons, {
                 {
-                    text = _("Close"),
-                    callback = function() UIManager:close(dialog) end,
-                },
-                {
-                    text = _("Try again"),
+                    text = label,
                     callback = function()
                         UIManager:close(dialog)
-                        retry_fn()
+                        retry_fn(true)
                     end,
                 },
-            }},
-        }
+            })
+        end
+        if #err_text <= ERROR_DIALOG_MAX_CHARS then
+            dialog = ButtonDialog:new{
+                title = err_text,
+                title_align = "left",
+                buttons = buttons,
+            }
+        else
+            -- Long decorated errors (quota facts + tips): scrollable, buttons always
+            -- reachable. TextViewer adds no default buttons when buttons_table is set,
+            -- so the rows above carry their own Close.
+            local TextViewer = require("ui/widget/textviewer")
+            dialog = TextViewer:new{
+                title = _("Request failed"),
+                text = err_text,
+                buttons_table = buttons,
+            }
+        end
         UIManager:show(dialog)
         return
     end
@@ -8866,11 +8906,38 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             end
                             -- Rate-limit retry: nothing was appended to this history on
                             -- failure, so re-issuing is the same call (the query layer
-                            -- shows its own loading dialog).
-                            showRequestError(err_text, function()
+                            -- shows its own loading dialog). drop = the "without …" row:
+                            -- re-issue on a config copy with web search and/or book
+                            -- tools forced off (Config Copy Pattern; one-shot — on
+                            -- success the viewer keeps the original config, so replies
+                            -- keep the chat's settings).
+                            local had_web = configuration.enable_web_search == true
+                                or (configuration.enable_web_search == nil
+                                    and configuration.features
+                                    and configuration.features.enable_web_search == true)
+                            local had_tools = BookToolRunner.shouldUse(configuration, ui_instance)
+                            showRequestError(err_text, function(drop)
+                                local cfg = configuration
+                                if drop then
+                                    cfg = {}
+                                    for k, v in pairs(configuration) do cfg[k] = v end
+                                    cfg.features = {}
+                                    for k, v in pairs(configuration.features or {}) do
+                                        cfg.features[k] = v
+                                    end
+                                    if had_web then
+                                        cfg.enable_web_search = false
+                                        cfg.features.enable_web_search = false
+                                    end
+                                    if had_tools then
+                                        cfg.features._tools_active = false
+                                    end
+                                end
                                 BookToolRunner.queryWith(queryChatGPT, history:getMessages(),
-                                    configuration, onResponseReady, plugin, ui_instance)
-                            end, recoverable and 6 or 3)
+                                    cfg, onResponseReady, plugin, ui_instance)
+                            end, recoverable and 6 or 3,
+                                (had_web or had_tools)
+                                and { web = had_web, tools = had_tools } or nil)
                         end
                     end
 
@@ -10715,7 +10782,10 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
     -- Rate-limit retry (see showRequestError): re-runs this action from the same inputs.
     -- Forward-declared because onComplete below closes over it, and assigned only after
     -- the early-return paths (local handlers, cached artifacts) are out of the way.
+    -- retry_web_was_on: whether web search resolved ON for this request (drives the
+    -- "Try again without web search" offer); assigned beside retryDirect below.
     local retryDirect
+    local retry_web_was_on = false
 
     -- Callback for when response is ready
     local function onComplete(history, temp_config_or_error)
@@ -10983,7 +11053,8 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
             showResponseDialog(action.text, history, highlighted_text, addMessage, temp_config, document_path, plugin, book_metadata, nil, ui)
         else
             local error_msg = temp_config_or_error or "Unknown error"
-            showRequestError(_("Error: ") .. error_msg, retryDirect)
+            showRequestError(_("Error: ") .. error_msg, retryDirect, nil,
+                retry_web_was_on and { web = true } or nil)
         end
     end
 
@@ -11070,9 +11141,30 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
     -- the quick-chip overrides are dialog-launch only).
     local sc_window = configuration and configuration.features
         and configuration.features._selection_context_window
-    retryDirect = function()
+    -- Web-off retry offer: only when web resolved ON for this request from the
+    -- book/global layer. An action's own enable_web_search pin wins over the session
+    -- layer (governance matrix), so a pinned action (fact_check) is never offered a
+    -- web-off retry it could not honor.
+    if action.enable_web_search == nil then
+        local ws = bookWebSearchOverride(configuration and configuration.features)
+        if ws ~= nil then
+            retry_web_was_on = ws == true
+        else
+            retry_web_was_on = (configuration and configuration.features
+                and configuration.features.enable_web_search == true) or false
+        end
+    end
+    retryDirect = function(drop)
         if configuration and configuration.features then
             configuration.features._selection_context_window = sc_window
+            -- Web-off retry rides the session-layer transient: createTempConfig copies
+            -- it into the request config and buildUnifiedRequestConfig bakes-and-
+            -- consumes it, so the whole rebuild runs web-off exactly once. (Tools are
+            -- never in the direct-action offer: predefined actions get explicit
+            -- _tools_active = false at bake, so tools were off on the failed request.)
+            if drop then
+                configuration.features._web_search_active = false
+            end
         end
         executeDirectAction(ui, action, highlighted_text, configuration, plugin)
     end
@@ -11362,10 +11454,34 @@ local function launchArtifactChat(user_question, artifact_content, artifact_type
         else
             -- Rate-limit retry: the history/config are already built, so re-issuing is
             -- literally the same call. Nothing was appended to the history on failure.
-            showRequestError(_("Error: ") .. (err or "Unknown error"), function()
-                BookToolRunner.queryWith(queryChatGPT, history:getMessages(), configuration,
+            -- The "without …" row re-issues on a copy with web search and/or book tools
+            -- forced off (one-shot; the chat's own settings are untouched).
+            local had_web = configuration.enable_web_search == true
+                or (configuration.enable_web_search == nil
+                    and configuration.features
+                    and configuration.features.enable_web_search == true)
+            local had_tools = BookToolRunner.shouldUse(configuration, ui)
+            showRequestError(_("Error: ") .. (err or "Unknown error"), function(drop)
+                local cfg = configuration
+                if drop then
+                    cfg = {}
+                    for k, v in pairs(configuration) do cfg[k] = v end
+                    cfg.features = {}
+                    for k, v in pairs(configuration.features or {}) do
+                        cfg.features[k] = v
+                    end
+                    if had_web then
+                        cfg.enable_web_search = false
+                        cfg.features.enable_web_search = false
+                    end
+                    if had_tools then
+                        cfg.features._tools_active = false
+                    end
+                end
+                BookToolRunner.queryWith(queryChatGPT, history:getMessages(), cfg,
                     onResponseReady, plugin, ui)
-            end)
+            end, nil, (had_web or had_tools)
+                and { web = had_web, tools = had_tools } or nil)
         end
     end
 

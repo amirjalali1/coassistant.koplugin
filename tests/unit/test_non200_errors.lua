@@ -150,9 +150,13 @@ end)
 
 TestRunner:suite("maybeAppendGemini3GroundingHint: gating")
 
-local TIP_NEEDLE = "free-tier limit of 0"
+local TIP_NEEDLE = "Google quota limit"
 
 local function ws_on() return { features = { enable_web_search = true } } end
+local function tools_on()
+    return { enable_web_search = false, features = {},
+        tools = { specs = { { name = "search_book" } }, mode = "ANY" } }
+end
 
 TestRunner:test("appends tip: gemini-3.5-flash + web search + 429", function()
     local out = ModelConstraints.maybeAppendGemini3GroundingHint(
@@ -179,6 +183,21 @@ TestRunner:test("NO tip when web search off (per-action false overrides global t
     local out = ModelConstraints.maybeAppendGemini3GroundingHint(
         "429 quota", "gemini", "gemini-3.5-flash", cfg)
     TestRunner:assertEqual(out, "429 quota", "per-action false should suppress tip")
+end)
+
+TestRunner:test("appends tip: book tools carried, web off (2026-08-14 device round)", function()
+    local out = ModelConstraints.maybeAppendGemini3GroundingHint(
+        "HTTP 429: quota exceeded", "gemini", "gemini-3.6-flash", tools_on())
+    TestRunner:assertContains(out, TIP_NEEDLE,
+        "function-calling requests hit the same free-tier gate as grounding")
+end)
+
+TestRunner:test("NO tip on empty tools specs with web off", function()
+    local cfg = { enable_web_search = false, features = {},
+        tools = { specs = {}, mode = "ANY" } }
+    local out = ModelConstraints.maybeAppendGemini3GroundingHint(
+        "429 quota", "gemini", "gemini-3.6-flash", cfg)
+    TestRunner:assertEqual(out, "429 quota", "no declarations means a plain request")
 end)
 
 TestRunner:test("NO tip for gemini-2.5-flash", function()

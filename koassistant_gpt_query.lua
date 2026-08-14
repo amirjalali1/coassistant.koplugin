@@ -273,6 +273,13 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
         if marker_pos then
             -- Try to extract detailed error from JSON body (before the marker)
             local body = full_response:sub(1, marker_pos - 1):match("^%s*(.-)%s*$")
+            -- Debug: the raw error body is the ground truth for quota forensics
+            -- (bucket/quotaId shapes vary per failure class) and is otherwise
+            -- never logged — only the extracted message reaches the user.
+            if config and config.features and config.features.debug then
+                logger.warn("KOAssistant: non-200 raw body:",
+                    (body and body ~= "") and body:sub(1, 2000) or "(empty)")
+            end
             if body and #body > 0 then
                 local decode_ok, j = pcall(json.decode, body)
                 if decode_ok and type(j) == "table" then
@@ -626,6 +633,12 @@ local function queryChatGPT(message_history, temp_config, on_complete, settings)
                     -- Self-heal before surfacing: finishStream has already
                     -- closed the stream dialog, so the retry opens a fresh one.
                     if tryMaxTokensSelfHeal(err) then return end
+                    -- Debug: keep the undecorated extracted error in the log for
+                    -- quota forensics (the streaming raw body never reaches here).
+                    if config.features and config.features.debug then
+                        logger.warn("KOAssistant: stream failed:",
+                            err and tostring(err):sub(1, 2000) or "(no error text)")
+                    end
                     local emsg = ModelConstraints.decorateRequestError(
                         err or "Unknown streaming error", provider, config.model, config)
                     if on_complete then on_complete(false, nil, emsg) end
