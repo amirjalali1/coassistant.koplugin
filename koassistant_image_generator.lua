@@ -512,9 +512,9 @@ function ImageGenerator.buildPrompt(description, opts, features)
         and opts and opts.book_metadata or nil
     if meta and meta.title and meta.title ~= "" then
         if meta.author and meta.author ~= "" then
-            table.insert(frame, string.format('The passage is from the book "%s" by %s.', meta.title, meta.author))
+            table.insert(frame, string.format('The passage is from the book "%s" by %s; match the book\'s setting and period.', meta.title, meta.author))
         else
-            table.insert(frame, string.format('The passage is from the book "%s".', meta.title))
+            table.insert(frame, string.format('The passage is from the book "%s"; match the book\'s setting and period.', meta.title))
         end
     end
     local w = (features.image_gen_frame_context ~= false)
@@ -528,10 +528,16 @@ function ImageGenerator.buildPrompt(description, opts, features)
         table.insert(frame, "Surrounding text, for context only: "
             .. prev .. " […] " .. next_)
     end
+    -- Subject-first (2026-08-14 audit): the passage leads, the frame follows as
+    -- labeled context — image models weight the opening as the subject, and the
+    -- old shape (up to ~900 frame chars before the passage) risked the model
+    -- illustrating the context window. The no-text rule guards against the
+    -- title/author frame inviting book-cover compositions with rendered text.
     if #frame > 0 then
         return "Create an illustration of the following passage from a book. "
-            .. table.concat(frame, " ")
+            .. "Illustrate the passage itself; do not render any text, titles, or captions in the image."
             .. "\n\nPassage to illustrate: " .. description
+            .. "\n\n" .. table.concat(frame, " ")
     end
     return description
 end
