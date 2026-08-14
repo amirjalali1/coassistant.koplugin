@@ -9131,6 +9131,13 @@ function AskGPT:_xrayAuthoringMode(file)
       live_ok, live_progress = true, p
     end
   end
+  -- The INSTALLED artifact's own coverage, separate from the ladder top
+  -- (2026-08-14 device round: with a checkpoint built AHEAD of the reader,
+  -- folding both into one "base" made the form's position pick read "from
+  -- scratch" — while round 24's paid-row demotion in the popup assumed this
+  -- form kept the to-position update reachable; jointly, "update to where I
+  -- am" had no surface at all)
+  local installed = live_ok and not (entry and entry.intro) and live_progress or nil
   if live_ok and not (entry and entry.intro)
       and (base == nil or (live_progress or 0) > base) then
     base = live_progress
@@ -9141,7 +9148,7 @@ function AskGPT:_xrayAuthoringMode(file)
   elseif entry and entry.result and not entry.intro then
     mode = "rebuild"
   end
-  return mode, base, has_intro, entry
+  return mode, base, has_intro, entry, installed
 end
 
 --- Unified X-Ray creation chooser (round 18 re-shell of the round-16 two-step:
@@ -9189,7 +9196,13 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   -- Round 23 (item 30): dual-mode — create / extend (usable base on disk) /
   -- rebuild (foreign-lineage live, no base)
   local cc_file = doc.file
-  local mode, base_progress, has_intro_rung, base_entry = self:_xrayAuthoringMode(cc_file)
+  local mode, base_progress, has_intro_rung, base_entry, installed_progress =
+    self:_xrayAuthoringMode(cc_file)
+  -- Position picks anchor on the INSTALLED artifact (ladder rungs ahead of
+  -- the reader are future versions, not current coverage); whole/target
+  -- picks keep the ladder anchor — their builds continue the rung chain.
+  -- No installed artifact (foreign live + rungs) falls back to the ladder.
+  local pos_anchor = installed_progress or base_progress
 
   -- Round 20b (maintainer): whole book is the DEFAULT and top coverage option.
   -- Round 22 (§25(f)): checkpoints are the default DELIVERY when the plan is
@@ -9219,6 +9232,11 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   local function pickIsRebuild()
     if mode == "rebuild" then return true end
     if mode ~= "extend" then return false end
+    if cr.coverage == "position" then
+      -- Installed anchor: a position past the installed coverage is an
+      -- UPDATE even when a checkpoint is built ahead of it
+      return decimal <= (pos_anchor or 0) + 0.01
+    end
     return goalFor() <= (base_progress or 0) + 0.01
   end
 
@@ -9252,8 +9270,18 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
   -- it reads "already on — start now" and starts the engine (R4: explicit
   -- enables act immediately; without this, a nominally-auto book with
   -- nothing built had no explicit-start entry).
+  -- Auto already on with the ladder at or past the reader: the follow pick
+  -- has nothing to start (2026-08-14 device round — a pickable row that did
+  -- nothing); it renders as a disabled state row and is never a default
+  local function followIdle()
+    return (auto_on and (base_progress or 0) >= decimal - 0.01) and true or false
+  end
+
   local function fixDelivery()
     if cr.delivery == "follow" and cr.coverage == "position" then
+      cr.delivery = "one"
+    end
+    if cr.delivery == "follow" and followIdle() then
       cr.delivery = "one"
     end
     if cr.delivery == "checkpoints" and stepsFor() <= 1 then
@@ -9266,9 +9294,18 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     end
   end
 
-  -- Round 22 (§25(f)): the checkpoint default for substantial plans
+  -- Round 22 (§25(f)): the checkpoint default for substantial plans.
+  -- Build-shapes 2026-08-14: the default DELIVERY is posture-routed —
+  -- protection OFF (spoiler off / research / finished) keeps build-all-now
+  -- (the quality path: short steps, bounded context), protection ON prefers
+  -- build-as-you-read when the follow pick can actually start. The steps
+  -- gate doubles as the length threshold: short docs stay on one request.
   if flowing and stepsFor() >= 4 then
     cr.delivery = "checkpoints"
+    local sp = BookSettings.resolveSpoilerPosture(self.ui.doc_settings, features)
+    if sp and sp.protected and not followIdle() then
+      cr.delivery = "follow"
+    end
   end
 
   local function dispatch()
@@ -9313,12 +9350,20 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
         end
         self_ref:_startXrayLadderBuild(bo)
       elseif cr.delivery == "one_bg" then
-        -- Item 50(a): whole-book/position single request through the silent
-        -- one-step machinery (install + notification; cancel like a build)
-        self_ref:_startXrayLadderBuild({
-          one_shot = true,
-          target = cr.coverage == "position" and decimal or nil,
-        })
+        if cr.coverage == "position" and mode == "extend" and not rebuild_pick then
+          -- Position update in background: the plain background UPDATE of
+          -- the installed artifact — the ladder one-shot plans from the
+          -- rung top and no-ops when a rung is built ahead of the reader
+          self_ref:_fireXrayAutoUpdate({ manual = true })
+        else
+          -- Item 50(a): whole-book/position single request through the
+          -- silent one-step machinery (install + notification; cancel like
+          -- a build)
+          self_ref:_startXrayLadderBuild({
+            one_shot = true,
+            target = cr.coverage == "position" and decimal or nil,
+          })
+        end
       else
         if cr.coverage == "position" then
           on_update()
@@ -9434,8 +9479,18 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     -- Round 23: state line — what exists, and what picking here does to it
     local state_line
     if mode == "extend" then
-      state_line = T(_("Your X-Ray covers to %1%."),
-        math.floor((base_progress or 0) * 100 + 0.5))
+      -- Name BOTH numbers when they differ (device 2026-08-14: "covers to
+      -- 60%" while the reader's viewer showed the installed 50% read as a
+      -- contradiction)
+      if installed_progress and base_progress
+          and base_progress > installed_progress + 0.005 then
+        state_line = T(_("Your installed X-Ray covers to %1%; checkpoints are built to %2%."),
+          math.floor(installed_progress * 100 + 0.5),
+          math.floor(base_progress * 100 + 0.5))
+      else
+        state_line = T(_("Your X-Ray covers to %1%."),
+          math.floor((base_progress or 0) * 100 + 0.5))
+      end
     elseif mode == "rebuild" and base_entry then
       local flavor = base_entry.full_document and _("analyzed as a whole")
         or base_entry.source_mode == "ai_knowledge" and _("made from AI knowledge")
@@ -9462,7 +9517,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       -- Round 24 (extend mode): a position at or below the base is a REBUILD
       -- from scratch — pickable and labeled, no longer disabled (this absorbs
       -- the old popup redo / rebuild-to-your-position rows)
-      local pos_rebuild = mode == "extend" and decimal <= (base_progress or 0) + 0.01
+      local pos_rebuild = mode == "extend" and decimal <= (pos_anchor or 0) + 0.01
       cov_rows[#cov_rows + 1] = { { text = pos_rebuild
           and T(_("Up to where I am (%1), from scratch"), progress.formatted)
           or T(_("Up to where I am (%1)"), progress.formatted),
@@ -9549,7 +9604,11 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     -- machinery, one step. Flowing docs only (the machinery's gate); target
     -- coverage's "one" row IS this already, so no second row there.
     if flowing and cr.coverage ~= "target" then
-      del_rows[#del_rows + 1] = { { text = _("In one request, in background"),
+      local bg_label = (mode == "extend" and not pick_rebuild
+          and cr.coverage == "position")
+        and _("In one request, in background (update)")
+        or _("In one request, in background")
+      del_rows[#del_rows + 1] = { { text = bg_label,
         provider = "one_bg", checked = cr.delivery == "one_bg" } }
     end
     local n_steps = stepsFor()
@@ -9562,10 +9621,14 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
         provider = "checkpoints", checked = cr.delivery == "checkpoints" } }
     end
     if flowing and (cr.coverage == "whole" or cr.coverage == "target") then
-      del_rows[#del_rows + 1] = { { text = auto_on
-          and _("In checkpoints, as I read (already on; start now)")
+      local f_idle = followIdle()
+      del_rows[#del_rows + 1] = { { text = f_idle
+          and _("In checkpoints, as I read (already on)")
+          or auto_on and _("In checkpoints, as I read (already on; start now)")
           or _("In checkpoints, as I read (automatic)"),
-        provider = "follow", checked = cr.delivery == "follow" } }
+        provider = "follow", checked = cr.delivery == "follow",
+        enabled = f_idle and false or nil,
+        fgcolor = f_idle and Blitbuffer.COLOR_DARK_GRAY or nil } }
     end
     local del_table = RadioButtonTable:new{
       radio_buttons = del_rows,
