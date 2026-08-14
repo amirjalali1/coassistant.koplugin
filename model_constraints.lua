@@ -382,6 +382,62 @@ ModelConstraints._max_output_tokens = {
     },
 }
 
+--- INPUT context windows (tokens), for the model-aware extraction pre-check.
+--- PARTIAL seed (2026-08-14): only values with a cited source; the research
+--- campaign (docs/capabilities_research_brief.md T2) is producing the full
+--- table. Absent entry = fail-open (no pre-check claim; the provider error +
+--- item-27 self-heal remain the backstop). Longest-prefix matched, same
+--- tie-break discipline as _max_output_tokens above.
+ModelConstraints._context_windows = {
+    anthropic = {
+        -- 200K standard for the whole claude line; the 1M-context variants
+        -- require a beta header this plugin does not send.
+        ["claude"] = 200000,
+    },
+    openai = {
+        ["gpt-5.6"] = 1000000,           -- ~1M ctx (probe batch 2026-07-24)
+    },
+    gemini = {
+        ["gemini-3"] = 1048576,          -- 3.x family (models-endpoint metadata, 3.6/3.7 probed)
+        ["gemini-2.5"] = 1048576,        -- 2.5 family (docs)
+    },
+    deepseek = {
+        ["deepseek-v4"] = 1000000,       -- V4 family documented 1M ctx
+    },
+    xai = {
+        ["grok-4.6"] = 500000,           -- launch docs 2026-08-12
+        ["grok-4.5"] = 500000,           -- provider docs
+        ["grok-4.3"] = 1000000,          -- provider docs (1M)
+        ["grok-4.20"] = 1000000,         -- provider docs (1M)
+        ["grok-build"] = 256000,         -- provider docs (256K)
+    },
+}
+
+--- Conservative context-window pre-check (fail-open). Returns nil when the
+--- model's input window is unknown (or chars is empty) — callers must treat
+--- nil as "no claim", never as "fits". Otherwise returns exceeded (boolean),
+--- window_tokens, est_tokens. The estimate is the LOW bound (chars/4 —
+--- English-dense; Arabic runs ~2 chars/token) so a warning is only raised for
+--- requests that exceed the window under the most favorable tokenization:
+--- fewer false alarms, and true overflows still self-report via the provider
+--- error. The 0.9 factor leaves headroom for prompt scaffolding + output.
+function ModelConstraints.checkContextWindow(provider, model, chars)
+    local provider_windows = ModelConstraints._context_windows[provider]
+    if not provider_windows or not model or not chars or chars <= 0 then return nil end
+    local best, best_len
+    for win_model, win_val in pairs(provider_windows) do
+        if model == win_model
+                or model:match("^" .. win_model:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%1")) then
+            if not best_len or #win_model > best_len then
+                best, best_len = win_val, #win_model
+            end
+        end
+    end
+    if not best then return nil end
+    local est_tokens = math.floor(chars / 4)
+    return est_tokens >= math.floor(best * 0.9), best, est_tokens
+end
+
 -- Default values for reasoning/thinking settings
 -- Use these instead of hardcoding values throughout the codebase
 ModelConstraints.reasoning_defaults = {

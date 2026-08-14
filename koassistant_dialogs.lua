@@ -5555,17 +5555,34 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     -- of a big book is as large as a create, and book_text/full_document miss it
     if message_data.incremental_book_text then extracted_chars = extracted_chars + #message_data.incremental_book_text end
 
+    -- Model-aware context pre-check (fail-open): speaks only when the dispatch
+    -- model's input window is KNOWN (ModelConstraints._context_windows) and even
+    -- the LOW token estimate exceeds it — so it can fire BELOW the char
+    -- threshold on small-window models, and stays silent on unknown models.
+    -- Rides the same warning dialogs and the same suppress flag.
+    local function contextWindowNote(chars)
+        local p = (temp_config and temp_config.provider) or config.provider
+        local m = (temp_config and temp_config.model) or config.model
+        local exceeded, window = ModelConstraints.checkContextWindow(p, m, chars)
+        if not exceeded then return nil end
+        return T(_("This likely exceeds the current model's context window (%1: ~%2K tokens). Pick a smaller scope or switch models."),
+            m, math.floor(window / 1000))
+    end
+
     -- Step 3: Large sidecar data warning for multi-book actions (always warn, no suppress)
     local sidecar_chars = message_data._total_sidecar_chars or 0
     local function checkSidecarDataAndSend()
-        if sidecar_chars > Constants.LARGE_EXTRACTION_THRESHOLD then
+        local cw_note = contextWindowNote(sidecar_chars)
+        if sidecar_chars > Constants.LARGE_EXTRACTION_THRESHOLD or cw_note then
             local chars_k = math.floor(sidecar_chars / 1000)
             local tokens_low = math.floor(sidecar_chars / 4000)
             local tokens_high = math.floor(sidecar_chars / 2000)
             local book_count = message_data.books_info and #message_data.books_info or 0
+            local warning_title = T(_("Large sidecar data: ~%1K characters (~%2K-%3K tokens) across %4 books. Make sure your model's context window can accommodate this.\n\nConsider selecting fewer books or using actions that don't require highlights/annotations."), chars_k, tokens_low, tokens_high, book_count)
+            if cw_note then warning_title = warning_title .. "\n\n" .. cw_note end
             local warning_dialog
             warning_dialog = ButtonDialog:new{
-                title = T(_("Large sidecar data: ~%1K characters (~%2K-%3K tokens) across %4 books. Make sure your model's context window can accommodate this.\n\nConsider selecting fewer books or using actions that don't require highlights/annotations."), chars_k, tokens_low, tokens_high, book_count),
+                title = warning_title,
                 buttons = {
                     {{
                         text = _("Cancel"),
@@ -5591,7 +5608,8 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
 
     -- Step 2: Large extraction warning (existing check, now wrapped in function for chaining)
     local function checkLargeExtractionAndSend()
-        if extracted_chars > Constants.LARGE_EXTRACTION_THRESHOLD
+        local cw_note = contextWindowNote(extracted_chars)
+        if (extracted_chars > Constants.LARGE_EXTRACTION_THRESHOLD or cw_note)
                 and not (config.features and config.features.suppress_large_extraction_warning) then
             local chars_k = math.floor(extracted_chars / 1000)
             local tokens_low = math.floor(extracted_chars / 4000)
@@ -5631,6 +5649,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             end
             if advice then
                 warning_title = warning_title .. "\n\n" .. advice
+            end
+            if cw_note then
+                warning_title = warning_title .. "\n\n" .. cw_note
             end
             local warning_dialog
             local warning_buttons = {}
@@ -5734,7 +5755,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 UIManager:show(require("ui/widget/notification"):new{ text = toast })
             end
         end
-        local size_ok = extracted_chars <= Constants.LARGE_EXTRACTION_THRESHOLD
+        local ladder_cw_note = contextWindowNote(extracted_chars)
+        local size_ok = (extracted_chars <= Constants.LARGE_EXTRACTION_THRESHOLD
+                and not ladder_cw_note)
             or (config.features and config.features.suppress_large_extraction_warning)
             or (xb_build and xb_build.size_ack)
         if not size_ok and config.features and config.features._ladder_size_check then
@@ -5790,7 +5813,8 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 end,
             }}
             size_dialog = ButtonDialog:new{
-                title = T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens) in this background request. Make sure your model's context window can accommodate this."), chars_k, tokens_low, tokens_high),
+                title = T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens) in this background request. Make sure your model's context window can accommodate this."), chars_k, tokens_low, tokens_high)
+                    .. (ladder_cw_note and ("\n\n" .. ladder_cw_note) or ""),
                 buttons = size_buttons,
             }
             UIManager:show(size_dialog)
@@ -8802,8 +8826,20 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 end
                 -- Same cost guard as the action path (checkLargeExtractionAndSend);
                 -- here Cancel keeps the dialog open with the typed input intact.
+                -- Model-aware pre-check mirrors the action path (inline require:
+                -- showChatGPTDialog closures sit near the 60-upvalue cap).
+                local scope_cw_note
+                if scope_block then
+                    local exceeded, window = require("model_constraints").checkContextWindow(
+                        configuration.provider, configuration.model, #scope_block.text)
+                    if exceeded then
+                        scope_cw_note = T(_("This likely exceeds the current model's context window (%1: ~%2K tokens). Pick a smaller scope or switch models."),
+                            configuration.model, math.floor(window / 1000))
+                    end
+                end
                 if scope_block
-                        and #scope_block.text > require("koassistant_constants").LARGE_EXTRACTION_THRESHOLD
+                        and (#scope_block.text > require("koassistant_constants").LARGE_EXTRACTION_THRESHOLD
+                            or scope_cw_note)
                         and not (configuration.features and configuration.features.suppress_large_extraction_warning) then
                     local ButtonDialog = require("ui/widget/buttondialog")
                     local chars_k = math.floor(#scope_block.text / 1000)
@@ -8811,7 +8847,8 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                     local tokens_high = math.floor(#scope_block.text / 2000)
                     local warning_dialog
                     warning_dialog = ButtonDialog:new{
-                        title = T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens). Make sure your model's context window can accommodate this.\n\nYou can pick a smaller scope on the Scope chip, or use KOReader's Hidden Flows to exclude irrelevant content."), chars_k, tokens_low, tokens_high),
+                        title = T(_("Large text extraction: ~%1K characters (~%2K-%3K tokens). Make sure your model's context window can accommodate this.\n\nYou can pick a smaller scope on the Scope chip, or use KOReader's Hidden Flows to exclude irrelevant content."), chars_k, tokens_low, tokens_high)
+                            .. (scope_cw_note and ("\n\n" .. scope_cw_note) or ""),
                         buttons = {
                             {{
                                 text = _("Cancel"),
