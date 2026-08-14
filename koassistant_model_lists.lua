@@ -834,10 +834,12 @@ end
 -- Resolve a speed-tier hint to a model (item 18e per-action tiers + the ⚡ Quick
 -- preset's "fastest" mode — keep both consumers agreeing). "fastest" walks
 -- ultrafast toward slower until the provider has a listed tier — NEVER frontier
--- (opt-in only); a named tier resolves via getModelForTier with its
--- toward-cheaper fallback. Goes through the tier override layer, so
--- custom_models.lua placements work (incl. custom providers; a provider without
--- any placement returns nil → callers keep the current model).
+-- (opt-in only); a named tier is EXACT (maintainer 2026-08-14): a tier is a
+-- class pick, not a direction — "fast" silently degrading to ultrafast is a
+-- quality cliff nobody asked for, and "fastest" already exists as the explicit
+-- walk. A miss returns nil → callers keep the current model (or the pinned
+-- provider's default under a provider pin). Goes through the tier override
+-- layer, so custom_models.lua placements work (incl. custom providers).
 -- @param provider string
 -- @param tier string - "fastest" or a tier name (flagship/standard/fast/ultrafast)
 -- @return string|nil model id
@@ -861,7 +863,7 @@ function ModelLists.resolveTierModel(provider, tier)
         end
     end
     if not canonical then return nil end
-    return ModelLists.getModelForTier(provider, tier, true)
+    return ModelLists.getModelForTier(provider, tier, false)
 end
 
 -- Global-aware tier resolution (tier GUI phase 2, docs/tier_gui_plan.md): like
@@ -871,7 +873,9 @@ end
 -- Returns provider, model — the provider differs from the input when a pin
 -- fired; callers dispatch cross-provider via the model-override rebase (the ⚡
 -- session-pick machinery). "fastest" still never touches frontier; named tiers
--- stay strict (garbage/sentinels resolve to nothing, same as resolveTierModel).
+-- are EXACT like resolveTierModel's (maintainer 2026-08-14 — one step: pin for
+-- that tier, else the provider's own placement, else nil; garbage/sentinels
+-- resolve to nothing as before).
 -- resolveTierModel itself stays ladder-only — it answers "what is THIS
 -- provider's tier model", which the tier GUI's default rows depend on.
 -- @return string|nil provider, string|nil model
@@ -892,19 +896,15 @@ function ModelLists.resolveTierTarget(provider, tier)
         end
         return nil
     end
-    local start_idx
-    for i, t in ipairs(TIER_ORDER) do
+    local canonical = false
+    for _idx, t in ipairs(TIER_ORDER) do
         if t == tier then
-            start_idx = i
+            canonical = true
             break
         end
     end
-    if not start_idx then return nil end
-    for i = start_idx, #TIER_ORDER do
-        local p2, m2 = step(TIER_ORDER[i])
-        if p2 then return p2, m2 end
-    end
-    return nil
+    if not canonical then return nil end
+    return step(tier)
 end
 
 -- Get the tier for a given model

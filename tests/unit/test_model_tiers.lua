@@ -189,10 +189,12 @@ TestRunner.assert(fastest == ModelLists.getModelForTier("anthropic", "ultrafast"
     "fastest picks the quickest listed tier")
 TestRunner.assert(fastest ~= "claude-fable-5", "fastest never lands on frontier")
 
--- Named tiers resolve with the toward-cheaper fallback
+-- Named tiers are EXACT (2026-08-14): a tier is a class pick, not a direction —
+-- a miss returns nil (caller keeps the current/default model); only "fastest"
+-- walks the ladder
 TestRunner.assert(ModelLists.resolveTierModel("anthropic", "fast")
-    == ModelLists.getModelForTier("anthropic", "fast", true),
-    "named tier matches getModelForTier with fallback")
+    == ModelLists.getModelForTier("anthropic", "fast", false),
+    "named tier matches getModelForTier WITHOUT fallback")
 
 -- No placements → nil (caller keeps the current model)
 TestRunner.assert(ModelLists.resolveTierModel("custom_nope", "fastest") == nil,
@@ -224,6 +226,13 @@ TestRunner.assert(ModelLists.resolveTierModel("custom_lm_studio", "fastest") == 
     "fastest walk consults user tier placements on custom providers")
 TestRunner.assert(ModelLists.resolveTierModel("custom_only_frontier", "fastest") == nil,
     "fastest walk NEVER consults frontier (frontier-only provider resolves to nothing)")
+-- Exact named tiers (2026-08-14): standard missing + fast present must NOT
+-- resolve — the miss means "no override", never a silent class substitution
+TestRunner.assert(ModelLists.resolveTierModel("custom_lm_studio", "standard") == nil,
+    "named tier miss returns nil even when a faster placement exists")
+local sp, sm = ModelLists.resolveTierTarget("custom_lm_studio", "standard")
+TestRunner.assert(sp == nil and sm == nil,
+    "resolveTierTarget named miss is exact too (no down-ladder walk)")
 ModelOverrides._setUserForTests(false)
 
 print("== GUI tier placements (tier GUI, features.tier_overrides) ==")
@@ -276,8 +285,8 @@ print("== global tier pins (resolveTierTarget, tier GUI phase 2) ==")
 
 -- No pins: provider passthrough, same model as the ladder resolver
 local p, m = ModelLists.resolveTierTarget("anthropic", "fast")
-TestRunner.assert(p == "anthropic" and m == ModelLists.getModelForTier("anthropic", "fast", true),
-    "no pins: resolveTierTarget == same-provider ladder resolution")
+TestRunner.assert(p == "anthropic" and m == ModelLists.getModelForTier("anthropic", "fast", false),
+    "no pins: resolveTierTarget == same-provider EXACT ladder resolution")
 
 -- A pin re-points the tier anywhere (provider + model)
 ModelOverrides.setGlobalTierPins({ fast = { provider = "groq", model = "llama-3.1-8b-instant" } })
@@ -305,11 +314,11 @@ TestRunner.assert(p == "anthropic" and m == "claude-haiku-4-5-20251001",
     "unusable pin is invisible — ladder fallback")
 ModelOverrides.setKeyChecker(nil)
 
--- Named-tier descend consults pins at descended steps: a provider with no
--- ladder at all still resolves through an ultrafast pin on a fast request
+-- Exact named tiers (2026-08-14): a fast request never descends to an
+-- ultrafast pin — the miss means "no override", even on a ladder-less provider
 p, m = ModelLists.resolveTierTarget("custom_nope", "fast")
-TestRunner.assert(p == "groq",
-    "descend from fast reaches the ultrafast pin on a ladder-less provider")
+TestRunner.assert(p == nil and m == nil,
+    "named tier miss does NOT reach a faster-step pin (exact, no descend)")
 
 -- Frontier pin: never consulted by fastest, honored on explicit request
 ModelOverrides.setGlobalTierPins({ frontier = { provider = "anthropic", model = "claude-fable-5" } })

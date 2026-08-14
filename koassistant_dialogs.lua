@@ -292,11 +292,13 @@ local function resolveQuickPresetModel(features, provider)
         if pinned then
             -- Explicit provider pin: ladder only, never global tier pins —
             -- same ruling as action provider+tier pins (maintainer 2026-08-09:
-            -- a named provider must not be hijacked to another one)
+            -- a named provider must not be hijacked to another one). Tier miss
+            -- (exact tiers, 2026-08-14) still honors the provider half: switch
+            -- with model nil = that provider's default (the action-pin shape).
             local m = MLists.resolveTierModel(pinned, tier)
-            if m then return { provider = pinned, model = m } end
-            return nil
+            return { provider = pinned, model = m }
         end
+        -- Active provider: tier miss = nil = keep the current model
         local p2, m = MLists.resolveTierTarget(provider, tier)
         if m then return { provider = p2, model = m } end
         return nil
@@ -487,18 +489,24 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
     -- handlePredefinedPrompt) wins.
     if model_override and model_override.provider and not (action and action.provider) then
         config.provider = model_override.provider
+        -- model may be NIL (provider+tier pin whose exact tier the provider
+        -- lacks, 2026-08-14): clear the top-level model (never send the old
+        -- provider's id across the switch) and leave the per-provider bucket
+        -- alone, so the pinned provider's own configured/default model applies.
         config.model = model_override.model
-        -- Clone the per-provider table before writing: the freeform rebase copy is
-        -- shallow-2-level, so this sub-table can still be SHARED with the module
-        -- config — a configuration.lua provider_settings entry must not absorb a
-        -- one-shot override as its session default.
-        config.provider_settings = config.provider_settings or {}
-        local ps = {}
-        for k, v in pairs(config.provider_settings[config.provider] or {}) do
-            ps[k] = v
+        if model_override.model then
+            -- Clone the per-provider table before writing: the freeform rebase copy is
+            -- shallow-2-level, so this sub-table can still be SHARED with the module
+            -- config — a configuration.lua provider_settings entry must not absorb a
+            -- one-shot override as its session default.
+            config.provider_settings = config.provider_settings or {}
+            local ps = {}
+            for k, v in pairs(config.provider_settings[config.provider] or {}) do
+                ps[k] = v
+            end
+            ps.model = model_override.model
+            config.provider_settings[config.provider] = ps
         end
-        ps.model = model_override.model
-        config.provider_settings[config.provider] = ps
     end
     if quick_answer and features.quick_preset_tools_off ~= false then
         -- Preset "no slow features": book tools off for this chat (explicit false —
@@ -1054,9 +1062,10 @@ showQuickPresetModelMode = function(opts)
             { id = "frontier", label = _("Frontier") },
         }
         for _idx, tier in ipairs(TIERS) do
-            -- Not every provider lists every tier: show what the pick resolves to
-            -- for THIS provider (fallback walks toward faster tiers)
-            local resolved = ModelLists.getModelForTier(provider_id, tier.id, true)
+            -- Not every provider lists every tier: show what the pick resolves
+            -- to for THIS provider (EXACT — named tiers never walk, 2026-08-14;
+            -- unlisted tiers show "(not available)" and stay unpickable)
+            local resolved = ModelLists.getModelForTier(provider_id, tier.id, false)
             local is_current = mode == "tier"
                 and ModelLists.normalizeTier(f.quick_preset_tier or "fast") == tier.id
                 and f.quick_preset_tier_provider == (pin and provider_id or nil)
@@ -1490,16 +1499,21 @@ local function applyQuickReplyOverrides(config, plugin)
     end
     if model_override and model_override.provider then
         config.provider = model_override.provider
+        -- model may be NIL (provider+tier pin whose exact tier the provider
+        -- lacks): clear the top level, leave the bucket — the pinned provider's
+        -- own configured/default model applies (same shape as the bake site)
         config.model = model_override.model
-        -- Copy-on-write: never mutate the original provider_settings tables
-        -- (they can be shared with the module config / configuration.lua).
-        local new_ps = {}
-        for prov, entry in pairs(orig.provider_settings or {}) do new_ps[prov] = entry end
-        local entry = {}
-        for k, v in pairs(new_ps[config.provider] or {}) do entry[k] = v end
-        entry.model = model_override.model
-        new_ps[config.provider] = entry
-        config.provider_settings = new_ps
+        if model_override.model then
+            -- Copy-on-write: never mutate the original provider_settings tables
+            -- (they can be shared with the module config / configuration.lua).
+            local new_ps = {}
+            for prov, entry in pairs(orig.provider_settings or {}) do new_ps[prov] = entry end
+            local entry = {}
+            for k, v in pairs(new_ps[config.provider] or {}) do entry[k] = v end
+            entry.model = model_override.model
+            new_ps[config.provider] = entry
+            config.provider_settings = new_ps
+        end
     end
 
     -- Preset "no slow features" (only under the ⚡ posture; explicit reply
