@@ -1045,7 +1045,7 @@ local SettingsSchema = {
                             type = "radio",
                             text_func = function(plugin)
                                 local f = plugin.settings:readSetting("features") or {}
-                                local mode = f.xray_marking_density or "first"
+                                local mode = f.xray_marking_density or "10"
                                 local labels = {
                                     all = _("All Occurrences"),
                                     first = _("Once per Page"),
@@ -1056,7 +1056,7 @@ local SettingsSchema = {
                                 return T(_("Marking Density: %1"), labels[mode] or mode)
                             end,
                             path = "features.xray_marking_density",
-                            default = "first",
+                            default = "10",
                             options = {
                                 { value = "first", text = _("Once per page") },
                                 { value = "10", text = _("Only after 10 unseen pages") },

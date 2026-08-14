@@ -17175,7 +17175,7 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
     T(_("Passive marking: %1"), features.xray_marking == true and _("On") or _("Off")),
     function() features.xray_marking = features.xray_marking ~= true end))
   if features.xray_marking == true then
-    local dens = features.xray_marking_density or "first"
+    local dens = features.xray_marking_density or "10"
     local dens_labels = {
       first = _("Once per page"),
       ["10"] = _("After 10 unseen pages"),

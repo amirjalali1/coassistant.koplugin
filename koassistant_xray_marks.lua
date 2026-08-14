@@ -12,8 +12,10 @@ WAITED on it, device: "page turns very slow"):
   patching); dotted DARK_GRAY strip at each box bottom (the maintainer-picked
   ambient default — full invert is an on-demand emphasis style, not this).
 - Per page turn: the onPageUpdate handler only CLEARS stale boxes (the fresh
-  page must never paint the old page's marks) and schedules the scan for the
-  tick AFTER the page's own repaint. The scan resolves terms — steady state
+  page must never paint the old page's marks) and schedules the scan for
+  SCAN_SETTLE_S after the turn — well after the page's own repaint, and
+  rapid flipping never scans at all (each turn invalidates the last
+  schedule's token). The scan resolves terms — steady state
   is pure memo lookups (NO page-text read, NO searches); a term never yet
   searched costs one whole-book `findAllText`, so at most ONE runs per tick
   with the rest chained on scheduleIn (UI stays responsive while a
@@ -45,6 +47,13 @@ local lfs = require("libs/libkoreader-lfs")
 local XrayMarks = {}
 
 local MODULE_NAME = "koassistant_xray_marks"
+
+-- Marks draw only after the reader SETTLES on a page (round 9, maintainer:
+-- rushing through pages shouldn't pay a scan-and-draw per page). Every turn
+-- bumps the token; the delayed tick aborts instantly for pages already left,
+-- so fast flipping costs nothing — and the page's own repaint always lands
+-- well before the marks pass.
+local SCAN_SETTLE_S = 0.3
 
 -- st = {
 --   file, families (nil = all),
@@ -362,6 +371,8 @@ function XrayMarks._scanTick(plugin, pageno, token, hay)
     local t0 = time.now()
     ensureIndex(plugin, pageno)
     if not st.entities or #st.entities == 0 then return end
+    local idx_ms = time.to_ms(time.now() - t0)
+    local hay_ms = 0
 
     -- A re-render (font/margin change) renumbers pages; the memo's pages
     -- were computed against the old flow. Xpointers stay valid — only the
@@ -387,19 +398,22 @@ function XrayMarks._scanTick(plugin, pageno, token, hay)
               -- line wraps arrive as newlines, so a wrapped "Danny\nLloyd"
               -- must still match the single-space term — collapse all
               -- whitespace (NBSP included) like the term norms.
+              local hay_t = time.now()
               local ContextExtractor = require("koassistant_context_extractor")
               local XrayParser = require("koassistant_xray_parser")
               local page_text = ContextExtractor:new(ui):getVisiblePageText().text or ""
               hay = XrayParser.normalizeArabic(page_text:lower())
                   :gsub("\194\160", " "):gsub("%s+", " ")
+              hay_ms = time.to_ms(time.now() - hay_t)
             end
             if hay ~= "" and hay:find(term.norm, 1, true) then
+              local search_t = time.now()
               st.term_hits[tkey] = searchTerm(ui.document, term)
               if st.debug then
                 logger.info("KOAssistant marks dbg: searched \"" .. term.text
                   .. "\" -> " .. tostring(#st.term_hits[tkey].pages)
                   .. " pages in "
-                  .. string.format("%.0f", time.to_ms(time.now() - t0)) .. "ms")
+                  .. string.format("%.0f", time.to_ms(time.now() - search_t)) .. "ms")
               end
               UIManager:scheduleIn(0.05, function()
                 XrayMarks._scanTick(plugin, pageno, token, hay)
@@ -412,6 +426,7 @@ function XrayMarks._scanTick(plugin, pageno, token, hay)
     end
 
     -- Paint: entity-level spacing + box resolution from the memo
+    local paint_t = time.now()
     local dbg = st.debug and { marked = {} } or nil
     local marks = {}
     for _i, ent in ipairs(st.entities) do
@@ -475,15 +490,20 @@ function XrayMarks._scanTick(plugin, pageno, token, hay)
       st.page_marks = dedupeMarks(marks)
       st.paint_boxes = mergeLineBoxes(st.page_marks)
     end
+    -- Phase-split timing line (the round-9 device-slowness arbiter). The
+    -- old full-hay dump is GONE — multi-KB synchronous log writes per page
+    -- turn were themselves a device cost, and its forensic job (presence
+    -- replay) is done. `text` covers page read+normalize, the presence
+    -- finds are total minus the named phases.
     if dbg then
       logger.info("KOAssistant marks dbg: page " .. tostring(pageno)
         .. " ents=" .. tostring(#st.entities)
         .. " marked=[" .. table.concat(dbg.marked, ", ") .. "]"
         .. " boxes=" .. tostring(st.page_marks and #st.page_marks or 0)
-        .. " in " .. string.format("%.0f", time.to_ms(time.now() - t0)) .. "ms")
-      if hay then
-        logger.info("KOAssistant marks dbg hay: " .. hay)
-      end
+        .. " idx=" .. string.format("%.0f", idx_ms)
+        .. "ms text=" .. string.format("%.0f", hay_ms)
+        .. "ms paint=" .. string.format("%.0f", time.to_ms(time.now() - paint_t))
+        .. "ms total=" .. string.format("%.0f", time.to_ms(time.now() - t0)) .. "ms")
     end
     -- One targeted partial refresh over the union of the strips — except
     -- after a settings change (sync sets full_refresh), where the whole
@@ -520,9 +540,9 @@ end
 --- dispatch, BEFORE the repaint) and from sync() for the current page.
 --- Synchronous work is only what must not wait: clearing stale boxes (the
 --- fresh page must never paint the old page's marks) and the search-session
---- state machine; the actual scan runs on the tick after the page's own
---- repaint (round 7 — the scan inside the dispatch made the page turn wait
---- on searches and box resolution).
+--- state machine; the actual scan runs SCAN_SETTLE_S after the turn (round
+--- 7 moved it off the dispatch — the turn waited on searches and boxes;
+--- round 9 added the settle so rapid flipping pays nothing per page).
 function XrayMarks.onPageTurn(plugin, pageno)
   if not st then return end
   local ui = plugin and plugin.ui
@@ -558,7 +578,7 @@ function XrayMarks.onPageTurn(plugin, pageno)
 
   st.scan_token = (st.scan_token or 0) + 1
   local token = st.scan_token
-  UIManager:nextTick(function()
+  UIManager:scheduleIn(SCAN_SETTLE_S, function()
     XrayMarks._scanTick(plugin, pageno, token, nil)
   end)
 end
@@ -605,8 +625,9 @@ function XrayMarks.sync(plugin)
   end
   -- Density → spacing (round 7): "all" marks every occurrence, "first" once
   -- per page, "10"/"25" only after that many pages unseen, "once" only the
-  -- first appearance in the book
-  local density = features.xray_marking_density or "first"
+  -- first appearance in the book. Default flipped to "10" round 9 —
+  -- returning names stand out, constant companions stay quiet.
+  local density = features.xray_marking_density or "10"
   if density == "all" then
     st.spacing = 0
   elseif density == "once" then
