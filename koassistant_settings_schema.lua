@@ -129,38 +129,12 @@ local SettingsSchema = {
         {
             id = "api_keys",
             type = "submenu",
-            text = _("API Keys"),
+            -- "& Auth" (maintainer 2026-08-14): the menu also hosts non-key access
+            -- methods — OpenAI Subscription's OAuth connect today, the planned
+            -- item-25a subscription providers later.
+            text = _("API Keys & Auth"),
             emoji = "🔑",
             callback = "buildApiKeysMenu",
-        },
-        {
-            id = "temperature",
-            type = "spinner",
-            text = _("Temperature"),
-            emoji = "🌡️",
-            path = "features.default_temperature",
-            default = 0.7,
-            min = 0,
-            max = 2,
-            step = 0.1,
-            precision = "%.1f",
-            info_text = _("Range: 0.0-2.0 (Anthropic max 1.0)\nLower = focused, deterministic\nHigher = creative, varied\n\nApplies to free-form chat: most built-in actions set their own temperature."),
-            -- Item 19c: a growing share of models ignore or pin temperature. Annotate
-            -- rather than disable — this is a GLOBAL default that still applies to every
-            -- other model the reader switches to (same rule as the QS web-search tile).
-            suffix_func = function(plugin)
-                local f = plugin.settings:readSetting("features") or {}
-                local mode = ModelConstraints.temperatureSupport(
-                    f.provider or "anthropic", plugin:getCurrentModel())
-                if mode == "rejected" then return _("ignored by this model") end
-                if mode == "forced" then return _("fixed by this model") end
-                return nil
-            end,
-            -- Static on purpose: settings_manager evaluates help_text ONCE at menu-build
-            -- time, so a model-specific string would go stale after switching models via
-            -- the Model row without leaving the menu. The live per-model state rides on
-            -- suffix_func above, which is re-evaluated on every render.
-            help_text = _("Applies to free-form chat: most built-in actions set their own temperature.\nSome models ignore this setting or accept only a fixed value; the row says so when the current model is one of them."),
             separator = true,
         },
         -- Display Settings submenu
@@ -2594,6 +2568,38 @@ local SettingsSchema = {
                             separator = true,
                         },
                     },
+                },
+                -- Temperature (moved from the top level 2026-08-14: a dial a growing
+                -- share of models ignore doesn't earn a slot beside the provider hub;
+                -- Reasoning is its natural sibling — both are model-behavior dials).
+                {
+                    id = "temperature",
+                    type = "spinner",
+                    text = _("Temperature"),
+                    path = "features.default_temperature",
+                    default = 0.7,
+                    min = 0,
+                    max = 2,
+                    step = 0.1,
+                    precision = "%.1f",
+                    info_text = _("Range: 0.0-2.0 (Anthropic max 1.0)\nLower = focused, deterministic\nHigher = creative, varied\n\nApplies to free-form chat: most built-in actions set their own temperature."),
+                    -- Item 19c: a growing share of models ignore or pin temperature. Annotate
+                    -- rather than disable — this is a GLOBAL default that still applies to every
+                    -- other model the reader switches to (same rule as the QS web-search tile).
+                    suffix_func = function(plugin)
+                        local f = plugin.settings:readSetting("features") or {}
+                        local mode = ModelConstraints.temperatureSupport(
+                            f.provider or "anthropic", plugin:getCurrentModel())
+                        if mode == "rejected" then return _("ignored by this model") end
+                        if mode == "forced" then return _("fixed by this model") end
+                        return nil
+                    end,
+                    -- Static on purpose: settings_manager evaluates help_text ONCE at menu-build
+                    -- time, so a model-specific string would go stale after switching models via
+                    -- the Model row without leaving the menu. The live per-model state rides on
+                    -- suffix_func above, which is re-evaluated on every render.
+                    help_text = _("Applies to free-form chat: most built-in actions set their own temperature.\nSome models ignore this setting or accept only a fixed value; the row says so when the current model is one of them."),
+                    separator = true,
                 },
                 -- Per-action model tiers (feature plan item 18e): actions carrying a
                 -- model_tier hint switch to a faster model of the SAME provider for

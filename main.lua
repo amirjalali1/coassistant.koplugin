@@ -2102,7 +2102,7 @@ function AskGPT:fetchProviderModels(provider_id)
     local msg = T(_("HTTP %1 from %2"), tostring(code), models_url:gsub("key=[^&]+", "key=***"))
     local n = tonumber(code)
     if n == 401 or n == 403 then
-      msg = msg .. "\n" .. _("This provider needs an API key — add one in Settings → API Keys.")
+      msg = msg .. "\n" .. _("This provider needs an API key. Add one in Settings → API Keys & Auth.")
     end
     return nil, msg
   end
@@ -2327,7 +2327,7 @@ function AskGPT:testProvider(provider_id)
   local needs_key = not (cp and cp.api_key_required == false)
   if needs_key and not auth then
     UIManager:show(InfoMessage:new{
-      text = T(_("No API key configured for %1.\n\nAdd one in Settings → API Keys, then test again."),
+      text = T(_("No API key configured for %1.\n\nAdd one in Settings → API Keys & Auth, then test again."),
         provider.name or provider_id),
     })
     return
@@ -2998,7 +2998,7 @@ function AskGPT:buildProviderMenu(simplified, show_all, hub)
   end
 
   -- "Show all" escape hatch so the filtered list never hides the existence of
-  -- more providers (keys are added in Settings → API Keys)
+  -- more providers (keys are added in Settings → API Keys & Auth)
   if hidden_count > 0 then
     table.insert(items, {
       text = T(_("Show all providers (%1 more)…"), hidden_count),

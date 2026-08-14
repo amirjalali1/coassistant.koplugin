@@ -594,7 +594,7 @@ function SetupWizard.stepProvider(plugin, ctx, next_step)
             callback = function()
                 UIManager:close(dialog)
                 UIManager:show(InfoMessage:new{
-                    text = _("No provider configured. Nothing will work until one is: add a key anytime in Settings > API Keys."),
+                    text = _("No provider configured. Nothing will work until one is: add a key anytime in Settings > API Keys & Auth."),
                     dismiss_callback = advanceOnce,
                 })
             end,
