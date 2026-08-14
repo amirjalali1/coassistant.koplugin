@@ -622,6 +622,8 @@ end
 --- @param plugin table AskGPT instance
 --- @param ges table Tap gesture ({pos = {x, y}})
 --- @return string|nil entity name
+--- @return table|nil word box {x, y, w, h} (screen coords, fresh copy) —
+---   anchors the floating-popup card style
 function XrayMarks.tapTarget(plugin, ges)
   local marks = st and st.page_marks
   if not (marks and ges and ges.pos) then return nil end
@@ -634,7 +636,7 @@ function XrayMarks.tapTarget(plugin, ges)
   for _i, m in ipairs(marks) do
     if tx >= m.x - pad and tx <= m.x + m.w + pad
         and ty >= m.y - pad and ty <= m.y + m.h + pad then
-      return m.name
+      return m.name, { x = m.x, y = m.y, w = m.w, h = m.h }
     end
   end
   return nil

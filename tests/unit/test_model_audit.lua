@@ -283,6 +283,93 @@ TestRunner:check("no wire notes when tool_choice/stream fine",
     btext:find("runner-incompatible", 1, true) == nil
     and btext:find("stream=true not honored", 1, true) == nil)
 
+--------------------------------------------------------------------------------
+TestRunner:suite("Transient-error classification (retry gate)")
+
+TestRunner:check("429 is transient", ModelAudit.isTransient(429, "") == true)
+TestRunner:check("503 is transient", ModelAudit.isTransient(503, "whatever") == true)
+TestRunner:check("529 (anthropic overloaded) is transient", ModelAudit.isTransient(529, "") == true)
+TestRunner:check("nil code (network-layer failure) is transient",
+    ModelAudit.isTransient(nil, "network: timeout") == true)
+TestRunner:check("400 invalid-param is NOT transient",
+    ModelAudit.isTransient(400, '{"error":{"message":"temperature is not supported"}}') == false)
+TestRunner:check("non-429 with rate-limit body IS transient (mistral gated class)",
+    ModelAudit.isTransient(400, "Rate limit exceeded") == true)
+TestRunner:check("capacity message is transient (gemini high-demand class)",
+    ModelAudit.isTransient(403, "This model is currently experiencing high demand.") == true)
+TestRunner:check("permission denial is NOT transient (zai staged-rollout class)",
+    ModelAudit.isTransient(403, "You do not have permission to access glm-5.3") == false)
+TestRunner:check("string code with transient body still matches",
+    ModelAudit.isTransient("closed", "connection reset, please retry") == true)
+
+--------------------------------------------------------------------------------
+TestRunner:suite("Watch-list classification")
+
+local wcurated = { ["glm-5.2"] = true }
+TestRunner:check("uncurated + unlisted -> watching",
+    ModelAudit.watchStatus("glm-5.3", wcurated, {}) == "watching")
+TestRunner:check("appears in fetched list -> listed",
+    ModelAudit.watchStatus("glm-5.3", wcurated, { ["glm-5.3"] = {} }) == "listed")
+TestRunner:check("curated wins over listed -> curated (delete reminder)",
+    ModelAudit.watchStatus("glm-5.2", wcurated, { ["glm-5.2"] = {} }) == "curated")
+TestRunner:check("nil fetched tolerated (no-adapter providers)",
+    ModelAudit.watchStatus("x", wcurated, nil) == "watching")
+TestRunner:check("every WATCH entry names an UNCURATED id (else the reminder is stale)",
+    (function()
+        local ModelLists = require("koassistant_model_lists")
+        for provider, entries in pairs(ModelAudit.WATCH) do
+            local cset = {}
+            for _i, id in ipairs(ModelLists[provider] or {}) do cset[id] = true end
+            for id in pairs(entries) do
+                if cset[id] then return false end
+            end
+        end
+        return true
+    end)())
+
+--------------------------------------------------------------------------------
+TestRunner:suite("Recheck drift comparison")
+
+local function rlevel(obs, current)
+    local level = ModelAudit.recheckCompare(obs, current)
+    return level
+end
+
+TestRunner:check("consistent default-on reasoning + temp passthrough -> ok",
+    rlevel({ served = true, default_reasoning = true, temp_ok = true },
+        { profile = { axis = "effort", default_state = "on" }, temp_after_apply = 0.7 }) == "ok")
+TestRunner:check("not served -> drift with reason", (function()
+    local level, reasons = ModelAudit.recheckCompare({ served = nil, err = "model_not_found" }, {})
+    return level == "drift" and reasons[1]:find("not served", 1, true) ~= nil
+end)())
+TestRunner:check("reasons by default but profile axis none -> drift",
+    rlevel({ served = true, default_reasoning = true, temp_ok = true },
+        { profile = { axis = "none" }, temp_after_apply = 0.7 }) == "drift")
+TestRunner:check("reasons by default but profile default off -> drift",
+    rlevel({ served = true, default_reasoning = true, temp_ok = true },
+        { profile = { axis = "effort", default_state = "off" }, temp_after_apply = 0.7 }) == "drift")
+TestRunner:check("no evidence with profile-on -> warn only (some wires don't report)",
+    rlevel({ served = true, default_reasoning = false, temp_ok = true },
+        { profile = { axis = "binary", default_state = "on" }, temp_after_apply = 0.7 }) == "warn")
+TestRunner:check("temp rejected but constraints pass it through -> drift (field 400s)",
+    rlevel({ served = true, default_reasoning = false, temp_ok = false },
+        { profile = { axis = "none" }, temp_after_apply = 0.7 }) == "drift")
+TestRunner:check("temp rejected while constraints strip it -> consistent ok",
+    rlevel({ served = true, default_reasoning = true, temp_ok = false },
+        { profile = { axis = "adaptive_effort", default_state = "on" }, temp_after_apply = nil }) == "ok")
+TestRunner:check("temp rejected while constraints force 1.0 -> consistent ok (gpt-5.6 class)",
+    rlevel({ served = true, default_reasoning = false, temp_ok = false },
+        { profile = { axis = "effort", default_state = "off" }, temp_after_apply = 1.0 }) == "ok")
+TestRunner:check("temp accepted while constraints strip it -> warn (over-strict, not harmful)",
+    rlevel({ served = true, default_reasoning = false, temp_ok = true },
+        { profile = { axis = "none" }, temp_after_apply = nil }) == "warn")
+TestRunner:check("temp inconclusive (quota) -> warn, never drift",
+    rlevel({ served = true, default_reasoning = false, temp_ok = nil },
+        { profile = { axis = "none" }, temp_after_apply = 0.7 }) == "warn")
+TestRunner:check("nil profile tolerated (unknown model)",
+    rlevel({ served = true, default_reasoning = false, temp_ok = true },
+        { temp_after_apply = 0.7 }) == "ok")
+
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))
 return TestRunner.failed == 0

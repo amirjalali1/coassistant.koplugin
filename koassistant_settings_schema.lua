@@ -1046,7 +1046,7 @@ local SettingsSchema = {
                             text = _("Entity Card First"),
                             path = "features.xray_card_landing",
                             default = true,
-                            help_text = _("Exact entity hits (tapping a marked word, or selecting text that matches an entity) open a compact card first: the name and a one-line identification, with the full entry one tap away. The identification may come from the newest built checkpoint, so newly appearing names are known on sight — the full entry stays at your reading position, behind a confirmation, while spoiler protection is on. Off = open the full entry directly."),
+                            help_text = _("Exact entity hits (tapping a marked word, or selecting text that matches an entity) open a compact card first: the name, category and role, and a one-line identification, with the full entry a tap on the card away. The identification may come from the newest built checkpoint, so newly appearing names are known on sight — the full entry stays at your reading position, behind a confirmation, while spoiler protection is on. Off = open the full entry directly."),
                             on_change = function(new_value, plugin)
                                 if plugin.syncXrayMarks then
                                     local UIManager = require("ui/uimanager")
@@ -1055,6 +1055,26 @@ local SettingsSchema = {
                                     end)
                                 end
                             end,
+                        },
+                        {
+                            id = "xray_card_style",
+                            type = "radio",
+                            text_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                local mode = f.xray_card_style or "footnote"
+                                local labels = {
+                                    footnote = _("Footnote Panel"),
+                                    popup = _("Floating Popup"),
+                                }
+                                return T(_("Card Style: %1"), labels[mode] or mode)
+                            end,
+                            path = "features.xray_card_style",
+                            default = "footnote",
+                            options = {
+                                { value = "footnote", text = _("Footnote panel (bottom of the screen)") },
+                                { value = "popup", text = _("Floating popup (near the tapped word)") },
+                            },
+                            help_text = _("How the entity card is presented. The footnote panel slides in at the bottom of the screen, like KOReader's footnote popups, and follows the book's margins and font size. The floating popup is a small window anchored next to the tapped word. In both, tapping the card opens the full entry; tapping elsewhere dismisses it."),
                         },
                         {
                             id = "xray_marking_density",

@@ -16760,8 +16760,26 @@ function AskGPT:syncDictionaryBypass()
           if dict_close_callback then
             dict_close_callback()
           end
-          self_ref:openXrayCard(word,
-            lookup_book and { document_path = lookup_book } or nil)
+          -- The lookup's word boxes (screen coords, from the tap in the OPEN
+          -- book — valid even when the card data comes from a lookup book)
+          -- anchor the floating-popup card style. Fresh copies: the source
+          -- tables belong to the selection machinery.
+          local card_boxes
+          if type(boxes) == "table" then
+            card_boxes = {}
+            for bi = 1, #boxes do
+              local b = boxes[bi]
+              if type(b) == "table" and b.y and b.h then
+                card_boxes[#card_boxes + 1] = { x = b.x, y = b.y, w = b.w, h = b.h }
+              end
+            end
+            if #card_boxes == 0 then card_boxes = nil end
+          end
+          local card_opts
+          if lookup_book or card_boxes then
+            card_opts = { document_path = lookup_book, sboxes = card_boxes }
+          end
+          self_ref:openXrayCard(word, card_opts)
           return
         end
       end
@@ -17109,8 +17127,22 @@ function AskGPT:syncHighlightBypass()
         -- old full cache parse
         if i_file and ActionCache.matchAnyXrayExact(i_file, sel) then
           logger.info("KOAssistant: X-Ray intercept - selection matches entity, opening X-Ray")
+          -- Selection geometry anchors the floating-popup card style —
+          -- captured as fresh copies BEFORE clear() releases the selection
+          local sel_boxes
+          local sb = hl_self.selected_text.sboxes
+          if type(sb) == "table" then
+            sel_boxes = {}
+            for bi = 1, #sb do
+              local b = sb[bi]
+              if type(b) == "table" and b.y and b.h then
+                sel_boxes[#sel_boxes + 1] = { x = b.x, y = b.y, w = b.w, h = b.h }
+              end
+            end
+            if #sel_boxes == 0 then sel_boxes = nil end
+          end
           hl_self:clear()
-          self_ref:openXrayCard(sel)
+          self_ref:openXrayCard(sel, sel_boxes and { sboxes = sel_boxes } or nil)
           return true
         end
       end
@@ -17193,6 +17225,11 @@ function AskGPT:openXrayCard(query, opts)
   end
   local self_ref = self
   XrayCard.show(hit, {
+    -- Presentation (round 15): footnote panel (default) or floating popup,
+    -- anchored at the tapped word when the landing carried geometry
+    style = features.xray_card_style,
+    ui = self.ui,
+    sboxes = opts and opts.sboxes or nil,
     on_full = function(h)
       if h.source ~= "ahead" then
         self_ref:_openXrayEntityDirect(h.query, opts)
@@ -17234,10 +17271,14 @@ function AskGPT:syncXrayMarks()
     highlight._koassistant_original_onTap = highlight.onTap
     local self_ref = self
     highlight.onTap = function(hl_self, arg, ges)
-      local name = ges and require("koassistant_xray_marks").tapTarget(self_ref, ges)
+      local name, box
+      if ges then
+        name, box = require("koassistant_xray_marks").tapTarget(self_ref, ges)
+      end
       if name then
         logger.info("KOAssistant: X-Ray mark tap - opening entity: " .. name)
-        self_ref:openXrayCard(name)
+        -- The word box anchors the floating-popup card style
+        self_ref:openXrayCard(name, box and { sboxes = { box } } or nil)
         return true
       end
       return highlight._koassistant_original_onTap(hl_self, arg, ges)
@@ -17346,11 +17387,29 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
     function() features.xray_selection_intercept = features.xray_selection_intercept == false end,
     function() self_ref:syncDictionaryBypass() end))
   -- Point-4: the shared landing for every exact hit (mark taps AND matching
-  -- selections — hence outside the marking-gated group)
+  -- selections — hence outside the marking-gated group). Cycles the card
+  -- presentation with the landing: footnote panel → floating popup → full
+  -- entry (writes both xray_card_landing and xray_card_style)
+  local card_mode_label
+  if features.xray_card_landing == false then
+    card_mode_label = _("Full entry")
+  elseif features.xray_card_style == "popup" then
+    card_mode_label = _("Floating popup")
+  else
+    card_mode_label = _("Footnote panel")
+  end
   table.insert(buttons, row(
-    T(_("Exact hits open: %1"),
-      features.xray_card_landing ~= false and _("Compact card") or _("Full entry")),
-    function() features.xray_card_landing = features.xray_card_landing == false end))
+    T(_("Exact hits open: %1"), card_mode_label),
+    function()
+      if features.xray_card_landing == false then
+        features.xray_card_landing = true
+        features.xray_card_style = "footnote"
+      elseif features.xray_card_style ~= "popup" then
+        features.xray_card_style = "popup"
+      else
+        features.xray_card_landing = false
+      end
+    end))
   if opts and opts.back then
     table.insert(buttons, {{ text = _("Back"), callback = function()
       UIManager:close(dialog)

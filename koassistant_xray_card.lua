@@ -1,24 +1,36 @@
 --[[--
-Compact entity card (A10 point-4 v1, ref #78 / #63): ONE landing surface for
+Compact entity card (A10 point-4, ref #78 / #63): ONE landing surface for
 exact entity hits — the ambient-mark tap and both selection intercepts all
 open this instead of jumping straight into the full browser entry.
 
 Two tiers (maintainer design 2026-08-14):
-- The CARD is the identification tier: name, category, the description's
-  first sentence. It may draw from the NEWEST BUILT checkpoint even when that
-  is ahead of the reader — "know who characters are when they first appear"
-  — which is the deliberate, bounded peek.
-- "Full entry" is the position tier: it resolves against the INSTALLED
+- The CARD is the identification tier: name, category (+ role when the
+  artifact has one — "Protagonist / Supporting"), the description's first
+  sentence. It may draw from the NEWEST BUILT checkpoint even when that is
+  ahead of the reader — "know who characters are when they first appear" —
+  which is the deliberate, bounded peek.
+- Tapping the card is the position tier: it resolves against the INSTALLED
   artifact via the existing exact-match lookup path (browser detail, natural
   back stack). An entity that exists ONLY ahead reveals its full entry
   behind a confirm while spoiler protection is on; with protection off the
   live artifact is the newest anyway (promotion), so no split exists.
 
+Two presentation styles (round 15, `features.xray_card_style`):
+- "footnote" (default): KOReader's FootnoteWidget — the bottom panel readers
+  know from footnote popups, rendered with the book's margins/font size.
+  Tap the panel (or swipe west / Press) = full entry; tap outside = dismiss.
+- "popup": the plugin's MinimalPopup — a small floating window anchored next
+  to the tapped word when selection geometry is available (EPUB; centered
+  fallback). Tap inside = full entry (its native expand idiom); outside =
+  dismiss.
+
 The module is UI + pure resolution only; routing and the landing preference
-(`features.xray_card_landing`) live in main.lua's AskGPT:openXrayCard.
+(`features.xray_card_landing`) live in main.lua's AskGPT:openXrayCard, which
+passes { style, ui, sboxes, on_full } through `opts`.
 ]]
 
 local UIManager = require("ui/uimanager")
+local logger = require("logger")
 local T = require("ffi/util").template
 local _ = require("koassistant_gettext")
 
@@ -48,6 +60,28 @@ local function itemText(item)
         if type(item[f]) == "string" and item[f] ~= "" then return item[f] end
     end
     return ""
+end
+
+--- "Category (Role)" — the classification half of the identity line.
+--- Role rides only when short (fiction-style "Protagonist"; the non-fiction
+--- schema allows sentence-length roles, which belong to the description).
+local function kindLabel(hit)
+    local label = type(hit.category_label) == "string" and hit.category_label or ""
+    local role = type(hit.item) == "table" and type(hit.item.role) == "string"
+        and hit.item.role or ""
+    role = role:gsub("^%s+", ""):gsub("[%s%.]+$", "")
+    if role ~= "" and #role <= 48 then
+        label = label ~= "" and (label .. " (" .. role .. ")") or role
+    end
+    return label
+end
+
+--- The "(from the checkpoint built to N%)" transparency line, or nil.
+local function aheadLine(hit)
+    if hit.source == "ahead" and hit.ahead_progress then
+        return T(_("(from the checkpoint built to %1%)"),
+            math.floor(hit.ahead_progress * 100 + 0.5))
+    end
 end
 
 --- Resolve an exact entity hit across the live main X-Ray, every section
@@ -114,79 +148,161 @@ function XrayCard.resolve(file, query)
     return nil
 end
 
---- Show the card. opts.on_full(hit) opens the full entry (router-owned).
-function XrayCard.show(hit, opts)
-    local ButtonDialog = require("ui/widget/buttondialog")
-    local parts = { hit.name or "" }
-    if type(hit.category_label) == "string" and hit.category_label ~= "" then
-        parts[1] = parts[1] .. "  ·  " .. hit.category_label
-    end
+--- Floating-popup style: the plugin's MinimalPopup, anchored at the tapped
+--- word when opts.sboxes carries geometry (EPUB; centered fallback). Tap
+--- inside = full entry (the popup's native expand idiom); outside = dismiss.
+local function showPopupCard(hit, opts)
+    local MinimalPopup = require("koassistant_minimal_popup")
+    local ok_v, Viewer = pcall(require, "koassistant_chatgptviewer")
+    local can_md = ok_v and Viewer and Viewer.stripMarkdown
+    local head = can_md and ("**" .. (hit.name or "") .. "**") or (hit.name or "")
+    local kind = kindLabel(hit)
+    if kind ~= "" then head = head .. " · " .. kind end
+    local parts = { head }
     local ident = XrayCard.firstSentence(itemText(hit.item))
-    if ident ~= "" then
-        parts[#parts + 1] = ident
+    if ident ~= "" then parts[#parts + 1] = ident end
+    local ahead = aheadLine(hit)
+    if ahead then parts[#parts + 1] = ahead end
+    local text = table.concat(parts, "\n\n")
+    local rtl = nil
+    if can_md then
+        if Viewer.hasDominantRTL and Viewer.hasDominantRTL(text) then rtl = true end
+        text = Viewer.stripMarkdown(text, rtl)
     end
-    if hit.source == "ahead" and hit.ahead_progress then
-        -- Transparency: the identification came from ahead of the reader
-        parts[#parts + 1] = T(_("(from the checkpoint built to %1%)"),
-            math.floor(hit.ahead_progress * 100 + 0.5))
-    end
-    local dialog
-    dialog = ButtonDialog:new{
-        title = table.concat(parts, "\n\n"),
-        title_align = "left",
-        buttons = {
-            {
-                {
-                    text = _("Full entry…"),
-                    callback = function()
-                        UIManager:close(dialog)
-                        if opts and opts.on_full then opts.on_full(hit) end
-                    end,
-                },
-                {
-                    text = _("Close"),
-                    callback = function() UIManager:close(dialog) end,
-                },
-            },
-        },
+    local popup = MinimalPopup:new{
+        text = text,
+        selection_data = opts.sboxes and { sboxes = opts.sboxes } or nil,
+        ui = opts.ui,
+        para_direction_rtl = rtl,
+        on_expand = function()
+            if opts.on_full then opts.on_full(hit) end
+        end,
     }
-    UIManager:show(dialog)
+    UIManager:show(popup)
 end
 
---- Full detail of an AHEAD-only entity (v1: a plain TextViewer — the browser
---- stack renders the LIVE artifact, and this entity is not in it yet; the
---- browser-hosted ahead view is a recorded follow-up).
+--- Footnote-panel style: KOReader's FootnoteWidget (the bottom panel from
+--- footnote popups), sized/margined like the book. Tap the panel, swipe
+--- west, or Press = full entry; tap outside / swipe south / Back = dismiss.
+--- Falls back to the floating popup if construction fails (older KOReader).
+local function showFootnoteCard(hit, opts)
+    local ok_req, FootnoteWidget = pcall(require, "ui/widget/footnotewidget")
+    if not ok_req or not FootnoteWidget then
+        return showPopupCard(hit, opts)
+    end
+    local function esc(s)
+        return s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+    end
+    local kind = kindLabel(hit)
+    local html = "<div><b>" .. esc(hit.name or "") .. "</b>"
+        .. (kind ~= "" and (" · " .. esc(kind)) or "") .. "</div>"
+    local ident = XrayCard.firstSentence(itemText(hit.item))
+    if ident ~= "" then
+        html = html .. '<div class="koa-line">' .. esc(ident) .. "</div>"
+    end
+    local ahead = aheadLine(hit)
+    if ahead then
+        html = html .. '<div class="koa-meta">' .. esc(ahead) .. "</div>"
+    end
+    -- Affordance: stock footnote panels do nothing on an inside tap, ours
+    -- opens the full entry — say so, muted
+    html = html .. '<div class="koa-meta">' .. esc(_("Tap for the full entry")) .. "</div>"
+
+    local ui = opts.ui
+    local doc = ui and ui.document
+    local params = {
+        html = html,
+        css = ".koa-line { margin-top: 0.4em; } .koa-meta { margin-top: 0.5em; font-size: 80%; color: #555555; }",
+        dialog = ui and ui.dialog,
+        follow_callback = nil, -- set below (needs the popup upvalue)
+    }
+    -- The doc_* fields tune the panel to the book (ReaderLink does the same).
+    -- Rolling (crengine) docs only: a PDF's configurable.font_size is a
+    -- reflow SCALE FACTOR (~1.0), not a point size — paging docs keep the
+    -- widget's own defaults instead
+    if ui and ui.rolling and doc then
+        if ui.font and ui.font.font_face then
+            params.doc_font_name = ui.font.font_face
+        end
+        if doc.configurable and tonumber(doc.configurable.font_size) then
+            local Screen = require("device").screen
+            params.doc_font_size = Screen:scaleBySize(doc.configurable.font_size)
+        end
+        if doc.getPageMargins then
+            local ok_m, margins = pcall(doc.getPageMargins, doc)
+            if ok_m and type(margins) == "table" then
+                params.doc_margins = margins
+            end
+        end
+    end
+    local popup
+    params.follow_callback = function() -- swipe west / Press key
+        if popup then UIManager:close(popup) end
+        if opts.on_full then opts.on_full(hit) end
+    end
+    local ok_new
+    ok_new, popup = pcall(FootnoteWidget.new, FootnoteWidget, params)
+    if not ok_new or type(popup) ~= "table" then
+        logger.warn("KOAssistant: footnote card construction failed, falling back to popup style", popup)
+        popup = nil
+        return showPopupCard(hit, opts)
+    end
+    -- The card never scrolls (short content) — free the inside tap for the
+    -- full-entry action instead of ScrollHtmlWidget's tap-to-scroll zones
+    if popup.htmlwidget and popup.htmlwidget.setTapScrollEnabled then
+        popup.htmlwidget:setTapScrollEnabled(false)
+    end
+    popup.onTapClose = function(fw, _arg, ges)
+        if ges.pos:notIntersectWith(fw.container.dimen) then
+            UIManager:close(fw)
+            return true
+        end
+        UIManager:close(fw)
+        if opts.on_full then opts.on_full(hit) end
+        return true
+    end
+    UIManager:show(popup)
+end
+
+--- Show the card. opts = { style ("footnote"|"popup"), ui, sboxes,
+--- on_full(hit) } — on_full opens the full entry (router-owned).
+function XrayCard.show(hit, opts)
+    opts = opts or {}
+    if opts.style == "popup" then
+        return showPopupCard(hit, opts)
+    end
+    return showFootnoteCard(hit, opts)
+end
+
+--- Full detail of an AHEAD-only entity: the browser's own body text
+--- (XrayParser.formatItemDetail — name/role, aliases, description,
+--- connections/significance per category) plus the cross-book background
+--- lines, headed by checkpoint provenance. Still a TextViewer host — the
+--- browser stack renders the LIVE artifact and cannot hold this entity yet
+--- (browser-hosted ahead view = recorded follow-up).
 function XrayCard.showFullDetail(hit)
     local TextViewer = require("ui/widget/textviewer")
-    local item = hit.item or {}
+    local XrayParser = require("koassistant_xray_parser")
     local parts = {}
-    local text = itemText(item)
-    if text ~= "" then parts[#parts + 1] = text end
-    if type(item.aliases) == "table" and #item.aliases > 0 then
-        local ok_names = {}
-        for _idx, a in ipairs(item.aliases) do
-            if type(a) == "string" and a ~= "" then ok_names[#ok_names + 1] = a end
-        end
-        if #ok_names > 0 then
-            parts[#parts + 1] = T(_("Also: %1"), table.concat(ok_names, ", "))
-        end
+    if hit.source == "ahead" and hit.ahead_progress then
+        parts[#parts + 1] = T(_("From the checkpoint built to %1% — ahead of your reading position."),
+            math.floor(hit.ahead_progress * 100 + 0.5))
     end
-    if type(item.connections) == "string" and item.connections ~= "" then
-        parts[#parts + 1] = T(_("Connections: %1"), item.connections)
-    elseif type(item.connections) == "table" and #item.connections > 0 then
-        local lines = {}
-        for _idx, c in ipairs(item.connections) do
-            if type(c) == "string" and c ~= "" then lines[#lines + 1] = "• " .. c end
-        end
-        if #lines > 0 then
-            parts[#parts + 1] = _("Connections:") .. "\n" .. table.concat(lines, "\n")
-        end
+    local ok_fmt, body = pcall(XrayParser.formatItemDetail, hit.item, hit.category_key)
+    if ok_fmt and type(body) == "string" and body:match("%S") then
+        parts[#parts + 1] = (body:gsub("%s+$", ""))
+    else
+        local text = itemText(hit.item)
+        if text ~= "" then parts[#parts + 1] = text end
     end
+    local item = hit.item or {}
     if type(item.background) == "table" and #item.background > 0 then
         local lines = {}
         for _idx, b in ipairs(item.background) do
             if type(b) == "table" and type(b.text) == "string" and b.text ~= "" then
-                lines[#lines + 1] = "• " .. b.text
+                local src = (type(b.source) == "string" and b.source ~= "")
+                    and (b.source .. ": ") or ""
+                lines[#lines + 1] = "• " .. src .. b.text
             end
         end
         if #lines > 0 then

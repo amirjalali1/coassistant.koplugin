@@ -20,6 +20,9 @@
 --   lua tests/model_audit.lua --probe anthropic claude-opus-5   # probe one model (LIVE calls)
 --   lua tests/model_audit.lua --probe-new              # discovery, then probe each NEW model
 --   lua tests/model_audit.lua --probe-new openai       # ... for one provider
+--   lua tests/model_audit.lua --recheck [providers]    # drift sweep over CURATED models (LIVE,
+--                                                      # 2 micro-requests each): still served?
+--                                                      # reasoning default? temp rule still right?
 --   Options: --verbose   full error bodies + ignored-id lists
 --
 -- Probes make real API micro-requests (max_tokens 32..1024); a full battery is
@@ -161,6 +164,26 @@ ModelAudit.DELIBERATE_SKIPS = {
     },
 }
 
+-- Announcement watch: ids we KNOW exist (announcements, direct probes) that
+-- the provider's list endpoint does not return or our key cannot yet access -
+-- the glm-5.3 class (released 2026-08-14, absent from Z.AI's known-incomplete
+-- /models list, probe got "no permission" under the staged rollout). Discovery
+-- prints a standing reminder per entry and upgrades it to "NOW LISTED - probe"
+-- / "now curated - delete" as state changes; delete an entry once the id is
+-- curated or abandoned.
+ModelAudit.WATCH = {
+    zai = {
+        ["glm-5.3"] = "released 2026-08-14; probe got 'no permission' (staged rollout) - re-probe",
+    },
+}
+
+-- Pure: classify a watched id against the curated array and the fetched list.
+function ModelAudit.watchStatus(id, curated_set, fetched)
+    if curated_set and curated_set[id] then return "curated" end
+    if fetched and fetched[id] then return "listed" end
+    return "watching"
+end
+
 -- Dated/numbered snapshots and -latest aliases of an id we already curate are
 -- not "new models" (gpt-4o vs gpt-4o-2024-08-06, gemini -001, mistral -2509).
 -- Each candidate base is also checked against the curated "-latest" alias,
@@ -287,11 +310,44 @@ function ModelAudit.reasoningEvidence(decoded)
     return nil
 end
 
+-- Fragments marking an error body as transient capacity/limit noise, matched
+-- lowercase plain-find (only consulted on non-200s).
+ModelAudit.TRANSIENT_FRAGMENTS = {
+    "rate limit", "rate_limit", "high demand", "overloaded", "over capacity",
+    "temporarily unavailable", "try again", "please retry", "server busy",
+}
+
+-- True when a FAILED request is worth retrying: nil code (network-layer
+-- failure), 429/5xx, or a transient body fragment. Permission/validation
+-- errors ("no permission", "invalid temperature") stay non-transient so a
+-- retry never blurs a real verdict.
+function ModelAudit.isTransient(code, text)
+    if code == nil then return true end
+    local n = tonumber(code)
+    if n == 429 or (n and n >= 500 and n < 600) then return true end
+    local lower = tostring(text or ""):lower()
+    for _i, frag in ipairs(ModelAudit.TRANSIENT_FRAGMENTS) do
+        if lower:find(frag, 1, true) then return true end
+    end
+    return false
+end
+
 --------------------------------------------------------------------------------
 -- HTTP (lazy-required so the pure helpers stay loadable without luarocks)
 --------------------------------------------------------------------------------
 
-local function httpGet(url, headers)
+-- Transient failures (429 quota, 5xx capacity, network drops) get a short
+-- backoff-and-retry before giving up: a rate-limited BASELINE used to abort a
+-- whole battery, and a mid-battery transient recorded a false REJECTED
+-- (gemini-3.7-flash "high demand" + the mistral rate-limit runs, 2026-08-14).
+local RETRY_DELAYS = { 3, 8 }
+
+local function sleepSeconds(s)
+    local ok, socket = pcall(require, "socket")
+    if ok and socket and socket.sleep then socket.sleep(s) end
+end
+
+local function httpGetOnce(url, headers)
     local https = require("ssl.https")
     local ltn12 = require("ltn12")
     local chunks = {}
@@ -300,15 +356,30 @@ local function httpGet(url, headers)
         sink = ltn12.sink.table(chunks),
     })
     local text = table.concat(chunks)
-    if not ok then return nil, "network: " .. tostring(code) end
+    if not ok then return nil, "network: " .. tostring(code), nil end
     if code ~= 200 then
-        return nil, string.format("HTTP %s: %s", tostring(code), text:sub(1, 300))
+        return nil, string.format("HTTP %s: %s", tostring(code), text:sub(1, 300)),
+            tonumber(code) or code
     end
     return text
 end
 
+local function httpGet(url, headers)
+    local text, err, code
+    for attempt = 1, #RETRY_DELAYS + 1 do
+        text, err, code = httpGetOnce(url, headers)
+        if text or not ModelAudit.isTransient(code, err) then return text, err end
+        local delay = RETRY_DELAYS[attempt]
+        if not delay then break end
+        printf("  %stransient fetch failure - retrying in %ds (attempt %d/%d)%s",
+            C.dim, delay, attempt + 1, #RETRY_DELAYS + 1, C.off)
+        sleepSeconds(delay)
+    end
+    return text, err
+end
+
 -- POST JSON; returns http_code (number|string), decoded (table|nil), raw text.
-local function httpPostJson(url, headers, body_tbl)
+local function httpPostJsonOnce(url, headers, body_tbl)
     local https = require("ssl.https")
     local ltn12 = require("ltn12")
     local payload = json.encode(body_tbl)
@@ -329,6 +400,22 @@ local function httpPostJson(url, headers, body_tbl)
         if dok and type(d) == "table" then decoded = d end
     end
     return tonumber(code) or code, decoded, text
+end
+
+local function httpPostJson(url, headers, body_tbl)
+    local code, decoded, raw
+    for attempt = 1, #RETRY_DELAYS + 1 do
+        code, decoded, raw = httpPostJsonOnce(url, headers, body_tbl)
+        if code == 200 or not ModelAudit.isTransient(code, raw) then
+            return code, decoded, raw
+        end
+        local delay = RETRY_DELAYS[attempt]
+        if not delay then break end
+        printf("  %stransient HTTP %s - retrying in %ds (attempt %d/%d)%s",
+            C.dim, tostring(code), delay, attempt + 1, #RETRY_DELAYS + 1, C.off)
+        sleepSeconds(delay)
+    end
+    return code, decoded, raw
 end
 
 --------------------------------------------------------------------------------
@@ -534,6 +621,26 @@ local function runDiscovery(provider, api_key, verbose)
     end
     if #diff.new == 0 and #diff.removed == 0 then
         printf("  %sin sync%s", C.green, C.off)
+    end
+    local watch = ModelAudit.WATCH[provider]
+    if watch then
+        local curated_set = {}
+        for _i, id in ipairs(curated) do curated_set[id] = true end
+        local wids = {}
+        for id in pairs(watch) do table.insert(wids, id) end
+        table.sort(wids)
+        for _i, id in ipairs(wids) do
+            local status = ModelAudit.watchStatus(id, curated_set, fetched)
+            if status == "curated" then
+                printf("  %swatch entry %s is now CURATED - delete it from ModelAudit.WATCH%s",
+                    C.green, id, C.off)
+            elseif status == "listed" then
+                printf("  %sWATCH -> NOW LISTED:%s %s  %sprobe: lua tests/model_audit.lua --probe %s %s%s",
+                    C.green, C.off, id, C.dim, provider, id, C.off)
+            else
+                printf("  %swatching (not listed): %-24s %s%s", C.yellow, id, watch[id], C.off)
+            end
+        end
     end
     if verbose then
         if #diff.snapshots > 0 then
@@ -1277,6 +1384,165 @@ local function probeModel(provider, model, api_key, verbose)
 end
 
 --------------------------------------------------------------------------------
+-- Recheck (curated-constraints drift sweep): 2 micro-requests per CURATED
+-- model - baseline (math prompt, reasoning-default evidence) + temperature=0.7
+-- - compared against the resolution layer. The cheap standing answer to the
+-- pre-freeze "recheck constraints" checklist item: catches delisted-and-dead
+-- ids, reasoning-default flips, and temperature rules that would 400 in the
+-- field, without the full 13-19-request battery per model.
+--------------------------------------------------------------------------------
+
+-- Pure: compare a recheck observation against the current resolution layer.
+-- Returns level ("ok" | "warn" | "drift") + reason strings. The asymmetry is
+-- deliberate: a mismatch that would 400 in the field (we SEND something the
+-- model rejects) is DRIFT; an over-strict constraint (we withhold something
+-- the model accepts) is only a WARN.
+function ModelAudit.recheckCompare(obs, current)
+    if not obs.served then
+        return "drift", { "not served: " .. tostring(obs.err or "?"):sub(1, 120) }
+    end
+    local reasons, level = {}, "ok"
+    local function drift(msg) level = "drift"; table.insert(reasons, msg) end
+    local function warn(msg)
+        if level ~= "drift" then level = "warn" end
+        table.insert(reasons, msg)
+    end
+    local profile = current.profile or {}
+    local pstate = profile.default_state
+    if obs.default_reasoning then
+        if (profile.axis or "none") == "none" then
+            drift("reasons by default, profile axis is none")
+        elseif pstate ~= "on" then
+            drift("reasons by default, profile default_state is " .. tostring(pstate))
+        end
+    elseif pstate == "on" then
+        -- Some wires report no reasoning evidence even when thinking ran, so
+        -- absence alone never claims drift.
+        warn("no reasoning evidence on math prompt (profile default on) - verify")
+    end
+    local we_send_temp = current.temp_after_apply == 0.7
+    if obs.temp_ok == false then
+        if we_send_temp then
+            drift("temperature=0.7 rejected but constraints pass it through (field 400s)")
+        end
+        -- rejected while constraints strip/force it = consistent
+    elseif obs.temp_ok == true then
+        if not we_send_temp then
+            warn("temperature accepted but constraints modify/strip it (possibly stale)")
+        end
+    else
+        warn("temperature probe inconclusive (rate limit)")
+    end
+    return level, reasons
+end
+
+local function recheckObserve(provider, model, api_key)
+    local obs = { model = model }
+    if provider == "anthropic" then
+        local url = Defaults.ProviderDefaults.anthropic.base_url
+        local headers = { ["x-api-key"] = api_key, ["anthropic-version"] = "2023-06-01" }
+        local code, decoded, raw = httpPostJson(url, headers, { model = model, max_tokens = 1024,
+            messages = { { role = "user", content = REASONING_PROBE_PROMPT } } })
+        if code ~= 200 then obs.err = ModelAudit.errText(decoded, raw); return obs end
+        obs.served = true
+        obs.default_reasoning = false
+        for _i, block in ipairs(type(decoded.content) == "table" and decoded.content or {}) do
+            if type(block) == "table" and block.type == "thinking" then obs.default_reasoning = true end
+        end
+        local tcode, tdec, traw = httpPostJson(url, headers, { model = model, max_tokens = 32,
+            temperature = 0.7, messages = { { role = "user", content = PROBE_PROMPT } } })
+        obs.temp_ok = verdict(tcode)
+        if obs.temp_ok == false then obs.temp_err = ModelAudit.errText(tdec, traw) end
+        return obs
+    elseif provider == "gemini" then
+        local base = ModelLists._docs.gemini.api_list
+        local url = base .. "/" .. model .. ":generateContent?key=" .. api_key
+        local code, decoded, raw = httpPostJson(url, nil, {
+            contents = { { parts = { { text = REASONING_PROBE_PROMPT } } } },
+            generationConfig = { maxOutputTokens = 1024 } })
+        if code ~= 200 then obs.err = ModelAudit.errText(decoded, raw); return obs end
+        obs.served = true
+        local um = type(decoded.usageMetadata) == "table" and decoded.usageMetadata
+        local thoughts = um and type(um.thoughtsTokenCount) == "number" and um.thoughtsTokenCount or 0
+        obs.default_reasoning = thoughts > 0
+        local tcode, tdec, traw = httpPostJson(url, nil, {
+            contents = { { parts = { { text = PROBE_PROMPT } } } },
+            generationConfig = { maxOutputTokens = 32, temperature = 0.7 } })
+        obs.temp_ok = verdict(tcode)
+        if obs.temp_ok == false then obs.temp_err = ModelAudit.errText(tdec, traw) end
+        return obs
+    elseif OPENAI_FAMILY[provider] then
+        local fam = OPENAI_FAMILY[provider]
+        local pd = Defaults.ProviderDefaults[provider]
+        local url = fam.url or (pd and pd.base_url)
+        if not url then obs.err = "no chat endpoint known"; return obs end
+        local headers = bearerHeaders(api_key)
+        for k, v in pairs(fam.extra_headers or {}) do headers[k] = v end
+        local token_key = "max_tokens"
+        local function req(extra, max_toks, prompt)
+            local body = { model = model,
+                           messages = { { role = "user", content = prompt or PROBE_PROMPT } } }
+            body[token_key] = max_toks or 32
+            for k, v in pairs(extra or {}) do body[k] = v end
+            return httpPostJson(url, headers, body)
+        end
+        local code, decoded, raw = req(nil, 1024, REASONING_PROBE_PROMPT)
+        if code ~= 200 and ModelAudit.errText(decoded, raw):find("max_completion_tokens", 1, true) then
+            token_key = "max_completion_tokens"
+            code, decoded, raw = req(nil, 1024, REASONING_PROBE_PROMPT)
+        end
+        if code ~= 200 then obs.err = ModelAudit.errText(decoded, raw); return obs end
+        obs.served = true
+        obs.default_reasoning = ModelAudit.reasoningEvidence(decoded) ~= nil
+        local tcode, tdec, traw = req({ temperature = 0.7 }, 32)
+        obs.temp_ok = verdict(tcode)
+        if obs.temp_ok == false then obs.temp_err = ModelAudit.errText(tdec, traw) end
+        return obs
+    end
+    obs.err = "no probe adapter for this provider"
+    return obs
+end
+
+local function runRecheck(provider, api_key, verbose)
+    banner("RECHECK " .. provider)
+    local curated = ModelLists[provider]
+    if type(curated) ~= "table" or #curated == 0 then
+        printf("  %sskipped: no curated model array%s", C.dim, C.off)
+        return nil
+    end
+    if not TestConfig.isValidApiKey(api_key) then
+        printf("  %sskipped: no API key in apikeys.lua%s", C.dim, C.off)
+        return nil
+    end
+    local fam = OPENAI_FAMILY[provider]
+    if provider ~= "anthropic" and provider ~= "gemini" and not fam then
+        printf("  %sskipped: no probe adapter%s", C.dim, C.off)
+        return nil
+    end
+    if fam and fam.cost_note then printf("  %snote: %s%s", C.yellow, fam.cost_note, C.off) end
+    printf("  %s2 micro-requests per curated model (%d models)%s", C.dim, #curated, C.off)
+    local counts = { ok = 0, warn = 0, drift = 0 }
+    for _i, model in ipairs(curated) do
+        local obs = recheckObserve(provider, model, api_key)
+        local level, reasons =
+            ModelAudit.recheckCompare(obs, ModelAudit.currentResolution(provider, model))
+        counts[level] = counts[level] + 1
+        if level == "ok" then
+            printf("  %sOK%s     %-38s%s", C.green, C.off, model,
+                verbose and (C.dim .. (obs.default_reasoning and "reasons by default"
+                    or "no default reasoning") .. C.off) or "")
+        else
+            printf("  %s%-6s%s %-38s %s", level == "drift" and C.red or C.yellow,
+                level:upper(), C.off, model, table.concat(reasons, "; "))
+        end
+    end
+    printf("  %ssummary: %d ok, %d warn, %d drift%s",
+        counts.drift > 0 and C.red or (counts.warn > 0 and C.yellow or C.green),
+        counts.ok, counts.warn, counts.drift, C.off)
+    return counts
+end
+
+--------------------------------------------------------------------------------
 -- Main
 --------------------------------------------------------------------------------
 
@@ -1291,7 +1557,7 @@ local function main()
         local a = arg[i]
         if a == "--help" or a == "-h" then
             print("Usage: lua tests/model_audit.lua [providers...] [--probe <provider> <model>] " ..
-                  "[--probe-new] [--verbose]")
+                  "[--probe-new] [--recheck] [--verbose]")
             os.exit(0)
         elseif a == "--verbose" or a == "-v" then
             verbose = true
@@ -1305,6 +1571,8 @@ local function main()
             end
         elseif a == "--probe-new" then
             mode = "probe-new"
+        elseif a == "--recheck" then
+            mode = "recheck"
         elseif a:match("^%-") then
             printf("unknown option: %s (see --help)", a)
             os.exit(1)
@@ -1328,6 +1596,30 @@ local function main()
     if mode == "probe" then
         local facts = probeModel(probe_provider, probe_model, apikeys[probe_provider], verbose)
         os.exit((facts and facts.reachable) and 0 or 1)
+    end
+
+    if mode == "recheck" then
+        if #providers == 0 then
+            -- Default set = every keyed provider with a probe adapter, EXCEPT
+            -- openrouter (31 marketplace mirror ids - run --recheck openrouter
+            -- explicitly when you mean it).
+            for _i, p in ipairs(ModelLists.getAllProviders()) do
+                if (p == "anthropic" or p == "gemini" or OPENAI_FAMILY[p])
+                        and p ~= "openrouter"
+                        and TestConfig.isValidApiKey(apikeys[p]) then
+                    table.insert(providers, p)
+                end
+            end
+            table.sort(providers)
+            printf("%sopenrouter excluded from the default recheck set (31 mirror ids) - " ..
+                   "run: lua tests/model_audit.lua --recheck openrouter%s", C.dim, C.off)
+        end
+        local any_drift = false
+        for _i, p in ipairs(providers) do
+            local counts = runRecheck(p, apikeys[p], verbose)
+            if counts and counts.drift > 0 then any_drift = true end
+        end
+        os.exit(any_drift and 1 or 0)
     end
 
     -- discovery (both "discover" and "probe-new" start here)
@@ -1355,6 +1647,9 @@ local function main()
                 (docs and docs.api_list) and "no discovery adapter yet"
                 or "no public list endpoint - validate via: lua tests/run_tests.lua --models "
                    .. provider, C.off)
+            for id, note in pairs(ModelAudit.WATCH[provider] or {}) do
+                printf("  %swatching: %-24s %s%s", C.yellow, id, note, C.off)
+            end
         else
             local diff = runDiscovery(provider, apikeys[provider], verbose)
             if diff then
