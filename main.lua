@@ -2908,10 +2908,16 @@ function AskGPT:buildProviderMenu(simplified, show_all, hub)
     end
   end
   if has_community then
+    -- Tappable legend (maintainer 2026-08-14: the * was explained nowhere
+    -- in-plugin) — the disabled see-README row became a real explainer.
     table.insert(items, {
-      text = _("* = community set (docs-based) — see README"),
-      enabled = false,
-      callback = function() end,
+      text = _("* = community set — tap for info"),
+      keep_menu_open = true,
+      callback = function()
+        UIManager:show(InfoMessage:new{
+          text = _("Providers marked * are the community set: wired up from documentation and community reports, not maintainer-tested end to end. Their model lists are seed lists — use \"Fetch models from provider…\" inside the provider for the live list, and \"Test provider…\" to verify your key and connection.\n\nUnmarked providers are the curated set."),
+        })
+      end,
     })
   end
 
@@ -2932,11 +2938,23 @@ function AskGPT:buildProviderMenu(simplified, show_all, hub)
       radio = true,
     }
     if hub then
-      -- Drill into this provider's model panel; the radio mark (checked_func
-      -- re-evaluates on every repaint) tracks the active provider even after
-      -- a switch made inside a panel.
-      item.sub_item_table_func = function()
-        return self_ref:buildModelMenu(false, prov_copy.id)
+      -- One-tap semantics (maintainer 2026-08-14 round 2): entering a
+      -- provider's panel IS picking it — switch to it (default model baked,
+      -- radio lands on it; same key-setup offer as before) and push the panel.
+      -- The push is MANUAL (mirrors TouchMenu:onMenuSelect's stack mechanics)
+      -- because the switch must never live in sub_item_table_func: KOReader's
+      -- menu SEARCH evaluates every sub_item_table_func while indexing, and a
+      -- side effect there would switch providers during a settings search.
+      item.keep_menu_open = true
+      item.callback = function(touchmenu_instance)
+        if self_ref:getCurrentProvider() ~= prov_copy.id then
+          createProviderCallback(prov_copy.id, prov_copy.display_name)(touchmenu_instance)
+        end
+        if touchmenu_instance and touchmenu_instance.item_table_stack then
+          table.insert(touchmenu_instance.item_table_stack, touchmenu_instance.item_table)
+          touchmenu_instance.item_table = self_ref:buildModelMenu(false, prov_copy.id)
+          touchmenu_instance:updateItems(1)
+        end
       end
     else
       item.callback = createProviderCallback(prov_copy.id, prov_copy.display_name)
@@ -2978,11 +2996,9 @@ function AskGPT:buildProviderMenu(simplified, show_all, hub)
 
   -- Add management options (only in full mode, not quick settings)
   if not simplified then
-    table.insert(items, {
-      text = "────────────────────",
-      enabled = false,
-      callback = function() end,
-    })
+    -- Split line on the row above instead of a padded dash row
+    -- (maintainer 2026-08-14; covers both the Show-all and all-shown cases)
+    if #items > 0 then items[#items].separator = true end
 
     -- Add local provider preset option
     table.insert(items, {
@@ -3655,11 +3671,8 @@ function AskGPT:buildModelMenu(simplified, provider_override)
 
   -- Add management options (only in full mode)
   if not simplified then
-    -- Add separator before actions
-    table.insert(items, {
-      text = "────────────",
-      enabled = false,
-    })
+    -- Split line on the last model row instead of a padded dash row
+    if #items > 0 then items[#items].separator = true end
 
     -- Add custom model input option (now saves to list)
     table.insert(items, {

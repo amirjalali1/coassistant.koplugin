@@ -2201,7 +2201,25 @@ local function unionStringArrays(new_list, keep_list)
     end
     addAll(new_list)
     addAll(keep_list)
-    return #out > 0 and out or nil
+    -- Connection strings carry relationship annotations — "Saladin Chamcha
+    -- (husband)" — so a bare mention and an annotated one of the same person
+    -- survive exact-string dedupe as a pair (observed on the first live fold).
+    -- A bare "X" yields to any "X (role)" variant; distinct annotations both
+    -- stay (they say different things).
+    local function baseKey(s)
+        return (s:gsub("%s*%b()%s*$", ""):lower():gsub("^%s+", ""):gsub("%s+$", ""))
+    end
+    local annotated = {}
+    for _i, s in ipairs(out) do
+        if s:match("%b()%s*$") then annotated[baseKey(s)] = true end
+    end
+    local filtered = {}
+    for _i, s in ipairs(out) do
+        if s:match("%b()%s*$") or not annotated[baseKey(s)] then
+            filtered[#filtered + 1] = s
+        end
+    end
+    return #filtered > 0 and filtered or nil
 end
 
 --- Reverse-alias rename detection (2026-08-14, the Pamela Lovelace → Pamela
