@@ -2782,7 +2782,10 @@ function AskGPT:refreshTouchMenu(touchmenu_instance, rebuild)
   end
 end
 
-function AskGPT:buildProviderMenu(simplified, show_all)
+function AskGPT:buildProviderMenu(simplified, show_all, hub)
+  -- hub = the unified provider/model navigation (maintainer 2026-08-14): each
+  -- provider row drills into its model panel (buildModelMenu w/ override)
+  -- instead of switching on tap — switching happens by PICKING A MODEL there.
   local self_ref = self
   local current = self:getCurrentProvider()
   local ModelLists = require("koassistant_model_lists")
@@ -2795,7 +2798,7 @@ function AskGPT:buildProviderMenu(simplified, show_all)
   local function menuRefresher(touchmenu_instance)
     return function()
       self_ref:refreshTouchMenu(touchmenu_instance, function()
-        return self_ref:buildProviderMenu(simplified, show_all)
+        return self_ref:buildProviderMenu(simplified, show_all, hub)
       end)
     end
   end
@@ -2927,15 +2930,24 @@ function AskGPT:buildProviderMenu(simplified, show_all)
       text = text,
       checked_func = function() return self_ref:getCurrentProvider() == prov_copy.id end,
       radio = true,
-      callback = createProviderCallback(prov_copy.id, prov_copy.display_name),
-      keep_menu_open = true,
+    }
+    if hub then
+      -- Drill into this provider's model panel; the radio mark (checked_func
+      -- re-evaluates on every repaint) tracks the active provider even after
+      -- a switch made inside a panel.
+      item.sub_item_table_func = function()
+        return self_ref:buildModelMenu(false, prov_copy.id)
+      end
+    else
+      item.callback = createProviderCallback(prov_copy.id, prov_copy.display_name)
+      item.keep_menu_open = true
       -- QS path (device 2026-08-13): selecting an unconfigured provider opens
       -- the key dialog, and the QS popup's reopen-after-select buried it —
       -- opens_dialog is the popup's own close-first-don't-reopen contract for
       -- exactly this. Build-time state is fine here: the QS popup rebuilds on
       -- every open. TouchMenu ignores the field.
-      opens_dialog = prov_copy.unconfigured or nil,
-    }
+      item.opens_dialog = prov_copy.unconfigured or nil
+    end
 
     -- Add hold callback for custom providers
     if prov.is_custom then
@@ -2957,7 +2969,7 @@ function AskGPT:buildProviderMenu(simplified, show_all)
       -- The QS popup checks replace_items before callback, so it never gets here.
       callback = function(touchmenu_instance)
         self_ref:refreshTouchMenu(touchmenu_instance, function()
-          return self_ref:buildProviderMenu(simplified, true)
+          return self_ref:buildProviderMenu(simplified, true, hub)
         end)
       end,
       keep_menu_open = true,
@@ -3003,6 +3015,14 @@ function AskGPT:buildProviderMenu(simplified, show_all)
   end
 
   return items
+end
+
+-- The unified provider/model hub (maintainer 2026-08-14): ONE settings row —
+-- providers listed (key-filtered, active radio-marked), each drilling into its
+-- model panel where a model pick switches provider+model in one tap. The
+-- legacy two-row shape survives only in the quick-settings popups.
+function AskGPT:buildProviderModelHub()
+  return self:buildProviderMenu(false, false, true)
 end
 
 -- Helper: Show options for a custom provider (on hold)
@@ -3383,9 +3403,12 @@ end
 
 -- Helper: Build model selection sub-menu for current provider
 -- @param simplified: if true, shows only model list without management options (for quick settings)
-function AskGPT:buildModelMenu(simplified)
+function AskGPT:buildModelMenu(simplified, provider_override)
   local self_ref = self
-  local provider = self:getCurrentProvider()
+  -- provider_override = a specific provider's panel inside the provider/model
+  -- HUB (any provider, not just the active one); nil = the active provider
+  -- (legacy Model menu shape, still used by the quick-settings popups).
+  local provider = provider_override or self:getCurrentProvider()
   local is_custom_provider = self:isCustomProvider(provider)
   local custom_provider_config = is_custom_provider and self:getCustomProvider(provider) or nil
 
@@ -3423,7 +3446,7 @@ function AskGPT:buildModelMenu(simplified)
   local function menuRefresher(touchmenu_instance)
     return function()
       self_ref:refreshTouchMenu(touchmenu_instance, function()
-        return self_ref:buildModelMenu(simplified)
+        return self_ref:buildModelMenu(simplified, provider_override)
       end)
     end
   end
@@ -3585,13 +3608,21 @@ function AskGPT:buildModelMenu(simplified)
     table.insert(items, {
       text = buildDisplayName(model_copy, is_custom),
       checked_func = function()
+        -- Hub panels exist for NON-active providers too: a coincidental
+        -- same-named f.model must not render checked there.
+        if self_ref:getCurrentProvider() ~= provider then return false end
         local f = self_ref.settings:readSetting("features") or {}
         local selected = f.model or effective_default
         return selected == model_copy
       end,
       radio = true,
       callback = function()
+        local switching = self_ref:getCurrentProvider() ~= provider
         local f = self_ref.settings:readSetting("features") or {}
+        -- Hub one-tap switch (maintainer 2026-08-14): picking a model under a
+        -- non-active provider sets provider + model TOGETHER — the old
+        -- switch-provider/back/reopen-models dance collapses into this tap.
+        if switching then f.provider = provider end
         f.model = model_copy
         -- Mark this as a DELIBERATE pick so default bumps never overwrite it
         -- (defaults_propagation_plan.md §3 — features.model alone can't tell an
@@ -3602,9 +3633,20 @@ function AskGPT:buildModelMenu(simplified)
         self_ref.settings:flush()
         self_ref:updateConfigFromSettings()
         UIManager:show(Notification:new{
-          text = T(_("Model: %1"), model_copy),
+          text = switching
+            and T(_("Provider: %1 — Model: %2"), provider_display_name, model_copy)
+            or T(_("Model: %1"), model_copy),
           timeout = 1.5,
         })
+        -- Same key-setup offer as the provider picker (the selection stands
+        -- either way — Cancel just leaves the key for later).
+        if switching and not self_ref:isProviderConfigured(provider) then
+          if provider == "openai_codex" then
+            require("koassistant_openai_codex_oauth").showManageDialog(self_ref)
+          else
+            self_ref:showApiKeyDialog(provider, provider_display_name, false)
+          end
+        end
       end,
       hold_callback = createHoldCallback(model_copy, is_custom),
       keep_menu_open = true,

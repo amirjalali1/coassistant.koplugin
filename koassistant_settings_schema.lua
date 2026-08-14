@@ -111,26 +111,20 @@ local SettingsSchema = {
             separator = true,
         },
 
-        -- Provider, Model, Temperature (top-level)
+        -- Provider & Model hub (top-level; merged from the old two rows,
+        -- maintainer 2026-08-14 — one entry, providers unfold their model
+        -- panels, model pick switches provider+model in one tap)
         {
-            id = "provider",
-            type = "submenu",
-            emoji = "🔗",
-            text_func = function(plugin)
-                local f = plugin.settings:readSetting("features") or {}
-                local provider = f.provider or "anthropic"
-                return T(_("Provider: %1"), plugin:getProviderDisplayName(provider))
-            end,
-            callback = "buildProviderMenu",
-        },
-        {
-            id = "model",
+            id = "provider_model",
             type = "submenu",
             emoji = "🤖",
             text_func = function(plugin)
-                return T(_("Model: %1"), plugin:getCurrentModel())
+                local f = plugin.settings:readSetting("features") or {}
+                local provider = f.provider or "anthropic"
+                return T(_("Model: %1 (%2)"), plugin:getCurrentModel(),
+                    plugin:getProviderDisplayName(provider))
             end,
-            callback = "buildModelMenu",
+            callback = "buildProviderModelHub",
         },
         {
             id = "api_keys",
