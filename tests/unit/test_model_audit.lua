@@ -62,6 +62,8 @@ TestRunner:check("openai gpt-5.7 is NOT noise", ModelAudit.isNoise("openai", "gp
 TestRunner:check("openai *-pro is noise (responses-only variants)",
     ModelAudit.isNoise("openai", "gpt-5.6-sol-pro") ~= nil)
 TestRunner:check("gemini gemma is noise", ModelAudit.isNoise("gemini", "gemma-3-27b-it") ~= nil)
+TestRunner:check("gemini video-understanding EAP variant is noise",
+    ModelAudit.isNoise("gemini", "gemini-3.7-flash-video-understanding-eap") ~= nil)
 TestRunner:check("gemini-2.5-pro is NOT noise (-pro list is openai-only)",
     ModelAudit.isNoise("gemini", "gemini-2.5-pro") == nil)
 TestRunner:check("mistral mistral-large is NOT noise",
@@ -386,6 +388,55 @@ TestRunner:check("model_not_found stays drift",
 TestRunner:check("weak evidence on default-off profile -> warn (terra class)",
     rlevel({ served = true, default_reasoning = false, weak_evidence = 12, temp_ok = false },
         { profile = { axis = "effort", default_state = "off" }, temp_after_apply = 1.0 }) == "warn")
+
+--------------------------------------------------------------------------------
+TestRunner:suite("Recheck ceiling comparison (--ceilings leg)")
+
+local rc_base = { profile = { axis = "none" }, temp_after_apply = 0.7 }
+local function withCeil(rd, clamped)
+    local c = { profile = rc_base.profile, temp_after_apply = 0.7,
+                resolved_default = rd, clamped = clamped }
+    return c
+end
+TestRunner:check("stated ceiling below our default -> drift (first request 400s)",
+    rlevel({ served = true, default_reasoning = false, temp_ok = true, ceiling = 8192 },
+        withCeil(32768, 65536)) == "drift")
+TestRunner:check("ceiling between default and clamp -> warn (pins in the gap 400)",
+    rlevel({ served = true, default_reasoning = false, temp_ok = true, ceiling = 40000 },
+        withCeil(32768, 65536)) == "warn")
+TestRunner:check("deliberate low clamp stays silent (grok-4 known-good floor class)",
+    rlevel({ served = true, default_reasoning = false, temp_ok = true, ceiling = 131072 },
+        withCeil(32768, 32768)) == "ok")
+TestRunner:check("no stated ceiling (silent-clamp provider) -> no ceiling verdict",
+    rlevel({ served = true, default_reasoning = false, temp_ok = true },
+        withCeil(32768, 8192)) == "ok")
+
+--------------------------------------------------------------------------------
+TestRunner:suite("OpenRouter marketplace cross-ref (pricing/context enrichment)")
+
+local or_map = {
+    ["x-ai/grok-4.6"] = { pricing = { prompt = "0.000002", completion = "0.000006" },
+                          context_length = 500000 },
+    ["anthropic/claude-opus-4.8"] = { context_length = 200000 },
+    ["mistralai/ministral-3b-2512"] = { pricing = { prompt = "0.0000001", completion = "0.0000001" } },
+}
+local slug1 = ModelAudit.openrouterLookup(or_map, "xai", "grok-4.6")
+TestRunner:check("xai id maps through the x-ai prefix", slug1 == "x-ai/grok-4.6")
+local slug2 = ModelAudit.openrouterLookup(or_map, "anthropic", "claude-opus-4-8")
+TestRunner:check("dash/period fold matches (claude-opus-4-8 vs .4.8)",
+    slug2 == "anthropic/claude-opus-4.8")
+TestRunner:check("unmapped provider -> nil",
+    ModelAudit.openrouterLookup(or_map, "groq", "llama-3.3-70b-versatile") == nil)
+TestRunner:check("no match -> nil",
+    ModelAudit.openrouterLookup(or_map, "xai", "grok-9000") == nil)
+local _slug3, meta3 = ModelAudit.openrouterLookup(or_map, "xai", "grok-4.6")
+local ann = ModelAudit.openrouterAnnotation(meta3)
+TestRunner:check("annotation scales per-token strings to per-million + context",
+    ann == "$2.00 in / $6.00 out per M tokens - ctx 500K")
+TestRunner:check("annotation with context only",
+    ModelAudit.openrouterAnnotation({ context_length = 200000 }) == "ctx 200K")
+TestRunner:check("annotation nil-safe on empty meta",
+    ModelAudit.openrouterAnnotation({}) == nil and ModelAudit.openrouterAnnotation(nil) == nil)
 
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))

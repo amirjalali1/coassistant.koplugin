@@ -23,6 +23,8 @@
 --   lua tests/model_audit.lua --recheck [providers]    # drift sweep over CURATED models (LIVE,
 --                                                      # 2 micro-requests each): still served?
 --                                                      # reasoning default? temp rule still right?
+--   lua tests/model_audit.lua --recheck --ceilings     # + output-ceiling check (3rd request/model;
+--                                                      # gemini rides free metadata instead)
 --   Options: --verbose   full error bodies + ignored-id lists
 --
 -- Probes make real API micro-requests (max_tokens 32..1024); a full battery is
@@ -103,6 +105,7 @@ ModelAudit.NOISE = {
     gemini = {
         "gemma", "aqa", "learnlm", "-live", "banana", "robotics", "computer-use",
         "lyria", "antigravity", "omni", "customtools",  -- music gen / IDE agent / speech / variant
+        "video-understanding",  -- video-input EAP variants (3.7-flash-video-understanding-eap)
     },
     mistral = {
         "open-mistral", "open-mixtral", "voxtral", "moderation",
@@ -182,6 +185,51 @@ function ModelAudit.watchStatus(id, curated_set, fetched)
     if curated_set and curated_set[id] then return "curated" end
     if fetched and fetched[id] then return "listed" end
     return "watching"
+end
+
+-- Direct-provider id -> OpenRouter marketplace slug prefix, for enriching NEW
+-- ids with the pricing + context_length the marketplace fetch already returns
+-- (tier PROPOSALS - a human still places tiers and defaults).
+ModelAudit.OPENROUTER_PREFIX = {
+    anthropic = "anthropic", openai = "openai", gemini = "google",
+    mistral = "mistralai", xai = "x-ai", deepseek = "deepseek",
+    zai = "z-ai", perplexity = "perplexity",
+}
+
+-- OR ids use periods where direct ids use dashes (and vice versa); fold.
+local function orNormalize(s)
+    return s:lower():gsub("%.", "-")
+end
+
+-- Pure: find provider/model in an OpenRouter marketplace map (id -> meta).
+-- Returns slug, meta - or nil when unmapped/unmatched.
+function ModelAudit.openrouterLookup(or_models, provider, model)
+    local prefix = ModelAudit.OPENROUTER_PREFIX[provider]
+    if not prefix or type(or_models) ~= "table" then return nil end
+    local want = orNormalize(prefix .. "/" .. model)
+    for id, meta in pairs(or_models) do
+        if orNormalize(id) == want then return id, meta end
+    end
+    return nil
+end
+
+-- Pure: human-readable price/context line from OR meta (nil when it has neither).
+-- OR pricing is per TOKEN as strings ("0.000002") - scale to per-million.
+function ModelAudit.openrouterAnnotation(meta)
+    if type(meta) ~= "table" then return nil end
+    local parts = {}
+    local p = type(meta.pricing) == "table" and meta.pricing
+    local pin = p and tonumber(p.prompt)
+    local pout = p and tonumber(p.completion)
+    if pin and pout then
+        table.insert(parts, string.format("$%.2f in / $%.2f out per M tokens",
+            pin * 1e6, pout * 1e6))
+    end
+    if type(meta.context_length) == "number" then
+        table.insert(parts, string.format("ctx %dK", math.floor(meta.context_length / 1000)))
+    end
+    if #parts == 0 then return nil end
+    return table.concat(parts, " - ")
 end
 
 -- Dated/numbered snapshots and -latest aliases of an id we already curate are
@@ -1171,6 +1219,7 @@ function ModelAudit.currentResolution(provider, model)
         caps = caps,
         temp_after_apply = params and params.temperature,
         clamped = ModelConstraints.clampMaxTokens(provider, model, ABSURD_MAX_TOKENS),
+        resolved_default = ModelConstraints.resolveMaxTokens(provider, model, 8192),
     }
 end
 
@@ -1452,10 +1501,25 @@ function ModelAudit.recheckCompare(obs, current)
     else
         warn("temperature probe inconclusive (rate limit)")
     end
+    -- Output-ceiling comparison (--ceilings leg). Only the harmful directions:
+    -- a clamp BELOW the stated ceiling is often a deliberate known-good floor
+    -- (the grok-4 32768 case) and never errors, so it stays silent.
+    if obs.ceiling then
+        local rd, clamped = current.resolved_default, current.clamped
+        if rd and obs.ceiling < rd then
+            drift(string.format(
+                "stated output ceiling %d below our default %d (first request 400s)",
+                obs.ceiling, rd))
+        elseif clamped and obs.ceiling < clamped then
+            warn(string.format(
+                "stated ceiling %d below our clamp %d (user pins in the gap 400)",
+                obs.ceiling, clamped))
+        end
+    end
     return level, reasons
 end
 
-local function recheckObserve(provider, model, api_key)
+local function recheckObserve(provider, model, api_key, opts)
     local obs = { model = model }
     if provider == "anthropic" then
         local url = Defaults.ProviderDefaults.anthropic.base_url
@@ -1472,6 +1536,14 @@ local function recheckObserve(provider, model, api_key)
             temperature = 0.7, messages = { { role = "user", content = PROBE_PROMPT } } })
         obs.temp_ok = verdict(tcode)
         if obs.temp_ok == false then obs.temp_err = ModelAudit.errText(tdec, traw) end
+        if opts and opts.ceilings then
+            local ccode, cdec, craw = httpPostJson(url, headers, { model = model,
+                max_tokens = ABSURD_MAX_TOKENS,
+                messages = { { role = "user", content = PROBE_PROMPT } } })
+            if ccode ~= 200 and ccode ~= 429 then
+                obs.ceiling = ModelAudit.parseCeiling(ModelAudit.errText(cdec, craw), ABSURD_MAX_TOKENS)
+            end
+        end
         return obs
     elseif provider == "gemini" then
         local base = ModelLists._docs.gemini.api_list
@@ -1489,6 +1561,17 @@ local function recheckObserve(provider, model, api_key)
             generationConfig = { maxOutputTokens = 32, temperature = 0.7 } })
         obs.temp_ok = verdict(tcode)
         if obs.temp_ok == false then obs.temp_err = ModelAudit.errText(tdec, traw) end
+        if opts and opts.ceilings then
+            -- Gemini states the ceiling in free model metadata - no generation.
+            local mtext = httpGet(base .. "/" .. model .. "?key=" .. api_key)
+            if mtext then
+                local mok, mdata = pcall(json.decode, mtext)
+                if mok and type(mdata) == "table"
+                        and type(mdata.outputTokenLimit) == "number" then
+                    obs.ceiling = mdata.outputTokenLimit
+                end
+            end
+        end
         return obs
     elseif OPENAI_FAMILY[provider] then
         local fam = OPENAI_FAMILY[provider]
@@ -1525,13 +1608,19 @@ local function recheckObserve(provider, model, api_key)
         local tcode, tdec, traw = req({ temperature = 0.7 }, 32)
         obs.temp_ok = verdict(tcode)
         if obs.temp_ok == false then obs.temp_err = ModelAudit.errText(tdec, traw) end
+        if opts and opts.ceilings then
+            local ccode, cdec, craw = req(nil, ABSURD_MAX_TOKENS)
+            if ccode ~= 200 and ccode ~= 429 then
+                obs.ceiling = ModelAudit.parseCeiling(ModelAudit.errText(cdec, craw), ABSURD_MAX_TOKENS)
+            end
+        end
         return obs
     end
     obs.err = "no probe adapter for this provider"
     return obs
 end
 
-local function runRecheck(provider, api_key, verbose)
+local function runRecheck(provider, api_key, verbose, opts)
     banner("RECHECK " .. provider)
     local curated = ModelLists[provider]
     if type(curated) ~= "table" or #curated == 0 then
@@ -1548,10 +1637,11 @@ local function runRecheck(provider, api_key, verbose)
         return nil
     end
     if fam and fam.cost_note then printf("  %snote: %s%s", C.yellow, fam.cost_note, C.off) end
-    printf("  %s2 micro-requests per curated model (%d models)%s", C.dim, #curated, C.off)
+    printf("  %s%d micro-requests per curated model (%d models)%s", C.dim,
+        (opts and opts.ceilings) and 3 or 2, #curated, C.off)
     local counts = { ok = 0, warn = 0, drift = 0 }
     for _i, model in ipairs(curated) do
-        local obs = recheckObserve(provider, model, api_key)
+        local obs = recheckObserve(provider, model, api_key, opts)
         local level, reasons =
             ModelAudit.recheckCompare(obs, ModelAudit.currentResolution(provider, model))
         counts[level] = counts[level] + 1
@@ -1580,12 +1670,13 @@ local function main()
     -- arg parsing
     local providers, verbose = {}, false
     local mode, probe_provider, probe_model = "discover", nil, nil
+    local recheck_ceilings = false
     local i = 1
     while i <= #arg do
         local a = arg[i]
         if a == "--help" or a == "-h" then
             print("Usage: lua tests/model_audit.lua [providers...] [--probe <provider> <model>] " ..
-                  "[--probe-new] [--recheck] [--verbose]")
+                  "[--probe-new] [--recheck [--ceilings]] [--verbose]")
             os.exit(0)
         elseif a == "--verbose" or a == "-v" then
             verbose = true
@@ -1601,6 +1692,8 @@ local function main()
             mode = "probe-new"
         elseif a == "--recheck" then
             mode = "recheck"
+        elseif a == "--ceilings" then
+            recheck_ceilings = true
         elseif a:match("^%-") then
             printf("unknown option: %s (see --help)", a)
             os.exit(1)
@@ -1644,7 +1737,7 @@ local function main()
         end
         local any_drift = false
         for _i, p in ipairs(providers) do
-            local counts = runRecheck(p, apikeys[p], verbose)
+            local counts = runRecheck(p, apikeys[p], verbose, { ceilings = recheck_ceilings })
             if counts and counts.drift > 0 then any_drift = true end
         end
         os.exit(any_drift and 1 or 0)
@@ -1683,6 +1776,27 @@ local function main()
             if diff then
                 for _j, id in ipairs(diff.new) do
                     table.insert(to_probe, { provider = provider, model = id })
+                end
+            end
+        end
+    end
+
+    -- Enrich NEW ids with marketplace pricing/context (tier proposals). One
+    -- extra GET; skipped without an openrouter key or when nothing is new.
+    if #to_probe > 0 and TestConfig.isValidApiKey(apikeys.openrouter) then
+        local or_models = fetchProviderList("openrouter", apikeys.openrouter)
+        if or_models then
+            printf("\n%sNEW-id metadata via the OpenRouter marketplace (tier proposals - human places tiers):%s",
+                C.bold, C.off)
+            for _i, entry in ipairs(to_probe) do
+                local slug, meta = ModelAudit.openrouterLookup(or_models, entry.provider, entry.model)
+                local note = slug and ModelAudit.openrouterAnnotation(meta)
+                if note then
+                    printf("  %s/%s: %s  %s(%s)%s",
+                        entry.provider, entry.model, note, C.dim, slug, C.off)
+                else
+                    printf("  %s%s/%s: no marketplace match%s",
+                        C.dim, entry.provider, entry.model, C.off)
                 end
             end
         end
