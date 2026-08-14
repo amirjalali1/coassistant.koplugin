@@ -10190,10 +10190,173 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
             local current_pct = math.floor(current_progress * 100 + 0.5)
             msg = msg .. "\n\n" .. T(_("X-Ray covers to %1% (you're at %2%). Updating may find this entry."), cache_pct, current_pct)
         end
-        UIManager:show(InfoMessage:new{
-            text = msg,
-            timeout = 5,
-        })
+        -- "Add as alias of..." (ref #63): the model can miss an identity the
+        -- reader KNOWS — the live case was a reintroduction under a changed
+        -- name that two of three runs failed to bridge. The user-aliases
+        -- sidecar is the reader-asserted fix: it survives every install and
+        -- rebuild by construction, and lookup, marking and the selection
+        -- intercept all re-read it (the exact-handle route index re-keys off
+        -- the alias file's stamp). Offered only when the selection looks
+        -- like a handle (the intercept's length gate) and the artifact has
+        -- alias-capable entries; timeline-class categories are never
+        -- targets — user aliases exist to mark and match text, which those
+        -- never do.
+        local alias_cats = {}
+        if document_path and #query > 2 and #query <= 120
+            and ActionCache.getUserAliasesPath(document_path) then
+            for _c_idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
+                if not XrayParser.TEXT_MATCH_EXCLUDED[cat.key] and #cat.items > 0 then
+                    table.insert(alias_cats, cat)
+                end
+            end
+        end
+        if #alias_cats == 0 then
+            UIManager:show(InfoMessage:new{
+                text = msg,
+                timeout = 5,
+            })
+            return
+        end
+
+        local function commitAlias(target_item, target_cat_key)
+            local target_name = XrayParser.getItemName(target_item, target_cat_key)
+            if not target_name then return end
+            if not ActionCache.addUserAlias(document_path, target_name, query) then
+                UIManager:show(InfoMessage:new{ text = _("Could not save the alias."), timeout = 3 })
+                return
+            end
+            -- Fold into the in-memory data so the detail page shows it now
+            XrayParser.mergeUserAliases(data, ActionCache.getUserAliases(document_path))
+            UIManager:show(InfoMessage:new{
+                text = T(_("Added \"%1\" as alias of %2."), query, target_name),
+                timeout = 3,
+            })
+            local XrayBrowser = openXrayBrowserFromCache(ui, data, cached, config, plugin,
+                book_metadata, best, #cleanup_widgets > 0 and cleanup_widgets or nil, document_path)
+            for _c_idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
+                if cat.key == target_cat_key then
+                    XrayBrowser:showCategoryItems(cat)
+                    break
+                end
+            end
+            XrayBrowser:showItemDetail(target_item, target_cat_key, target_name)
+        end
+
+        local show_target_picker, show_category_pick, show_entity_page
+
+        -- Word-overlap suggestions first (a reintroduced character usually
+        -- keeps part of the name), manual category pick as the fallback
+        show_target_picker = function()
+            local pd
+            local rows = {}
+            for _s_idx, r in ipairs(XrayParser.suggestAliasTargets(data, query, 6)) do
+                local s_item, s_cat = r.item, r.category_key
+                local nm = XrayParser.getItemName(s_item, s_cat)
+                if nm then
+                    rows[#rows + 1] = { {
+                        text = nm .. "  ·  " .. tostring(r.category_label or s_cat),
+                        callback = function()
+                            UIManager:close(pd)
+                            commitAlias(s_item, s_cat)
+                        end,
+                    } }
+                end
+            end
+            if #rows == 0 then
+                -- No word overlap to rank by — straight to the category pick
+                show_category_pick()
+                return
+            end
+            rows[#rows + 1] = { { text = _("Pick from all entries…"), callback = function()
+                UIManager:close(pd)
+                show_category_pick()
+            end } }
+            rows[#rows + 1] = { { text = _("Cancel"), callback = function() UIManager:close(pd) end } }
+            pd = ButtonDialog:new{
+                title = T(_("Add \"%1\" as an alias of which entry?"), query),
+                buttons = rows,
+            }
+            UIManager:show(pd)
+        end
+
+        show_category_pick = function()
+            local pd
+            local rows = {}
+            for _c_idx, cat in ipairs(alias_cats) do
+                local c = cat
+                rows[#rows + 1] = { {
+                    text = tostring(c.label or c.key) .. " (" .. tostring(#c.items) .. ")",
+                    callback = function()
+                        UIManager:close(pd)
+                        show_entity_page(c, 1)
+                    end,
+                } }
+            end
+            rows[#rows + 1] = { { text = _("Cancel"), callback = function() UIManager:close(pd) end } }
+            pd = ButtonDialog:new{
+                title = T(_("Add \"%1\" as an alias of which entry?"), query),
+                buttons = rows,
+            }
+            UIManager:show(pd)
+        end
+
+        show_entity_page = function(cat, page)
+            local pd
+            local per_page = 8
+            local total_pages = math.max(1, math.ceil(#cat.items / per_page))
+            page = math.max(1, math.min(page, total_pages))
+            local rows = {}
+            for i = (page - 1) * per_page + 1, math.min(page * per_page, #cat.items) do
+                local it = cat.items[i]
+                local nm = XrayParser.getItemName(it, cat.key)
+                if nm then
+                    rows[#rows + 1] = { {
+                        text = nm,
+                        callback = function()
+                            UIManager:close(pd)
+                            commitAlias(it, cat.key)
+                        end,
+                    } }
+                end
+            end
+            local nav = {}
+            if total_pages > 1 then
+                table.insert(nav, { text = "◀", enabled = page > 1, callback = function()
+                    UIManager:close(pd)
+                    show_entity_page(cat, page - 1)
+                end })
+            end
+            table.insert(nav, { text = _("Back"), callback = function()
+                UIManager:close(pd)
+                show_category_pick()
+            end })
+            if total_pages > 1 then
+                table.insert(nav, { text = "▶", enabled = page < total_pages, callback = function()
+                    UIManager:close(pd)
+                    show_entity_page(cat, page + 1)
+                end })
+            end
+            rows[#rows + 1] = nav
+            pd = ButtonDialog:new{
+                title = T(_("Add \"%1\" as an alias of which entry?"), query)
+                    .. (total_pages > 1 and ("  (" .. page .. "/" .. total_pages .. ")") or ""),
+                buttons = rows,
+            }
+            UIManager:show(pd)
+        end
+
+        local nores
+        nores = ButtonDialog:new{
+            title = msg,
+            buttons = {
+                { { text = _("Add as alias of an entry…"), callback = function()
+                    UIManager:close(nores)
+                    show_target_picker()
+                end } },
+                { { text = _("Close"), callback = function() UIManager:close(nores) end } },
+            },
+        }
+        UIManager:show(nores)
     else
         -- Exact-identity fast path (device round 2026-08-13, ref #63): a query
         -- that IS an entity's name or alias goes straight to that entity —

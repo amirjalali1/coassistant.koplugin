@@ -1250,6 +1250,49 @@ function ActionCache.addDedupOfferedPairs(document_path, new_pairs)
     return ActionCache.setUserAliases(document_path, all)
 end
 
+--- Add one reader-asserted alias to an entity's user-alias record (the
+--- no-hits "Add as alias of…" flow, ref #63). Reuses an existing record
+--- key case-insensitively, dedupes against add, and removes the alias from
+--- ignore when present — an explicit add outranks an old ignore.
+--- @param document_path string The document file path
+--- @param item_name string The entity's display name (record key)
+--- @param alias string The alias to add
+--- @return boolean success
+function ActionCache.addUserAlias(document_path, item_name, alias)
+    if type(item_name) ~= "string" or item_name == ""
+        or type(alias) ~= "string" or alias == "" then
+        return false
+    end
+    local all = ActionCache.getUserAliases(document_path)
+    local key = item_name
+    for k in pairs(all) do
+        if type(k) == "string"
+            and k ~= ActionCache.NEVER_MERGE_KEY and k ~= ActionCache.DEDUP_OFFERED_KEY
+            and k:lower() == item_name:lower() then
+            key = k
+            break
+        end
+    end
+    local entry = all[key] or { add = {}, ignore = {} }
+    entry.add = entry.add or {}
+    entry.ignore = entry.ignore or {}
+    local alias_lower = alias:lower()
+    for i = #entry.ignore, 1, -1 do
+        if entry.ignore[i]:lower() == alias_lower then
+            table.remove(entry.ignore, i)
+        end
+    end
+    for _idx, a in ipairs(entry.add) do
+        if a:lower() == alias_lower then
+            all[key] = entry
+            return ActionCache.setUserAliases(document_path, all)
+        end
+    end
+    table.insert(entry.add, alias)
+    all[key] = entry
+    return ActionCache.setUserAliases(document_path, all)
+end
+
 --- Load the entity never-merge pair list (validated copy).
 --- @param document_path string The document file path
 --- @return table pairs Array of { name_a, name_b }

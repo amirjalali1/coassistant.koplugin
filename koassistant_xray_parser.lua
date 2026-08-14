@@ -1761,10 +1761,13 @@ end
 --- short form already finds every occurrence of the long one, and keeping
 --- both would double-count the same physical mention). Moved here from the
 --- browser (slice 2) so the mention lists, the native-search launches AND
---- ambient marking share one term truth.
+--- ambient marking share one term truth. The dropped longer variants come
+--- back as a SECOND return for callers that paint spans rather than count
+--- mentions (buildMarkEntities) — counting callers must keep ignoring it.
 --- @param item table X-Ray entity item
 --- @param item_title string|nil Fallback title when the item has no name
---- @return table terms Array of { text, regex? }
+--- @return table terms Array of { text, regex? } (substring-minimal)
+--- @return table dropped Longer variants removed by minimization
 function XrayParser.collectSearchTerms(item, item_title)
     local terms, seen = {}, {}
     local function add(t)
@@ -1789,7 +1792,7 @@ function XrayParser.collectSearchTerms(item, item_title)
     if type(aliases) == "table" then
         for _idx, a in ipairs(aliases) do add(a) end
     end
-    local minimal = {}
+    local minimal, dropped = {}, {}
     for i, t in ipairs(terms) do
         local contains_other = false
         local t_lower = t.text:lower()
@@ -1800,9 +1803,9 @@ function XrayParser.collectSearchTerms(item, item_title)
                 break
             end
         end
-        if not contains_other then table.insert(minimal, t) end
+        table.insert(contains_other and dropped or minimal, t)
     end
-    return minimal
+    return minimal, dropped
 end
 
 --- Ambient-marking entity list (slice 2, ref #78): one entry per markable
@@ -1810,6 +1813,14 @@ end
 --- (unmapped categories are their own family) and a normalized variant of
 --- each term for the cheap page-presence pre-check. Category gate =
 --- TEXT_MATCH_EXCLUDED, the same truth countItemOccurrences uses.
+--- Unlike the counting surfaces, the term set here INCLUDES the longer
+--- variants the minimizer dropped, sorted longest-first: the widest form
+--- present at an occurrence is the one that paints (device 2026-08-14: a
+--- one-word alias contained in the entity's full three-word name marked
+--- only the middle word of the full name). Zero steady-state cost — the
+--- scan's presence pre-check already gates each term's one-time search on
+--- the term actually appearing in the page text, so pages showing only the
+--- short form never pay for the long one.
 --- @param data table Parsed X-Ray data (user aliases already merged)
 --- @return table entities Array of { name, category_key, family, terms }
 function XrayParser.buildMarkEntities(data)
@@ -1817,7 +1828,11 @@ function XrayParser.buildMarkEntities(data)
     for _idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
         if not TEXT_MATCH_EXCLUDED[cat.key] then
             for _idx2, item in ipairs(cat.items) do
-                local terms = XrayParser.collectSearchTerms(item, nil)
+                local terms, long_variants = XrayParser.collectSearchTerms(item, nil)
+                for _idx3, lv in ipairs(long_variants) do
+                    table.insert(terms, lv)
+                end
+                table.sort(terms, function(a, b) return #a.text > #b.text end)
                 if #terms > 0 then
                     for _idx3, t in ipairs(terms) do
                         -- Whitespace-collapsed (NBSP too) to match the
@@ -1832,6 +1847,42 @@ function XrayParser.buildMarkEntities(data)
                         family = XrayParser.CATEGORY_FAMILY[cat.key] or cat.key,
                         terms = terms,
                     })
+                end
+            end
+        end
+    end
+    return out
+end
+
+--- Rank likely alias-target entities for a handle the X-Ray does NOT know
+--- (the no-hits "Add as alias of…" offer, ref #63): per-word substring
+--- search over names+aliases, first-hit order, capped. A shared word is
+--- the usual identity signal — a character reintroduced under a changed
+--- name tends to keep part of it — while a fully novel handle yields
+--- nothing and the caller falls back to the manual category pick.
+--- TEXT_MATCH_EXCLUDED categories are never targets: user aliases exist to
+--- mark and match text, which those never do.
+--- @param data table Parsed X-Ray data (user aliases already merged)
+--- @param query string The unknown handle
+--- @param cap number|nil Max suggestions (default 6)
+--- @return table results searchAll-shaped { item, category_key, category_label }
+function XrayParser.suggestAliasTargets(data, query, cap)
+    cap = cap or 6
+    if not data or type(query) ~= "string" then return {} end
+    local out, seen = {}, {}
+    local words = {}
+    for w in query:gmatch("%S+") do
+        if #w > 2 then words[#words + 1] = w end
+    end
+    for _w, w in ipairs(words) do
+        for _r, r in ipairs(XrayParser.searchAll(data, w, { skip_description = true })) do
+            if not TEXT_MATCH_EXCLUDED[r.category_key] then
+                local nm = XrayParser.getItemName(r.item, r.category_key)
+                local k = nm and (r.category_key .. "\0" .. nm:lower()) or nil
+                if k and not seen[k] then
+                    seen[k] = true
+                    out[#out + 1] = r
+                    if #out >= cap then return out end
                 end
             end
         end

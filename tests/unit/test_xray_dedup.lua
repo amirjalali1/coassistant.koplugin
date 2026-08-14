@@ -359,6 +359,29 @@ TestRunner:test("empty inputs rejected; reserved key skipped by old-format norma
     TestRunner:assertTrue(type(raw[1]) == "table", "still an array of pairs")
 end)
 
+TestRunner:test("addUserAlias: key reuse, add dedupe, ignore-removal (ref #63)", function()
+    TestRunner:assertEqual(ActionCache.addUserAlias(DOC_PATH, "Veyra Sol", "The Cartographer"), true, "add")
+    local all = ActionCache.getUserAliases(DOC_PATH)
+    TestRunner:assertEqual(all["Veyra Sol"].add[1], "The Cartographer", "stored under entity key")
+    -- case-variant entity name reuses the existing record key
+    TestRunner:assertEqual(ActionCache.addUserAlias(DOC_PATH, "VEYRA SOL", "Vey"), true, "case-variant add")
+    all = ActionCache.getUserAliases(DOC_PATH)
+    TestRunner:assertTrue(all["VEYRA SOL"] == nil, "no duplicate case-variant record")
+    TestRunner:assertEqual(#all["Veyra Sol"].add, 2, "second alias joined the same record")
+    -- re-adding case-folded is a no-op success
+    TestRunner:assertEqual(ActionCache.addUserAlias(DOC_PATH, "Veyra Sol", "vey"), true, "dupe ok")
+    TestRunner:assertEqual(#ActionCache.getUserAliases(DOC_PATH)["Veyra Sol"].add, 2, "no growth")
+    -- an explicit add outranks an old ignore
+    all = ActionCache.getUserAliases(DOC_PATH)
+    all["Veyra Sol"].ignore = { "Cartwright" }
+    TestRunner:assertEqual(ActionCache.setUserAliases(DOC_PATH, all), true, "seed ignore")
+    TestRunner:assertEqual(ActionCache.addUserAlias(DOC_PATH, "Veyra Sol", "CARTWRIGHT"), true, "add ignored term")
+    all = ActionCache.getUserAliases(DOC_PATH)
+    TestRunner:assertEqual(#(all["Veyra Sol"].ignore or {}), 0, "ignore entry removed")
+    TestRunner:assertEqual(all["Veyra Sol"].add[3], "CARTWRIGHT", "asserted alias added")
+    TestRunner:assertEqual(ActionCache.addUserAlias(DOC_PATH, "", "x"), false, "empty name refused")
+end)
+
 print("")
 print("  [section-merge prompt injection]")
 

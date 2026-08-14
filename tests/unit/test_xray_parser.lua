@@ -356,13 +356,46 @@ end)
 
 TestRunner:suite("slice 2 — collectSearchTerms / buildMarkEntities")
 TestRunner:test("terms: parenthetical strip, dedupe, substring-minimal set", function()
-    local terms = XrayParser.collectSearchTerms({
+    local terms, dropped = XrayParser.collectSearchTerms({
         name = "Jean Valjean", aliases = { "Valjean", "Theosis (Deification)" } })
     local texts = {}
     for _i, t in ipairs(terms) do texts[t.text] = true end
     TestRunner:ok(texts["Valjean"])
     TestRunner:ok(not texts["Jean Valjean"]) -- contains "Valjean", dropped
     TestRunner:ok(texts["Theosis"])
+    -- The dropped longer variant rides the second return (for span painting)
+    TestRunner:eq(#dropped, 1)
+    TestRunner:eq(dropped[1].text, "Jean Valjean")
+end)
+TestRunner:test("mark entities: dropped long variants included, longest-first", function()
+    -- A short alias contained in the full name: counting keeps only the
+    -- short form, but the MARKS term set must carry the full name first so
+    -- the widest form present at an occurrence is the one that paints
+    local data = {
+        characters = { { name = "Corvan Aldous Merek", aliases = { "Aldous" } } },
+    }
+    local ents = XrayParser.buildMarkEntities(data)
+    TestRunner:eq(#ents, 1)
+    local texts = {}
+    for _i, t in ipairs(ents[1].terms) do texts[#texts + 1] = t.text end
+    TestRunner:eq(#texts, 2)
+    TestRunner:eq(texts[1], "Corvan Aldous Merek")
+    TestRunner:eq(texts[2], "Aldous")
+    -- Long variant carries a presence-check norm like every other term
+    TestRunner:eq(ents[1].terms[1].norm, "corvan aldous merek")
+end)
+TestRunner:test("suggestAliasTargets: word overlap ranks, excluded cats out (ref #63)", function()
+    local data = {
+        characters = { { name = "Mara Ellison", aliases = { "Mara" } }, { name = "Tomas Cole" } },
+        timeline = { { event = "Mara arrives" } },
+    }
+    local s = XrayParser.suggestAliasTargets(data, "Mara Cole", 6)
+    TestRunner:eq(#s, 2)
+    TestRunner:eq(s[1].item.name, "Mara Ellison") -- shared given name ranks first
+    TestRunner:eq(s[2].item.name, "Tomas Cole")   -- shared surname second
+    -- The timeline event containing "Mara" is never a target
+    -- A fully novel single-word handle gives no signal
+    TestRunner:eq(#XrayParser.suggestAliasTargets(data, "Quorra"), 0)
 end)
 TestRunner:test("mark entities: families mapped, excluded categories out, norms present", function()
     local data = {
