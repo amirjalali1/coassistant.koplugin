@@ -10013,6 +10013,21 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
     -- target a book other than the one the reader has open (2026-08-13)
     if doc and doc.file ~= document_path then doc = nil end
 
+    -- Card target (round 19): the entity card already resolved ONE entity —
+    -- its "full entry" tap must open exactly that one, never a re-search
+    -- (device: two entries sharing a handle landed the tap on an unranked
+    -- search list instead of the entity the card had just shown). Consume-
+    -- once transient; the card threads it for live-main hits only, so the
+    -- target branch below reads the main artifact directly.
+    local card_target = config and config.features and config.features._xray_lookup_target
+    if config and config.features then config.features._xray_lookup_target = nil end
+    if card_target then
+        local main = ActionCache.getXrayCache(document_path)
+        if not (main and main.result) then
+            card_target = nil -- artifact vanished since the card resolved
+        end
+    end
+
     -- Build cleanup list: widgets to close when browser launches book text search.
     -- Prevents dictionary popup and cross-section results from blocking search highlights.
     local cleanup_widgets = {}
@@ -10022,7 +10037,8 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
     end
 
     -- Cross-section search: when multiple X-Rays exist and no override, search all
-    if not override_best then
+    -- (a card target skips this — its entity lives in the main artifact)
+    if not override_best and not card_target then
         local sections = ActionCache.getSectionXrays(document_path)
         local main = ActionCache.getXrayCache(document_path)
         local total_xrays = #sections + (main and main.result and 1 or 0)
@@ -10064,7 +10080,14 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
     end
 
     -- Find best X-Ray: prefer section covering current page, fall back to main
-    local best = override_best or ActionCache.findBestXray(document_path, doc)
+    -- (card target forces the MAIN artifact — that is where its entity lives,
+    -- and findBestXray could prefer a section covering the current page)
+    local best
+    if card_target then
+        best = { entry = ActionCache.getXrayCache(document_path) }
+    else
+        best = override_best or ActionCache.findBestXray(document_path, doc)
+    end
 
     if not best then
         UIManager:show(InfoMessage:new{
@@ -10120,6 +10143,29 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
     -- User search terms must match in lookup too, not only in the browser
     -- (F1, xray_marking_plan.md, ref #63)
     XrayParser.mergeUserAliases(data, ActionCache.getUserAliases(document_path))
+
+    -- Card target (round 19): open the card's own entity, stacked on its
+    -- category — no search at all. A stale target (entity renamed/removed
+    -- since the card resolved) falls through to the normal flow.
+    if card_target and card_target.name and card_target.category_key then
+        local titems = data[card_target.category_key]
+        if type(titems) == "table" then
+            for _t_idx, titem in ipairs(titems) do
+                if XrayParser.getItemName(titem, card_target.category_key) == card_target.name then
+                    local XrayBrowser = openXrayBrowserFromCache(ui, data, cached, config, plugin,
+                        book_metadata, best, #cleanup_widgets > 0 and cleanup_widgets or nil, document_path)
+                    for _c_idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
+                        if cat.key == card_target.category_key then
+                            XrayBrowser:showCategoryItems(cat)
+                            break
+                        end
+                    end
+                    XrayBrowser:showItemDetail(titem, card_target.category_key, card_target.name)
+                    return
+                end
+            end
+        end
+    end
 
     -- Search name + alias only (description matches are noise for dictionary lookup)
     local results = XrayParser.searchAll(data, query, { skip_description = true })
@@ -10192,9 +10238,48 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
                 end
             end
             XrayBrowser:showItemDetail(result.item, result.category_key, name)
+        elseif #exact > 1 then
+            -- Several entities share the exact handle (round 19, device: a
+            -- place and a lexicon term under one name): a compact
+            -- DISAMBIGUATION of just the exact matches, with the full search
+            -- one row away — the old path dumped straight into the browser's
+            -- full search, where the exact entries were not even on top. The
+            -- browser root is already open underneath as the landing base.
+            local ButtonDialog = require("ui/widget/buttondialog")
+            local chooser
+            local rows = {}
+            for _idx, r in ipairs(exact) do
+                local captured = r
+                local nm = XrayParser.getItemName(captured.item, captured.category_key)
+                rows[#rows + 1] = {{
+                    text = nm .. "  ·  " .. tostring(captured.category_label or captured.category_key),
+                    align = "left",
+                    callback = function()
+                        UIManager:close(chooser)
+                        for _c_idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
+                            if cat.key == captured.category_key then
+                                XrayBrowser:showCategoryItems(cat)
+                                break
+                            end
+                        end
+                        XrayBrowser:showItemDetail(captured.item, captured.category_key, nm)
+                    end,
+                }}
+            end
+            rows[#rows + 1] = {{
+                text = _("Full search results…"),
+                callback = function()
+                    UIManager:close(chooser)
+                    XrayBrowser:showSearchResults(query, true)
+                end,
+            }}
+            chooser = ButtonDialog:new{
+                title = T(_("\"%1\" matches %2 entries"), query, #exact),
+                buttons = rows,
+            }
+            UIManager:show(chooser)
         else
-            -- Fuzzy-only matches, or several entities sharing the exact
-            -- name: show search results in browser
+            -- Fuzzy-only matches: show search results in browser
             -- Skip "Search other X-Rays" button — cross-section search already ran
             XrayBrowser:showSearchResults(query, true)
         end

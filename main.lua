@@ -17344,6 +17344,13 @@ function AskGPT:_openXrayEntityDirect(query, opts)
     and self.action_service:getAction("highlight", "xray_lookup")
   if not xaction then return end
   self:updateConfigFromSettings()
+  -- Card target (round 19): the card resolved ONE entity — its "full entry"
+  -- opens exactly that one (consume-once transient; the lookup falls back to
+  -- the normal search when the target went stale)
+  if opts and opts.target then
+    configuration.features = configuration.features or {}
+    configuration.features._xray_lookup_target = opts.target
+  end
   Dialogs.executeDirectAction(self.ui, xaction, query, configuration, self,
     opts and opts.document_path and { document_path = opts.document_path } or nil)
 end
@@ -17370,7 +17377,15 @@ function AskGPT:openXrayCard(query, opts)
   local self_ref = self
   local function openFull(h)
     if h.source ~= "ahead" then
-      self_ref:_openXrayEntityDirect(h.query, opts)
+      -- Live-main hits carry the resolved identity so "full entry" opens the
+      -- entity the CARD showed — two entries sharing a handle used to dump
+      -- this tap on an unranked search list (round 19). Section hits keep
+      -- the plain lookup (their entity lives outside the main artifact).
+      self_ref:_openXrayEntityDirect(h.query, {
+        document_path = opts and opts.document_path or nil,
+        target = h.source == "live"
+          and { category_key = h.category_key, name = h.name } or nil,
+      })
       return
     end
     -- Ahead-only entity: the full entry crosses the reading position
