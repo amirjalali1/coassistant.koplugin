@@ -1785,6 +1785,8 @@ function PromptsManager:showStep3_Settings(state)
     local model_display = state.model
         or (pinned_tier_model and T(_("Auto: %1"), pinned_tier_model))
         or (state.provider and _("Provider default"))
+        or (self:globalTierHintLive(state)
+            and T(_("Global (tier: %1)"), self:getModelTierDisplayText(state)))
         or _("Global")
 
     -- Collect items, lay out 2 per row (same order as edit dialogs)
@@ -3174,6 +3176,21 @@ function PromptsManager:pinnedTierModelFor(state)
     return self:pinnedTierModelForPick(state)
 end
 
+-- Visual sibling for the UNPINNED shape (maintainer 2026-08-14): no
+-- provider/model pin but a live tier hint — the Model display must not read
+-- bare "Global" when the hint will re-pick the model at dispatch. The model
+-- resolves against whatever provider is ACTIVE then, so this answers "is the
+-- hint live", not "which model" (kill switch respected, like the pinned mirror).
+function PromptsManager:globalTierHintLive(state)
+    if state.provider or state.model then return nil end
+    local tier = state.model_tier
+    if not tier or tier == "none" then return nil end
+    local f = self.plugin and self.plugin.settings
+        and self.plugin.settings:readSetting("features") or {}
+    if f.use_action_tiers == false then return nil end
+    return tier
+end
+
 -- Provider selector dialog
 function PromptsManager:showProviderSelector(state, show_all)
     local ModelLists = require("koassistant_model_lists")
@@ -3493,6 +3510,8 @@ function PromptsManager:showBuiltinSettingsDialog(state)
     local model_display = state.model
         or (pinned_tier_model and T(_("Auto: %1"), pinned_tier_model))
         or (state.provider and _("Provider default"))
+        or (self:globalTierHintLive(state)
+            and T(_("Global (tier: %1)"), self:getModelTierDisplayText(state)))
         or _("Global")
 
     local buttons = {}
@@ -4451,6 +4470,8 @@ function PromptsManager:showCustomQuickSettingsDialog(state)
     local model_display = state.model
         or (pinned_tier_model and T(_("Auto: %1"), pinned_tier_model))
         or (state.provider and _("Provider default"))
+        or (self:globalTierHintLive(state)
+            and T(_("Global (tier: %1)"), self:getModelTierDisplayText(state)))
         or _("Global")
 
     local buttons = {
