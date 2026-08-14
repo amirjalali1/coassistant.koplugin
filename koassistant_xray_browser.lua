@@ -5355,10 +5355,13 @@ function XrayBrowser:showSearchResults(query, skip_cross_search)
 
     local items = {}
     local self_ref = self
+    local other_count = self:_countOtherXrays()
 
     -- Show X-Ray identity header when launched from external lookup
-    -- (user needs to know which X-Ray these results are from)
-    if skip_cross_search then
+    -- (user needs to know which X-Ray these results are from) — but only
+    -- when OTHER X-Rays exist for the book; the book's sole X-Ray needs no
+    -- identity line (device round 2026-08-14)
+    if skip_cross_search and other_count > 0 then
         local header
         if self.scope then
             header = self.scope.label or ""
@@ -5419,8 +5422,7 @@ function XrayBrowser:showSearchResults(query, skip_cross_search)
 
     -- "Search other X-Rays" button when others exist
     -- Skip when caller already performed cross-section search (e.g., "Look up in X-Ray")
-    local other_count = not skip_cross_search and self:_countOtherXrays() or 0
-    if other_count > 0 then
+    if not skip_cross_search and other_count > 0 then
         local captured_query = query
         table.insert(items, {
             text = T(_("Search other X-Rays (%1)"), other_count),
@@ -5428,6 +5430,31 @@ function XrayBrowser:showSearchResults(query, skip_cross_search)
             separator = true,
             callback = function()
                 self_ref:_showCrossXrayResults(captured_query)
+            end,
+        })
+    end
+
+    -- "Add as alias…" (ref #63): the no-hits dialog covers zero-hit
+    -- lookups, but a handle worth adding usually DOES substring-hit other
+    -- entries (a bare given name against the full-name entry) and lands on
+    -- this list instead — the same shared picker rides as the last row.
+    local q_trim = query and query:match("^%s*(.-)%s*$") or ""
+    if self.metadata and self.metadata.book_file and #q_trim > 2 and #q_trim <= 120 then
+        local captured_query = query
+        table.insert(items, {
+            text = T(_("Add \"%1\" as an alias…"), query),
+            bold = true,
+            separator = true,
+            callback = function()
+                local Dialogs = require("koassistant_dialogs")
+                Dialogs.showAliasTargetPicker{
+                    data = self_ref.xray_data,
+                    query = captured_query,
+                    document_path = self_ref.metadata.book_file,
+                    on_committed = function(target_item, target_cat_key, target_name)
+                        self_ref:showItemDetail(target_item, target_cat_key, target_name)
+                    end,
+                }
             end,
         })
     end
