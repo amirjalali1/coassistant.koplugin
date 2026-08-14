@@ -5768,6 +5768,34 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             if on_complete then on_complete(nil, "background: extraction truncated") end
             return nil
         end
+        -- A2 naming canon on the DEFAULT create path (maintainer 2026-08-11:
+        -- silent injection). Background and ladder creates never reach the
+        -- attended fold ask (Step 0 below), so grouped background creates
+        -- named recurring entities without the alias bridge — diverging from
+        -- attended ones. Same gate and same post-build injection as Step 0;
+        -- no dialog, and the fold itself stays manual at the group screen /
+        -- attended surfaces. `not using_cache` scopes this to name-birthing
+        -- requests (first rung, intro, one-shot create, rebuild) — updates
+        -- carry the entity index instead.
+        if prompt and prompt.cache_as_xray and not using_cache and cache_file
+            and not (config.features and (config.features._section_scope
+                or config.features._section_xray)) then
+            local XrayMerge = require("koassistant_xray_merge")
+            local src = XrayMerge.seedSource(cache_file, config.features,
+                temp_config and temp_config.provider, ui)
+            local canon = src and XrayMerge.namingCanonBlock(src.parsed, src.title)
+            if canon then
+                local msgs = history:getMessages()
+                for i = 1, #msgs do
+                    if msgs[i].role == "user" and msgs[i].is_context then
+                        msgs[i].content = msgs[i].content .. "\n\n" .. canon
+                        break
+                    end
+                end
+                logger.info("KOAssistant: naming canon injected into background X-Ray create, source:",
+                    src.title)
+            end
+        end
         -- Item 50 follow-up (rounds 2): background size safeguard. The FIRST
         -- request of a user-initiated build may dialog — it fires right after
         -- the confirm tap, so that moment is attended; acceptance sticks on
@@ -5982,7 +6010,8 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     -- the naming canon into the already-built context message — post-build,
     -- so the canon never meets the placeholder pass (merge-module
     -- wire-safety rule). Declining sends the create untouched. Background
-    -- and ladder paths returned above and never reach this.
+    -- and ladder paths returned above and never reach this — their creates
+    -- get the canon SILENTLY in the background branch (A2, same gate).
     if prompt and prompt.cache_as_xray and not using_cache and cache_file
         and not (config.features and (config.features._section_scope
             or config.features._section_xray)) then

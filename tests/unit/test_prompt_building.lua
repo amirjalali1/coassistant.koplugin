@@ -107,12 +107,23 @@ local function createMockExtractor(settings, mock_data)
         return mock_data.annotations or { formatted = "- Test annotation with note" }
     end
 
+    -- Real extraction results carry char_count (= #text; extractor contract
+    -- "{ text, truncated, char_count, disabled, ... }") — the A8
+    -- empty-extraction guard reads it, so mock results must too
+    local function withCharCount(result)
+        if result.char_count == nil and type(result.text) == "string" then
+            result.char_count = #result.text
+        end
+        return result
+    end
+
     extractor.getBookText = function()
         -- Trusted provider bypasses global gate
         if not extractor:isProviderTrusted() and not extractor:isBookTextExtractionEnabled() then
             return { text = "", disabled = true }
         end
-        return mock_data.book_text or { text = "This is the book text content up to current position." }
+        return withCharCount(mock_data.book_text
+            or { text = "This is the book text content up to current position." })
     end
 
     extractor.getFullDocumentText = function()
@@ -120,11 +131,14 @@ local function createMockExtractor(settings, mock_data)
         if not extractor:isProviderTrusted() and not extractor:isBookTextExtractionEnabled() then
             return { text = "", disabled = true }
         end
-        return mock_data.full_document or { text = "This is the full document text." }
+        return withCharCount(mock_data.full_document
+            or { text = "This is the full document text." })
     end
 
     extractor.getReadingProgress = function()
-        return mock_data.reading_progress or { formatted = "50%", decimal = 0.5 }
+        -- percent is guaranteed non-nil by the real implementation (init 0);
+        -- the A8 empty-at-start guard compares it
+        return mock_data.reading_progress or { percent = 50, formatted = "50%", decimal = 0.5 }
     end
 
     extractor.getReadingStats = function()

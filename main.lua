@@ -7974,16 +7974,23 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
     })
     table.insert(vgroup, VerticalSpan:new{ width = Size.padding.default })
 
-    -- Wrap in dialog frame
+    -- Wrap in dialog frame. Stock radio-picker composition (RadioButtonWidget
+    -- idiom): frame padding 0 so the title bar spans edge-to-edge, content
+    -- column CENTERED — the old large frame padding plus a left-aligned column
+    -- narrower than the title bar sat everything (Run button included) one
+    -- padding left of the dialog's true center (polish round 2026-08-14).
     local widget_frame = FrameContainer:new{
       radius = Size.radius.window,
-      padding = Size.padding.large,
+      padding = 0,
       margin = 0,
       background = Blitbuffer.COLOR_WHITE,
       VerticalGroup:new{
         align = "left",
         title_bar,
-        vgroup,
+        CenterContainer:new{
+          dimen = Geom:new{ w = dialog_width, h = vgroup:getSize().h },
+          vgroup,
+        },
       },
     }
     local movable = MovableContainer:new{ widget_frame }
@@ -10046,12 +10053,21 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
     })
     table.insert(vgroup, VerticalSpan:new{ width = Size.padding.default })
 
+    -- Stock radio-picker composition (same fix as _showUnifiedActionPopup,
+    -- polish round 2026-08-14): frame padding 0, content column centered
     local widget_frame = FrameContainer:new{
       radius = Size.radius.window,
-      padding = Size.padding.large,
+      padding = 0,
       margin = 0,
       background = Blitbuffer.COLOR_WHITE,
-      VerticalGroup:new{ align = "left", title_bar, vgroup },
+      VerticalGroup:new{
+        align = "left",
+        title_bar,
+        CenterContainer:new{
+          dimen = Geom:new{ w = dialog_width, h = vgroup:getSize().h },
+          vgroup,
+        },
+      },
     }
     local movable = MovableContainer:new{ widget_frame }
     -- Top-anchor on rebuilds (same trick as _showUnifiedActionPopup): no
