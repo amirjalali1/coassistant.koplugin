@@ -4,10 +4,11 @@ Kimi (Moonshot) API Handler
 OpenAI-compatible handler with regional endpoint selection (Z.AI pattern).
 Moonshot runs two SEPARATE platforms whose API keys are NOT interchangeable
 (T9 refresh 2026-08-14): keys minted on one host 401 against the other.
+  - International: platform.kimi.ai      -> api.moonshot.ai  (default)
   - China:         platform.moonshot.cn  -> api.moonshot.cn
-  - International: platform.kimi.ai      -> api.moonshot.ai
-Default stays "china" (the long-shipped endpoint our signup docs point at);
-international users flip Settings > Advanced > Provider Settings > Kimi Region.
+Fresh installs default to "international"; a one-time initSettings migration
+(_kimi_region_migrated) stamps kimi_region="china" for installs that already
+held a kimi key — those keyed against the China platform our docs pointed at.
 
 @module kimi
 ]]
@@ -18,8 +19,8 @@ local KimiHandler = OpenAICompatibleHandler:new()
 
 -- Regional endpoints for Kimi (keys are region-locked — see header)
 local REGIONAL_ENDPOINTS = {
-    china = "https://api.moonshot.cn/v1/chat/completions",
     international = "https://api.moonshot.ai/v1/chat/completions",
+    china = "https://api.moonshot.cn/v1/chat/completions",
 }
 
 function KimiHandler:getProviderName()
@@ -35,8 +36,8 @@ function KimiHandler:customizeUrl(url, config)
     if config.base_url then
         return config.base_url
     end
-    local region = config.features and config.features.kimi_region or "china"
-    return REGIONAL_ENDPOINTS[region] or REGIONAL_ENDPOINTS.china
+    local region = config.features and config.features.kimi_region or "international"
+    return REGIONAL_ENDPOINTS[region] or REGIONAL_ENDPOINTS.international
 end
 
 -- Add hint for auth errors about region setting (keys are region-locked)

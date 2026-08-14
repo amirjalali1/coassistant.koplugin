@@ -2853,6 +2853,11 @@ local SettingsSchema = {
                     type = "submenu",
                     text = _("Provider Settings"),
                     items = {
+                        -- NOTE: the zai/qwen/kimi region rows and the Z.AI
+                        -- search engine row are MIRRORED in the provider/model
+                        -- hub panels (main.lua buildModelMenu
+                        -- provider_radio_rows) — same features keys; keep the
+                        -- option lists in sync in both places.
                         {
                             id = "zai_region",
                             type = "radio",
@@ -2928,19 +2933,19 @@ local SettingsSchema = {
                             type = "radio",
                             text_func = function(plugin)
                                 local f = plugin.settings:readSetting("features") or {}
-                                local region = f.kimi_region or "china"
+                                local region = f.kimi_region or "international"
                                 local labels = {
-                                    china = _("China"),
                                     international = _("International"),
+                                    china = _("China"),
                                 }
                                 return T(_("Kimi Region: %1"), labels[region] or region)
                             end,
-                            help_text = _("Select the Kimi (Moonshot) platform your API key was issued on.\n\nKeys are NOT interchangeable between the two platforms:\n- China: platform.moonshot.cn (api.moonshot.cn)\n- International: platform.kimi.ai (api.moonshot.ai)"),
+                            help_text = _("Select the Kimi (Moonshot) platform your API key was issued on.\n\nKeys are NOT interchangeable between the two platforms:\n- International: platform.kimi.ai (api.moonshot.ai)\n- China: platform.moonshot.cn (api.moonshot.cn)"),
                             path = "features.kimi_region",
-                            default = "china",
+                            default = "international",
                             options = {
-                                { value = "china", text = _("China (api.moonshot.cn)") },
                                 { value = "international", text = _("International (api.moonshot.ai)") },
+                                { value = "china", text = _("China (api.moonshot.cn)") },
                             },
                         },
                     },

@@ -119,6 +119,7 @@ Registry.SETTINGS_SUBKEYS = {
         "_quiz_chapter_level_reset", "_language_prompt_shown",
         "_qs_layout_v2",
         "_image_gen_action_v1",  -- old Show-Generate-Image toggle → action dismissal seed (main.lua initSettings)
+        "_kimi_region_migrated", -- pre-split kimi keys stamped kimi_region="china" (main.lua initSettings, 2026-08-14)
         "setup_wizard_completed",                            -- top-level (see TOPLEVEL_SUBKEYS)
         -- Setup Wizard v2 (koassistant_setup_wizard.lua, 2026-08-11; inert
         -- until the release flip). The two _wizard_*_install/_writes records

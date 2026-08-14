@@ -167,10 +167,11 @@ local ProviderDefaults = {
     kimi = {
         provider = "kimi",
         model = getDefaultModel("kimi"),
-        -- China platform (default). kimi.lua:customizeUrl swaps to the
-        -- international api.moonshot.ai per features.kimi_region — the two
-        -- platforms' keys are NOT interchangeable (T9 2026-08-14).
-        base_url = "https://api.moonshot.cn/v1/chat/completions",
+        -- International platform (the default since 2026-08-14; was .cn).
+        -- kimi.lua:customizeUrl swaps per features.kimi_region — the two
+        -- platforms' keys are NOT interchangeable (T9 2026-08-14); a one-time
+        -- migration stamps pre-split keyed installs "china".
+        base_url = "https://api.moonshot.ai/v1/chat/completions",
         additional_parameters = {
             temperature = 0.7,
             max_tokens = 16384

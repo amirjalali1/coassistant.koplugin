@@ -1559,6 +1559,11 @@ function AskGPT:initSettings()
       behavior_migrated = true,
       _tools_posture_migrated = true,
       _tools_binary_migrated = true,
+      -- Kimi regional split (2026-08-14): a fresh install must never be
+      -- stamped kimi_region="china" just because apikeys.lua was pre-filled —
+      -- only UPGRADING installs (which keyed against the China platform our
+      -- docs pointed at) get the preserving stamp below.
+      _kimi_region_migrated = true,
     }
     if user_config_loaded then
       for k, v in pairs(config_file_defaults.features) do
@@ -1598,6 +1603,23 @@ function AskGPT:initSettings()
         end
       end
       features.show_image_gen_in_highlight = nil
+      needs_save = true
+    end
+
+    -- Kimi regional split (2026-08-14): the schema default is "international",
+    -- but every PRE-SPLIT kimi key was minted on the China platform our docs
+    -- pointed at, and Moonshot keys are region-locked. One-time here, not in
+    -- the pure migrations module: detecting an existing key needs
+    -- BaseHandler.getApiKey (GUI + apikeys.lua). Fresh installs seed the stamp
+    -- above so a brand-new key is never mis-stamped. Stamp registered in the
+    -- storage registry's internal bucket.
+    if not features._kimi_region_migrated then
+      features._kimi_region_migrated = true
+      if features.kimi_region == nil
+          and require("koassistant_api.base").getApiKey("kimi", self.settings) then
+        features.kimi_region = "china"
+        logger.info("KOAssistant: existing kimi key stamped kimi_region=china (region-locked keys)")
+      end
       needs_save = true
     end
 
@@ -3699,6 +3721,83 @@ function AskGPT:buildModelMenu(simplified, provider_override)
         callback = function(touchmenu_instance)
           self_ref:showCustomProviderOptions(custom_provider_config,
             menuRefresher(touchmenu_instance))
+        end,
+      })
+    end
+
+    -- Provider-specific settings (regional endpoints, Z.AI search engine),
+    -- MIRRORED from Settings ▸ Advanced ▸ Provider Settings — same features
+    -- keys, two doors to one setting (maintainer 2026-08-14; option lists must
+    -- stay in sync with the schema rows, cross-noted there). Row labels
+    -- refresh via text_func; sub_item_table_func stays side-effect-free
+    -- (menu-search evaluates it while indexing).
+    local provider_radio_rows = {
+      zai = {
+        { key = "zai_region", tpl = _("Region: %1"), default = "international",
+          options = {
+            { value = "international", text = _("International (api.z.ai)") },
+            { value = "china", text = _("China (open.bigmodel.cn)") },
+          } },
+        { key = "zai_search_engine", tpl = _("Search engine: %1"), default = "search_pro_jina",
+          options = {
+            { value = "search_pro_jina", text = _("Jina (international, default)") },
+            { value = "search_pro_bing", text = _("Bing (international)") },
+            { value = "search_pro_quark", text = _("Quark (Chinese web)") },
+            { value = "search_pro_sogou", text = _("Sogou (Chinese web)") },
+            { value = "search_pro", text = _("Pro (Chinese web)") },
+            { value = "search_std", text = _("Basic (Chinese web)") },
+          } },
+      },
+      qwen = {
+        { key = "qwen_region", tpl = _("Region: %1"), default = "international",
+          options = {
+            { value = "international", text = _("International (Singapore)") },
+            { value = "china", text = _("China (Beijing)") },
+            { value = "us", text = _("US (Virginia)") },
+          } },
+      },
+      kimi = {
+        { key = "kimi_region", tpl = _("Region: %1"), default = "international",
+          options = {
+            { value = "international", text = _("International (api.moonshot.ai)") },
+            { value = "china", text = _("China (api.moonshot.cn)") },
+          } },
+      },
+    }
+    for _idx, spec in ipairs(provider_radio_rows[provider] or {}) do
+      local spec_copy = spec
+      table.insert(items, {
+        text_func = function()
+          local f = self_ref.settings:readSetting("features") or {}
+          local current = f[spec_copy.key] or spec_copy.default
+          local label = current
+          for _i, opt in ipairs(spec_copy.options) do
+            if opt.value == current then label = opt.text break end
+          end
+          return T(spec_copy.tpl, label)
+        end,
+        sub_item_table_func = function()
+          local sub = {}
+          for _i, opt in ipairs(spec_copy.options) do
+            local opt_copy = opt
+            table.insert(sub, {
+              text = opt_copy.text,
+              radio = true,
+              checked_func = function()
+                local f = self_ref.settings:readSetting("features") or {}
+                return (f[spec_copy.key] or spec_copy.default) == opt_copy.value
+              end,
+              callback = function()
+                local f = self_ref.settings:readSetting("features") or {}
+                f[spec_copy.key] = opt_copy.value
+                self_ref.settings:saveSetting("features", f)
+                self_ref.settings:flush()
+                self_ref:updateConfigFromSettings()
+              end,
+              keep_menu_open = true,
+            })
+          end
+          return sub
         end,
       })
     end
