@@ -127,18 +127,23 @@ local ModelLists = {
         -- Reasoning (Magistral 1.2)
         "magistral-medium-latest",
         "magistral-small-latest",       -- open-weight (Apache 2.0)
-        -- Ministral edge models (2512 generation; probed 2026-07-28: no reasoning
-        -- axis, temperature free, tools OK)
+        -- Ministral edge models (2512 generation; 14b/8b probed 2026-07-28,
+        -- 3b probed 2026-08-14: no reasoning axis, temperature free, tools OK)
         "ministral-14b-latest",         -- fast
-        "ministral-8b-latest",          -- ultrafast
+        "ministral-8b-latest",
+        "ministral-3b-latest",          -- ultrafast ($0.10/M in+out, vision+tools)
         -- Coding
         "codestral-latest",
     },
 
     xai = {
-        -- Grok 4.5 (current flagship, 500K context; the documented agent-tools
+        -- Grok 4.6 (flagship since 2026-08-12; 500K context, $2/$6 — grok-4.5
+        -- successor. Probed 2026-08-14: effort minimal..xhigh, effort "none"
+        -- REJECTED (cannot disable reasoning — unlike 4.5/4.3), temp free, tools OK)
+        "grok-4.6",                     -- flagship (default) + reasoning
+        -- Grok 4.5 (500K context; the documented agent-tools
         -- model — native web search rides its Responses endpoint)
-        "grok-4.5",                     -- flagship (default) + reasoning
+        "grok-4.5",                     -- reasoning
         -- Grok 4.3 (1M context)
         "grok-4.3",                     -- reasoning
         -- Grok 4.20 (1M context; reasoning toggle baked into the slug)
@@ -425,7 +430,7 @@ local ModelLists = {
         ollama     = { "llama4", "llama3.3" },
         groq       = { "llama-3.3-70b-versatile" },
         mistral    = { "mistral-large-latest" },
-        xai        = { "grok-4.5", "grok-4.3", "grok-4.20-beta-0309-non-reasoning", "grok-4-1-fast-non-reasoning" },
+        xai        = { "grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-beta-0309-non-reasoning", "grok-4-1-fast-non-reasoning" },
         openrouter = { "anthropic/claude-sonnet-5", "anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.5" },
         requesty   = { "openai/gpt-4o-mini" },
         qwen       = { "qwen3-max" },
@@ -461,7 +466,7 @@ local ModelLists = {
             gemini = "gemini-3.6-flash",             -- Pro models are paid-only; keep tier free-tier usable (3.6 flash assumed free-tier)
             groq = "llama-3.3-70b-versatile",
             mistral = "mistral-large-latest",
-            xai = "grok-4.5",
+            xai = "grok-4.6",
             cohere = "command-a-plus-05-2026",
             ollama = "llama4",
             openrouter = "anthropic/claude-opus-5",  -- mirrors the direct-Anthropic re-tier (opus-5 flagship, sonnet-5 standard)
@@ -532,7 +537,7 @@ local ModelLists = {
             deepseek = "deepseek-v4-flash",
             gemini = "gemini-3.5-flash-lite",
             groq = "llama-3.1-8b-instant",
-            mistral = "ministral-8b-latest",
+            mistral = "ministral-3b-latest",
             xai = "grok-4.20-0309-non-reasoning",
             cohere = "command-r7b-12-2024",
             ollama = "tinyllama",

@@ -153,6 +153,8 @@ ModelAudit.DELIBERATE_SKIPS = {
         ["mistral-medium-3.5"] = "curated via mistral-medium-latest",
         ["mistral-tiny-latest"] = "legacy tiny tier",
         ["mistral-tiny-2407"] = "legacy tiny tier",
+        ["glm-5-2"] = "partner-hosted GLM - probe blocked (rate-limited on our tier 2026-08-14)",
+        ["zai-glm-5-2"] = "partner-hosted GLM - probe blocked (rate-limited on our tier 2026-08-14)",
     },
     xai = {
         ["grok-4.20-multi-agent-0309"] = "specialised multi-agent variant",

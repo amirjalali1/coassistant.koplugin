@@ -224,9 +224,10 @@ ModelConstraints.capabilities = {
         thinking = { "DeepSeek-V3.1", "DeepSeek-V3.2" },
     },
     xai = {
+        -- grok-4.6 supports reasoning_effort minimal..xhigh ("none" rejected — probe 2026-08-14);
         -- grok-4.5/4.3 and the grok-4.20 reasoning variant support reasoning_effort (none/low/medium/high)
         -- The grok-4.20 non-reasoning slug has no effort control
-        reasoning = { "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning" },
+        reasoning = { "grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning" },
         -- Grok-4-family models take the native web_search agent tool on xAI's
         -- Responses endpoint (/v1/responses, OpenAI-compatible wire — the old
         -- chat-completions live search returns 410 Gone since 2026-01-12).
@@ -729,6 +730,12 @@ ModelConstraints.reasoning_profiles = {
           stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
     },
     xai = {
+        -- grok-4.6 (probed 2026-08-14): reasons by default, effort "none" REJECTED
+        -- (cannot disable — unlike 4.5/4.3, so the family fallback's off_option would
+        -- 400 on the Minimal stance); ladder gains minimal + xhigh, "max" rejected.
+        { match = "grok-4.6", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
+          options = { "minimal", "low", "medium", "high", "xhigh" }, default_option = "high",
+          stance_map = { minimal = { state = "on", option = "minimal" }, maximum = { state = "on", option = "xhigh" } } },
         -- grok-4.5 / 4.3 / 4.20 reasoning: reasons by default, disableable via effort "none".
         { match = "grok-4.5", axis = "effort", default_state = "on", can_disable = true, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high", off_option = "none",
