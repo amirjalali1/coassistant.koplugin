@@ -190,6 +190,14 @@ ToolWire.adapters.mistral = ToolWire.adapters.openai
 ToolWire.adapters.groq = ToolWire.adapters.openai
 ToolWire.adapters.xai = ToolWire.adapters.openai
 
+-- Ollama (probed live on 0.17.7, 2026-08-14): OpenAI tool wire with object-form
+-- `arguments` — the raw assistant turn echoes verbatim (object arguments
+-- accepted back) and {role="tool", tool_call_id, content} results replay
+-- cleanly, so the openai adapter fits unchanged. The capability half of the
+-- runner's gate is DERIVED per model from /api/show's capabilities array
+-- (fetchDerivedModelCaps) — local model names are user-specific, never curated.
+ToolWire.adapters.ollama = ToolWire.adapters.openai
+
 -- Community set (M1): plain OpenAI chat wire, parser key "openai" (shared
 -- _tool_calls extraction). The capability half of the runner's gate comes from
 -- the derived layer ("Test this provider") or user grants — never curated.

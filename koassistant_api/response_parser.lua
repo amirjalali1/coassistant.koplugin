@@ -694,6 +694,33 @@ local RESPONSE_TRANSFORMERS = {
             return false, response.error
         end
 
+        -- Tool calls (Track 35; probed Ollama 0.17.7): OpenAI-shaped entries,
+        -- except `arguments` arrives as a DECODED OBJECT, not a JSON string.
+        -- ids are present on 0.17.x. Type-check every level — luajson decodes
+        -- JSON null to a truthy function sentinel.
+        if response.message and type(response.message.tool_calls) == "table"
+                and #response.message.tool_calls > 0 then
+            local calls = {}
+            for _, tc in ipairs(response.message.tool_calls) do
+                local fn = type(tc) == "table" and type(tc["function"]) == "table"
+                    and tc["function"] or nil
+                if fn and type(fn.name) == "string" then
+                    table.insert(calls, {
+                        id = type(tc.id) == "string" and tc.id or nil,
+                        name = fn.name,
+                        args = type(fn.arguments) == "table" and fn.arguments or {},
+                    })
+                end
+            end
+            if #calls > 0 then
+                return true, {
+                    _tool_calls = true,
+                    calls = calls,
+                    raw_assistant_turn = response.message,
+                }, nil, nil
+            end
+        end
+
         if response.message and response.message.content then
             local content = response.message.content
             -- Extract <think> tags from R1 models running locally

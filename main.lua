@@ -1992,7 +1992,40 @@ end
 -- ~2 KB endpoint; synchronous — only called behind explicit user actions (add custom
 -- model / refresh row). Returns true when metadata was fetched and recorded.
 function AskGPT:fetchDerivedModelCaps(provider, model)
-  if provider ~= "openrouter" or not model or model == "" then return false end
+  if not model or model == "" then return false end
+  -- Ollama: /api/show returns a per-model `capabilities` array (probed 0.17.7:
+  -- ["completion","tools",...]) — recorded as a derived params set so
+  -- supportsCapability("ollama", <model>, "tools") resolves per LOCAL model
+  -- (names are user-specific; curation is impossible). Local + fast, but only
+  -- ever called behind explicit user actions (model pick, custom add, refresh).
+  if provider == "ollama" then
+    local BaseHandler = require("koassistant_api.base")
+    local json = require("json")
+    local ModelOverrides = require("koassistant_model_overrides")
+    local d = self:getProviderDescriptor("ollama")
+    local base = d and d.base_url or ""
+    local show_url = base:gsub("/api/chat$", "") .. "/api/show"
+    local code, body = BaseHandler.fetchInSubprocess(show_url, {
+      timeout = 5,
+      method = "POST",
+      headers = { ["Content-Type"] = "application/json" },
+      body = json.encode({ model = model }),
+    })
+    if tonumber(code) ~= 200 or type(body) ~= "string" or body == "" then return false end
+    local ok, decoded = pcall(json.decode, body)
+    if not ok or type(decoded) ~= "table" or type(decoded.capabilities) ~= "table" then
+      return false
+    end
+    local params = {}
+    for _idx, cap in ipairs(decoded.capabilities) do
+      if type(cap) == "string" then params[cap] = true end
+    end
+    -- No-tools models need no explicit false: derivedParam treats a recorded
+    -- entry WITHOUT the param as a definitive no (and the serializer only
+    -- persists true values anyway).
+    return ModelOverrides.recordDerived(provider, model, params)
+  end
+  if provider ~= "openrouter" then return false end
   local BaseHandler = require("koassistant_api.base")
   local json = require("json")
   local ModelOverrides = require("koassistant_model_overrides")
@@ -3674,6 +3707,14 @@ function AskGPT:buildModelMenu(simplified, provider_override)
             or T(_("Model: %1"), model_copy),
           timeout = 1.5,
         })
+        -- Ollama: derive this model's capabilities from /api/show (tools gate —
+        -- local model names can't be curated). Deferred so the notification
+        -- paints first; server-down failure is silent, retried on next pick.
+        if provider == "ollama" then
+          UIManager:scheduleIn(0.2, function()
+            self_ref:fetchDerivedModelCaps("ollama", model_copy)
+          end)
+        end
         -- Same key-setup offer as the provider picker (the selection stands
         -- either way — Cancel just leaves the key for later).
         if switching and not self_ref:isProviderConfigured(provider) then
@@ -3856,7 +3897,7 @@ function AskGPT:buildModelMenu(simplified, provider_override)
                         -- the curated lists. Delayed so the notification paints first;
                         -- offline failure is silent (family fallbacks still apply,
                         -- retry via Manage custom models -> Refresh).
-                        if provider == "openrouter" then
+                        if provider == "openrouter" or provider == "ollama" then
                           UIManager:scheduleIn(0.2, function()
                             if self_ref:fetchDerivedModelCaps(provider, new_model) then
                               UIManager:show(Notification:new{
@@ -4210,9 +4251,10 @@ function AskGPT:showManageCustomModelsMenu(provider, on_change)
     }})
   end
 
-  -- OpenRouter: re-fetch derived capabilities for all custom models (item 19
-  -- auto-derive) — covers models added before the feature existed and offline adds.
-  if provider == "openrouter" then
+  -- OpenRouter + Ollama: re-fetch derived capabilities for all custom models
+  -- (item 19 auto-derive; ollama = /api/show capabilities) — covers models
+  -- added before the feature existed and offline adds.
+  if provider == "openrouter" or provider == "ollama" then
     table.insert(buttons, {{
       text = _("Refresh model capabilities"),
       callback = function()

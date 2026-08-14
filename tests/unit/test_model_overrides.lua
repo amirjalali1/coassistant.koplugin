@@ -230,6 +230,13 @@ ModelOverrides._setDerivedForTests({
         ["somevendor/basic"] = { fetched = 1753500000,
             params = { temperature = true } },                          -- neither
     },
+    -- Ollama rides the same derived layer (fetchDerivedModelCaps /api/show
+    -- branch, 2026-08-14): capabilities array -> params set; there is no
+    -- curated ollama tools list, so derived data is the ONLY grant path.
+    ollama = {
+        ["qwen2.5:0.5b"] = { fetched = 1786700000, params = { tools = true, completion = true } },
+        ["gemma:2b"] = { fetched = 1786700000, params = { completion = true } },
+    },
 })
 
 TestRunner:check("derived grants tools after curated miss",
@@ -238,6 +245,13 @@ TestRunner:check("derived absence of tools denies",
     not ModelConstraints.supportsCapability("openrouter", "somevendor/basic", "tools"))
 TestRunner:check("curated family grant unaffected by missing derived data",
     ModelConstraints.supportsCapability("openrouter", "anthropic/claude-sonnet-5", "tools"))
+
+TestRunner:check("ollama derived grants tools per local model",
+    ModelConstraints.supportsCapability("ollama", "qwen2.5:0.5b", "tools"))
+TestRunner:check("ollama recorded model without tools capability denies",
+    not ModelConstraints.supportsCapability("ollama", "gemma:2b", "tools"))
+TestRunner:check("ollama unknown model (never derived) denies",
+    not ModelConstraints.supportsCapability("ollama", "mystery:7b", "tools"))
 
 p = ModelConstraints.getReasoningProfile("openrouter", "moonshotai/kimi-k2-0905")
 TestRunner:check("catch-all downgraded to passthrough when derived says no reasoning",
