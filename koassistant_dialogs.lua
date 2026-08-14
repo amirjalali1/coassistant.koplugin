@@ -4957,7 +4957,10 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     -- Merge partial update into existing data when available
                     if using_cache and message_data._parsed_old_xray then
                         -- To debug X-Ray merge: uncomment koassistant_debug_utils.dumpXrayMerge() below
-                        parsed = XrayParser.merge(message_data._parsed_old_xray, parsed)
+                        local never_pairs = cache_file
+                            and require("koassistant_action_cache").getNeverMergePairs(cache_file)
+                        parsed = XrayParser.merge(message_data._parsed_old_xray, parsed,
+                            never_pairs and { never_pairs = never_pairs } or nil)
                         logger.info("KOAssistant: Merged incremental X-Ray update into existing data")
                         -- Wake-pass (carry layer 2): entities arriving in this
                         -- slice promote their carried history

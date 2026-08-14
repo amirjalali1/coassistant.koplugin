@@ -288,12 +288,14 @@ end
 ---   both sides parse and BEFORE the delta merge — may mutate either in place
 ---   (item 44: the cross-book merge applies mechanical background updates and
 ---   strips disobedient rewrites here). base_parsed is nil in complete mode.
+--- @param never_pairs table|nil ActionCache.getNeverMergePairs output — the
+---   reader's non-identical rulings, guarded in the merge's rename fold
 --- @return table|nil parsed Merged/complete X-Ray data table
 --- @return string|nil err Error text (model refusal or unparseable output)
 --- @return string|nil cache_json Serialized JSON for cache storage (pretty
 ---   under dkjson in the test env; compact under KOReader's json — the cache
 ---   is machine-read either way)
-function WriteBack.parseXrayAnswer(answer, base, transform)
+function WriteBack.parseXrayAnswer(answer, base, transform, never_pairs)
     local XrayParser = require("koassistant_xray_parser")
     local parsed = XrayParser.parse(answer or "")
     if parsed and parsed.error then
@@ -324,7 +326,8 @@ function WriteBack.parseXrayAnswer(answer, base, transform)
         if type(transform) == "function" then
             transform(parsed, base_parsed)
         end
-        parsed = XrayParser.merge(base_parsed, parsed)
+        parsed = XrayParser.merge(base_parsed, parsed,
+            never_pairs and { never_pairs = never_pairs } or nil)
     elseif type(transform) == "function" then
         transform(parsed, nil)
     end
@@ -405,7 +408,14 @@ function WriteBack.applyXray(opts)
     if not (opts and opts.document_path and opts.answer) then
         return false, "missing document_path or answer"
     end
-    local parsed, err, cache_json = WriteBack.parseXrayAnswer(opts.answer, opts.base, opts.transform)
+    local never_pairs
+    do
+        local ok_np, np = pcall(function()
+            return require("koassistant_action_cache").getNeverMergePairs(opts.document_path)
+        end)
+        if ok_np then never_pairs = np end
+    end
+    local parsed, err, cache_json = WriteBack.parseXrayAnswer(opts.answer, opts.base, opts.transform, never_pairs)
     if not parsed then
         return false, err or "parse failed"
     end

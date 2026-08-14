@@ -2164,20 +2164,77 @@ end
 --- already present. nil when both sides are empty.
 local function unionAliases(keep_aliases, new_aliases)
     local out, seen = {}, {}
-    for _idx, list in ipairs({ keep_aliases, new_aliases }) do
-        if type(list) == "table" then
-            for _i, alias in ipairs(list) do
-                if type(alias) == "string" and alias ~= "" and not seen[alias:lower()] then
-                    seen[alias:lower()] = true
-                    out[#out + 1] = alias
-                end
+    -- NOT ipairs({a, b}): a nil first side makes ipairs stop at slot 1 and
+    -- silently drop the other list (latent since 2026-08-09 — a rewrite
+    -- adding first-ever aliases to an alias-less entry lost them; exposed by
+    -- the rename-fold tests 2026-08-14)
+    local function addAll(list)
+        if type(list) ~= "table" then return end
+        for _i, alias in ipairs(list) do
+            if type(alias) == "string" and alias ~= "" and not seen[alias:lower()] then
+                seen[alias:lower()] = true
+                out[#out + 1] = alias
             end
         end
     end
+    addAll(keep_aliases)
+    addAll(new_aliases)
     return #out > 0 and out or nil
 end
 
-local function mergeArrayCategory(old_items, new_items)
+--- Case-insensitive union of two string arrays (connections/references),
+--- new side first (the fresh read leads); tolerates a bare string on either
+--- side. nil when both are empty.
+local function unionStringArrays(new_list, keep_list)
+    if type(new_list) == "string" then new_list = { new_list } end
+    if type(keep_list) == "string" then keep_list = { keep_list } end
+    local out, seen = {}, {}
+    -- Explicit adds, never ipairs({a, b}) — see unionAliases
+    local function addAll(list)
+        if type(list) ~= "table" then return end
+        for _i, s in ipairs(list) do
+            if type(s) == "string" and s ~= "" and not seen[s:lower()] then
+                seen[s:lower()] = true
+                out[#out + 1] = s
+            end
+        end
+    end
+    addAll(new_list)
+    addAll(keep_list)
+    return #out > 0 and out or nil
+end
+
+--- Reverse-alias rename detection (2026-08-14, the Pamela Lovelace → Pamela
+--- Chamcha case): the delta protocol has no rename verb — a character whose
+--- primary name changes can only arrive as a NEW entry carrying the old
+--- primary name among its aliases (the model's explicit identity bridge).
+--- Find the old entry that bridge points at. Guards: the bridging alias must
+--- be MULTI-WORD (short forms like "Khalid" routinely collide with unrelated
+--- minor characters — those stay dedup-scan material), must match exactly ONE
+--- existing entry's primary name (ambiguity → append, the scan's case), and
+--- the pair must not be on the reader's never-merge list.
+--- @return number|nil index into old_items
+local function renameTarget(new_item, lookup, never_set, new_key)
+    if type(new_item) ~= "table" or type(new_item.aliases) ~= "table" then return nil end
+    local target, bridge
+    for _ai, alias in ipairs(new_item.aliases) do
+        if type(alias) == "string" and alias:find("%s") then
+            local idx = lookup[alias:lower()]
+            if idx then
+                if target and target ~= idx then return nil end -- ambiguous
+                target, bridge = idx, alias
+            end
+        end
+    end
+    if target and never_set and new_key and bridge then
+        local a, b = new_key, bridge:lower()
+        if a > b then a, b = b, a end
+        if never_set[a .. "\0" .. b] then return nil end
+    end
+    return target
+end
+
+local function mergeArrayCategory(old_items, new_items, never_set)
     local lookup = {}
     for i, item in ipairs(old_items) do
         local name = getItemSearchName(item)
@@ -2212,6 +2269,11 @@ local function mergeArrayCategory(old_items, new_items)
             idx = alias_of[key]
             via_alias = idx ~= nil
         end
+        local via_rename = false
+        if not idx and key then
+            idx = renameTarget(new_item, lookup, never_set, key)
+            via_rename = idx ~= nil
+        end
         if idx then
             local keep = old_items[idx]
             -- background is attached mechanically (cross-book merge, item 44)
@@ -2232,6 +2294,19 @@ local function mergeArrayCategory(old_items, new_items)
             -- Stored aliases survive the rewrite (dedup absorbs and renames
             -- live there; a model echo that drops them must not shed them)
             new_item.aliases = unionAliases(keep.aliases, new_item.aliases)
+            if via_rename then
+                -- Rename fold: the new name IS the point — it stays primary
+                -- (the old one rides in aliases, it is the bridge we matched
+                -- on). The model writes the fresh entry unaware it must carry
+                -- the old entry's relational data, so union it mechanically —
+                -- the Pamela case shipped with her husband connection
+                -- stranded on the dead duplicate.
+                new_item.connections = unionStringArrays(new_item.connections, keep.connections)
+                new_item.references = unionStringArrays(new_item.references, keep.references)
+                lookup[key] = idx
+                logger.info("KOAssistant: X-Ray merge folded rename '"
+                    .. tostring(getItemSearchName(keep)) .. "' -> '" .. tostring(name) .. "'")
+            end
             old_items[idx] = new_item
         else
             old_items[#old_items + 1] = new_item
@@ -2847,10 +2922,24 @@ end
 --- The AI outputs only new/changed entries; this merges them into the full dataset.
 --- @param old_data table Complete existing X-Ray data (mutated in place)
 --- @param new_data table Partial update from AI
+--- @param opts table|nil { never_pairs = ActionCache.getNeverMergePairs output }
+---   — reader-ruled non-identical pairs the rename fold must not merge
 --- @return table old_data The merged result
-function XrayParser.merge(old_data, new_data)
+function XrayParser.merge(old_data, new_data, opts)
     if not new_data or type(new_data) ~= "table" then return old_data end
     if not old_data or type(old_data) ~= "table" then return new_data end
+
+    local never_set
+    if opts and type(opts.never_pairs) == "table" then
+        never_set = {}
+        for _idx, pair in ipairs(opts.never_pairs) do
+            if type(pair) == "table" and type(pair[1]) == "string" and type(pair[2]) == "string" then
+                local a, b = pair[1]:lower(), pair[2]:lower()
+                if a > b then a, b = b, a end
+                never_set[a .. "\0" .. b] = true
+            end
+        end
+    end
 
     old_data.type = old_data.type or new_data.type
 
@@ -2872,7 +2961,7 @@ function XrayParser.merge(old_data, new_data)
                 end
             else
                 if type(new_data[key]) == "table" then
-                    old_data[key] = mergeArrayCategory(old_data[key] or {}, new_data[key])
+                    old_data[key] = mergeArrayCategory(old_data[key] or {}, new_data[key], never_set)
                 end
             end
         end

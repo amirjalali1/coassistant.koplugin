@@ -1187,6 +1187,7 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 - When adding a new entry to a category, include ONLY the new entries in that category's array
 - When modifying an existing entry, output the COMPLETE entry with all fields (it will replace the old version)
 - A modified entry REPLACES the old one — carry over its existing details (identifying facts, relationships, earlier developments) and add the new; anything you leave out is lost
+- If an entity's primary name has CHANGED in the new content (marriage, title, a revealed identity), do NOT keep or create a separate entry under the old name: output ONE entry under the NEW name, include the old name in "aliases", and carry the existing entry's details forward
 - To reference an existing entity, use the EXACT name from the entity list above
 - Names listed under "dormant" are carried from related books and have NOT appeared in this book yet — they are not existing entries. If a character, place, or term you are adding or updating is the same person, place, or thing as a dormant name, include that dormant name among its aliases.
 - You MUST always include "current_position" — this is always considered changed
@@ -1235,6 +1236,7 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 - When adding a new entry to a category, include ONLY the new entries in that category's array
 - When modifying an existing entry, output the COMPLETE entry with all fields (it will replace the old version)
 - A modified entry REPLACES the old one — carry over its existing details (identifying facts, relationships, earlier developments) and add the new; anything you leave out is lost
+- If an entity's primary name has CHANGED in the new content (marriage, title, a revealed identity), do NOT keep or create a separate entry under the old name: output ONE entry under the NEW name, include the old name in "aliases", and carry the existing entry's details forward
 - To reference an existing entity, use the EXACT name from the entity list above
 - Names listed under "dormant" are carried from related books and have NOT appeared in this book yet — they are not existing entries. If a character, place, or term you are adding or updating is the same person, place, or thing as a dormant name, include that dormant name among its aliases.
 - You MUST always include "current_state" (fiction) or "current_position" (nonfiction) — these are always considered changed
