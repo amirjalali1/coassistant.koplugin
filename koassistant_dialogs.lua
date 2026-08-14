@@ -271,7 +271,8 @@ end
 -- @return boolean: true if config was successfully built
 -- Resolve the Quick Answer preset's model component (controls_parity_plan.md §2
 -- round 3): quick_preset_model_mode = "none" | "fastest" (fastest listed tier for
--- the active provider) | "tier" (quick_preset_tier for the active provider, tier
+-- the active provider) | "tier" (quick_preset_tier for the active provider — or,
+-- when quick_preset_tier_provider is set, that PINNED provider's tier; tier
 -- fallback toward faster) | "model" (pinned quick_preset_provider/_model).
 -- Shared by the request bake AND the quick-menu provenance label — keep them
 -- agreeing. Returns { provider, model } or nil (no override).
@@ -286,7 +287,17 @@ local function resolveQuickPresetModel(features, provider)
         return nil
     end
     if mode == "tier" then
-        local p2, m = MLists.resolveTierTarget(provider, features.quick_preset_tier or "fast")
+        local tier = features.quick_preset_tier or "fast"
+        local pinned = features.quick_preset_tier_provider
+        if pinned then
+            -- Explicit provider pin: ladder only, never global tier pins —
+            -- same ruling as action provider+tier pins (maintainer 2026-08-09:
+            -- a named provider must not be hijacked to another one)
+            local m = MLists.resolveTierModel(pinned, tier)
+            if m then return { provider = pinned, model = m } end
+            return nil
+        end
+        local p2, m = MLists.resolveTierTarget(provider, tier)
         if m then return { provider = p2, model = m } end
         return nil
     end
@@ -848,9 +859,16 @@ local function createTempConfig(prompt, base_config)
     if prompt.provider then
         temp_config.provider = prompt.provider
         if prompt.model then
+            -- Clone before writing: the copy above is 2 levels deep, so the
+            -- per-provider sub-table is still SHARED with the source config —
+            -- a pin must not absorb into configuration.lua's provider_settings
             temp_config.provider_settings = temp_config.provider_settings or {}
-            temp_config.provider_settings[temp_config.provider] = temp_config.provider_settings[temp_config.provider] or {}
-            temp_config.provider_settings[temp_config.provider].model = prompt.model
+            local ps = {}
+            for k, v in pairs(temp_config.provider_settings[prompt.provider] or {}) do
+                ps[k] = v
+            end
+            ps.model = prompt.model
+            temp_config.provider_settings[prompt.provider] = ps
         end
     end
 
@@ -863,7 +881,11 @@ end
 -- marked), "Show all" reveals the rest, disarmed while no real key exists.
 -- opts = { plugin, current = {provider, model}|nil,
 --          top_row = { text, callback }|nil (prepended row, closes first),
---          on_pick(provider_id, model_name) }
+--          on_pick(provider_id, model_name),
+--          on_provider(provider_id, provider_label)|nil — when set, picking a
+--            provider ends the flow here (no model stage; used by the Quick
+--            preset's provider+tier pick),
+--          provider_title|nil (title for the provider stage) }
 local function pickProviderModel(opts)
     local ButtonDialog = require("ui/widget/buttondialog")
     local ModelLists = require("koassistant_model_lists")
@@ -957,7 +979,11 @@ local function pickProviderModel(opts)
                     text = label,
                     callback = function()
                         UIManager:close(sub)
-                        pickModelFor(prov_id, prov_name)
+                        if opts.on_provider then
+                            opts.on_provider(prov_id, prov_name)
+                        else
+                            pickModelFor(prov_id, prov_name)
+                        end
                     end,
                 }})
             else
@@ -975,7 +1001,7 @@ local function pickProviderModel(opts)
         end
         table.insert(buttons, {{ text = _("Cancel"), callback = function() UIManager:close(sub) end }})
         sub = ButtonDialog:new{
-            title = _("Model · pick a provider"),
+            title = opts.provider_title or _("Model · pick a provider"),
             buttons = buttons,
         }
         UIManager:show(sub)
@@ -1008,8 +1034,15 @@ showQuickPresetModelMode = function(opts)
     local f = plugin.settings:readSetting("features") or {}
     local mode = f.quick_preset_model_mode or "none"
     local active_provider = (plugin.getCurrentProvider and plugin:getCurrentProvider()) or "anthropic"
+    local function providerLabel(provider_id)
+        return plugin.getProviderDisplayName
+            and plugin:getProviderDisplayName(provider_id) or provider_id
+    end
 
-    local function pickTier()
+    -- pin = true stores the provider with the tier (quick_preset_tier_provider —
+    -- the pick follows THAT provider's ladder regardless of the active one);
+    -- pin = false/nil keeps the tier relative to the active provider.
+    local function pickTier(provider_id, provider_label, pin)
         local ModelLists = require("koassistant_model_lists")
         local sub
         local buttons = {}
@@ -1022,10 +1055,11 @@ showQuickPresetModelMode = function(opts)
         }
         for _idx, tier in ipairs(TIERS) do
             -- Not every provider lists every tier: show what the pick resolves to
-            -- for the ACTIVE provider (fallback walks toward faster tiers)
-            local resolved = ModelLists.getModelForTier(active_provider, tier.id, true)
+            -- for THIS provider (fallback walks toward faster tiers)
+            local resolved = ModelLists.getModelForTier(provider_id, tier.id, true)
             local is_current = mode == "tier"
                 and ModelLists.normalizeTier(f.quick_preset_tier or "fast") == tier.id
+                and f.quick_preset_tier_provider == (pin and provider_id or nil)
             local tier_id = tier.id
             table.insert(buttons, {{
                 text = (is_current and "● " or "○ ")
@@ -1036,6 +1070,7 @@ showQuickPresetModelMode = function(opts)
                     mutate(function(feats)
                         feats.quick_preset_model_mode = "tier"
                         feats.quick_preset_tier = tier_id
+                        feats.quick_preset_tier_provider = pin and provider_id or nil
                     end)
                     UIManager:close(sub)
                     finish()
@@ -1044,8 +1079,7 @@ showQuickPresetModelMode = function(opts)
         end
         table.insert(buttons, {{ text = _("Cancel"), callback = function() UIManager:close(sub) end }})
         sub = ButtonDialog:new{
-            title = T(_("Tier for %1"), plugin.getProviderDisplayName
-                and plugin:getProviderDisplayName(active_provider) or active_provider),
+            title = T(_("Tier for %1"), provider_label),
             buttons = buttons,
         }
         UIManager:show(sub)
@@ -1070,12 +1104,33 @@ showQuickPresetModelMode = function(opts)
                 finish()
             end),
             row(mode == "tier"
-                    and T(_("Tier: %1 (change…)"),
-                        require("koassistant_model_lists").normalizeTier(f.quick_preset_tier or "fast"))
-                    or _("A tier of the active provider…"),
+                    and (f.quick_preset_tier_provider
+                        and T(_("Tier: %1 · %2 (change…)"),
+                            providerLabel(f.quick_preset_tier_provider),
+                            require("koassistant_model_lists").normalizeTier(f.quick_preset_tier or "fast"))
+                        or T(_("Tier: %1 (change…)"),
+                            require("koassistant_model_lists").normalizeTier(f.quick_preset_tier or "fast")))
+                    or _("A tier…"),
                 mode == "tier", function()
                 UIManager:close(dialog)
-                pickTier()
+                -- Provider stage first: active provider (tier follows whichever
+                -- provider is current) or a pinned one (provider+tier combo,
+                -- ladder-only — mirrors the action provider+tier pin)
+                pickProviderModel({
+                    plugin = plugin,
+                    current = f.quick_preset_tier_provider
+                        and { provider = f.quick_preset_tier_provider } or nil,
+                    provider_title = _("Tier · pick a provider"),
+                    top_row = {
+                        text = T(_("Active provider (%1)"), providerLabel(active_provider)),
+                        callback = function()
+                            pickTier(active_provider, providerLabel(active_provider), false)
+                        end,
+                    },
+                    on_provider = function(provider_id, provider_label)
+                        pickTier(provider_id, provider_label, true)
+                    end,
+                })
             end),
             row(mode == "model"
                     and T(_("Pinned: %1 (change…)"), f.quick_preset_model or "?")
@@ -1287,8 +1342,17 @@ showQuickPresetEditor = function(opts)
     if mode == "fastest" then
         model_mode_label = _("Fastest for provider")
     elseif mode == "tier" then
-        model_mode_label = T(_("%1 tier"),
-            require("koassistant_model_lists").normalizeTier(f.quick_preset_tier or "fast"))
+        local tier_label = require("koassistant_model_lists")
+            .normalizeTier(f.quick_preset_tier or "fast")
+        if f.quick_preset_tier_provider then
+            local prov = f.quick_preset_tier_provider
+            model_mode_label = T(_("%1 · %2 tier"),
+                plugin.getProviderDisplayName
+                    and plugin:getProviderDisplayName(prov) or prov,
+                tier_label)
+        else
+            model_mode_label = T(_("%1 tier"), tier_label)
+        end
     elseif mode == "model" then
         model_mode_label = f.quick_preset_model or "?"
     else
@@ -3524,13 +3588,25 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         temp_config.features._merge_payload = nil
     end
     if prompt.provider then
-        if not temp_config.provider_settings[prompt.provider] then
-            temp_config.provider_settings[prompt.provider] = {}
-        end
-        temp_config.provider_settings[prompt.provider].model = prompt.model
-        -- Set both provider and model at top level so they take precedence
+        -- Set both provider and model at top level so they take precedence.
+        -- provider_settings can be NIL here: it comes only from a
+        -- configuration.lua that defines one (GUI-only setups have none), and
+        -- createTempConfig creates it only for provider+model pins — a
+        -- provider+tier pin (model nil, tier baked later) crashed on the index
+        -- (device 2026-08-14). Only mirror an actual model pin into the
+        -- per-provider bucket, and clone before writing: the 2-level copy
+        -- leaves sub-tables SHARED with the module config.
         temp_config.provider = prompt.provider
         temp_config.model = prompt.model
+        if prompt.model then
+            temp_config.provider_settings = temp_config.provider_settings or {}
+            local ps = {}
+            for k, v in pairs(temp_config.provider_settings[prompt.provider] or {}) do
+                ps[k] = v
+            end
+            ps.model = prompt.model
+            temp_config.provider_settings[prompt.provider] = ps
+        end
     end
 
     -- Apply translate view settings if action has translate_view flag
