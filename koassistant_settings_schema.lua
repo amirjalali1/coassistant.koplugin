@@ -1046,16 +1046,25 @@ local SettingsSchema = {
                             text_func = function(plugin)
                                 local f = plugin.settings:readSetting("features") or {}
                                 local mode = f.xray_marking_density or "first"
-                                return T(_("Marking Density: %1"),
-                                    mode == "all" and _("All Occurrences") or _("First per Page"))
+                                local labels = {
+                                    all = _("All Occurrences"),
+                                    first = _("Once per Page"),
+                                    ["10"] = _("After 10 Unseen Pages"),
+                                    ["25"] = _("After 25 Unseen Pages"),
+                                    once = _("First Appearance Only"),
+                                }
+                                return T(_("Marking Density: %1"), labels[mode] or mode)
                             end,
                             path = "features.xray_marking_density",
                             default = "first",
                             options = {
-                                { value = "first", text = _("First occurrence per page") },
+                                { value = "first", text = _("Once per page") },
+                                { value = "10", text = _("Only after 10 unseen pages") },
+                                { value = "25", text = _("Only after 25 unseen pages") },
+                                { value = "once", text = _("First appearance only") },
                                 { value = "all", text = _("All occurrences") },
                             },
-                            help_text = _("How many of an entity's occurrences on a page get marked. First per page keeps pages calm; all occurrences marks every one."),
+                            help_text = _("How often an entity gets marked. Once per page marks its first occurrence on every page it appears. The unseen-pages options re-mark it only after it has been absent that long, so newly returning names stand out while constant companions stay quiet. First appearance marks it once in the whole book; all occurrences marks every one."),
                             on_change = function(new_value, plugin)
                                 if plugin.syncXrayMarks then
                                     local UIManager = require("ui/uimanager")

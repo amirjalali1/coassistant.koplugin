@@ -5,17 +5,21 @@ layer with no search session behind it. Tapping a marked word rides the
 EXISTING selection intercept (round 9/10) straight to the entity, so this
 module paints and nothing else.
 
-Mechanics (donor-verified, xray_marking_plan.md §1/§6):
+Mechanics (donor-verified, xray_marking_plan.md §1/§6; DEFERRED since round 7
+— the scan used to run inside the onPageUpdate dispatch and the page turn
+WAITED on it, device: "page turns very slow"):
 - Paint = ONE `ReaderView:registerViewModule` widget (public API, zero
-  patching); thin `invertRect` strip at each box bottom (underline — full
-  invert is the on-demand emphasis style, not the ambient one).
-- Per page turn (the scan runs INSIDE the onPageUpdate dispatch, before the
-  repaint, so marks ride the page's own refresh — no extra e-ink flash):
-  visible-page text once → cheap normalized `find` presence check per term →
-  `findAllText` ONLY for terms actually present and never searched this
-  session (whole-doc, memoized per term with per-hit page precomputed) →
-  boxes for current-page hits via `getScreenBoxesFromPositions` → dedupe →
-  store → painted by the view module in the same cycle.
+  patching); dotted DARK_GRAY strip at each box bottom (the maintainer-picked
+  ambient default — full invert is an on-demand emphasis style, not this).
+- Per page turn: the onPageUpdate handler only CLEARS stale boxes (the fresh
+  page must never paint the old page's marks) and schedules the scan for the
+  tick AFTER the page's own repaint. The scan resolves terms — steady state
+  is pure memo lookups (NO page-text read, NO searches); a term never yet
+  searched costs one whole-book `findAllText`, so at most ONE runs per tick
+  with the rest chained on scheduleIn (UI stays responsive while a
+  first-encounter page warms up) — then boxes for current-page hits via
+  `getScreenBoxesFromPositions` → dedupe/merge → ONE partial refresh sized
+  to the strips, skipped entirely on mark-free pages.
 - EPUB page mode only in v1: scroll mode clears (boxes go stale mid-scroll
   with no per-scroll event granularity worth paying for), PDFs are excluded
   (the donor rides the native highlight.temp slot there, which the search
@@ -43,7 +47,18 @@ local XrayMarks = {}
 local MODULE_NAME = "koassistant_xray_marks"
 
 -- st = {
---   file, density_first, families (nil = all),
+--   file, families (nil = all),
+--   spacing,           -- 0 = every occurrence, 1 = once per page, N = only
+--                      -- after N pages unseen, math.huge = first appearance
+--                      -- only (round 7 "another level of space": the window
+--                      -- is measured in reference pages from the entity's
+--                      -- nearest PREVIOUS hit, so it is deterministic from
+--                      -- book position, not from what the reader viewed)
+--   debug,             -- features.debug captured at sync
+--   scan_token,        -- bumped per turn; stale deferred ticks abort
+--   hits_page_count,   -- doc page count the memo was built against (a
+--                      -- re-render, e.g. font change, renumbers pages —
+--                      -- wipe the memo, xpointers stay valid)
 --   stamps,            -- cache+aliases disk stamp gating the reloads
 --   live,              -- in-memory live entry, reloaded on stamp change
 --   sections,          -- { {key, sp, ep, stamp, data} } ranges resolved on
@@ -52,26 +67,42 @@ local MODULE_NAME = "koassistant_xray_marks"
 --                      -- invisible to marking)
 --   artifact_key,      -- identity of the artifacts the entity index came from
 --   entities,          -- XrayParser.buildMarkEntities output (main + in-range sections)
---   term_hits = {},    -- term text (lower) -> { {start, e, page}, ... }
+--   term_hits = {},    -- term text (lower) -> { by_page = {[page] = {{start, e},...}},
+--                      -- pages = sorted unique page list } — whole-book,
+--                      -- searched at most once per term per session
 --   page_marks,        -- current page: { {x,y,w,h, name}, ... } — FULL word
 --                      -- boxes, the tap targets (round 2, d2)
 --   paint_boxes,       -- same-line-merged union rects the strips paint from
---                      -- (round 3: overlapping invertRect strips XOR each
---                      -- other back to normal — "only 'on' of Kubrickon")
+--                      -- (round 3: overlapping strips double-painted each
+--                      -- other — "only 'on' of Kubrickon"; still wanted for
+--                      -- dotted paint so overlapping dot grids never clash)
 -- }
 local st = nil
 
 -- The paint widget: registerViewModule injects .view/.ui; paintTo runs on
--- every view repaint, so it must only READ prepared state.
+-- every view repaint, so it must only READ prepared state. Style: gray
+-- DOTTED underline (maintainer round 7) — quiet enough to live on every
+-- page, distinct from KOReader's solid-underline highlight style, and
+-- paintRect (unlike the old invertRect) never self-cancels on overlap.
 local paint_widget = {
   paintTo = function(_w, bb, _x, _y)
     local boxes = st and st.paint_boxes
     if not boxes then return end
     local Screen = require("device").screen
+    local Blitbuffer = require("ffi/blitbuffer")
     local strip = math.max(2, Screen:scaleBySize(2))
+    local dot = math.max(3, Screen:scaleBySize(3))
+    local gap = math.max(2, Screen:scaleBySize(2))
     for _i, box in ipairs(boxes) do
       if box.x and box.y and box.w and box.h and box.w > 0 and box.h > strip then
-        bb:invertRect(box.x, box.y + box.h - strip, box.w, strip)
+        local y = box.y + box.h - strip
+        local x_end = box.x + box.w
+        local x = box.x
+        while x < x_end do
+          bb:paintRect(x, y, math.min(dot, x_end - x), strip,
+            Blitbuffer.COLOR_DARK_GRAY)
+          x = x + dot + gap
+        end
       end
     end
   end,
@@ -207,8 +238,11 @@ local function blockingAffix(s)
   return false
 end
 
---- Whole-doc hit list for one term, page precomputed per hit. Memoized by
---- the caller; runs at most once per term per session.
+--- Whole-doc hit index for one term: hits bucketed per page plus the sorted
+--- page list (the spacing window walks it for the nearest previous hit).
+--- Memoized by the caller; runs at most once per term per session — this is
+--- THE expensive call (whole-book search), which is why the scan chain
+--- budgets it to one per tick.
 --- Search flags are LOAD-BEARING (round 4, the unmarked "Danny Lloyd"):
 --- without them crengine matches nothing across DOM text-node boundaries
 --- (MATCH_ACROSS_TEXT_NODES) and folds no NBSP/soft-hyphen/curly-apostrophe
@@ -223,7 +257,7 @@ local function searchTerm(document, term)
   else
     res = document:findAllText(term.text, true, 1, 2000, false, 0x00FF)
   end
-  local hits = {}
+  local by_page, pages = {}, {}
   if res then
     for _i, r in ipairs(res) do
       local keep = true
@@ -234,12 +268,19 @@ local function searchTerm(document, term)
       if keep then
         local ok, page = pcall(document.getPageFromXPointer, document, r.start)
         if ok and page then
-          hits[#hits + 1] = { start = r.start, e = r["end"], page = page }
+          local bucket = by_page[page]
+          if not bucket then
+            bucket = {}
+            by_page[page] = bucket
+            pages[#pages + 1] = page
+          end
+          bucket[#bucket + 1] = { start = r.start, e = r["end"] }
         end
       end
     end
   end
-  return hits
+  table.sort(pages)
+  return { by_page = by_page, pages = pages }
 end
 
 local function dedupeMarks(marks)
@@ -294,18 +335,197 @@ local function mergeLineBoxes(marks)
   return out
 end
 
---- The per-page-turn scan. Called from AskGPT:onPageUpdate (inside the
---- dispatch, before the repaint) and from sync() for the current page.
+--- One deferred scan step (round 7 — the perf split). Resolve phase: a term
+--- present on this page but never searched costs one whole-book findAllText
+--- (~100ms+ on device), so at most ONE runs per tick and the rest chain on
+--- scheduleIn; the normalized page text (hay) is built lazily on the first
+--- unsearched term and carried through the chain. Paint phase (every term
+--- memoized — the steady state): page hits are pure table lookups, boxes
+--- resolve for this page only, then ONE partial refresh sized to the strips
+--- — a mark-free page schedules nothing and refreshes nothing.
+function XrayMarks._scanTick(plugin, pageno, token, hay)
+  if not st or st.scan_token ~= token then return end
+  local ui = plugin and plugin.ui
+  if not (ui and ui.document and ui.rolling) then return end
+  if ui.document.file ~= st.file then return end
+  if ui.view and ui.view.view_mode == "scroll" then return end
+  -- A search session can OPEN between the turn and this tick (or mid-chain
+  -- during a multi-term warm-up) — our findAllText would erase its hit
+  -- highlights (the round-3 bug), so every tick re-checks
+  local search = ui.search
+  if search and (search._koassistant_search_session
+      or (search.search_dialog and UIManager:isWidgetShown(search.search_dialog))) then
+    return
+  end
+  local ok, err = pcall(function()
+    local time = require("ui/time")
+    local t0 = time.now()
+    ensureIndex(plugin, pageno)
+    if not st.entities or #st.entities == 0 then return end
+
+    -- A re-render (font/margin change) renumbers pages; the memo's pages
+    -- were computed against the old flow. Xpointers stay valid — only the
+    -- page bucketing is stale — so wipe and let terms re-search on demand.
+    local total = ui.document.info and ui.document.info.number_of_pages
+    if total and st.hits_page_count ~= total then
+      if st.hits_page_count ~= nil then st.term_hits = {} end
+      st.hits_page_count = total
+    end
+
+    -- Resolve: first present-but-never-searched term searches now, rest of
+    -- the chain follows one tick at a time. An absent unsearched term stays
+    -- unmemoized on purpose — the page where it IS present triggers its
+    -- one-time search.
+    for _i, ent in ipairs(st.entities) do
+      if not st.families or st.families[ent.family] then
+        for _j, term in ipairs(ent.terms) do
+          local tkey = term.text:lower()
+          if not st.term_hits[tkey] then
+            if hay == nil then
+              -- Visible-page text, once per scan (page-level read, same
+              -- consent class as the page-exempt extraction). LAYOUT text:
+              -- line wraps arrive as newlines, so a wrapped "Danny\nLloyd"
+              -- must still match the single-space term — collapse all
+              -- whitespace (NBSP included) like the term norms.
+              local ContextExtractor = require("koassistant_context_extractor")
+              local XrayParser = require("koassistant_xray_parser")
+              local page_text = ContextExtractor:new(ui):getVisiblePageText().text or ""
+              hay = XrayParser.normalizeArabic(page_text:lower())
+                  :gsub("\194\160", " "):gsub("%s+", " ")
+            end
+            if hay ~= "" and hay:find(term.norm, 1, true) then
+              st.term_hits[tkey] = searchTerm(ui.document, term)
+              if st.debug then
+                logger.info("KOAssistant marks dbg: searched \"" .. term.text
+                  .. "\" -> " .. tostring(#st.term_hits[tkey].pages)
+                  .. " pages in "
+                  .. string.format("%.0f", time.to_ms(time.now() - t0)) .. "ms")
+              end
+              UIManager:scheduleIn(0.05, function()
+                XrayMarks._scanTick(plugin, pageno, token, hay)
+              end)
+              return
+            end
+          end
+        end
+      end
+    end
+
+    -- Paint: entity-level spacing + box resolution from the memo
+    local dbg = st.debug and { marked = {} } or nil
+    local marks = {}
+    for _i, ent in ipairs(st.entities) do
+      if not st.families or st.families[ent.family] then
+        -- Hits on this page (pageno+1 covers two-page spreads) and, for the
+        -- spacing window, the entity's nearest hit page BEFORE this page
+        local page_hits = {}
+        local prev_page
+        for _j, term in ipairs(ent.terms) do
+          local th = st.term_hits[term.text:lower()]
+          if th then
+            for p = pageno, pageno + 1 do
+              local bucket = th.by_page[p]
+              if bucket then
+                for _k, h in ipairs(bucket) do
+                  page_hits[#page_hits + 1] = h
+                end
+              end
+            end
+            if st.spacing > 1 then
+              local pgs = th.pages
+              for k = #pgs, 1, -1 do
+                if pgs[k] < pageno then
+                  if not prev_page or pgs[k] > prev_page then prev_page = pgs[k] end
+                  break
+                end
+              end
+            end
+          end
+        end
+        -- Spacing window: the entity appeared within the last N pages —
+        -- stay quiet (math.huge = first appearance only). Measured from
+        -- book positions, so it is deterministic under back-jumps too.
+        local suppressed = #page_hits > 0 and st.spacing > 1 and prev_page
+            and (pageno - prev_page) < st.spacing
+        if #page_hits > 0 and not suppressed then
+          local ent_done = false
+          for _k, h in ipairs(page_hits) do
+            -- Off-view positions return no/off-screen boxes; y-filter drops
+            local bok, bxs = pcall(ui.document.getScreenBoxesFromPositions,
+              ui.document, h.start, h.e, true)
+            if bok and bxs then
+              local added = false
+              for _b, box in ipairs(bxs) do
+                if box.y and box.y >= 0 and box.h and box.h > 0 then
+                  marks[#marks + 1] = { x = box.x, y = box.y,
+                    w = box.w, h = box.h, name = ent.name }
+                  added = true
+                end
+              end
+              if added then ent_done = true end
+            end
+            -- Any spacing except "every occurrence": one mark per entity
+            if st.spacing >= 1 and ent_done then break end
+          end
+          if dbg and ent_done then table.insert(dbg.marked, ent.name) end
+        end
+      end
+    end
+    if #marks > 0 then
+      st.page_marks = dedupeMarks(marks)
+      st.paint_boxes = mergeLineBoxes(st.page_marks)
+    end
+    if dbg then
+      logger.info("KOAssistant marks dbg: page " .. tostring(pageno)
+        .. " ents=" .. tostring(#st.entities)
+        .. " marked=[" .. table.concat(dbg.marked, ", ") .. "]"
+        .. " boxes=" .. tostring(st.page_marks and #st.page_marks or 0)
+        .. " in " .. string.format("%.0f", time.to_ms(time.now() - t0)) .. "ms")
+      if hay then
+        logger.info("KOAssistant marks dbg hay: " .. hay)
+      end
+    end
+    -- One targeted partial refresh over the union of the strips
+    if st.paint_boxes and ui.dialog then
+      local Geom = require("ui/geometry")
+      local first = st.paint_boxes[1]
+      local rx, ry = first.x, first.y
+      local rx2, ry2 = first.x + first.w, first.y + first.h
+      for _b = 2, #st.paint_boxes do
+        local b = st.paint_boxes[_b]
+        rx = math.min(rx, b.x)
+        ry = math.min(ry, b.y)
+        rx2 = math.max(rx2, b.x + b.w)
+        ry2 = math.max(ry2, b.y + b.h)
+      end
+      UIManager:setDirty(ui.dialog, "ui", Geom:new{
+        x = math.floor(rx), y = math.floor(ry),
+        w = math.ceil(rx2 - rx), h = math.ceil(ry2 - ry),
+      })
+    end
+  end)
+  if not ok then
+    logger.warn("KOAssistant marks: scan failed:", err)
+    st.page_marks = nil
+    st.paint_boxes = nil
+  end
+end
+
+--- Per-page-turn entry. Called from AskGPT:onPageUpdate (inside the
+--- dispatch, BEFORE the repaint) and from sync() for the current page.
+--- Synchronous work is only what must not wait: clearing stale boxes (the
+--- fresh page must never paint the old page's marks) and the search-session
+--- state machine; the actual scan runs on the tick after the page's own
+--- repaint (round 7 — the scan inside the dispatch made the page turn wait
+--- on searches and box resolution).
 function XrayMarks.onPageTurn(plugin, pageno)
   if not st then return end
   local ui = plugin and plugin.ui
   if not (ui and ui.document and ui.rolling and pageno) then return end
   if ui.document.file ~= st.file then return end
-  if ui.view and ui.view.view_mode == "scroll" then
-    st.page_marks = nil
-    st.paint_boxes = nil
-    return
-  end
+  st.page_marks = nil
+  st.paint_boxes = nil
+  if ui.view and ui.view.view_mode == "scroll" then return end
 
   -- A live search session owns the page visuals: our findAllText shares
   -- crengine's selection state with the session's hit highlighting, so a
@@ -318,105 +538,24 @@ function XrayMarks.onPageTurn(plugin, pageno)
   local sd = search and search.search_dialog
   if sd and UIManager:isWidgetShown(sd) then
     search._koassistant_search_session = "shown"
-    st.page_marks = nil
-    st.paint_boxes = nil
+    -- Invalidate any in-flight scan chain too
+    st.scan_token = (st.scan_token or 0) + 1
     return
   end
   local sess = search and search._koassistant_search_session
   if sess == true then
-    st.page_marks = nil
-    st.paint_boxes = nil
+    st.scan_token = (st.scan_token or 0) + 1
     return
   elseif sess then
     -- Was shown, now closed: session over
     search._koassistant_search_session = nil
   end
 
-  st.page_marks = nil
-  st.paint_boxes = nil
-  local ok, err = pcall(function()
-    ensureIndex(plugin, pageno)
-    if not st.entities or #st.entities == 0 then return end
-
-    -- Visible-page text, once, for the presence pre-check (page-level read,
-    -- same consent class as the page-exempt extraction)
-    local ContextExtractor = require("koassistant_context_extractor")
-    local page_text = ContextExtractor:new(ui):getVisiblePageText().text or ""
-    if page_text == "" then return end
-    local XrayParser = require("koassistant_xray_parser")
-    -- The extracted page text is LAYOUT text: line wraps arrive as newlines,
-    -- so a wrapped "Danny\nLloyd" must still match the single-space term
-    -- (device 2026-08-14 — multi-word entities silently unmarked when they
-    -- wrapped). Collapse all whitespace (NBSP included) to single spaces;
-    -- term norms are collapsed the same way at index build.
-    local hay = XrayParser.normalizeArabic(page_text:lower())
-        :gsub("\194\160", " "):gsub("%s+", " ")
-
-    -- Diagnosis lines (features.debug only): which terms went present this
-    -- turn, which entities marked, and the collapsed page text itself —
-    -- enough to replay a presence miss offline (round 3, the unmarked
-    -- Danny Lloyd hunt)
-    local dbg = plugin.settings
-        and (plugin.settings:readSetting("features") or {}).debug
-        and { present = {}, marked = {} } or nil
-
-    local marks = {}
-    for _i, ent in ipairs(st.entities) do
-      if not st.families or st.families[ent.family] then
-        local ent_done = false
-        for _j, term in ipairs(ent.terms) do
-          local tkey = term.text:lower()
-          local hits = st.term_hits[tkey]
-          if not hits and hay:find(term.norm, 1, true) then
-            if dbg then table.insert(dbg.present, term.text) end
-            hits = searchTerm(ui.document, term)
-            st.term_hits[tkey] = hits
-          end
-          if hits then
-            for _k, h in ipairs(hits) do
-              -- pageno+1 covers two-page spreads; off-view positions
-              -- return no/off-screen boxes and the y-filter drops them
-              if h.page >= pageno and h.page <= pageno + 1 then
-                local bok, bxs = pcall(ui.document.getScreenBoxesFromPositions,
-                  ui.document, h.start, h.e, true)
-                if bok and bxs then
-                  local added = false
-                  for _b, box in ipairs(bxs) do
-                    if box.y and box.y >= 0 and box.h and box.h > 0 then
-                      marks[#marks + 1] = { x = box.x, y = box.y,
-                        w = box.w, h = box.h, name = ent.name }
-                      added = true
-                    end
-                  end
-                  if added then ent_done = true end
-                end
-              end
-              if st.density_first and ent_done then break end
-            end
-          end
-          if st.density_first and ent_done then break end
-        end
-        if dbg and ent_done then table.insert(dbg.marked, ent.name) end
-      end
-    end
-    if #marks > 0 then
-      st.page_marks = dedupeMarks(marks)
-      st.paint_boxes = mergeLineBoxes(st.page_marks)
-    end
-    if dbg then
-      logger.info("KOAssistant marks dbg: page " .. tostring(pageno)
-        .. " ents=" .. tostring(#st.entities)
-        .. " fresh_present=[" .. table.concat(dbg.present, ", ") .. "]"
-        .. " marked=[" .. table.concat(dbg.marked, ", ") .. "]"
-        .. " boxes=" .. tostring(st.page_marks and #st.page_marks or 0))
-      logger.info("KOAssistant marks dbg hay: " .. hay)
-    end
+  st.scan_token = (st.scan_token or 0) + 1
+  local token = st.scan_token
+  UIManager:nextTick(function()
+    XrayMarks._scanTick(plugin, pageno, token, nil)
   end)
-  if not ok then
-    logger.warn("KOAssistant marks: scan failed:", err)
-    st.page_marks = nil
-    st.paint_boxes = nil
-  end
 end
 
 --- d2 tap layer (round 2): entity name under a tap, or nil. The FULL word
@@ -459,7 +598,18 @@ function XrayMarks.sync(plugin)
   if not (st and st.file == ui.document.file) then
     st = { file = ui.document.file, term_hits = {} }
   end
-  st.density_first = (features.xray_marking_density or "first") ~= "all"
+  -- Density → spacing (round 7): "all" marks every occurrence, "first" once
+  -- per page, "10"/"25" only after that many pages unseen, "once" only the
+  -- first appearance in the book
+  local density = features.xray_marking_density or "first"
+  if density == "all" then
+    st.spacing = 0
+  elseif density == "once" then
+    st.spacing = math.huge
+  else
+    st.spacing = tonumber(density) or 1
+  end
+  st.debug = features.debug and true or nil
   local fam = features.xray_marking_families or "all"
   if fam == "people" then
     st.families = { people = true }
@@ -483,7 +633,7 @@ end
 
 function XrayMarks.teardown(plugin)
   local ui = plugin and plugin.ui
-  local was_painting = st and st.page_boxes
+  local was_painting = st and st.paint_boxes
   st = nil
   if ui and ui.view and ui.view.view_modules
       and ui.view.view_modules[MODULE_NAME] then

@@ -845,6 +845,13 @@ end
 
 -- Emoji mappings for category keys (used when enable_emoji_icons is on)
 -- Short category labels for chapter analysis display
+-- The Chapter Appearances tree renders denser than the rest of the browser
+-- (round 10, maintainer: "way too much" line height): more rows per page,
+-- with the row font following KOReader's own perpage→font mapping — the
+-- stock-TOC pairing. Rides the nav-stack display protocol, so every other
+-- level keeps the browser's constructed metrics.
+local TREE_PERPAGE = 20
+
 local CHAPTER_CATEGORY_SHORT = {
     characters = _("Cast"),
     key_figures = _("Figures"),
@@ -1021,6 +1028,16 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
         -- NOTE: Do NOT use close_callback here. KOReader's Menu:onMenuSelect()
         -- calls close_callback after every item tap, not just on widget close.
         -- Cleanup is done via onCloseWidget instead.
+    }
+    -- Row metrics the menu was constructed with: a display-passing level
+    -- that doesn't state its own drops back to THESE (not the Menu class
+    -- defaults — items_per_page nil means the user's global setting, which
+    -- is not the browser's constructed look). Only the compact appearances
+    -- tree overrides them.
+    self._base_metrics = {
+        items_per_page = self.menu.items_per_page,
+        items_font_size = self.menu.items_font_size,
+        items_mandatory_font_size = self.menu.items_mandatory_font_size,
     }
     -- TOC-style expand/collapse for the appearances tree (readertoc idiom):
     -- a tap on the state-arrow side of a row with a state button toggles the
@@ -1820,13 +1837,21 @@ function XrayBrowser:navigateForward(title, items, focus_idx, display)
             with_dots = self.menu.with_dots,
             align_baselines = self.menu.align_baselines,
             line_color = self.menu.line_color,
+            items_per_page = self.menu.items_per_page,
+            items_font_size = self.menu.items_font_size,
+            items_mandatory_font_size = self.menu.items_mandatory_font_size,
         },
     })
     self.current_title = title
     if display then
         -- Protocol: a display-passing level states everything it needs;
         -- unstated fields drop to the Menu class defaults (nil clears the
-        -- instance field), so one level's styling never leaks into the next
+        -- instance field), so one level's styling never leaks into the next.
+        -- Exception: the row METRICS drop to the browser's constructed
+        -- values instead — Menu's own fallback for a nil items_per_page is
+        -- the user's global setting, not our look. switchItemTable with a
+        -- new table always re-runs _recalculateDimen, which re-reads them.
+        local base = self._base_metrics or {}
         self.menu.single_line = display.single_line
         self.menu.multilines_forced = display.multilines_forced
         self.menu.items_max_lines = display.items_max_lines
@@ -1834,6 +1859,10 @@ function XrayBrowser:navigateForward(title, items, focus_idx, display)
         self.menu.with_dots = display.with_dots
         self.menu.align_baselines = display.align_baselines
         self.menu.line_color = display.line_color
+        self.menu.items_per_page = display.items_per_page or base.items_per_page
+        self.menu.items_font_size = display.items_font_size or base.items_font_size
+        self.menu.items_mandatory_font_size = display.items_mandatory_font_size
+            or base.items_mandatory_font_size
     end
 
     -- Add to paths so back arrow becomes enabled via updatePageInfo
@@ -1893,6 +1922,9 @@ function XrayBrowser:navigateBack()
         self.menu.with_dots = prev.display.with_dots
         self.menu.align_baselines = prev.display.align_baselines
         self.menu.line_color = prev.display.line_color
+        self.menu.items_per_page = prev.display.items_per_page
+        self.menu.items_font_size = prev.display.items_font_size
+        self.menu.items_mandatory_font_size = prev.display.items_mandatory_font_size
     end
 
     -- Remove from paths so back arrow disables when we reach root
@@ -4230,9 +4262,12 @@ function XrayBrowser:showMentions(chapter)
             local captured_idx = _idx
             table.insert(items, {
                 text = nav_entry.name,
+                -- No mandatory_dim here (round 10): this column carries the
+                -- comparison HISTOGRAM, and graying it out grayed the bars —
+                -- normal ink for this view, unlike the plain-info columns of
+                -- the other lists
                 mandatory = string.format("[%s] %s", short_cat,
                     buildDistributionBar(entry.count, max_count, 6, count_width)),
-                mandatory_dim = true,
                 callback = function()
                     self_ref:showItemDetail(nav_entry.item, nav_entry.category_key, nav_entry.name, nil, {
                         entries = nav_entries, index = captured_idx,
@@ -4435,7 +4470,7 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
     if has_parents then
         local Button = require("ui/widget/button")
         local BD = require("ui/bidi")
-        local icon_size = math.floor(Screen:getHeight() / 14 * 2 / 5)
+        local icon_size = math.floor(Screen:getHeight() / TREE_PERPAGE * 2 / 5)
         button_width = icon_size * 2
         local function toggleNode(idx)
             if not idx then return end
@@ -4519,14 +4554,15 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
         end
     end
 
-    -- Indent unit: width of 4 spaces (the hierarchical picker idiom)
+    -- Indent unit: width of 4 spaces (the hierarchical picker idiom),
+    -- measured at the tree's own row font
     local indent_unit = 0
     if (data.max_depth or 0) > 1 then
         local Font = require("ui/font")
         local TextWidget = require("ui/widget/textwidget")
         local tmp = TextWidget:new{
             text = "    ",
-            face = Font:getFace("smallinfofont", 18),
+            face = Font:getFace("smallinfofont", Menu.getItemFontSize(TREE_PERPAGE)),
         }
         indent_unit = tmp:getSize().w
         tmp:free()
@@ -4641,13 +4677,18 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
         self:_switchMenuItems(title, items, data._focus_idx)
     else
         -- The stock-TOC look (maintainer round 9): single truncated lines,
-        -- dotted leaders running to the histogram, no divider lines
+        -- dotted leaders running to the histogram, no divider lines; denser
+        -- rows than the rest of the browser (round 10), font from KOReader's
+        -- own perpage→size mapping
         self:navigateForward(title, items, data._focus_idx, {
             single_line = true,
             with_dots = true,
             align_baselines = true,
             line_color = require("ffi/blitbuffer").COLOR_WHITE,
             state_w = has_parents and button_width or nil,
+            items_per_page = TREE_PERPAGE,
+            items_font_size = Menu.getItemFontSize(TREE_PERPAGE),
+            items_mandatory_font_size = Menu.getItemFontSize(TREE_PERPAGE) - 4,
         })
         -- Stash item detail info so back from distribution reopens the TextViewer
         local top = self.nav_stack[#self.nav_stack]

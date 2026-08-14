@@ -17176,9 +17176,18 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
     function() features.xray_marking = features.xray_marking ~= true end))
   if features.xray_marking == true then
     local dens = features.xray_marking_density or "first"
+    local dens_labels = {
+      first = _("Once per page"),
+      ["10"] = _("After 10 unseen pages"),
+      ["25"] = _("After 25 unseen pages"),
+      once = _("First appearance only"),
+      all = _("All occurrences"),
+    }
+    local dens_next = { first = "10", ["10"] = "25", ["25"] = "once",
+      once = "all", all = "first" }
     table.insert(buttons, row(
-      T(_("Density: %1"), dens == "all" and _("All occurrences") or _("First per page")),
-      function() features.xray_marking_density = dens == "all" and "first" or "all" end))
+      T(_("Density: %1"), dens_labels[dens] or dens),
+      function() features.xray_marking_density = dens_next[dens] or "first" end))
     local fam = features.xray_marking_families or "all"
     local fam_labels = {
       all = _("All entities"),
