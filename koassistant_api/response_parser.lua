@@ -1057,8 +1057,13 @@ local RESPONSE_TRANSFORMERS = {
                     addProvSource(web_prov, url)
                 end
             end
-            -- Perplexity always searches the web — every response is web-grounded
-            return true, content, reasoning, finishProv(web_prov)
+            -- Honest provenance (2026-08-14): web_search_used only when search
+            -- artifacts actually came back — with disable_search (the toggle is
+            -- real, probed) a response carries no citations/search_results and
+            -- must not claim a search happened.
+            local searched = (type(response.search_results) == "table" and #response.search_results > 0)
+                or (type(response.citations) == "table" and #response.citations > 0)
+            return true, content, reasoning, searched and finishProv(web_prov) or nil
         end
         return false, "Unexpected response format"
     end

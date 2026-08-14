@@ -97,17 +97,71 @@ TestRunner:test("per-action force-on works without the global", function()
     TestRunner:assertEqual(result.parser, "openai_responses", "action-level web-on routes")
 end)
 
-TestRunner:test("book-tool sessions stay on Chat Completions (no adapter)", function()
-    local config = webConfig()
+TestRunner:test("book-tool sessions ride Responses on capable models (T3 P9)", function()
+    local config = webConfig({ features = {} }) -- web OFF: tools alone must route
     config.tools = {
         mode = "AUTO",
         specs = { { name = "toc", description = "d", parameters = { type = "object" } } },
     }
     local result = XAIHandler:buildRequestBody(HISTORY, config)
-    TestRunner:assertTrue(result.parser == nil, "tool session keeps the chat wire")
+    TestRunner:assertEqual(result.parser, "openai_responses", "tool session routes to Responses")
+    TestRunner:assertEqual(result.body.tools[1].type, "function", "FLAT function def (no nested wrapper)")
+    TestRunner:assertEqual(result.body.tools[1].name, "toc", "tool name at top level")
+    TestRunner:assertEqual(result.body.tool_choice, "auto", "AUTO mode maps to auto")
+    TestRunner:assertEqual(result.body.include[1], "reasoning.encrypted_content",
+        "encrypted reasoning requested for stateless replay")
+    local has_web = false
+    for _idx, t in ipairs(result.body.tools) do
+        if t.type == "web_search" then has_web = true end
+    end
+    TestRunner:assertTrue(not has_web, "no web_search tool when web is off")
+end)
+
+TestRunner:test("tool modes map to tool_choice; web-on adds web_search beside tools", function()
+    local config = webConfig() -- web ON via features
+    config.tools = {
+        mode = "ANY",
+        specs = { { name = "search_book", description = "d", parameters = { type = "object" } } },
+    }
+    local result = XAIHandler:buildRequestBody(HISTORY, config)
+    TestRunner:assertEqual(result.body.tool_choice, "required", "ANY maps to required")
+    TestRunner:assertEqual(result.body.tools[1].type, "web_search", "web_search coexists with book tools")
+    TestRunner:assertEqual(result.body.tools[2].type, "function", "book tool after web_search")
+    config.tools.mode = "NONE"
+    result = XAIHandler:buildRequestBody(HISTORY, config)
+    TestRunner:assertEqual(result.body.tool_choice, "none", "NONE maps to none")
+end)
+
+TestRunner:test("tool sessions on non-Responses models keep the chat wire end-to-end", function()
+    local config = webConfig({ model = "grok-2-vision", features = {} })
+    config.tools = {
+        mode = "AUTO",
+        specs = { { name = "toc", description = "d", parameters = { type = "object" } } },
+    }
+    local result = XAIHandler:buildRequestBody(HISTORY, config)
+    TestRunner:assertTrue(result.parser == nil, "non-capable model stays on chat wire")
     TestRunner:assertTrue(result.body.messages ~= nil, "chat body")
-    TestRunner:assertTrue(result.body.tools ~= nil, "chat-shape tool defs present")
     TestRunner:assertTrue(result.body.tools[1]["function"] ~= nil, "nested function wrapper (chat shape)")
+end)
+
+TestRunner:test("_responses_items tool turns replay verbatim into input", function()
+    local config = webConfig({ features = {} })
+    config.tools = {
+        mode = "NONE",
+        specs = { { name = "toc", description = "d", parameters = { type = "object" } } },
+    }
+    local history = {
+        { role = "user", content = "Q" },
+        { _responses_items = {
+            { type = "reasoning", encrypted_content = "blob" },
+            { type = "function_call", call_id = "c1", name = "toc", arguments = "{}" },
+            { type = "function_call_output", call_id = "c1", output = "chapters" },
+        } },
+    }
+    local result = XAIHandler:buildRequestBody(history, config)
+    TestRunner:assertEqual(#result.body.input, 4, "1 user + 3 replayed items")
+    TestRunner:assertEqual(result.body.input[2].type, "reasoning", "reasoning item precedes its call")
+    TestRunner:assertEqual(result.body.input[4].type, "function_call_output", "our output item last")
 end)
 
 --------------------------------------------------------------------------------

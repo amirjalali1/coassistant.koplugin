@@ -1346,6 +1346,10 @@ function BookToolRunner.gatherForAction(params)
 end
 
 BookToolRunner.function_declarations = FUNCTION_DECLARATIONS
+-- Gather set incl. the empty-properties `done` tool — exported so the model
+-- audit's tool legs probe the REAL specs (the empty-properties shape is the
+-- field-found Gemini rejection class; tests/model_audit.lua T7 P1.3).
+BookToolRunner.gather_declarations = GATHER_DECLARATIONS
 
 function BookToolRunner.cancel()
     BookToolRunner._cancelled = true

@@ -6553,13 +6553,16 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             doc_settings, configuration and configuration.features)
     end
 
-    -- Initialize the session web-search toggle: per-book override > global default.
-    -- Skipped when restored from a refresh (session choice preserved). Session-only —
-    -- the top-row Web button no longer writes the global setting (lasting defaults
-    -- live in Quick Settings and Book Settings).
+    -- Initialize the session web-search toggle: per-book override > global default
+    -- > provider native default (Perplexity seeds ON — it searches unless told not
+    -- to, so the chip reflects reality and tapping it off actually disables via
+    -- disable_search). Skipped when restored from a refresh (session choice
+    -- preserved). Session-only — the top-row Web button no longer writes the global
+    -- setting (lasting defaults live in Quick Settings and Book Settings).
     if session_web_search == nil then
         session_web_search = BookSettings.resolveWebSearch(
-            doc_settings, configuration and configuration.features)
+            doc_settings, configuration and configuration.features,
+            configuration and configuration.provider)
     end
 
     -- Forward declaration (showDomainSelector uses refreshInputDialog, defined later)

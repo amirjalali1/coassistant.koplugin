@@ -147,6 +147,14 @@ package.loaded["ui/widget/inputtext"] = {
     extend = function() return {} end,
 }
 package.loaded["ui/widget/inputdialog"] = {}
+-- koassistant_book_settings.lua requires ButtonDialog at module top level; the
+-- missing stub silently broke every require-chain through it under plain lua
+-- (test_book_tool_runner crashed on load — masked by the returns-nil-counts-
+-- as-passing harness loophole — and the model audit's real-spec tool legs fell
+-- back to stubs). Widget-shaped: :new{} returns a table.
+package.loaded["ui/widget/buttondialog"] = {
+    new = function(self, o) return o or {} end,
+}
 package.loaded["ui/uimanager"] = {
     show = function() end,
     close = function() end,

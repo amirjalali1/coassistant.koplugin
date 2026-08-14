@@ -275,13 +275,19 @@ function BookSettings.webSearchOverride(doc_settings)
 end
 
 --- Resolve effective web-search state for a book: per-book override > global
--- enable_web_search (opt-in, schema default false — check pattern matches). The
--- per-chat toggle is the caller's concern (mirrors resolveSpoilerFree).
+-- enable_web_search (opt-in, schema default false — check pattern matches) >
+-- the provider's NATIVE default (optional 3rd arg: Perplexity searches unless
+-- told not to — disable_search probed real 2026-08-14 — so an untouched global
+-- resolves ON there, keeping out-of-box behavior and making the Web chip
+-- truthful; every other provider stays off). The per-chat toggle is the
+-- caller's concern (mirrors resolveSpoilerFree).
 -- @return boolean
-function BookSettings.resolveWebSearch(doc_settings, features)
+function BookSettings.resolveWebSearch(doc_settings, features, provider)
     local per_book = BookSettings.webSearchOverride(doc_settings)
     if per_book ~= nil then return per_book end
-    return (features and features.enable_web_search) == true
+    local global = features and features.enable_web_search
+    if global ~= nil then return global == true end
+    return provider == "perplexity"
 end
 
 -- Per-book overrides for the two "how much work" dials (nil = follow global). Surfaced

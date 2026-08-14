@@ -181,8 +181,10 @@ ToolWire.adapters.openai_codex = ToolWire.adapters.openai
 -- chat-completions tool wire verbatim. Each also has a `tools` capability list in
 -- model_constraints.lua (the load-bearing gate — some backends silently ignore the
 -- tools param) and a _tool_calls detection branch in its response_parser transformer.
--- xAI note: tool sessions stay on the chat wire by design — xai.lua's Responses
--- routing explicitly bails when config.tools is set.
+-- xAI note: since 2026-08-14 tool sessions on responses_web_search-capable
+-- models ride xAI's Responses endpoint (xai.lua buildResponsesRequest — the
+-- openai adapter's _responses_output branch covers the replay); other xai
+-- models keep the chat wire below.
 ToolWire.adapters.deepseek = ToolWire.adapters.openai
 ToolWire.adapters.mistral = ToolWire.adapters.openai
 ToolWire.adapters.groq = ToolWire.adapters.openai

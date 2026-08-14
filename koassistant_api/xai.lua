@@ -7,9 +7,10 @@ grok-4.x reasoning models support reasoning_effort (none/low/medium/high).
 Web search (responses_api_plan.md R4): xAI's native web_search agent tool lives
 on their Responses endpoint (/v1/responses, OpenAI-compatible wire — parsed by
 the shared openai_responses transformer). The old chat-completions live search
-returns 410 Gone since 2026-01-12. Web-on requests on capable models (the
-responses_web_search list) route to Responses; everything else stays on Chat
-Completions.
+returns 410 Gone since 2026-01-12. Web-on requests AND book-tool sessions on
+capable models (the responses_web_search list) route to Responses (tools since
+2026-08-14, campaign T3 probe P9 — the only wire where tools and native web
+search coexist); everything else stays on Chat Completions.
 
 @module xai
 ]]
@@ -46,15 +47,21 @@ local function webSearchEnabled(config)
     return (config.features and config.features.enable_web_search) and true or false
 end
 
---- Route this request to xAI's Responses endpoint? Only for native web search
---- on capable models. Book-tool sessions (config.tools) stay on Chat
---- Completions: xAI has no tool_wire adapter yet, so tool turns must keep the
---- chat wire shape end-to-end.
+--- Route this request to xAI's Responses endpoint? Capable models (the
+--- responses_web_search list) route there for native web search AND for
+--- book-tool sessions (campaign T3 probe P9, 2026-08-14: flat function tools +
+--- tool_choice "required" + encrypted reasoning all accepted with
+--- OpenAI-identical function_call items) — this is what lets tools and native
+--- web search COEXIST in one xAI chat, impossible on the chat wire (live
+--- search 410 since 2026-01-12). Same one-endpoint-per-session logic as
+--- openai.lua: every tool-turn config carries config.tools, so
+--- _responses_items history entries are only ever replayed here. Models
+--- outside the capability list keep tool sessions on the chat wire end-to-end.
 local function shouldUseResponses(config, model)
-    if config.tools ~= nil then return false end
     if not ModelConstraints.supportsCapability("xai", model, "responses_web_search") then
         return false
     end
+    if config.tools ~= nil then return true end
     return webSearchEnabled(config)
 end
 
@@ -85,7 +92,15 @@ function XAIHandler:buildResponsesRequest(message_history, config, model)
     end
 
     for _idx, msg in ipairs(message_history) do
-        if msg.role ~= "system" and hasContent(msg) then
+        if type(msg._responses_items) == "table" then
+            -- A completed tool turn appended by tool_wire's Responses branch
+            -- (xai aliases the openai adapter): raw output items (reasoning/
+            -- function_call/message) + our function_call_output items, replayed
+            -- verbatim — the documented stateless pattern for store=false.
+            for _i, item in ipairs(msg._responses_items) do
+                table.insert(request_body.input, item)
+            end
+        elseif msg.role ~= "system" and hasContent(msg) then
             table.insert(request_body.input, {
                 role = msg.role == "assistant" and "assistant" or "user",
                 content = msg.content,
@@ -114,10 +129,39 @@ function XAIHandler:buildResponsesRequest(message_history, config, model)
         end
     end
 
-    -- Native web_search agent tool (always present here — routing requires
-    -- web search on). Citations come back as url_citation annotations, which
-    -- the shared parser/stream harvest already turn into provenance.
-    request_body.tools = { { type = "web_search" } }
+    -- Native web_search agent tool (when active — tool-turn configs may have
+    -- web off). Citations come back as url_citation annotations, which the
+    -- shared parser/stream harvest already turn into provenance. No
+    -- context-size dial on xAI's tool (the web_search_effort setting doesn't
+    -- apply here).
+    if webSearchEnabled(config) then
+        request_body.tools = { { type = "web_search" } }
+    end
+
+    -- Book-tool declarations (T3 P9): Responses takes FLAT function defs (no
+    -- nested "function" wrapper). Same mode mapping as openai.lua's builder.
+    if config.tools and config.tools.specs then
+        request_body.tools = request_body.tools or {}
+        for _idx, spec in ipairs(config.tools.specs) do
+            table.insert(request_body.tools, {
+                type = "function",
+                name = spec.name,
+                description = spec.description,
+                parameters = spec.parameters,
+            })
+        end
+        if config.tools.mode == "NONE" then
+            request_body.tool_choice = "none"
+        elseif config.tools.mode == "ANY" then
+            request_body.tool_choice = "required"
+        else
+            request_body.tool_choice = "auto"
+        end
+        -- Stateless tool loop: reasoning items must be replayed alongside
+        -- their function calls, which with store=false requires their
+        -- encrypted form (probe-verified accepted on grok-4.x).
+        request_body.include = { "reasoning.encrypted_content" }
+    end
 
     local headers = {
         ["Content-Type"] = "application/json",

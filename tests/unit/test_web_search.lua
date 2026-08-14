@@ -1175,12 +1175,14 @@ TestRunner:test("Perplexity falls back to citation URLs", function()
     TestRunner:assertNil(prov.sources[1].title, "no title on bare citation")
 end)
 
-TestRunner:test("Perplexity without any source data stays true", function()
+TestRunner:test("Perplexity without any source data reports NO search (honest provenance)", function()
+    -- 2026-08-14: disable_search is real on the wire (probed) — a response
+    -- carrying no citations/search_results must not claim a search happened.
     local response = {
         choices = { { message = { content = "Sonar answer" } } },
     }
     local _s, _c, _r, prov = ResponseParser:parseResponse(response, "perplexity")
-    TestRunner:assertEqual(prov, true, "always-on web search collapses to true")
+    TestRunner:assertNil(prov, "no search artifacts -> web_search_used nil")
 end)
 
 TestRunner:test("Z.AI captures web_search result links", function()

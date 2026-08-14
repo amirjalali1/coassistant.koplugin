@@ -28,9 +28,21 @@ function OpenRouterHandler:customizeHeaders(headers, config)
 end
 
 -- Add web search via :online suffix if enabled
--- OpenRouter uses Exa search ($0.02/request, 5 results default)
+-- OpenRouter uses Exa search ($0.007/request incl. up to 10 results, +$0.001
+-- each beyond; 5 results default — price re-verified against OR's server-tool
+-- page, campaign T6 2026-08-14)
 -- Works with ALL models - no capability check needed
 function OpenRouterHandler:customizeRequestBody(body, config)
+    -- Prompt caching (campaign T6, probe OR-A/OR-B: $0.0138 → $0.0014 per
+    -- reuse on an OR-routed Claude turn): OpenRouter's top-level cache_control
+    -- is an AUTO-ADVANCING breakpoint (placed on the last cacheable block,
+    -- moves as the chat grows) that OR translates per backend (Anthropic
+    -- cache_control, OpenAI prompt_cache_breakpoint, …). Before this we sent
+    -- nothing, so every OR-routed Claude/Gemini turn re-paid full input.
+    -- Backends without explicit caching ignore it. session_id sticky routing
+    -- (pins a chat to one endpoint so caches actually hit) needs a per-chat
+    -- id the request config doesn't carry yet — recorded follow-up.
+    body.cache_control = { type = "ephemeral" }
     -- Check if web search is enabled (per-action > global)
     local enable_web_search = false
     if config.enable_web_search ~= nil then

@@ -15544,7 +15544,8 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       -- EFFECTIVE state for the open book, "(book)" when a per-book override masks it.
       local BookSettings = require("koassistant_book_settings")
       local doc_settings = has_document and self.ui.doc_settings or nil
-      local label = BookSettings.resolveWebSearch(doc_settings, features) and _("On") or _("Off")
+      local label = BookSettings.resolveWebSearch(doc_settings, features,
+        self:getCurrentProvider()) and _("On") or _("Off")
       if doc_settings and doc_settings:readSetting(BookSettings.KEY_WEB_SEARCH) ~= nil then
         label = label .. _(" (book)")
       end

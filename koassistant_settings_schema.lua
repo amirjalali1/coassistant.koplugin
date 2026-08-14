@@ -2635,7 +2635,7 @@ local SettingsSchema = {
                             id = "enable_web_search",
                             type = "toggle",
                             text = _("Enable Web Search"),
-                            help_text = T(_("Allow AI to search the web for current information.\n\nSupported providers: %1.\n\nGemini supports it only on Search-grounding-capable models; OpenAI on GPT-5 models and xAI on Grok-4 models (via their Responses APIs); Perplexity always searches (no toggle needed); OpenRouter works for any model via the :online suffix.\n\nOther providers currently ignore this setting.\n\nThis is a global default: per-request toggles (input dialog, chat viewer) adapt to the active provider.\n\nIncreases token usage/cost."),
+                            help_text = T(_("Allow AI to search the web for current information.\n\nSupported providers: %1.\n\nGemini supports it only on Search-grounding-capable models; OpenAI on GPT-5 models and xAI on Grok-4 models (via their Responses APIs); OpenRouter works for any model via the :online suffix.\n\nPerplexity searches BY DEFAULT (its native behavior) — the Web toggle can now actually turn it off per chat or per book.\n\nOther providers currently ignore this setting.\n\nThis is a global default: per-request toggles (input dialog, chat viewer) adapt to the active provider.\n\nIncreases token usage/cost."),
                                 ModelConstraints.getWebSearchProvidersLabel())
                                 -- Appended as its own sentence rather than folded into the
                                 -- string above so the existing translations survive. Field

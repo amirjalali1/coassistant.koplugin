@@ -150,6 +150,31 @@ TestRunner:check("no candidate number -> nil",
     ModelAudit.parseCeiling("invalid request: streaming is required", 10000000) == nil)
 TestRunner:check("echo of the sent value alone -> nil",
     ModelAudit.parseCeiling("max_tokens 10000000 is invalid", 10000000) == nil)
+-- T7 fix (2026-08-14): the vLLM-family CONTEXT error echoes the request total,
+-- which the largest-number rule would misread as the ceiling.
+TestRunner:check("vLLM context error returns the stated context length, not the request total",
+    ModelAudit.parseCeiling(
+        "This model's maximum context length is 12288 tokens. However, you requested 20480 tokens (8192 in the messages, 12288 in the completion).",
+        10000000) == 12288)
+TestRunner:check("context window phrasing also matched",
+    ModelAudit.parseCeiling("input exceeds the context window of 131072 tokens (you sent 200000)",
+        10000000) == 131072)
+
+--==========================================================================
+TestRunner:suite("real-shape helpers (T7 hardening)")
+
+local nested = { a = {}, b = { c = {}, d = { 1, 2 } }, e = "x" }
+local copy = ModelAudit.deepcopy(nested)
+TestRunner:check("deepcopy: distinct tables, equal leaves",
+    copy ~= nested and copy.b ~= nested.b and copy.b.d[2] == 2 and copy.e == "x")
+ModelAudit.markEmptyObjects(copy)
+TestRunner:check("markEmptyObjects: empty tables tagged __jsontype=object",
+    getmetatable(copy.a) and getmetatable(copy.a).__jsontype == "object"
+    and getmetatable(copy.b.c) and getmetatable(copy.b.c).__jsontype == "object")
+TestRunner:check("markEmptyObjects: non-empty tables untouched",
+    getmetatable(copy.b) == nil and getmetatable(copy.b.d) == nil)
+TestRunner:check("markEmptyObjects: original specs never mutated (deepcopy first)",
+    getmetatable(nested.a) == nil)
 
 --==========================================================================
 TestRunner:suite("errText / reasoningEvidence")

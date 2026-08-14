@@ -593,14 +593,21 @@ end
 -- Test Perplexity (always-on web search + citations)
 TestRunner:suite("Perplexity")
 
-TestRunner:test("parses successful response with web_search_used=true", function()
-    local response = {
+TestRunner:test("web_search_used is evidence-based (2026-08-14: disable_search is real)", function()
+    local bare = {
         choices = { { message = { content = "Hello from Perplexity" } } }
     }
-    local success, result, reasoning, web_search_used = ResponseParser:parseResponse(response, "perplexity")
+    local success, result, _r, web_search_used = ResponseParser:parseResponse(bare, "perplexity")
     TestRunner:assertTrue(success, "success")
     TestRunner:assertEqual(result, "Hello from Perplexity", "content")
-    TestRunner:assertTrue(web_search_used, "web_search_used always true")
+    TestRunner:assertTrue(web_search_used == nil, "no citations/search_results -> no search claim")
+    local searched = {
+        choices = { { message = { content = "Grounded answer" } } },
+        search_results = { { url = "https://s.example/1", title = "Source" } },
+    }
+    local _s2, _c2, _r2, used2 = ResponseParser:parseResponse(searched, "perplexity")
+    TestRunner:assertTrue(type(used2) == "table" and used2.web_search == true,
+        "search artifacts -> provenance table")
 end)
 
 TestRunner:test("appends citation footnotes", function()

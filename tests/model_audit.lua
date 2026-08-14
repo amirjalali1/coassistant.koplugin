@@ -28,8 +28,11 @@
 --   Options: --verbose   full error bodies + ignored-id lists
 --
 -- Probes make real API micro-requests (max_tokens 32..1024); a full battery is
--- ~13-19 requests, fractions of a cent on most providers. Perplexity caveat:
--- every request also bills one web search.
+-- ~20-30 requests (T7 hardening 2026-08-14 added the temperature-value sweep,
+-- the real-dispatch-shape leg incl. the Anthropic cache-engagement pair, and
+-- the two-round tool replay through the plugin's own ToolWire adapters with
+-- the runner's real specs), fractions of a cent on most providers. Perplexity
+-- caveat: every request also bills one web search.
 --
 -- Requires luarocks modules (luasocket, luasec, dkjson). Run this FIRST:
 --   eval "$(luarocks --lua-version 5.5 path)"
@@ -322,9 +325,21 @@ end
 -- Parse the output-token ceiling out of an oversized-max_tokens error.
 -- Takes the largest number that is >= 1024 and BELOW the absurd value we sent
 -- (excludes echoes of our own value and large date-like ids such as 20251001).
+-- vLLM-family CONTEXT errors also echo the request total ("maximum context
+-- length is 12288 tokens. However, you requested 20480 tokens") — the
+-- largest-number rule would return 20480, not the bound, so the stated
+-- context length is checked FIRST (same order as the runtime's
+-- parseMaxTokensError; T7 P1 fix 2026-08-14).
 function ModelAudit.parseCeiling(err, sent)
+    local text = tostring(err)
+    local ctx = text:match("context length[^%d]*(%d+)")
+        or text:match("context window[^%d]*(%d+)")
+    if ctx then
+        local n = tonumber(ctx)
+        if n and n >= 1024 and n < sent then return n end
+    end
     local best
-    for num in tostring(err):gmatch("%d+") do
+    for num in text:gmatch("%d+") do
         local n = tonumber(num)
         if n and n >= 1024 and n < sent and (not best or n > best) then best = n end
     end
@@ -718,6 +733,139 @@ local function dummyProps()
     return { ping = { type = "string", description = "Any value." } }
 end
 
+--------------------------------------------------------------------------------
+-- Real-shape probe material (T7 P1, 2026-08-14). The battery's bare
+-- one-message legs are a LOWER BOUND on request complexity; real dispatch
+-- always carries a system prompt, usually consecutive user turns (Attach
+-- chip, the live spoiler line), and a 4-digit token ask — so each family
+-- battery also probes THAT shape, plus a two-round tool replay through the
+-- plugin's own ToolWire adapters with the runner's REAL tool specs.
+--------------------------------------------------------------------------------
+
+-- Deep copy (plain tables) — the runner's shared spec tables must never be
+-- mutated by probe-side encoding tags.
+function ModelAudit.deepcopy(t)
+    if type(t) ~= "table" then return t end
+    local out = {}
+    for k, v in pairs(t) do out[k] = ModelAudit.deepcopy(v) end
+    return out
+end
+
+-- Encoder parity (T7 gap 14): the runtime's KOReader json encodes an empty
+-- Lua table as {} (object); dkjson emits [] unless tagged. The real gather
+-- specs contain exactly one empty object (the `done` tool's properties) — tag
+-- every empty table so dkjson sends the wire the plugin actually sends.
+function ModelAudit.markEmptyObjects(t)
+    if type(t) ~= "table" then return t end
+    if next(t) == nil then
+        return setmetatable(t, { __jsontype = "object" })
+    end
+    for _k, v in pairs(t) do ModelAudit.markEmptyObjects(v) end
+    return t
+end
+
+-- The runner's real declarations (gather set incl. the empty-properties
+-- `done` tool — the field-found Gemini rejection class), probe-safe copy.
+local function realToolSpecs()
+    local ok, Runner = pcall(require, "koassistant_book_tool_runner")
+    if not ok or type(Runner) ~= "table" then return nil end
+    local specs = Runner.gather_declarations or Runner.function_declarations
+    if type(specs) ~= "table" then return nil end
+    return ModelAudit.markEmptyObjects(ModelAudit.deepcopy(specs))
+end
+
+-- Per-family renderings, exactly as the handlers render them.
+local function anthropicToolDefs(specs)
+    local defs = {}
+    for _i, spec in ipairs(specs) do
+        table.insert(defs, { name = spec.name, description = spec.description,
+                             input_schema = spec.parameters })
+    end
+    return defs
+end
+local function openaiToolDefs(specs)
+    local defs = {}
+    for _i, spec in ipairs(specs) do
+        table.insert(defs, { type = "function",
+            ["function"] = { name = spec.name, description = spec.description,
+                             parameters = spec.parameters } })
+    end
+    return defs
+end
+-- Mirrors gemini.lua's accommodation: OBJECT schemas with EMPTY properties are
+-- rejected ("should be non-empty for OBJECT type"), so such specs omit
+-- `parameters` — the accommodation itself is under test here.
+local function geminiToolDefs(specs)
+    local declarations = {}
+    for _i, spec in ipairs(specs) do
+        local params = spec.parameters
+        if type(params) == "table" and type(params.properties) == "table"
+                and next(params.properties) == nil then
+            table.insert(declarations, { name = spec.name, description = spec.description })
+        else
+            table.insert(declarations, spec)
+        end
+    end
+    return { { functionDeclarations = declarations } }
+end
+
+local TOOL_REPLAY_PROMPT = "Show me this book's table of contents. Use the toc tool."
+
+-- Real-dispatch history shape: consecutive user turns are DELIBERATE plugin
+-- output (Attach chip context message; the live spoiler line rides as its own
+-- final user message).
+local function realHistory()
+    return {
+        { role = "user", content = "[Context]\nBook: \"The Probe Book\" by Nobody.\n\n[User Question]\nReply with only: ok" },
+        { role = "assistant", content = "ok" },
+        { role = "user", content = "Reply with only: ok, once more." },
+        { role = "user", content = "The reader is currently at 40% of this book. Do not reveal or discuss anything beyond this point." },
+    }
+end
+
+-- ~6K chars of system text: comfortably above every Claude model's minimum
+-- cacheable prefix (512-4096 tokens by model) so the cache-engagement
+-- assertion can't silently no-op the way the old short system block did.
+local REAL_SYSTEM_SENTENCE = "You are a careful reading assistant for an e-reader plugin. " ..
+    "Ground every answer in the provided book context, cite page numbers when you know them, " ..
+    "keep responses short for a small e-ink screen, and never reveal content beyond the " ..
+    "reader's stated position. "
+local function realSystemText()
+    return REAL_SYSTEM_SENTENCE:rep(28)
+end
+
+-- Neutral tool-call parse via the plugin's OWN response transformers; falls
+-- back to the shared "openai" transformer for providers without one.
+local function parseToolCalls(decoded, provider)
+    local ResponseParser = require("koassistant_api.response_parser")
+    local ok, content = ResponseParser:parseResponse(decoded, provider)
+    if not ok or type(content) ~= "table" or not content._tool_calls then
+        if provider ~= "openai" then
+            ok, content = ResponseParser:parseResponse(decoded, "openai")
+            if ok and type(content) == "table" and content._tool_calls then return content end
+        end
+        return nil
+    end
+    return content
+end
+
+-- Execute the parsed calls with a constant result and append the turn through
+-- the plugin's real ToolWire adapter (the one leg that must import plugin
+-- code: round-2 failure classes — gemini thought_signature, deepseek
+-- reasoning_content, orphaned call ids — live in the adapter's exact output).
+local function appendReplayTurn(adapter_key, messages, parsed)
+    local ToolWire = require("koassistant_api.tool_wire")
+    local adapter = ToolWire.adapters[adapter_key]
+    if not adapter then return false end
+    local executed = {}
+    for _i, call in ipairs(parsed.calls or {}) do
+        table.insert(executed, { call = call,
+            result = { ok = true, note = "probe: constant tool result", chapters = { "One", "Two" } } })
+    end
+    adapter.appendToolTurn(messages, parsed.raw_assistant_turn, executed)
+    return #executed > 0
+end
+
 local function newFacts(family, provider, model)
     return { family = family, provider = provider, model = model,
              efforts = {}, probes = {} }
@@ -851,13 +999,19 @@ local function probeAnthropic(model, api_key, verbose)
             "accepted?! no ceiling error - verify by hand")
     end
 
-    -- 7. tools sanity
-    local probe_tools = { { name = "ping", description = "Connectivity test.",
-                            input_schema = { type = "object", properties = dummyProps() } } }
+    -- 7. tools sanity — the runner's REAL declarations (T7 P1.3: array params,
+    -- object items, the empty-properties `done` tool; a ping stub can green a
+    -- schema shape the plugin never sends). Falls back to the stub only if the
+    -- runner module fails to load.
+    local real_specs = realToolSpecs()
+    local probe_tools = real_specs and anthropicToolDefs(real_specs)
+        or { { name = "ping", description = "Connectivity test.",
+               input_schema = { type = "object", properties = dummyProps() } } }
     local wcode, wdec, wraw = req({ tools = probe_tools })
     facts.tools_ok = verdict(wcode)
     if not facts.tools_ok then facts.tools_err = ModelAudit.errText(wdec, wraw) end
-    recordProbe(facts, "tools (minimal function def)", facts.tools_ok, facts.tools_err)
+    recordProbe(facts, real_specs and "tools (real runner specs)" or "tools (minimal function def)",
+        facts.tools_ok, facts.tools_err)
 
     -- 8. forced tool_choice - the runner's gather ("any") and final ("none")
     -- passes need non-auto tool_choice; a bare tools probe can't see this
@@ -886,6 +1040,69 @@ local function probeAnthropic(model, api_key, verbose)
     -- 9. streaming smoke
     local scode, sdec, sraw = req({ stream = true })
     recordStreamProbe(facts, scode, sdec, sraw)
+
+    -- 10. real dispatch shape (T7 P1.1): system ARRAY with a block breakpoint
+    -- + the top-level auto-advancing cache_control (what anthropic_request.lua
+    -- sends since 2026-08-14), consecutive-user history, the real resolved
+    -- token ask — and an assertion that the cache ENGAGES (below the model's
+    -- minimum cacheable prefix it silently no-ops, the shipped-config bug the
+    -- campaign measured).
+    local real_max = ModelConstraints.clampMaxTokens("anthropic", model,
+        ModelConstraints.resolveMaxTokens("anthropic", model, 16384))
+    local real_body = {
+        model = model, max_tokens = real_max,
+        system = { { type = "text", text = realSystemText(),
+                     cache_control = { type = "ephemeral" } } },
+        cache_control = { type = "ephemeral" },
+        messages = realHistory(),
+    }
+    local r1code, r1dec, r1raw = httpPostJson(url, headers, real_body)
+    local r1usage = r1code == 200 and type(r1dec.usage) == "table" and r1dec.usage or {}
+    local wrote = (r1usage.cache_creation_input_tokens or 0) > 0
+        or (r1usage.cache_read_input_tokens or 0) > 0
+    facts.real_shape_ok = verdict(r1code)
+    recordProbe(facts, "real shape (system+consecutive users)", facts.real_shape_ok,
+        r1code ~= 200 and ModelAudit.errText(r1dec, r1raw)
+            or string.format("cache_creation=%s cache_read=%s",
+                tostring(r1usage.cache_creation_input_tokens),
+                tostring(r1usage.cache_read_input_tokens)))
+    if r1code == 200 then
+        facts.cache_engaged = wrote
+        if not wrote then
+            recordProbe(facts, "prompt cache engagement", false,
+                "0 cached tokens - prefix below this model's minimum cacheable size?")
+        else
+            local r2code, r2dec = httpPostJson(url, headers, real_body)
+            local r2usage = r2code == 200 and type(r2dec.usage) == "table" and r2dec.usage or {}
+            local read_back = (r2usage.cache_read_input_tokens or 0) > 0
+            facts.cache_read_ok = r2code == 200 and read_back or verdict(r2code)
+            recordProbe(facts, "prompt cache engagement (write then read)",
+                facts.cache_read_ok,
+                string.format("read_back=%s", tostring(r2usage.cache_read_input_tokens)))
+        end
+    end
+
+    -- 11. two-round tool replay (T7 P1.2): round 1 forces a call on the real
+    -- specs; the result rides back through the plugin's OWN ToolWire adapter;
+    -- round 2 must accept the replayed turn. Every known round-2 failure class
+    -- is invisible to the single-call legs above.
+    if facts.tools_ok and real_specs then
+        local t1code, t1dec, t1raw = req({ tools = probe_tools,
+            tool_choice = { type = "any" } }, 1024, TOOL_REPLAY_PROMPT)
+        local parsed = t1code == 200 and parseToolCalls(t1dec, "anthropic") or nil
+        if not parsed then
+            recordProbe(facts, "tool replay round 1 (forced call)", verdict(t1code),
+                t1code ~= 200 and ModelAudit.errText(t1dec, t1raw) or "no tool call parsed")
+        else
+            local messages = { { role = "user", content = TOOL_REPLAY_PROMPT } }
+            appendReplayTurn("anthropic", messages, parsed)
+            local t2code, t2dec, t2raw = req({ messages = messages,
+                tools = probe_tools, tool_choice = { type = "none" } }, 1024)
+            facts.tool_replay_ok = verdict(t2code)
+            recordProbe(facts, "tool replay round 2 (adapter echo)", facts.tool_replay_ok,
+                t2code ~= 200 and ModelAudit.errText(t2dec, t2raw) or nil)
+        end
+    end
 
     if verbose and facts.temp_err then printf("  %stemp error: %s%s", C.dim, facts.temp_err, C.off) end
     return facts
@@ -968,11 +1185,21 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
         (facts.weak_reasoning_evidence and " (weak signal - verify)" or "") ..
         (facts.needs_max_completion_tokens and " (needs max_completion_tokens)" or ""))
 
-    -- 2. temperature
+    -- 2. temperature — the plugin's ACTUAL values, not just "is 0.7 legal"
+    -- (T7 P1.4): action pins sit at 0.3-0.6, the user spinner allows 0.0-2.0.
     local tcode, tdec, traw = req({ temperature = 0.7 }, 32)
     facts.temp_ok = verdict(tcode)
     if not facts.temp_ok then facts.temp_err = ModelAudit.errText(tdec, traw) end
     recordProbe(facts, "temperature=0.7", facts.temp_ok, facts.temp_err)
+    if facts.temp_ok then
+        facts.temp_values = {}
+        for _i, tv in ipairs({ 0.0, 0.3, 1.0, 2.0 }) do
+            local vcode, vdec, vraw = req({ temperature = tv }, 32)
+            facts.temp_values[tostring(tv)] = verdict(vcode)
+            recordProbe(facts, "temperature=" .. tostring(tv), verdict(vcode),
+                vcode ~= 200 and ModelAudit.errText(vdec, vraw) or nil)
+        end
+    end
 
     -- 3. reasoning controls
     if fam.effort_key then
@@ -1024,14 +1251,18 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
             "accepted (provider may clamp silently) - check docs")
     end
 
-    -- 5. tools sanity
-    local probe_tools = { { type = "function",
-                            ["function"] = { name = "ping", description = "Connectivity test.",
-                                             parameters = { type = "object", properties = dummyProps() } } } }
+    -- 5. tools sanity — the runner's REAL declarations (T7 P1.3; stub fallback
+    -- only if the runner module fails to load)
+    local real_specs = realToolSpecs()
+    local probe_tools = real_specs and openaiToolDefs(real_specs)
+        or { { type = "function",
+               ["function"] = { name = "ping", description = "Connectivity test.",
+                                parameters = { type = "object", properties = dummyProps() } } } }
     local wcode, wdec, wraw = req({ tools = probe_tools })
     facts.tools_ok = verdict(wcode)
     if not facts.tools_ok then facts.tools_err = ModelAudit.errText(wdec, wraw) end
-    recordProbe(facts, "tools (minimal function def)", facts.tools_ok, facts.tools_err)
+    recordProbe(facts, real_specs and "tools (real runner specs)" or "tools (minimal function def)",
+        facts.tools_ok, facts.tools_err)
 
     -- 6. forced tool_choice (runner gather="required" / final="none" - the
     -- Z.AI wave-1.5 failure class a bare tools probe cannot see)
@@ -1117,6 +1348,62 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
         end
     end
 
+    -- 11. real dispatch shape (T7 P1.1): system message + consecutive user
+    -- turns + the real resolved token ask. Perplexity gets the handler-merged
+    -- shape (perplexity.lua merges consecutive same-role turns — the known
+    -- rejecter's accommodation is itself under test); everyone else gets the
+    -- raw shape dispatch actually sends.
+    do
+        local history = { { role = "system", content = realSystemText() } }
+        for _i, msg in ipairs(realHistory()) do table.insert(history, msg) end
+        if provider == "perplexity" then
+            local merged = { history[1] }
+            for i = 2, #history do
+                local prev = merged[#merged]
+                if history[i].role == prev.role then
+                    prev.content = prev.content .. "\n\n" .. history[i].content
+                else
+                    table.insert(merged, history[i])
+                end
+            end
+            history = merged
+        end
+        local real_max = ModelConstraints.clampMaxTokens(provider, model,
+            ModelConstraints.resolveMaxTokens(provider, model, 4096))
+        local rcode, rdec, rraw = req({ messages = history }, real_max)
+        facts.real_shape_ok = verdict(rcode)
+        recordProbe(facts, "real shape (system+consecutive users)", facts.real_shape_ok,
+            rcode ~= 200 and ModelAudit.errText(rdec, rraw) or nil)
+    end
+
+    -- 12. two-round tool replay (T7 P1.2) through the plugin's own ToolWire
+    -- adapter. deepseek mirrors its handler (thinking disabled on tool
+    -- sessions; reasoning_content stays on the replayed turn — V3.2+ 400s
+    -- without it); other providers get the handler-stripped shape.
+    if facts.tools_ok and real_specs then
+        local tool_extra = { tools = probe_tools, tool_choice = "required" }
+        if provider == "deepseek" then tool_extra.thinking = { type = "disabled" } end
+        local t1code, t1dec, t1raw = req(tool_extra, 1024, TOOL_REPLAY_PROMPT)
+        local parsed = t1code == 200 and parseToolCalls(t1dec, provider) or nil
+        if not parsed then
+            recordProbe(facts, "tool replay round 1 (forced call)", verdict(t1code),
+                t1code ~= 200 and ModelAudit.errText(t1dec, t1raw) or "no tool call parsed")
+        else
+            local messages = { { role = "user", content = TOOL_REPLAY_PROMPT } }
+            appendReplayTurn("openai", messages, parsed)
+            for _i, m in ipairs(messages) do
+                if provider ~= "deepseek" then m.reasoning_content = nil end
+                if provider ~= "openrouter" then m.reasoning_details = nil end
+            end
+            local replay_extra = { messages = messages, tools = probe_tools, tool_choice = "none" }
+            if provider == "deepseek" then replay_extra.thinking = { type = "disabled" } end
+            local t2code, t2dec, t2raw = req(replay_extra, 1024)
+            facts.tool_replay_ok = verdict(t2code)
+            recordProbe(facts, "tool replay round 2 (adapter echo)", facts.tool_replay_ok,
+                t2code ~= 200 and ModelAudit.errText(t2dec, t2raw) or nil)
+        end
+    end
+
     if verbose and facts.temp_err then printf("  %stemp error: %s%s", C.dim, facts.temp_err, C.off) end
     return facts
 end
@@ -1138,6 +1425,13 @@ local function probeGemini(model, api_key, verbose)
             facts.meta = mdata
             if type(mdata.outputTokenLimit) == "number" then
                 facts.ceiling = mdata.outputTokenLimit
+            end
+            -- Keep the temperature bound as a FACT (T7 P1.4) instead of
+            -- printing and discarding it — the draft compares it against what
+            -- the plugin sends (0.3-0.7 pins vs Google's recommended 1.0 on
+            -- Gemini 3).
+            if type(mdata.maxTemperature) == "number" then
+                facts.max_temperature_meta = mdata.maxTemperature
             end
             printf("  %smetadata: outputTokenLimit=%s inputTokenLimit=%s maxTemperature=%s%s",
                 C.dim, tostring(mdata.outputTokenLimit), tostring(mdata.inputTokenLimit),
@@ -1198,13 +1492,20 @@ local function probeGemini(model, api_key, verbose)
     recordProbe(facts, "thinkingBudget=1024", facts.budget_ok,
         not facts.budget_ok and ModelAudit.errText(bdec, braw) or nil)
 
-    -- 5. tools sanity
-    local probe_tools = { { functionDeclarations = { { name = "ping", description = "Connectivity test.",
-                            parameters = { type = "object", properties = dummyProps() } } } } }
+    -- 5. tools sanity — the runner's REAL declarations rendered with
+    -- gemini.lua's empty-properties accommodation (T7 P1.3: the `done` tool's
+    -- empty properties is the field-found Gemini rejection class, so the
+    -- accommodation itself is under test); stub fallback if the runner module
+    -- fails to load.
+    local real_specs = realToolSpecs()
+    local probe_tools = real_specs and geminiToolDefs(real_specs)
+        or { { functionDeclarations = { { name = "ping", description = "Connectivity test.",
+              parameters = { type = "object", properties = dummyProps() } } } } }
     local wcode, wdec, wraw = req(nil, { tools = probe_tools }, 32)
     facts.tools_ok = verdict(wcode)
     if not facts.tools_ok then facts.tools_err = ModelAudit.errText(wdec, wraw) end
-    recordProbe(facts, "tools (functionDeclarations)", facts.tools_ok, facts.tools_err)
+    recordProbe(facts, real_specs and "tools (real runner specs)" or "tools (functionDeclarations)",
+        facts.tools_ok, facts.tools_err)
 
     -- 6. forced tool_choice (runner gather=ANY / final=NONE via toolConfig -
     -- the Z.AI wave-1.5 failure class a bare tools probe cannot see)
@@ -1228,6 +1529,64 @@ local function probeGemini(model, api_key, verbose)
         generationConfig = { maxOutputTokens = 32 },
     })
     recordStreamProbe(facts, scode, sdec, sraw)
+
+    -- 8. real dispatch shape (T7 P1.1): system_instruction + consecutive user
+    -- turns, as gemini.lua sends them.
+    do
+        local rcode, rdec, rraw = httpPostJson(url, nil, {
+            system_instruction = { parts = { { text = realSystemText() } } },
+            contents = {
+                { role = "user", parts = { { text = "Reply with only: ok" } } },
+                { role = "model", parts = { { text = "ok" } } },
+                { role = "user", parts = { { text = "Reply with only: ok, once more." } } },
+                { role = "user", parts = { { text = "The reader is at 40% of this book. Do not discuss anything beyond this point." } } },
+            },
+            generationConfig = { maxOutputTokens = 256 },
+        })
+        facts.real_shape_ok = verdict(rcode)
+        recordProbe(facts, "real shape (system+consecutive users)", facts.real_shape_ok,
+            rcode ~= 200 and ModelAudit.errText(rdec, rraw) or nil)
+    end
+
+    -- 9. two-round tool replay (T7 P1.2): Gemini 3 enforces thought_signature
+    -- replay — a single-call probe can never see it. The turn rides the
+    -- plugin's own gemini ToolWire adapter; roles map as gemini.lua maps them
+    -- (assistant echo keeps "model", tool results go on a "user" turn).
+    if facts.tools_ok and real_specs then
+        local t1code, t1dec, t1raw = req(nil, { tools = probe_tools,
+            toolConfig = { functionCallingConfig = { mode = "ANY" } } }, 1024, TOOL_REPLAY_PROMPT)
+        local parsed = t1code == 200 and parseToolCalls(t1dec, "gemini") or nil
+        if not parsed then
+            recordProbe(facts, "tool replay round 1 (forced call)", verdict(t1code),
+                t1code ~= 200 and ModelAudit.errText(t1dec, t1raw) or "no tool call parsed")
+        else
+            local messages = { { role = "user",
+                parts = { { text = TOOL_REPLAY_PROMPT } } } }
+            local ToolWire = require("koassistant_api.tool_wire")
+            local executed = {}
+            for _i, call in ipairs(parsed.calls or {}) do
+                table.insert(executed, { call = call,
+                    result = { ok = true, note = "probe: constant tool result" } })
+            end
+            ToolWire.adapters.gemini.appendToolTurn(messages, parsed.raw_assistant_turn, executed)
+            local contents = {}
+            for _i, m in ipairs(messages) do
+                table.insert(contents, {
+                    role = m.role == "tool" and "user" or m.role,
+                    parts = m.parts,
+                })
+            end
+            local t2code, t2dec, t2raw = httpPostJson(url, nil, {
+                contents = contents,
+                tools = probe_tools,
+                toolConfig = { functionCallingConfig = { mode = "NONE" } },
+                generationConfig = { maxOutputTokens = 1024 },
+            })
+            facts.tool_replay_ok = verdict(t2code)
+            recordProbe(facts, "tool replay round 2 (adapter echo)", facts.tool_replay_ok,
+                t2code ~= 200 and ModelAudit.errText(t2dec, t2raw) or nil)
+        end
+    end
 
     printf("  %sgoogle_search grounding: not probed (separate quota) - set per family/docs%s",
         C.dim, C.off)

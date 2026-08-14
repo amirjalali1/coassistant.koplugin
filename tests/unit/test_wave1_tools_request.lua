@@ -164,19 +164,23 @@ TestRunner:test("groq: declaration coexists with reasoning customization", funct
     TestRunner:assertEqual(body.reasoning_effort, "low", "reasoning_effort still applied")
 end)
 
-TestRunner:test("xai: tool session stays on the chat wire even with web search on", function()
+TestRunner:test("xai: tool session routes to Responses on capable models (2026-08-14, T3 P9)", function()
+    -- The old stays-on-chat-wire contract is retired: tools + native web
+    -- search now COEXIST on /v1/responses (flat function defs beside the
+    -- web_search tool). Non-capable xai models still keep the chat wire —
+    -- covered in test_xai_responses.lua.
     local result = XAIHandler:buildRequestBody(TOOL_HISTORY, {
         api_key = "test",
         model = "grok-4.5",
-        enable_web_search = true,  -- would route to /v1/responses WITHOUT config.tools
+        enable_web_search = true,
         tools = { specs = SPECS, mode = "AUTO" },
     })
-    TestRunner:assertTrue(result.parser == nil, "no openai_responses parser override")
-    TestRunner:assertTrue(result.body.input == nil, "chat wire shape (messages, not input)")
-    TestRunner:assertTrue(result.body.messages ~= nil, "messages present")
-    TestRunner:assertEqual(result.body.tools[1].type, "function", "book tools declared")
-    TestRunner:assertEqual(result.body.tools[1]["function"].name, "search_book", "function name")
-    TestRunner:assertEqual(result.body.messages[2].tool_calls[1].id, "c1", "tool_calls preserved")
+    TestRunner:assertEqual(result.parser, "openai_responses", "Responses parser")
+    TestRunner:assertTrue(result.body.input ~= nil, "Responses shape (input items)")
+    TestRunner:assertEqual(result.body.tools[1].type, "web_search", "native web search kept")
+    TestRunner:assertEqual(result.body.tools[2].type, "function", "flat book-tool def beside it")
+    TestRunner:assertEqual(result.body.tools[2].name, "search_book", "function name at top level")
+    TestRunner:assertEqual(result.body.include[1], "reasoning.encrypted_content", "stateless reasoning replay")
 end)
 
 TestRunner:test("xai: web-on WITHOUT tools still routes to Responses (guard the guard)", function()
