@@ -1013,8 +1013,8 @@ local SettingsSchema = {
                             type = "toggle",
                             text = _("Passive Marking"),
                             path = "features.xray_marking",
-                            default = false,
-                            help_text = _("Discreetly underline words on the page that match an X-Ray entity's name or alias, as you read. Tap a marked word to open its entry (via \"X-Ray Entry for Matching Selections\"). Only marks entities the X-Ray knows at your reading position when spoiler protection is on. EPUB page mode only."),
+                            default = true,
+                            help_text = _("Discreetly underline words on the page that match an X-Ray entity's name or alias, as you read (dotted gray, drawn shortly after the page settles; entirely on-device). Tap a marked word to open its entry. Only active for books that have an X-Ray. EPUB page mode only."),
                             on_change = function(new_value, plugin)
                                 if plugin.syncXrayMarks then
                                     local UIManager = require("ui/uimanager")
@@ -2968,9 +2968,20 @@ local SettingsSchema = {
                     id = "debug",
                     type = "toggle",
                     text = _("Console Debug"),
-                    help_text = _("Enable console/terminal debug logging (for developers)"),
+                    help_text = _("Log requests, responses, routing decisions and feature diagnostics to the console/crash log, for developers. Large content is truncated (see below); API keys are never logged. Slows page turns slightly while X-Ray marking is on."),
                     path = "features.debug",
                     default = false,
+                    on_change = function(new_value, plugin)
+                        -- Most consumers read the flag per request; the marks
+                        -- module caches it at sync — resync so the toggle is
+                        -- live there too
+                        if plugin.syncXrayMarks then
+                            local UIManager = require("ui/uimanager")
+                            UIManager:nextTick(function()
+                                plugin:syncXrayMarks()
+                            end)
+                        end
+                    end,
                 },
                 {
                     id = "show_debug_in_chat",

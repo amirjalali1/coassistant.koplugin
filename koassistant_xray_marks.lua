@@ -613,7 +613,9 @@ function XrayMarks.sync(plugin)
   local ui = plugin and plugin.ui
   local features = plugin and plugin.settings
       and plugin.settings:readSetting("features") or {}
-  local eligible = features.xray_marking == true
+  -- Opt-out since round 10 (default ON — read pattern must match the schema
+  -- default): nil counts as enabled, explicit false is the opt-out
+  local eligible = features.xray_marking ~= false
       and ui and ui.document and ui.rolling and ui.view
   if not eligible then
     XrayMarks.teardown(plugin)

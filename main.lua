@@ -17172,9 +17172,9 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
   end
   local buttons = {}
   table.insert(buttons, row(
-    T(_("Passive marking: %1"), features.xray_marking == true and _("On") or _("Off")),
-    function() features.xray_marking = features.xray_marking ~= true end))
-  if features.xray_marking == true then
+    T(_("Passive marking: %1"), features.xray_marking ~= false and _("On") or _("Off")),
+    function() features.xray_marking = features.xray_marking == false end))
+  if features.xray_marking ~= false then
     local dens = features.xray_marking_density or "10"
     local dens_labels = {
       first = _("Once per page"),
