@@ -93,6 +93,10 @@ local st = nil
 -- DOTTED underline (maintainer round 7) — quiet enough to live on every
 -- page, distinct from KOReader's solid-underline highlight style, and
 -- paintRect (unlike the old invertRect) never self-cancels on overlap.
+-- AHEAD-ONLY entities (known only to the newest built checkpoint — round
+-- 16) paint short DASHES instead: same gray, same weight, visibly "new /
+-- identification only", so the reader knows the full entry sits behind the
+-- spoiler gate before tapping.
 local paint_widget = {
   paintTo = function(_w, bb, _x, _y)
     local boxes = st and st.paint_boxes
@@ -101,16 +105,18 @@ local paint_widget = {
     local Blitbuffer = require("ffi/blitbuffer")
     local strip = math.max(2, Screen:scaleBySize(2))
     local dot = math.max(3, Screen:scaleBySize(3))
+    local dash = math.max(7, Screen:scaleBySize(7))
     local gap = math.max(2, Screen:scaleBySize(2))
     for _i, box in ipairs(boxes) do
       if box.x and box.y and box.w and box.h and box.w > 0 and box.h > strip then
+        local seg = box.ahead and dash or dot
         local y = box.y + box.h - strip
         local x_end = box.x + box.w
         local x = box.x
         while x < x_end do
-          bb:paintRect(x, y, math.min(dot, x_end - x), strip,
+          bb:paintRect(x, y, math.min(seg, x_end - x), strip,
             Blitbuffer.COLOR_DARK_GRAY)
-          x = x + dot + gap
+          x = x + seg + gap
         end
       end
     end
@@ -219,7 +225,7 @@ local function ensureIndex(plugin, pageno)
   local ents = {}
   local seen_names = {}
   local included, skipped = {}, {}
-  local function addFrom(result)
+  local function addFrom(result, is_ahead)
     local data = XrayParser.parse(result)
     if not data then return end
     XrayParser.mergeUserAliases(data, user_aliases)
@@ -229,6 +235,9 @@ local function ensureIndex(plugin, pageno)
       local nk = type(e.name) == "string" and e.name:lower() or nil
       if not (nk and seen_names[nk]) then
         if nk then seen_names[nk] = true end
+        -- Ahead-only entities paint differently (dashes) — the reader can
+        -- tell "new, identification only" from an established mark
+        if is_ahead then e.ahead = true end
         ents[#ents + 1] = e
         included[e.category_key] = (included[e.category_key] or 0) + 1
       end
@@ -244,7 +253,7 @@ local function ensureIndex(plugin, pageno)
   end
   if art then addFrom(art.result) end
   for _idx, s in ipairs(st.sections or {}) do addFrom(s.data.result) end
-  if st.ahead then addFrom(st.ahead.result) end
+  if st.ahead then addFrom(st.ahead.result, true) end
   st.entities = #ents > 0 and ents or nil
   st.artifact_key = key
   local function tally(t)
@@ -368,8 +377,11 @@ local function mergeLineBoxes(marks)
         cur.y = math.min(cur.y, b.y)
         cur.w = right - cur.x
         cur.h = bottom - cur.y
+        -- A merged strip stays "ahead" (dashed) only when EVERY contributor
+        -- is — an established mark makes the whole strip established
+        cur.ahead = cur.ahead and b.ahead or nil
       else
-        cur = { x = b.x, y = b.y, w = b.w, h = b.h }
+        cur = { x = b.x, y = b.y, w = b.w, h = b.h, ahead = b.ahead }
         out[#out + 1] = cur
       end
     end
@@ -506,7 +518,8 @@ function XrayMarks._scanTick(plugin, pageno, token, hay)
               for _b, box in ipairs(bxs) do
                 if box.y and box.y >= 0 and box.h and box.h > 0 then
                   marks[#marks + 1] = { x = box.x, y = box.y,
-                    w = box.w, h = box.h, name = ent.name }
+                    w = box.w, h = box.h, name = ent.name,
+                    ahead = ent.ahead }
                   added = true
                 end
               end

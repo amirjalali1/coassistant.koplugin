@@ -17208,12 +17208,10 @@ end
 --- checkpoint), full entry one tap away at the position tier; ahead-only
 --- entities reveal their full entry behind a confirm while spoiler
 --- protection is on. `features.xray_card_landing == false` restores the
---- straight-to-full-entry behavior.
+--- straight-to-full-entry behavior — except ahead-only entities, which keep
+--- the reveal flow (the position-tier lookup cannot show them).
 function AskGPT:openXrayCard(query, opts)
   local features = self.settings:readSetting("features") or {}
-  if features.xray_card_landing == false then
-    return self:_openXrayEntityDirect(query, opts)
-  end
   local file = (opts and opts.document_path)
     or (self.ui and self.ui.document and self.ui.document.file)
   local XrayCard = require("koassistant_xray_card")
@@ -17224,37 +17222,44 @@ function AskGPT:openXrayCard(query, opts)
     return self:_openXrayEntityDirect(query, opts)
   end
   local self_ref = self
+  local function openFull(h)
+    if h.source ~= "ahead" then
+      self_ref:_openXrayEntityDirect(h.query, opts)
+      return
+    end
+    -- Ahead-only entity: the full entry crosses the reading position
+    local function reveal()
+      XrayCard.showFullDetail(h)
+    end
+    local f2 = self_ref.settings:readSetting("features") or {}
+    local ds = self_ref.ui and self_ref.ui.doc_settings
+    local protected = ds and require("koassistant_book_settings")
+      .resolveSpoilerPosture(ds, f2).protected
+    if protected then
+      local ConfirmBox = require("ui/widget/confirmbox")
+      UIManager:show(ConfirmBox:new{
+        text = T(_("This entry comes from a checkpoint ahead of your reading position (%1%) and may contain spoilers.\n\nReveal the full entry?"),
+          math.floor((h.ahead_progress or 0) * 100 + 0.5)),
+        ok_text = _("Reveal"),
+        ok_callback = reveal,
+      })
+    else
+      reveal()
+    end
+  end
+  if features.xray_card_landing == false then
+    -- Full-entry landing (round 16): an AHEAD-ONLY entity still needs the
+    -- reveal flow — the direct lookup searches the position tier and would
+    -- dead-end on "no results" for a hit the gate just confirmed
+    return openFull(hit)
+  end
   XrayCard.show(hit, {
     -- Presentation (round 15): footnote panel (default) or floating popup,
     -- anchored at the tapped word when the landing carried geometry
     style = features.xray_card_style,
     ui = self.ui,
     sboxes = opts and opts.sboxes or nil,
-    on_full = function(h)
-      if h.source ~= "ahead" then
-        self_ref:_openXrayEntityDirect(h.query, opts)
-        return
-      end
-      -- Ahead-only entity: the full entry crosses the reading position
-      local function reveal()
-        XrayCard.showFullDetail(h)
-      end
-      local f2 = self_ref.settings:readSetting("features") or {}
-      local ds = self_ref.ui and self_ref.ui.doc_settings
-      local protected = ds and require("koassistant_book_settings")
-        .resolveSpoilerPosture(ds, f2).protected
-      if protected then
-        local ConfirmBox = require("ui/widget/confirmbox")
-        UIManager:show(ConfirmBox:new{
-          text = T(_("This entry comes from a checkpoint ahead of your reading position (%1%) and may contain spoilers.\n\nReveal the full entry?"),
-            math.floor((h.ahead_progress or 0) * 100 + 0.5)),
-          ok_text = _("Reveal"),
-          ok_callback = reveal,
-        })
-      else
-        reveal()
-      end
-    end,
+    on_full = openFull,
   })
 end
 
