@@ -16745,28 +16745,24 @@ function AskGPT:syncDictionaryBypass()
         -- Memoized route index (slice 2): a stat per tap instead of the old
         -- full cache parse per tap — the #63 one-parse-per-tap cost is gone
         if i_file and ActionCache.matchAnyXrayExact(i_file, word) then
-          local xaction = self_ref.action_service:getAction("highlight", "xray_lookup")
-          if xaction then
-            logger.info("KOAssistant: X-Ray intercept - word matches entity, opening X-Ray")
-            local lookup_book = dict_self._koassistant_lookup_book
-            dict_self._koassistant_non_reader_lookup = nil
-            dict_self._koassistant_lookup_book = nil
-            -- No dict window will ever exist to clear the reader's selection
-            -- on close (stock clears it from DictQuickLookup; the bypass
-            -- path below clears it too) — without this the word stays stuck
-            -- selected and the next tap re-fires the lookup (device
-            -- 2026-08-13)
-            if highlight and highlight.clear then
-              highlight:clear()
-            end
-            if dict_close_callback then
-              dict_close_callback()
-            end
-            self_ref:updateConfigFromSettings()
-            Dialogs.executeDirectAction(self_ref.ui, xaction, word, configuration, self_ref,
-              lookup_book and { document_path = lookup_book } or nil)
-            return
+          logger.info("KOAssistant: X-Ray intercept - word matches entity, opening X-Ray")
+          local lookup_book = dict_self._koassistant_lookup_book
+          dict_self._koassistant_non_reader_lookup = nil
+          dict_self._koassistant_lookup_book = nil
+          -- No dict window will ever exist to clear the reader's selection
+          -- on close (stock clears it from DictQuickLookup; the bypass
+          -- path below clears it too) — without this the word stays stuck
+          -- selected and the next tap re-fires the lookup (device
+          -- 2026-08-13)
+          if highlight and highlight.clear then
+            highlight:clear()
           end
+          if dict_close_callback then
+            dict_close_callback()
+          end
+          self_ref:openXrayCard(word,
+            lookup_book and { document_path = lookup_book } or nil)
+          return
         end
       end
       if not bypass_enabled then
@@ -17112,13 +17108,10 @@ function AskGPT:syncHighlightBypass()
         -- Memoized route index (slice 2): a stat per release instead of the
         -- old full cache parse
         if i_file and ActionCache.matchAnyXrayExact(i_file, sel) then
-          local xaction = self_ref.action_service:getAction("highlight", "xray_lookup")
-          if xaction then
-            logger.info("KOAssistant: X-Ray intercept - selection matches entity, opening X-Ray")
-            self_ref:executeHighlightBypassAction(xaction, sel, hl_self)
-            hl_self:clear()
-            return true
-          end
+          logger.info("KOAssistant: X-Ray intercept - selection matches entity, opening X-Ray")
+          hl_self:clear()
+          self_ref:openXrayCard(sel)
+          return true
         end
       end
     end
@@ -17164,6 +17157,70 @@ end
 
 --- Ambient X-Ray marks (slice 2): install/refresh/remove the paint layer per
 --- current settings + book. Safe to call any time; no-ops without a reader.
+--- The pre-card exact-hit open: the xray_lookup action through the exact
+--- fast path (browser detail, natural back stack). Shared by the card's
+--- "Full entry", the full-entry landing preference, and the resolver-miss
+--- fallback. opts = { document_path } for lookup-book taps.
+function AskGPT:_openXrayEntityDirect(query, opts)
+  local xaction = self.action_service
+    and self.action_service:getAction("highlight", "xray_lookup")
+  if not xaction then return end
+  self:updateConfigFromSettings()
+  Dialogs.executeDirectAction(self.ui, xaction, query, configuration, self,
+    opts and opts.document_path and { document_path = opts.document_path } or nil)
+end
+
+--- Card landing router (point-4 v1, ref #78/#63): every EXACT entity hit
+--- (mark tap, dict-side intercept, highlight-side intercept) lands here.
+--- Card first (identification tier, may peek at the newest built
+--- checkpoint), full entry one tap away at the position tier; ahead-only
+--- entities reveal their full entry behind a confirm while spoiler
+--- protection is on. `features.xray_card_landing == false` restores the
+--- straight-to-full-entry behavior.
+function AskGPT:openXrayCard(query, opts)
+  local features = self.settings:readSetting("features") or {}
+  if features.xray_card_landing == false then
+    return self:_openXrayEntityDirect(query, opts)
+  end
+  local file = (opts and opts.document_path)
+    or (self.ui and self.ui.document and self.ui.document.file)
+  local XrayCard = require("koassistant_xray_card")
+  local ok, hit = pcall(XrayCard.resolve, file, query)
+  if not ok or not hit then
+    -- The exact gate said yes but the resolver disagreed (disk moved,
+    -- parse hiccup): the old path handles it — incl. its no-result flows
+    return self:_openXrayEntityDirect(query, opts)
+  end
+  local self_ref = self
+  XrayCard.show(hit, {
+    on_full = function(h)
+      if h.source ~= "ahead" then
+        self_ref:_openXrayEntityDirect(h.query, opts)
+        return
+      end
+      -- Ahead-only entity: the full entry crosses the reading position
+      local function reveal()
+        XrayCard.showFullDetail(h)
+      end
+      local f2 = self_ref.settings:readSetting("features") or {}
+      local ds = self_ref.ui and self_ref.ui.doc_settings
+      local protected = ds and require("koassistant_book_settings")
+        .resolveSpoilerPosture(ds, f2).protected
+      if protected then
+        local ConfirmBox = require("ui/widget/confirmbox")
+        UIManager:show(ConfirmBox:new{
+          text = T(_("This entry comes from a checkpoint ahead of your reading position (%1%) and may contain spoilers.\n\nReveal the full entry?"),
+            math.floor((h.ahead_progress or 0) * 100 + 0.5)),
+          ok_text = _("Reveal"),
+          ok_callback = reveal,
+        })
+      else
+        reveal()
+      end
+    end,
+  })
+end
+
 function AskGPT:syncXrayMarks()
   require("koassistant_xray_marks").sync(self)
   -- d2 tap layer (slice 2 round 2): marked words are LINKS — a plain tap on
@@ -17179,14 +17236,9 @@ function AskGPT:syncXrayMarks()
     highlight.onTap = function(hl_self, arg, ges)
       local name = ges and require("koassistant_xray_marks").tapTarget(self_ref, ges)
       if name then
-        local xaction = self_ref.action_service
-          and self_ref.action_service:getAction("highlight", "xray_lookup")
-        if xaction then
-          logger.info("KOAssistant: X-Ray mark tap - opening entity: " .. name)
-          self_ref:updateConfigFromSettings()
-          Dialogs.executeDirectAction(self_ref.ui, xaction, name, configuration, self_ref)
-          return true
-        end
+        logger.info("KOAssistant: X-Ray mark tap - opening entity: " .. name)
+        self_ref:openXrayCard(name)
+        return true
       end
       return highlight._koassistant_original_onTap(hl_self, arg, ges)
     end
@@ -17293,6 +17345,12 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
       features.xray_selection_intercept ~= false and _("On") or _("Off")),
     function() features.xray_selection_intercept = features.xray_selection_intercept == false end,
     function() self_ref:syncDictionaryBypass() end))
+  -- Point-4: the shared landing for every exact hit (mark taps AND matching
+  -- selections — hence outside the marking-gated group)
+  table.insert(buttons, row(
+    T(_("Exact hits open: %1"),
+      features.xray_card_landing ~= false and _("Compact card") or _("Full entry")),
+    function() features.xray_card_landing = features.xray_card_landing == false end))
   if opts and opts.back then
     table.insert(buttons, {{ text = _("Back"), callback = function()
       UIManager:close(dialog)

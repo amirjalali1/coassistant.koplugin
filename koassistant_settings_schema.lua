@@ -1041,6 +1041,22 @@ local SettingsSchema = {
                             end,
                         },
                         {
+                            id = "xray_card_landing",
+                            type = "toggle",
+                            text = _("Entity Card First"),
+                            path = "features.xray_card_landing",
+                            default = true,
+                            help_text = _("Exact entity hits (tapping a marked word, or selecting text that matches an entity) open a compact card first: the name and a one-line identification, with the full entry one tap away. The identification may come from the newest built checkpoint, so newly appearing names are known on sight — the full entry stays at your reading position, behind a confirmation, while spoiler protection is on. Off = open the full entry directly."),
+                            on_change = function(new_value, plugin)
+                                if plugin.syncXrayMarks then
+                                    local UIManager = require("ui/uimanager")
+                                    UIManager:nextTick(function()
+                                        plugin:syncXrayMarks()
+                                    end)
+                                end
+                            end,
+                        },
+                        {
                             id = "xray_marking_density",
                             type = "radio",
                             text_func = function(plugin)

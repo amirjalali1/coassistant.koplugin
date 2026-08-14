@@ -2267,13 +2267,24 @@ function ActionCache.matchAnyXrayExact(document_path, query)
     if aattr then
         key = key .. "|" .. tostring(aattr.modification) .. "|" .. tostring(aattr.size)
     end
+    -- Point-4: the newest built checkpoint ahead of the live artifact joins
+    -- the route (the card's identification peek must FIRE for ahead-only
+    -- entities) — its file joins the stamp so a fresh rung re-indexes
+    local ladder_path = ActionCache.getXrayLadderPath(document_path)
+    local lattr = ladder_path and lfs.attributes(ladder_path)
+    if lattr then
+        key = key .. "|" .. tostring(lattr.modification) .. "|" .. tostring(lattr.size)
+    end
     if not (exact_route_index and exact_route_index.path == path
             and exact_route_index.key == key) then
         local XrayParser = require("koassistant_xray_parser")
         local set = {}
         local user_aliases = ActionCache.getUserAliases(document_path)
+        local live_p = 0
         local main = ActionCache.getXrayCache(document_path)
         if main and main.result then
+            live_p = main.full_document and 1.0
+                or tonumber(main.progress_decimal) or 0
             local data = XrayParser.parse(main.result)
             if data then
                 XrayParser.mergeUserAliases(data, user_aliases)
@@ -2283,6 +2294,20 @@ function ActionCache.matchAnyXrayExact(document_path, query)
         for _idx, sec in ipairs(ActionCache.getSectionXrays(document_path)) do
             local data = sec.data and sec.data.result
                 and XrayParser.parse(sec.data.result)
+            if data then
+                XrayParser.mergeUserAliases(data, user_aliases)
+                XrayParser.foldExactHandles(data, set)
+            end
+        end
+        local ahead
+        for _idx, rg in ipairs(ActionCache.getXrayLadder(document_path)) do
+            local p = rg.full_document and 1.0 or tonumber(rg.progress_decimal) or 0
+            if rg.result and not rg.intro and p > live_p + 0.005 then
+                if not ahead or p > ahead.p then ahead = { result = rg.result, p = p } end
+            end
+        end
+        if ahead then
+            local data = XrayParser.parse(ahead.result)
             if data then
                 XrayParser.mergeUserAliases(data, user_aliases)
                 XrayParser.foldExactHandles(data, set)

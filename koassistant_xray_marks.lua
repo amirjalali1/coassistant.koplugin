@@ -118,6 +118,8 @@ local paint_widget = {
 }
 
 --- Disk stamp over everything the entity index depends on. Stats only.
+--- The ladder joins (point-4): the index folds the newest built checkpoint
+--- ahead of the live artifact, so a fresh rung must re-index.
 local function diskStamps(ActionCache, file)
   local parts = {}
   local cache_path = ActionCache.getPath(file)
@@ -126,6 +128,9 @@ local function diskStamps(ActionCache, file)
   local apath = ActionCache.getUserAliasesPath(file)
   local aattr = apath and lfs.attributes(apath)
   parts[#parts + 1] = aattr and (tostring(aattr.modification) .. ":" .. tostring(aattr.size)) or "-"
+  local lpath = ActionCache.getXrayLadderPath and ActionCache.getXrayLadderPath(file)
+  local lattr = lpath and lfs.attributes(lpath)
+  parts[#parts + 1] = lattr and (tostring(lattr.modification) .. ":" .. tostring(lattr.size)) or "-"
   return table.concat(parts, "|")
 end
 
@@ -171,6 +176,21 @@ local function ensureIndex(plugin, pageno)
         end
       end
     end
+    -- Point-4 identification peek: the newest built checkpoint AHEAD of the
+    -- live artifact joins the index, so entities that first appear past the
+    -- installed coverage get marked (and card-identified) when the reader
+    -- meets them. Full entries stay position-gated in the card router.
+    st.ahead = nil
+    local live_p = st.live and (st.live.full_document and 1.0
+      or tonumber(st.live.progress_decimal)) or 0
+    for _idx, rg in ipairs(ActionCache.getXrayLadder(st.file)) do
+      local p = rg.full_document and 1.0 or tonumber(rg.progress_decimal) or 0
+      if rg.result and not rg.intro and p > live_p + 0.005 then
+        if not st.ahead or p > st.ahead.p then
+          st.ahead = { result = rg.result, p = p, stamp = tostring(rg.timestamp) }
+        end
+      end
+    end
   end
   local art = pickArtifact()
   -- Round 5: ALL section X-Rays fold in, range-free — the lookup/intercept
@@ -189,19 +209,29 @@ local function ensureIndex(plugin, pageno)
   for _idx, s in ipairs(st.sections or {}) do
     key = key .. "|" .. s.key .. ":" .. s.stamp
   end
+  if st.ahead then
+    key = key .. "|ahead:" .. st.ahead.stamp
+  end
   key = key .. "|" .. st.stamps
   if st.artifact_key == key and st.entities then return end
   local XrayParser = require("koassistant_xray_parser")
   local user_aliases = ActionCache.getUserAliases(st.file)
   local ents = {}
+  local seen_names = {}
   local included, skipped = {}, {}
   local function addFrom(result)
     local data = XrayParser.parse(result)
     if not data then return end
     XrayParser.mergeUserAliases(data, user_aliases)
     for _idx, e in ipairs(XrayParser.buildMarkEntities(data)) do
-      ents[#ents + 1] = e
-      included[e.category_key] = (included[e.category_key] or 0) + 1
+      -- First writer wins across sources (main → sections → ahead): the
+      -- ahead rung contributes only entities the position truth lacks
+      local nk = type(e.name) == "string" and e.name:lower() or nil
+      if not (nk and seen_names[nk]) then
+        if nk then seen_names[nk] = true end
+        ents[#ents + 1] = e
+        included[e.category_key] = (included[e.category_key] or 0) + 1
+      end
     end
     -- Tally what the category gate dropped — the one line that separates
     -- "entity in a non-marking category" from "entity not in this artifact"
@@ -214,6 +244,7 @@ local function ensureIndex(plugin, pageno)
   end
   if art then addFrom(art.result) end
   for _idx, s in ipairs(st.sections or {}) do addFrom(s.data.result) end
+  if st.ahead then addFrom(st.ahead.result) end
   st.entities = #ents > 0 and ents or nil
   st.artifact_key = key
   local function tally(t)
@@ -229,8 +260,10 @@ local function ensureIndex(plugin, pageno)
     src = (art == st.live and "live@" or "checkpoint@") .. pct .. "%"
   end
   logger.info("KOAssistant marks: index rebuilt from " .. src
-    .. " +" .. tostring(#(st.sections or {})) .. " sections: "
-    .. tally(included) .. (next(skipped) and (" | skipped: " .. tally(skipped)) or ""))
+    .. " +" .. tostring(#(st.sections or {})) .. " sections"
+    .. (st.ahead and (" +ahead@" .. math.floor(st.ahead.p * 100 + 0.5) .. "%") or "")
+    .. ": " .. tally(included)
+    .. (next(skipped) and (" | skipped: " .. tally(skipped)) or ""))
 end
 
 -- Word-boundary honesty for plain terms (round 3, device: "Kubrick" marked
