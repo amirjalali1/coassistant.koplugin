@@ -912,6 +912,11 @@ local OPENAI_FAMILY = {
                                      ["X-Title"] = "KOAssistant model audit" } },
 }
 
+-- Providers whose web search (and gpt-5.x tools) ride the /v1/responses wire -
+-- probed as its own battery section. openai_codex excluded (OAuth, not a key).
+local RESPONSES_FAMILY = { openai = true, xai = true,
+    web_note = "the Responses web probe runs one real search" }
+
 local function probeOpenAIFamily(provider, model, api_key, verbose)
     local facts = newFacts("openai", provider, model)
     local fam = OPENAI_FAMILY[provider]
@@ -1079,6 +1084,39 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
         end
     end
 
+    -- 10. Responses wire (openai/xai only) - the wire this plugin ACTUALLY uses
+    -- for web search (and gpt-5.x book tools); a chat-wire verdict says nothing
+    -- about it. Bare acceptance -> web_search tool -> SSE smoke.
+    if RESPONSES_FAMILY[provider] then
+        printf("  %snote: %s%s", C.yellow, RESPONSES_FAMILY.web_note, C.off)
+        local rurl = url:gsub("chat/completions$", "responses")
+        local rcode, rdec, rraw = httpPostJson(rurl, headers,
+            { model = model, input = PROBE_PROMPT, max_output_tokens = 64, store = false })
+        facts.responses_ok = verdict(rcode)
+        recordProbe(facts, "Responses wire (bare)", facts.responses_ok,
+            rcode ~= 200 and ModelAudit.errText(rdec, rraw) or nil)
+        if facts.responses_ok then
+            local wcode2, wdec2, wraw2 = httpPostJson(rurl, headers,
+                { model = model, input = "What year is it right now? Answer briefly.",
+                  max_output_tokens = 128, store = false,
+                  tools = { { type = "web_search" } } })
+            facts.responses_web_ok = verdict(wcode2)
+            recordProbe(facts, "Responses + web_search tool", facts.responses_web_ok,
+                wcode2 ~= 200 and ModelAudit.errText(wdec2, wraw2) or nil)
+            local rscode, rsdec, rsraw = httpPostJson(rurl, headers,
+                { model = model, input = PROBE_PROMPT, max_output_tokens = 64,
+                  store = false, stream = true })
+            if rscode == 200 then
+                facts.responses_stream_ok = ModelAudit.looksLikeSSE(rsraw)
+            else
+                facts.responses_stream_ok = verdict(rscode)
+            end
+            recordProbe(facts, "Responses streaming (SSE smoke)", facts.responses_stream_ok,
+                facts.responses_stream_ok == false and (rscode == 200 and "200 but non-SSE body"
+                    or ModelAudit.errText(rsdec, rsraw)) or nil)
+        end
+    end
+
     if verbose and facts.temp_err then printf("  %stemp error: %s%s", C.dim, facts.temp_err, C.off) end
     return facts
 end
@@ -1205,6 +1243,7 @@ end
 local AUDIT_CAPS = {
     "tools", "reasoning", "reasoning_gated", "thinking", "adaptive_thinking",
     "extended_thinking", "thinking_budget", "no_sampling_params",
+    "responses_web_search",
 }
 
 function ModelAudit.currentResolution(provider, model)
@@ -1289,6 +1328,15 @@ function ModelAudit.draftStanzas(facts, current)
             add("--   NOTE: probe uses the chat wire; this plugin runs gpt-5.x function tools")
             add("--   over the Responses API (openai.lua R3) - a chat-wire rejection does not")
             add("--   prove tools are absent")
+        end
+        capLine("responses_web_search", facts.responses_web_ok)
+        if facts.responses_ok == false then
+            add("%s-- NOTE: Responses wire REJECTED the model - web search cannot route for it%s",
+                C.yellow, C.off)
+        end
+        if facts.responses_ok and facts.responses_stream_ok == false then
+            add("%s-- NOTE: Responses streaming not honored - web-on requests would not stream%s",
+                C.yellow, C.off)
         end
     end
 

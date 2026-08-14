@@ -438,6 +438,42 @@ TestRunner:check("annotation with context only",
 TestRunner:check("annotation nil-safe on empty meta",
     ModelAudit.openrouterAnnotation({}) == nil and ModelAudit.openrouterAnnotation(nil) == nil)
 
+--------------------------------------------------------------------------------
+TestRunner:suite("Responses-wire facts in draft stanzas")
+
+local rfacts = {
+    family = "openai", provider = "xai", model = "grok-4.6",
+    efforts = {}, probes = {}, reachable = true,
+    tools_ok = true, tool_choice_any_ok = true, tool_choice_none_ok = true,
+    stream_ok = true, responses_ok = true, responses_web_ok = true,
+    responses_stream_ok = true,
+}
+local rcurrent = ModelAudit.currentResolution("xai", "grok-4.6")
+local rtext = table.concat(ModelAudit.draftStanzas(rfacts, rcurrent), "\n")
+TestRunner:check("responses_web_search cap drafted when Responses web probe passes",
+    rtext:find("responses_web_search", 1, true) ~= nil)
+TestRunner:check("grok-4.6 responses cap already covered (grok-4 prefix)",
+    rtext:find("responses_web_search", 1, true) ~= nil
+    and rtext:find("NOTE: Responses wire REJECTED", 1, true) == nil)
+
+local rfacts_new = {}
+for k, v in pairs(rfacts) do rfacts_new[k] = v end
+rfacts_new.model = "newmodel-9"
+local rtext_new = table.concat(ModelAudit.draftStanzas(rfacts_new,
+    ModelAudit.currentResolution("xai", "newmodel-9")), "\n")
+TestRunner:check("uncovered id gets NEEDS CURATION on the responses cap",
+    rtext_new:find("responses_web_search", 1, true) ~= nil
+    and rtext_new:find("NEEDS CURATION", 1, true) ~= nil)
+
+local rfacts_rej = {}
+for k, v in pairs(rfacts) do rfacts_rej[k] = v end
+rfacts_rej.responses_ok = false
+rfacts_rej.responses_web_ok = nil
+rfacts_rej.responses_stream_ok = nil
+local rtext_rej = table.concat(ModelAudit.draftStanzas(rfacts_rej, rcurrent), "\n")
+TestRunner:check("Responses rejection drafts the cannot-route note",
+    rtext_rej:find("Responses wire REJECTED", 1, true) ~= nil)
+
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))
 return TestRunner.failed == 0
