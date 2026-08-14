@@ -157,4 +157,24 @@ TestRunner:test("explicit disabled thinking survives the carve-out (Sonnet 5)", 
         "explicit off stays off — carve-out only fires when NO thinking param exists")
 end)
 
+TestRunner:test("output_config merges field-wise; the effort clamp never mutates api_params", function()
+    -- The old alias-assign (request_body.output_config = params.output_config) let the
+    -- xhigh/max clamp write back into the caller's api_params table, and would clobber
+    -- sibling output_config keys (structured outputs' `format` — campaign T1 §3d).
+    local pinned = { effort = "max", format = { type = "json_schema" } }
+    local result = AnthropicHandler:buildRequestBody({
+        { role = "user", content = "q" },
+    }, {
+        model = "claude-sonnet-4-6",  -- adaptive-capable, no xhigh/max in its profile
+        api_key = "test",
+        api_params = { thinking = { type = "adaptive" }, output_config = pinned },
+        features = {},
+    })
+    TestRunner:assertEqual(result.body.output_config and result.body.output_config.effort, "high",
+        "max clamps to high on a model without it")
+    TestRunner:assertEqual(pinned.effort, "max", "caller's api_params table untouched by the clamp")
+    TestRunner:assertEqual(result.body.output_config.format and result.body.output_config.format.type,
+        "json_schema", "sibling output_config keys survive the merge")
+end)
+
 return TestRunner:summary()

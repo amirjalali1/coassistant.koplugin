@@ -194,9 +194,18 @@ function AnthropicRequest:build(config)
                 if ModelConstraints.supportsCapability("anthropic", model, "no_sampling_params") then
                     request_body.thinking.display = "summarized"
                 end
-                -- Pass through output_config (effort level) if provided
+                -- Pass through output_config (effort level) if provided.
+                -- Field-wise MERGE onto a fresh table, never an alias-assign:
+                -- assigning params.output_config wholesale (a) mutated the
+                -- caller's api_params table when the effort clamp below fired,
+                -- and (b) would clobber sibling keys other writers put in
+                -- output_config (structured outputs' `format` lives here too —
+                -- campaign T1 §3d, 2026-08-14).
                 if params.output_config then
-                    request_body.output_config = params.output_config
+                    request_body.output_config = request_body.output_config or {}
+                    for k, v in pairs(params.output_config) do
+                        request_body.output_config[k] = v
+                    end
                     -- Clamp top-of-ladder effort to "high" for models whose reasoning
                     -- profile doesn't list it. The UI offers the full Opus ladder
                     -- (incl. xhigh/max) for every Anthropic model, so guard here: Opus 4.6+
