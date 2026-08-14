@@ -1103,30 +1103,28 @@ showQuickPresetModelMode = function(opts)
                 UIManager:close(dialog)
                 finish()
             end),
-            row(mode == "tier"
-                    and (f.quick_preset_tier_provider
-                        and T(_("Tier: %1 · %2 (change…)"),
-                            providerLabel(f.quick_preset_tier_provider),
-                            require("koassistant_model_lists").normalizeTier(f.quick_preset_tier or "fast"))
-                        or T(_("Tier: %1 (change…)"),
-                            require("koassistant_model_lists").normalizeTier(f.quick_preset_tier or "fast")))
-                    or _("A tier…"),
-                mode == "tier", function()
+            row((mode == "tier" and not f.quick_preset_tier_provider)
+                    and T(_("Tier: %1 (change…)"),
+                        require("koassistant_model_lists").normalizeTier(f.quick_preset_tier or "fast"))
+                    or _("A tier of the active provider…"),
+                mode == "tier" and not f.quick_preset_tier_provider, function()
                 UIManager:close(dialog)
-                -- Provider stage first: active provider (tier follows whichever
-                -- provider is current) or a pinned one (provider+tier combo,
-                -- ladder-only — mirrors the action provider+tier pin)
+                pickTier(active_provider, providerLabel(active_provider), false)
+            end),
+            row((mode == "tier" and f.quick_preset_tier_provider)
+                    and T(_("Tier: %1 · %2 (change…)"),
+                        providerLabel(f.quick_preset_tier_provider),
+                        require("koassistant_model_lists").normalizeTier(f.quick_preset_tier or "fast"))
+                    or _("A provider + tier…"),
+                mode == "tier" and f.quick_preset_tier_provider ~= nil, function()
+                UIManager:close(dialog)
+                -- Provider+tier combo: pinned provider, ladder-only resolution
+                -- (mirrors the action provider+tier pin)
                 pickProviderModel({
                     plugin = plugin,
                     current = f.quick_preset_tier_provider
                         and { provider = f.quick_preset_tier_provider } or nil,
                     provider_title = _("Tier · pick a provider"),
-                    top_row = {
-                        text = T(_("Active provider (%1)"), providerLabel(active_provider)),
-                        callback = function()
-                            pickTier(active_provider, providerLabel(active_provider), false)
-                        end,
-                    },
                     on_provider = function(provider_id, provider_label)
                         pickTier(provider_id, provider_label, true)
                     end,
