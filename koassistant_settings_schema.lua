@@ -2923,6 +2923,26 @@ local SettingsSchema = {
                                 { value = "us", text = _("US (Virginia)") },
                             },
                         },
+                        {
+                            id = "kimi_region",
+                            type = "radio",
+                            text_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                local region = f.kimi_region or "china"
+                                local labels = {
+                                    china = _("China"),
+                                    international = _("International"),
+                                }
+                                return T(_("Kimi Region: %1"), labels[region] or region)
+                            end,
+                            help_text = _("Select the Kimi (Moonshot) platform your API key was issued on.\n\nKeys are NOT interchangeable between the two platforms:\n- China: platform.moonshot.cn (api.moonshot.cn)\n- International: platform.kimi.ai (api.moonshot.ai)"),
+                            path = "features.kimi_region",
+                            default = "china",
+                            options = {
+                                { value = "china", text = _("China (api.moonshot.cn)") },
+                                { value = "international", text = _("International (api.moonshot.ai)") },
+                            },
+                        },
                     },
                 },
                 {

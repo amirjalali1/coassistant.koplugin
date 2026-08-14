@@ -17,7 +17,7 @@ local function getDefaultModel(provider)
         deepseek = "deepseek-v4-pro",
         gemini = "gemini-3.5-flash",
         ollama = "llama4",
-        groq = "llama-3.3-70b-versatile",
+        groq = "openai/gpt-oss-120b",
         mistral = "mistral-large-latest",
         xai = "grok-4.5",
         openrouter = "anthropic/claude-sonnet-5",
@@ -26,7 +26,7 @@ local function getDefaultModel(provider)
         kimi = "kimi-k2.6",
         together = "deepseek-ai/DeepSeek-V4-Pro",
         fireworks = "accounts/fireworks/models/deepseek-v4-pro",
-        sambanova = "Llama-4-Maverick-17B-128E-Instruct",
+        sambanova = "gpt-oss-120b",
         cohere = "command-a-plus-05-2026",
         doubao = "doubao-seed-2.0-pro-32k",
         zai = "glm-5.2",
@@ -167,6 +167,9 @@ local ProviderDefaults = {
     kimi = {
         provider = "kimi",
         model = getDefaultModel("kimi"),
+        -- China platform (default). kimi.lua:customizeUrl swaps to the
+        -- international api.moonshot.ai per features.kimi_region — the two
+        -- platforms' keys are NOT interchangeable (T9 2026-08-14).
         base_url = "https://api.moonshot.cn/v1/chat/completions",
         additional_parameters = {
             temperature = 0.7,

@@ -382,34 +382,121 @@ ModelConstraints._max_output_tokens = {
     },
 }
 
---- INPUT context windows (tokens), for the model-aware extraction pre-check.
---- PARTIAL seed (2026-08-14): only values with a cited source; the research
---- campaign (docs/capabilities_research_brief.md T2) is producing the full
---- table. Absent entry = fail-open (no pre-check claim; the provider error +
---- item-27 self-heal remain the backstop). Longest-prefix matched, same
---- tie-break discipline as _max_output_tokens above.
+--- MAX INPUT tokens per model, for the model-aware extraction pre-check.
+--- Full cited table (research campaign T2, 2026-08-14 — evidence per line:
+--- [probe] = live first-party API call, [docs] = provider's own docs page,
+--- [OR] = OpenRouter catalog, [inferred] = arithmetic on two documented
+--- numbers). Values are the documented MAXIMUM INPUT where the provider
+--- states one (OpenAI does — input alone above it is an immediate 400);
+--- elsewhere the single documented context number, with the caller's 0.9
+--- headroom covering the output reservation. Absent entry = fail-open (no
+--- pre-check claim; the provider error + item-27 self-heal remain the
+--- backstop) — ollama (user-set num_ctx) and the community providers are
+--- deliberately absent. Longest-prefix matched, same tie-break discipline
+--- as _max_output_tokens above.
 ModelConstraints._context_windows = {
     anthropic = {
-        -- 200K standard for the whole claude line; the 1M-context variants
-        -- require a beta header this plugin does not send.
-        ["claude"] = 200000,
+        -- 1M is the no-beta-header DEFAULT on every 1M Claude model at
+        -- standard pricing (context-windows docs page, 2026-08-14); only
+        -- Haiku 4.5 stays 200K. The old ["claude"]=200000-for-everything
+        -- rationale ("1M needs a beta header we do not send") is obsolete.
+        ["claude-sonnet-5"]   = 1000000, -- [docs] 1M list; [OR] agrees
+        ["claude-opus-5"]     = 1000000, -- [docs]
+        ["claude-fable-5"]    = 1000000, -- [docs]
+        ["claude-sonnet-4-6"] = 1000000, -- [docs]; [OR] agrees
+        ["claude-opus-4-8"]   = 1000000, -- [docs]; [OR] agrees
+        ["claude-haiku-4-5"]  = 200000,  -- [docs] models overview; [OR] agrees
+        -- Conservative family floor for uncurated claude-* ids: a future 1M
+        -- model loses a little scope headroom; a 200K model wrongly called 1M
+        -- would 400 in the field.
+        ["claude"]            = 200000,  -- [docs] "Other Claude models"
     },
     openai = {
-        ["gpt-5.6"] = 1000000,           -- ~1M ctx (probe batch 2026-07-24)
+        -- OpenAI documents max INPUT separately from the 1,050,000 window;
+        -- input is the load-bearing number. 922,000 stated verbatim on the
+        -- 5.6 pages; 5.5/5.4 [inferred] window-minus-output reproduces the
+        -- stated max input on every page that carries one.
+        ["gpt-5.6"]      = 922000,  -- [docs] "Maximum input tokens: 922,000"
+        ["gpt-5.5"]      = 922000,  -- [inferred]
+        ["gpt-5.4"]      = 922000,  -- [inferred]
+        ["gpt-5.4-mini"] = 272000,  -- [docs] 400K window / 272K max input
+        ["gpt-5.4-nano"] = 272000,  -- [docs]
+        -- Guards for ids a "Fetch models" run can surface (not curated):
+        ["gpt-4.1"]      = 1000000, -- [docs] 1M context family
+        ["gpt-4o"]       = 128000,  -- [docs]
+    },
+    -- openai_codex aliased below (same hosted models, same slugs)
+    deepseek = {
+        ["deepseek-v4"] = 1000000,  -- [docs] pricing table: 1M for v4-pro AND v4-flash; [OR] 1048576
     },
     gemini = {
-        ["gemini-3"] = 1048576,          -- 3.x family (models-endpoint metadata, 3.6/3.7 probed)
-        ["gemini-2.5"] = 1048576,        -- 2.5 family (docs)
+        ["gemini-3"]   = 1048576,   -- [probe] models-endpoint inputTokenLimit, all curated 3.x ids
+        ["gemini-2.5"] = 1048576,   -- [probe] 2.5-flash / -pro / -flash-lite
     },
-    deepseek = {
-        ["deepseek-v4"] = 1000000,       -- V4 family documented 1M ctx
+    mistral = {
+        -- [probe] GET /v1/models field max_context_length, 2026-08-14.
+        ["mistral-large"]   = 262144,
+        ["mistral-medium"]  = 262144, -- ([OR]'s 131072 is the older pinned -3.1 snapshot, not -latest)
+        ["mistral-small"]   = 262144,
+        ["magistral-small"] = 262144,
+        ["ministral-14b"]   = 262144,
+        ["ministral-8b"]    = 262144,
+        ["ministral-3b"]    = 131072, -- [probe] genuinely half its siblings (-latest and -2512 both)
+        ["codestral"]       = 256000,
+        -- magistral-medium-latest: NO entry on purpose — absent from the live
+        -- /v1/models listing (delisted-but-served, verified 2026-08-14);
+        -- fail-open until the curated id's fate is decided.
     },
     xai = {
-        ["grok-4.6"] = 500000,           -- launch docs 2026-08-12
-        ["grok-4.5"] = 500000,           -- provider docs
-        ["grok-4.3"] = 1000000,          -- provider docs (1M)
-        ["grok-4.20"] = 1000000,         -- provider docs (1M)
-        ["grok-build"] = 256000,         -- provider docs (256K)
+        -- [probe] GET /v1/models field context_length, 2026-08-14. Also
+        -- adjudicates grok-4.20: xAI's own API says 1M ([OR]'s 2M rejected).
+        ["grok-4.6"]   = 500000,
+        ["grok-4.5"]   = 500000,
+        ["grok-4.3"]   = 1000000,
+        ["grok-4.20"]  = 1000000,
+        ["grok-build"] = 256000,
+    },
+    zai = {
+        -- [docs] per-model pages (the /models listing carries no metadata).
+        ["glm-5.2"] = 1000000,      -- 1M context (5x jump from 5.1)
+        ["glm-5"]   = 200000,       -- glm-5 / 5.1 / 5-turbo
+        ["glm-4.7"] = 200000,       -- covers glm-4.7-flash
+    },
+    perplexity = {
+        ["sonar-pro"]           = 200000, -- [docs]; [OR] agrees
+        ["sonar-reasoning-pro"] = 128000, -- [docs]
+        ["sonar-deep-research"] = 128000, -- [docs]
+        ["sonar"]               = 127072, -- [OR] exact value (docs round to "128K"; smaller = safer)
+    },
+    openrouter = {
+        -- [OR] live catalog 2026-08-14 (all 31 curated mirror ids resolved).
+        -- OpenAI mirrors use OpenAI's documented max INPUT, not [OR]'s window,
+        -- so both routes to the same model agree.
+        ["anthropic/claude-sonnet-5"]   = 1000000,
+        ["anthropic/claude-opus-5"]     = 1000000,
+        ["anthropic/claude-fable-5"]    = 1000000,
+        ["anthropic/claude-sonnet-4.6"] = 1000000,
+        ["anthropic/claude-opus-4.8"]   = 1000000,
+        ["anthropic/claude-haiku-4.5"]  = 200000,
+        ["openai/gpt-5.6"]              = 922000,
+        ["openai/gpt-5.5"]              = 922000,
+        ["openai/gpt-5.4"]              = 922000,
+        ["openai/gpt-5.4-mini"]         = 272000,
+        ["openai/gpt-oss"]              = 131072,
+        ["google/gemini-3"]             = 1048576,
+        ["deepseek/deepseek-v4"]        = 1000000,
+        ["x-ai/grok-4.3"]               = 1000000,
+        ["x-ai/grok-4.20"]              = 1000000, -- [probe] xAI's own API; [OR]'s 2M rejected
+        ["meta-llama/llama-3.3-70b-instruct"] = 131072,
+        ["mistralai/mistral-large-2512"]      = 262144,
+        ["mistralai/mistral-medium-3.1"]      = 131072, -- this pinned snapshot IS 131072, unlike -latest
+        ["qwen/qwen3-max"]              = 262144,
+        ["qwen/qwen3-235b-a22b"]        = 131072,
+        ["perplexity/sonar-pro"]        = 200000,
+        ["perplexity/sonar-reasoning-pro"] = 128000,
+        ["perplexity/sonar"]            = 127072,
+        ["moonshotai/kimi-k2-thinking"] = 262144,
+        ["minimax/minimax-m2.1"]        = 204800,
     },
 }
 
@@ -417,7 +504,10 @@ ModelConstraints._context_windows = {
 --- model's input window is unknown (or chars is empty) — callers must treat
 --- nil as "no claim", never as "fits". Otherwise returns exceeded (boolean),
 --- window_tokens, est_tokens. The estimate is the LOW bound (chars/4 —
---- English-dense; Arabic runs ~2 chars/token) so a warning is only raised for
+--- English-dense; non-Latin scripts run far denser, measured down to ~1.1
+--- chars/token for vocalized Arabic on the new Claude tokenizer — T2 ratio
+--- table in docs/research/2026-08-14/ if a family-aware estimator is ever
+--- wanted) so a warning is only raised for
 --- requests that exceed the window under the most favorable tokenization:
 --- fewer false alarms, and true overflows still self-report via the provider
 --- error. The 0.9 factor leaves headroom for prompt scaffolding + output.
@@ -1805,5 +1895,6 @@ end
 ModelConstraints.openai_codex = ModelConstraints.openai
 ModelConstraints.capabilities.openai_codex = ModelConstraints.capabilities.openai
 ModelConstraints.reasoning_profiles.openai_codex = ModelConstraints.reasoning_profiles.openai
+ModelConstraints._context_windows.openai_codex = ModelConstraints._context_windows.openai
 
 return ModelConstraints

@@ -60,14 +60,38 @@ TestRunner:check("window and estimate returned for the message",
 
 print("== checkContextWindow: prefix matching ==")
 
+-- 1M is the no-beta-header default on all 1M Claude models (T2, 2026-08-14);
+-- only Haiku 4.5 and the uncurated-family floor stay 200K.
 local _ex1, win1 = ModelConstraints.checkContextWindow("anthropic", "claude-sonnet-5", 400000)
-TestRunner:check("family prefix matches (claude-sonnet-5 -> claude 200K)", win1 == 200000)
+TestRunner:check("exact id wins (claude-sonnet-5 -> 1M)", win1 == 1000000)
+local _exh, winh = ModelConstraints.checkContextWindow("anthropic", "claude-haiku-4-5-20251001", 400000)
+TestRunner:check("prefix id (claude-haiku-4-5-20251001 -> 200K)", winh == 200000)
+local _exf, winf = ModelConstraints.checkContextWindow("anthropic", "claude-newthing-9", 400000)
+TestRunner:check("family floor (uncurated claude-* -> 200K)", winf == 200000)
 local _ex2, win2 = ModelConstraints.checkContextWindow("xai", "grok-4.6", 400000)
 TestRunner:check("exact id wins (grok-4.6 -> 500K)", win2 == 500000)
 TestRunner:check("escaped dot: gemini-2x5-x must NOT match the gemini-2.5 prefix",
     ModelConstraints.checkContextWindow("gemini", "gemini-2x5-flash", 10000000) == nil)
 local ex3 = ModelConstraints.checkContextWindow("gemini", "gemini-3.6-flash", 400000)
 TestRunner:check("1M-window model: 400K chars is comfortably under", ex3 == false)
+
+print("== checkContextWindow: new providers (T2 table) ==")
+
+local _exz1, winz1 = ModelConstraints.checkContextWindow("zai", "glm-5.2", 400000)
+local _exz2, winz2 = ModelConstraints.checkContextWindow("zai", "glm-5-turbo", 400000)
+TestRunner:check("longest prefix: glm-5.2 (1M) beats glm-5 (200K); glm-5-turbo gets glm-5",
+    winz1 == 1000000 and winz2 == 200000)
+local _exp1, winp1 = ModelConstraints.checkContextWindow("perplexity", "sonar-pro", 400000)
+local _exp2, winp2 = ModelConstraints.checkContextWindow("perplexity", "sonar", 400000)
+TestRunner:check("perplexity: sonar-pro 200K, bare sonar 127072",
+    winp1 == 200000 and winp2 == 127072)
+local _exc, winc = ModelConstraints.checkContextWindow("openai_codex", "gpt-5.6-terra", 400000)
+TestRunner:check("openai_codex aliases the openai table (gpt-5.6 -> 922K max input)",
+    winc == 922000)
+local _exm, winm = ModelConstraints.checkContextWindow("mistral", "ministral-3b-latest", 400000)
+TestRunner:check("mistral probe values (ministral-3b -> 131072)", winm == 131072)
+TestRunner:check("magistral-medium-latest fails open (delisted, no entry on purpose)",
+    ModelConstraints.checkContextWindow("mistral", "magistral-medium-latest", 10000000) == nil)
 
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))
 return TestRunner.failed == 0

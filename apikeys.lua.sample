@@ -52,7 +52,10 @@ return {
     qwen = "YOUR_QWEN_API_KEY",
 
     -- Kimi/Moonshot API key
-    -- Get from: https://platform.moonshot.cn/
+    -- Get from: https://platform.moonshot.cn/ (China, the default)
+    --       or: https://platform.kimi.ai/ (International)
+    -- Keys are NOT interchangeable between the two platforms — pick the
+    -- matching region in Settings > Advanced > Provider Settings > Kimi Region.
     kimi = "YOUR_KIMI_API_KEY",
 
     -- Together AI API key

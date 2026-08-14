@@ -105,13 +105,14 @@ local ModelLists = {
 
     groq = {
         -- Production models (FREE tier with rate limits)
-        "llama-3.3-70b-versatile",                      -- flagship (default)
-        "llama-3.1-8b-instant",                         -- ultrafast
-        "openai/gpt-oss-120b",                          -- OpenAI open-weight
-        "openai/gpt-oss-20b",                           -- OpenAI open-weight (fast)
-        -- (qwen/qwen3-32b + meta-llama/llama-4-scout deprecated by Groq effective
-        -- 2026-07-17 — removed from the picker; constraint entries kept for users
-        -- with the model still persisted in settings.)
+        "openai/gpt-oss-120b",                          -- flagship (default)
+        "openai/gpt-oss-20b",                           -- fast
+        -- (llama-3.3-70b-versatile + llama-3.1-8b-instant — the former default
+        -- and fast picks — deprecated by Groq effective 2026-08-16, vendor-
+        -- recommended replacements = the two gpt-oss models above (T9 refresh
+        -- 2026-08-14). qwen/qwen3-32b + meta-llama/llama-4-scout deprecated
+        -- 2026-07-17. Removed from the picker; constraint entries kept for
+        -- users with the model still persisted in settings.)
         -- Compound AI (agentic)
         "groq/compound",                                -- web search + code exec
         "groq/compound-mini",
@@ -260,43 +261,48 @@ local ModelLists = {
         -- DeepSeek V4 (current)
         "deepseek-ai/DeepSeek-V4-Pro",                       -- flagship + reasoning
         "deepseek-ai/DeepSeek-V4-Flash",
-        -- Qwen
-        "Qwen/Qwen3.5-397B-A17B",                            -- MoE flagship
-        "Qwen/Qwen3-235B-A22B-Instruct-2507-tput",
         -- Llama 3.3
         "meta-llama/Llama-3.3-70B-Instruct-Turbo",           -- standard/fast
         -- Other
         "moonshotai/Kimi-K2.6",
-        "zai-org/GLM-5",
-        "MiniMaxAI/MiniMax-M2.7",
+        "zai-org/GLM-5.2",                                   -- GLM-5 deprecated 2026-06-22, changelog recommends 5.2
+        -- (Removed per Together's own changelog, T9 refresh 2026-08-14:
+        -- Qwen/Qwen3.5-397B-A17B deprecated from serverless 2026-06-29;
+        -- Qwen/Qwen3-235B-A22B-Instruct-2507-tput moved dedicated-only
+        -- 2026-07-10; MiniMaxAI/MiniMax-M2.7 deprecated 2026-07-28.)
     },
 
     fireworks = {
         -- DeepSeek (current)
         "accounts/fireworks/models/deepseek-v4-pro",                 -- flagship + reasoning
         "accounts/fireworks/models/deepseek-r1",                     -- reasoning
-        -- Llama 3.3
-        "accounts/fireworks/models/llama-v3p3-70b-instruct",         -- standard/fast
         -- Qwen 3
         "accounts/fireworks/models/qwen3-235b-a22b",
         -- Other
         "accounts/fireworks/models/kimi-k2-thinking",                -- reasoning
-        "accounts/fireworks/models/glm-5",
-        "accounts/fireworks/models/gpt-oss-120b",
+        "accounts/fireworks/models/gpt-oss-120b",                    -- standard/fast
+        -- (Removed per Fireworks' changelog, T9 refresh 2026-08-14:
+        -- llama-v3p3-70b-instruct deprecated 2026-05-14, vendor migration
+        -- target = gpt-oss-120b above; glm-5 deprecated in the same batch —
+        -- its GLM 5.1/5.2 replacement SLUG is unconfirmed (Fireworks slugs
+        -- don't mirror display names), use "Fetch models" for a live id.)
     },
 
     sambanova = {
-        -- Llama 4
-        "Llama-4-Maverick-17B-128E-Instruct",                -- flagship
+        -- gpt-oss (Production tier)
+        "gpt-oss-120b",                                      -- flagship (default)
         -- DeepSeek
-        "DeepSeek-V3.1",                                     -- reasoning
-        "DeepSeek-V3.2",
+        "DeepSeek-V3.1",                                     -- reasoning (128K ctx)
+        "DeepSeek-V3.2",                                     -- preview (32K ctx per docs)
         -- Llama 3.x
         "Meta-Llama-3.3-70B-Instruct",                       -- standard/fast
         -- Other
         "MiniMax-M2.7",
         "gemma-4-31B-it",
-        "gpt-oss-120b",
+        -- (Llama-4-Maverick-17B-128E-Instruct — the former default/flagship —
+        -- deprecated by SambaNova 2026-06-09 and absent from their live model
+        -- page (T9 refresh 2026-08-14); their suggested gemma-4-31B-it is
+        -- Preview-tier, so the Production-tier gpt-oss-120b is the new default.)
     },
 
     cohere = {
@@ -350,7 +356,7 @@ local ModelLists = {
     -- provider's DEFAULT model, i.e. the provider was unusable out of the box).
     cerebras = {
         "gpt-oss-120b",                             -- live 2026-08-09
-        "zai-glm-4.7",                              -- live 2026-08-09 (was "llama-3.3-70b", deprecated by Cerebras 2026-02-16)
+        "gemma-4-31b",                              -- catalog 2026-08-14 (replaced zai-glm-4.7, which Cerebras deprecates 2026-08-17; llama-3.3-70b before that, deprecated 2026-02-16)
     },
     minimax = {
         "MiniMax-M3",                               -- seed (unverified: catalog needs a key)
@@ -372,7 +378,10 @@ local ModelLists = {
         "deepseek-ai/DeepSeek-V4",                  -- seed (unverified)
     },
     chutes = {
-        "deepseek-ai/DeepSeek-V4",                  -- seed (unverified)
+        -- Chutes' own live catalog (chutes.ai/app, fetched 2026-08-14) lists
+        -- every current id with a -TEE suffix; the old bare "deepseek-ai/
+        -- DeepSeek-V4" appears nowhere in it.
+        "deepseek-ai/DeepSeek-V4-Flash-0731-TEE",   -- catalog 2026-08-14
     },
     featherless = {
         "Qwen/Qwen3-32B",                           -- seed (unverified)
@@ -428,7 +437,7 @@ local ModelLists = {
         gemini     = { "gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-3-flash-preview" },
         deepseek   = { "deepseek-v4-pro", "deepseek-chat" },
         ollama     = { "llama4", "llama3.3" },
-        groq       = { "llama-3.3-70b-versatile" },
+        groq       = { "openai/gpt-oss-120b", "llama-3.3-70b-versatile" },
         mistral    = { "mistral-large-latest" },
         xai        = { "grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-beta-0309-non-reasoning", "grok-4-1-fast-non-reasoning" },
         openrouter = { "anthropic/claude-sonnet-5", "anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.5" },
@@ -437,7 +446,7 @@ local ModelLists = {
         kimi       = { "kimi-k2.6", "kimi-k2.5", "kimi-k2-0905-preview" },
         together   = { "deepseek-ai/DeepSeek-V4-Pro", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8" },
         fireworks  = { "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/llama4-maverick-instruct-basic" },
-        sambanova  = { "Llama-4-Maverick-17B-128E-Instruct", "Meta-Llama-4-Maverick-17B-128E-Instruct" },
+        sambanova  = { "gpt-oss-120b", "Llama-4-Maverick-17B-128E-Instruct", "Meta-Llama-4-Maverick-17B-128E-Instruct" },
         cohere     = { "command-a-plus-05-2026", "command-a-03-2025" },
         doubao     = { "doubao-seed-2.0-pro-32k", "doubao-1.8-pro-32k" },
         perplexity = { "sonar-pro", "sonar" },
@@ -464,7 +473,7 @@ local ModelLists = {
             openai_codex = "gpt-5.6-sol",
             deepseek = "deepseek-v4-pro",
             gemini = "gemini-3.6-flash",             -- Pro models are paid-only; keep tier free-tier usable (3.6 flash assumed free-tier)
-            groq = "llama-3.3-70b-versatile",
+            groq = "openai/gpt-oss-120b",            -- llama picks deprecated by Groq 2026-08-16
             mistral = "mistral-large-latest",
             xai = "grok-4.6",
             cohere = "command-a-plus-05-2026",
@@ -473,7 +482,7 @@ local ModelLists = {
             requesty = "anthropic/claude-opus-5",
             together = "deepseek-ai/DeepSeek-V4-Pro",
             fireworks = "accounts/fireworks/models/deepseek-v4-pro",
-            sambanova = "Llama-4-Maverick-17B-128E-Instruct",
+            sambanova = "gpt-oss-120b",              -- Maverick deprecated 2026-06-09
             qwen = "qwen3-max",
             kimi = "kimi-k2.6",
             doubao = "doubao-seed-2.0-pro-32k",
@@ -488,7 +497,7 @@ local ModelLists = {
             openai_codex = "gpt-5.6-terra",
             deepseek = "deepseek-v4-flash",
             gemini = "gemini-3.6-flash",
-            groq = "llama-3.3-70b-versatile",
+            groq = "openai/gpt-oss-120b",
             mistral = "mistral-medium-latest",
             xai = "grok-4.20-0309-non-reasoning",
             cohere = "command-a-plus-05-2026",
@@ -496,7 +505,7 @@ local ModelLists = {
             openrouter = "google/gemini-3.6-flash",
             requesty = "google/gemini-2.5-flash",   -- newer gemini rides vertex/ ids on Requesty; this is the verified google/ slug (2026-07-28)
             together = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-            fireworks = "accounts/fireworks/models/llama-v3p3-70b-instruct",
+            fireworks = "accounts/fireworks/models/gpt-oss-120b", -- llama-v3p3 deprecated 2026-05-14, vendor target gpt-oss-120b
             sambanova = "Meta-Llama-3.3-70B-Instruct",
             qwen = "qwen3.5-plus",
             kimi = "kimi-k2.6",
@@ -512,7 +521,7 @@ local ModelLists = {
             openai_codex = "gpt-5.6-luna",
             deepseek = "deepseek-v4-flash",
             gemini = "gemini-3.5-flash-lite",   -- lite = the no-default-thinking class; 3.6-flash here duplicated standard and can't turn thinking off (floor = minimal)
-            groq = "llama-3.1-8b-instant",
+            groq = "openai/gpt-oss-20b",        -- 8b-instant deprecated 2026-08-16; gpt-oss-20b is Groq's own replacement (reasons at medium by default — no non-reasoning production model remains)
             mistral = "ministral-14b-latest",
             xai = "grok-4.20-0309-non-reasoning",
             cohere = "command-r7b-12-2024",
@@ -520,7 +529,7 @@ local ModelLists = {
             openrouter = "openai/gpt-5.6-luna",     -- was 3.6-flash: duplicated standard AND reasoning-mandatory via the router; luna mirrors the direct-openai fast pick, reasoning off by default
             requesty = "openai/gpt-4o-mini",        -- was 2.5-flash (duplicated standard); gpt-4o-mini is the verified fast/low-cost pick and never reasons
             together = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-            fireworks = "accounts/fireworks/models/llama-v3p3-70b-instruct",
+            fireworks = "accounts/fireworks/models/gpt-oss-120b", -- llama-v3p3 deprecated 2026-05-14
             sambanova = "Meta-Llama-3.3-70B-Instruct",
             qwen = "qwen3.5-flash",
             kimi = "kimi-k2-turbo-preview",
@@ -536,7 +545,7 @@ local ModelLists = {
             openai_codex = "gpt-5.4-nano",
             deepseek = "deepseek-v4-flash",
             gemini = "gemini-3.5-flash-lite",
-            groq = "llama-3.1-8b-instant",
+            groq = "openai/gpt-oss-20b",            -- see fast-tier note: Groq retired every non-reasoning production model 2026-08-16
             mistral = "ministral-3b-latest",
             xai = "grok-4.20-0309-non-reasoning",
             cohere = "command-r7b-12-2024",
@@ -544,7 +553,7 @@ local ModelLists = {
             openrouter = "openai/gpt-5.4-mini",     -- mini-class, reasoning off by default (NOT gpt-oss-20b: open-weight oss models reason at medium effort by default — wrong surprise for ultrafast)
             requesty = "openai/gpt-4o-mini",
             together = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-            fireworks = "accounts/fireworks/models/llama-v3p3-70b-instruct",
+            fireworks = "accounts/fireworks/models/gpt-oss-120b",
             sambanova = "Meta-Llama-3.3-70B-Instruct",
             qwen = "qwen-turbo",
             kimi = "kimi-k2-turbo-preview",
@@ -610,6 +619,8 @@ local ModelLists = {
         },
         kimi = {
             docs = "https://platform.moonshot.cn/docs/intro",
+            -- International platform: platform.kimi.ai (separate accounts,
+            -- region-locked keys — see features.kimi_region)
         },
         together = {
             api_list = "https://api.together.xyz/v1/models",

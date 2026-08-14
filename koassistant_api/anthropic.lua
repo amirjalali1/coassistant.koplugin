@@ -35,7 +35,6 @@ function AnthropicHandler:buildRequestBody(message_history, config)
         ["Content-Type"] = "application/json",
         ["x-api-key"] = config.api_key or "",
         ["anthropic-version"] = defaults.additional_parameters.anthropic_version,
-        ["anthropic-beta"] = AnthropicRequest.CACHE_BETA,  -- Enable prompt caching
     }
 
     local url = config.base_url or defaults.base_url
@@ -89,7 +88,6 @@ function AnthropicHandler:query(message_history, config)
             ["Content-Type"] = "application/json",
             ["x-api-key"] = config.api_key,
             ["anthropic-version"] = defaults.additional_parameters.anthropic_version,
-            ["anthropic-beta"] = AnthropicRequest.CACHE_BETA,  -- Enable prompt caching
             ["Content-Length"] = tostring(#requestBody),
             ["Accept"] = "text/event-stream",
         }
@@ -105,7 +103,6 @@ function AnthropicHandler:query(message_history, config)
         ["Content-Type"] = "application/json",
         ["x-api-key"] = config.api_key,
         ["anthropic-version"] = defaults.additional_parameters.anthropic_version,
-        ["anthropic-beta"] = AnthropicRequest.CACHE_BETA,  -- Enable prompt caching
         ["Content-Length"] = tostring(#requestBody),
     }
 

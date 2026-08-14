@@ -12,9 +12,6 @@ local ModelConstraints = require("model_constraints")
 
 local AnthropicRequest = {}
 
--- Beta header required for prompt caching
-AnthropicRequest.CACHE_BETA = "prompt-caching-2024-07-31"
-
 -- Default API parameters
 AnthropicRequest.DEFAULT_PARAMS = {
     max_tokens = 16384,
@@ -320,6 +317,18 @@ function AnthropicRequest:build(config)
         request_body.top_k = nil
     end
 
+    -- Automatic prompt caching (GA 2026-02-19, no beta header): a top-level
+    -- cache_control makes the API place the cache breakpoint on the last
+    -- cacheable block and advance it as the conversation grows, so message
+    -- history (book text, chat turns, tool loops) caches — the explicit
+    -- system-block breakpoint alone sits UNDER the model's minimum cacheable
+    -- prefix in the default config (1024 tokens on Sonnet 5; system block is
+    -- ~571) and measurably cached nothing (probed 2026-08-14). Explicit
+    -- block-level breakpoints coexist with the automatic one.
+    if not (config.system and config.system.enable_caching == false) then
+        request_body.cache_control = { type = "ephemeral" }
+    end
+
     -- Add streaming if requested
     if config.stream then
         request_body.stream = true
@@ -368,9 +377,6 @@ function AnthropicRequest:getHeaders(config, content_length)
         ["x-api-key"] = config.api_key,
         ["anthropic-version"] = defaults.additional_parameters.anthropic_version,
     }
-
-    -- Add caching beta header (always enabled for this module)
-    headers["anthropic-beta"] = AnthropicRequest.CACHE_BETA
 
     -- Add content length if provided
     if content_length then
