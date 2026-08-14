@@ -394,6 +394,69 @@ TestRunner:test("no never pairs → builders emit empty payload slot", function(
     TestRunner:assertEqual(payload.never, "", "nil pairs → empty string")
 end)
 
+print("")
+print("  [round 18 — offered-pairs memory / refusal verdict / ladder sweep]")
+
+TestRunner:test("addDedupOfferedPairs: batch round-trip, dedupe, never-pairs coexist", function()
+    TestRunner:assertEqual(ActionCache.addDedupOfferedPairs(DOC_PATH, {
+        { "Mara Cole", "Mara Ellison" }, { "Bell", "Bell Tower" },
+    }), true, "batch add")
+    local all = ActionCache.getUserAliases(DOC_PATH)
+    local offered = ActionCache.dedupOfferedPairsFrom(all)
+    TestRunner:assertEqual(#offered, 2, "both pairs stored")
+    -- re-add reversed/case-folded: no growth
+    TestRunner:assertEqual(ActionCache.addDedupOfferedPairs(DOC_PATH, {
+        { "MARA ELLISON", "mara cole" },
+    }), true, "dupe add ok")
+    TestRunner:assertEqual(#ActionCache.dedupOfferedPairsFrom(ActionCache.getUserAliases(DOC_PATH)), 2,
+        "order/case-insensitive dedupe")
+    -- reserved key not wrapped by old-format normalization
+    local raw = all[ActionCache.DEDUP_OFFERED_KEY]
+    TestRunner:assertTrue(type(raw) == "table" and raw.add == nil, "reserved key not normalized")
+    -- never pairs still intact alongside
+    TestRunner:assertTrue(#ActionCache.getNeverMergePairs(DOC_PATH) > 0, "never pairs coexist")
+end)
+
+TestRunner:test("isDifferentEntitiesVerdict: marker + reason; plain description passes through", function()
+    local refused, reason = XrayDedup.isDifferentEntitiesVerdict(
+        "DIFFERENT ENTITIES\nOne is a historical figure, the other a modern broadcaster.")
+    TestRunner:assertTrue(refused, "marker detected")
+    TestRunner:assertTrue(reason and reason:find("broadcaster") ~= nil, "reason carried")
+    TestRunner:assertTrue(not XrayDedup.isDifferentEntitiesVerdict("A combined description of one person."),
+        "normal answer not a refusal")
+end)
+
+TestRunner:test("keepBothText: both, one, neither", function()
+    local t = XrayDedup.keepBothText("kept", "dropped", "Old Name")
+    TestRunner:assertTrue(t:find("kept", 1, true) == 1 and t:find("dropped", 1, true) ~= nil
+        and t:find("Old Name", 1, true) ~= nil, "labeled both-text")
+    TestRunner:assertEqual(XrayDedup.keepBothText("kept", "", "X"), "kept", "keep-only")
+    TestRunner:assertEqual(XrayDedup.keepBothText(nil, "dropped", "X"), "dropped", "drop-only")
+    TestRunner:assertEqual(XrayDedup.keepBothText("", "", "X"), nil, "both empty = plain absorb")
+end)
+
+TestRunner:test("applyMergeToRungs: folds rungs holding both, leaves single-name rungs, keeps identity", function()
+    local XrayParser = require("koassistant_xray_parser")
+    local rungs = {
+        { timestamp = 111, progress_decimal = 0.5,
+          result = '{"characters":[{"name":"Mara Cole","description":"early"},{"name":"Mara Ellison","description":"older text","aliases":["Elli"]}]}' },
+        { timestamp = 222, progress_decimal = 0.6,
+          result = '{"characters":[{"name":"Mara Cole","description":"later"}]}' },
+    }
+    local before_r2 = rungs[2].result
+    local changed = XrayDedup.applyMergeToRungs(rungs, "characters", "Mara Cole", "Mara Ellison")
+    TestRunner:assertEqual(changed, 1, "one rung swept")
+    local d1 = XrayParser.parse(rungs[1].result)
+    TestRunner:assertEqual(#d1.characters, 1, "split folded in the rung")
+    TestRunner:assertEqual(d1.characters[1].name, "Mara Cole", "survivor primary")
+    TestRunner:assertTrue(d1.characters[1].description:find("older text", 1, true) ~= nil,
+        "rung folds with its OWN texts (keep-both)")
+    local aliases = table.concat(d1.characters[1].aliases or {}, "|")
+    TestRunner:assertTrue(aliases:find("Mara Ellison", 1, true) ~= nil, "dropped name absorbed as alias")
+    TestRunner:assertEqual(rungs[2].result, before_r2, "single-name rung untouched")
+    TestRunner:assertEqual(rungs[1].timestamp, 111, "timestamp identity preserved")
+end)
+
 os.execute(string.format("rm -rf %q", TMP_ROOT))
 
 local ok = TestRunner:summary()

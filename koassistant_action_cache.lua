@@ -1037,6 +1037,10 @@ end
 -- into the section-merge prompts. get/setUserAliases carry it through the
 -- normal get→modify→set round-trips untouched.
 ActionCache.NEVER_MERGE_KEY = "__never_merge"
+-- Reserved key holding pairs the post-update dedup ask has ALREADY offered
+-- (round 18): same array-of-pairs shape as never-merge. One ask per pair,
+-- ever — dismissing the ask is an answer; the manual scan stays available.
+ActionCache.DEDUP_OFFERED_KEY = "__dedup_offered"
 
 --- Get path to user aliases file for a document
 --- @param document_path string The document file path
@@ -1075,10 +1079,11 @@ function ActionCache.getUserAliases(document_path)
     end
 
     -- Normalize: old format { [name] = { "a", "b" } } → { [name] = { add = { "a", "b" } } }
-    -- (never the reserved never-merge key — its value is an array of PAIRS,
-    -- and wrapping it as add-tables would crash the serializer on save)
+    -- (never the reserved pair-list keys — their values are arrays of PAIRS,
+    -- and wrapping them as add-tables would crash the serializer on save)
     for name, entry in pairs(data) do
         if name ~= ActionCache.NEVER_MERGE_KEY
+            and name ~= ActionCache.DEDUP_OFFERED_KEY
             and type(entry) == "table" and not entry.add and not entry.ignore then
             -- Old format: plain array of strings
             data[name] = { add = entry }
@@ -1095,12 +1100,13 @@ function ActionCache.setUserAliases(document_path, aliases_table)
     local path = ActionCache.getUserAliasesPath(document_path)
     if not path then return false end
 
-    -- Remove entries with no content (the reserved never-merge key holds an
-    -- array of pairs, not add/ignore lists — judged on its own emptiness)
+    -- Remove entries with no content (the reserved pair-list keys hold
+    -- arrays of pairs, not add/ignore lists — judged on their own emptiness)
     for name, entry in pairs(aliases_table) do
         if type(entry) ~= "table" then
             aliases_table[name] = nil
-        elseif name == ActionCache.NEVER_MERGE_KEY then
+        elseif name == ActionCache.NEVER_MERGE_KEY
+            or name == ActionCache.DEDUP_OFFERED_KEY then
             if #entry == 0 then
                 aliases_table[name] = nil
             end
@@ -1146,18 +1152,21 @@ function ActionCache.setUserAliases(document_path, aliases_table)
     end
 
     file:write("return {\n")
-    local never_pairs = aliases_table[ActionCache.NEVER_MERGE_KEY]
-    if type(never_pairs) == "table" and #never_pairs > 0 then
-        file:write(string.format("    [%q] = {", ActionCache.NEVER_MERGE_KEY))
-        for _idx, pair in ipairs(never_pairs) do
-            if type(pair) == "table" and type(pair[1]) == "string" and type(pair[2]) == "string" then
-                file:write(string.format(" { %q, %q },", pair[1], pair[2]))
+    for _ri, rkey in ipairs({ ActionCache.NEVER_MERGE_KEY, ActionCache.DEDUP_OFFERED_KEY }) do
+        local pair_list = aliases_table[rkey]
+        if type(pair_list) == "table" and #pair_list > 0 then
+            file:write(string.format("    [%q] = {", rkey))
+            for _idx, pair in ipairs(pair_list) do
+                if type(pair) == "table" and type(pair[1]) == "string" and type(pair[2]) == "string" then
+                    file:write(string.format(" { %q, %q },", pair[1], pair[2]))
+                end
             end
+            file:write(" },\n")
         end
-        file:write(" },\n")
     end
     for item_name, entry in pairs(aliases_table) do
-        if item_name ~= ActionCache.NEVER_MERGE_KEY then
+        if item_name ~= ActionCache.NEVER_MERGE_KEY
+            and item_name ~= ActionCache.DEDUP_OFFERED_KEY then
             file:write(string.format("    [%q] = { add = ", item_name))
             write_array(file, entry.add)
             if entry.ignore and #entry.ignore > 0 then
@@ -1174,12 +1183,9 @@ function ActionCache.setUserAliases(document_path, aliases_table)
     return true
 end
 
---- Validated never-merge pair list from an already-loaded aliases table
---- (callers holding a getUserAliases result skip a second file read). Pure.
---- @param aliases_table table getUserAliases output
---- @return table pairs Array of { name_a, name_b }
-function ActionCache.neverMergePairsFrom(aliases_table)
-    local raw = type(aliases_table) == "table" and aliases_table[ActionCache.NEVER_MERGE_KEY]
+--- Validated pair list from a reserved pair-list key. Pure.
+local function pairListFrom(aliases_table, key)
+    local raw = type(aliases_table) == "table" and aliases_table[key]
     local list = {}
     if type(raw) == "table" then
         for _idx, pair in ipairs(raw) do
@@ -1189,6 +1195,59 @@ function ActionCache.neverMergePairsFrom(aliases_table)
         end
     end
     return list
+end
+
+--- Validated never-merge pair list from an already-loaded aliases table
+--- (callers holding a getUserAliases result skip a second file read). Pure.
+--- @param aliases_table table getUserAliases output
+--- @return table pairs Array of { name_a, name_b }
+function ActionCache.neverMergePairsFrom(aliases_table)
+    return pairListFrom(aliases_table, ActionCache.NEVER_MERGE_KEY)
+end
+
+--- Already-offered dedup-ask pairs (round 18). Pure.
+--- @param aliases_table table getUserAliases output
+--- @return table pairs Array of { name_a, name_b }
+function ActionCache.dedupOfferedPairsFrom(aliases_table)
+    return pairListFrom(aliases_table, ActionCache.DEDUP_OFFERED_KEY)
+end
+
+--- Record dedup-ask pairs as offered (batch; order/case-insensitive dedupe).
+--- @param document_path string
+--- @param new_pairs table Array of { name_a, name_b }
+--- @return boolean success
+function ActionCache.addDedupOfferedPairs(document_path, new_pairs)
+    if type(new_pairs) ~= "table" or #new_pairs == 0 then return false end
+    local all = ActionCache.getUserAliases(document_path)
+    local list = all[ActionCache.DEDUP_OFFERED_KEY]
+    if type(list) ~= "table" then
+        list = {}
+        all[ActionCache.DEDUP_OFFERED_KEY] = list
+    end
+    local seen = {}
+    for _idx, pair in ipairs(list) do
+        if type(pair) == "table" and type(pair[1]) == "string" and type(pair[2]) == "string" then
+            local a, b = pair[1]:lower(), pair[2]:lower()
+            if a > b then a, b = b, a end
+            seen[a .. "\0" .. b] = true
+        end
+    end
+    local added = false
+    for _idx, pair in ipairs(new_pairs) do
+        if type(pair) == "table" and type(pair[1]) == "string" and type(pair[2]) == "string"
+            and pair[1] ~= "" and pair[2] ~= "" then
+            local a, b = pair[1]:lower(), pair[2]:lower()
+            if a > b then a, b = b, a end
+            local key = a .. "\0" .. b
+            if not seen[key] then
+                seen[key] = true
+                list[#list + 1] = { pair[1], pair[2] }
+                added = true
+            end
+        end
+    end
+    if not added then return true end
+    return ActionCache.setUserAliases(document_path, all)
 end
 
 --- Load the entity never-merge pair list (validated copy).
@@ -1776,6 +1835,19 @@ function ActionCache.pushXrayLadderRung(document_path, rung)
     if not writeCheckpointRing(path, ladder) then return false end
     logger.info("KOAssistant ActionCache: Saved X-Ray ladder rung at", tostring(p), "for", document_path)
     return true
+end
+
+--- Persist a loaded-and-modified ladder array (the dedup ladder sweep edits
+--- rung RESULTS in place). Timestamps and progress MUST be preserved by the
+--- caller — promotion and rung identity match on them.
+--- @param document_path string The document file path
+--- @param ladder table getXrayLadder output, possibly modified
+--- @return boolean success
+function ActionCache.saveXrayLadder(document_path, ladder)
+    if type(ladder) ~= "table" or #ladder == 0 then return false end
+    local path = ActionCache.getXrayLadderPath(document_path)
+    if not path then return false end
+    return writeCheckpointRing(path, ladder)
 end
 
 --- Remove ONE rung, identity-matched (timestamp + progress). Round 24

@@ -76,6 +76,7 @@ Rules:
 - Use ONLY the two entries below — add no facts from outside knowledge, even if you recognize the work
 - Combine complementary details; drop exact repetition
 - Keep roughly the length of the longer of the two descriptions
+- EXCEPTION: if the two entries clearly describe DIFFERENT people, places, or things — similar or echoing names, but not the same entity — do NOT merge. Reply with exactly DIFFERENT ENTITIES on the first line, then one short sentence naming the difference
 - Output ONLY the combined description text — no preamble, no headings, no JSON, no quotation marks]]
 
 --- Lowercase, trim, collapse inner whitespace. nil for empty/non-strings.
@@ -409,6 +410,35 @@ function XrayDedup.buildAiMergePrompt(pair, keep_side)
     return XrayDedup.MERGE_PROMPT, { inputs = inputs }
 end
 
+--- Did the AI merge refuse with the DIFFERENT ENTITIES verdict (first-line
+--- marker; round 18 — a live test merged two echo-named DISTINCT characters
+--- because the prompt forced a combination)? Pure.
+--- @return boolean refused, string|nil reason (text after the marker line)
+function XrayDedup.isDifferentEntitiesVerdict(text)
+    if type(text) ~= "string" then return false, nil end
+    local first = text:match("^%s*([^\n]*)") or ""
+    if not first:upper():find("DIFFERENT ENTITIES", 1, true) then
+        return false, nil
+    end
+    local reason = text:match("^%s*[^\n]*\n+%s*(.-)%s*$")
+    if reason == "" then reason = nil end
+    return true, reason
+end
+
+--- The lossless keep-both description: survivor's own text with the other
+--- entry's appended as a labeled block (the next update's replace pass
+--- consolidates). nil = plain absorb (both sides empty). Pure.
+function XrayDedup.keepBothText(keep_d, drop_d, drop_name)
+    keep_d = type(keep_d) == "string" and keep_d or ""
+    drop_d = type(drop_d) == "string" and drop_d or ""
+    if keep_d ~= "" and drop_d ~= "" then
+        return keep_d .. "\n\n" .. T(_("[Merged from \"%1\"]: %2"), drop_name, drop_d)
+    elseif keep_d ~= "" or drop_d ~= "" then
+        return keep_d ~= "" and keep_d or drop_d
+    end
+    return nil
+end
+
 --- Trim + unwrap a model reply into a usable description; nil when the shape
 --- is unusable (empty, or JSON despite instructions). Pure.
 function XrayDedup.cleanDescription(text)
@@ -418,6 +448,54 @@ function XrayDedup.cleanDescription(text)
     if unquoted then t = unquoted end
     if t == "" or t:sub(1, 1) == "{" or t:sub(1, 1) == "[" then return nil end
     return t
+end
+
+--- Ladder sweep (round 18): replay an identity merge into built-but-not-
+--- installed rungs so a later install does not resurrect the split. IDENTITY
+--- ONLY and lossless: each rung folds with ITS OWN two texts (keep-both
+--- form) — never the live/AI combined text, which may describe coverage the
+--- rung has not reached. Rungs holding only one of the two names are left
+--- alone (nothing to fold; the aliases sidecar bridges lookups either way).
+--- Pure over the loaded rung array (caller persists via saveXrayLadder);
+--- timestamps/progress untouched — rung identity survives.
+--- @param rungs table getXrayLadder output (mutated in place)
+--- @return number changed How many rungs were rewritten
+function XrayDedup.applyMergeToRungs(rungs, cat_key, keep_name, drop_name)
+    local XrayParser = require("koassistant_xray_parser")
+    local json = require("json")
+    local keep_norm, drop_norm = normalizeName(keep_name), normalizeName(drop_name)
+    if not keep_norm or not drop_norm then return 0 end
+    local changed = 0
+    for _idx, rung in ipairs(rungs or {}) do
+        if type(rung) == "table" and type(rung.result) == "string"
+            and not rung.intro and XrayParser.isJSON(rung.result) then
+            local data = XrayParser.parse(rung.result)
+            local items = data and not data.error
+                and type(data[cat_key]) == "table" and data[cat_key]
+            if items then
+                local keep_item, drop_item
+                for _i, item in ipairs(items) do
+                    local nm = normalizeName(rawName(item))
+                    if nm == keep_norm then keep_item = keep_item or item
+                    elseif nm == drop_norm then drop_item = drop_item or item end
+                end
+                if keep_item and drop_item then
+                    local combined = XrayDedup.keepBothText(
+                        keep_item.description, drop_item.description, drop_name)
+                    local ok_apply = XrayDedup.applyMergeToData(
+                        data, cat_key, keep_name, drop_name, combined)
+                    if ok_apply then
+                        local okj, encoded = pcall(json.encode, data, { pretty = true, indent = true })
+                        if okj and type(encoded) == "string" then
+                            rung.result = encoded
+                            changed = changed + 1
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return changed
 end
 
 -- ============================ execution ============================
@@ -503,6 +581,18 @@ local function commitEntityMerge(opts, state, pair, keep_side, merged_descriptio
     end
 
     logger.info("KOAssistant XrayDedup: merged", drop_name, "into", keep_name, "for", file)
+
+    -- Ladder sweep (round 18): built-but-uninstalled rungs replay the
+    -- identity merge so a later install does not resurrect the split. Never
+    -- fails the already-committed live merge — pcall + best effort.
+    pcall(function()
+        local rungs = ActionCache.getXrayLadder(opts.file)
+        if #rungs == 0 then return end
+        local swept = XrayDedup.applyMergeToRungs(rungs, pair.cat_key, keep_name, drop_name)
+        if swept > 0 and ActionCache.saveXrayLadder(opts.file, rungs) then
+            logger.info("KOAssistant XrayDedup: swept", swept, "ladder rung(s) for the merge")
+        end
+    end)
     return true, nil
 end
 
@@ -549,6 +639,33 @@ local function runAiMerge(opts, state, pair, keep_side, on_finished)
                     timeout = 4,
                 })
                 on_finished(false)
+                return
+            end
+            -- Refusal escape (round 18): the model may object that the pair
+            -- is two DIFFERENT entities (echo-named characters) instead of
+            -- being forced into a merge — turn that into a Never suggestion
+            local refused, reason = XrayDedup.isDifferentEntitiesVerdict(result)
+            if refused then
+                local ActionCache = require("koassistant_action_cache")
+                local ConfirmBox = require("ui/widget/confirmbox")
+                UIManager:show(ConfirmBox:new{
+                    text = T(_("The AI thinks \"%1\" and \"%2\" are different entities and declined to merge them."),
+                            pair.name_a, pair.name_b)
+                        .. (reason and ("\n\n" .. reason) or "")
+                        .. "\n\n" .. _("Mark the pair as never-merge?"),
+                    ok_text = _("Never merge"),
+                    ok_callback = function()
+                        ActionCache.addNeverMergePair(opts.file, pair.name_a, pair.name_b)
+                        UIManager:show(Notification:new{
+                            text = T(_("\"%1\" and \"%2\" will stay separate"), pair.name_a, pair.name_b),
+                        })
+                        on_finished(true)
+                    end,
+                    cancel_text = _("Not now"),
+                    cancel_callback = function()
+                        on_finished(true)
+                    end,
+                })
                 return
             end
             local desc = XrayDedup.cleanDescription(result)
@@ -719,14 +836,8 @@ function XrayDedup.startFlow(opts)
                 align = "left",
                 callback = function()
                     UIManager:close(dialog)
-                    local keep_d = type(keep_item.description) == "string" and keep_item.description or ""
-                    local drop_d = type(drop_item.description) == "string" and drop_item.description or ""
-                    local combined
-                    if keep_d ~= "" and drop_d ~= "" then
-                        combined = keep_d .. "\n\n" .. T(_("[Merged from \"%1\"]: %2"), drop_name, drop_d)
-                    elseif keep_d ~= "" or drop_d ~= "" then
-                        combined = keep_d ~= "" and keep_d or drop_d
-                    end
+                    local combined = XrayDedup.keepBothText(
+                        keep_item.description, drop_item.description, drop_name)
                     local ok, err = commitEntityMerge(opts, state, pair, keep_side, combined)
                     afterCommit(ok, err, T(_("Merged \"%1\" into \"%2\", both texts kept"), drop_name, keep_name))
                 end,

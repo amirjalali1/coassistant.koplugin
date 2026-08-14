@@ -182,6 +182,13 @@ function XrayRows.versionRows(ctx)
                 pre()
                 if plugin:_fireXrayLadderPromotion({ manual = true }) then
                     if retire then retire() end
+                    -- Attended install: the freshly installed artifact may
+                    -- carry new duplicate suggestions (round 18)
+                    if plugin.maybeOfferDedupAsk then
+                        UIManager:scheduleIn(1, function()
+                            plugin:maybeOfferDedupAsk(file)
+                        end)
+                    end
                 else
                     -- Disk moved between drawing the row and tapping it
                     UIManager:show(require("ui/widget/infomessage"):new{
