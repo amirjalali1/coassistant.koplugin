@@ -2285,6 +2285,16 @@ XrayParser.CATEGORY_FAMILY = {
 --- the caller the artifact itself. Safe on non-X-Ray strings (prose caches).
 --- @param json_str string|nil
 --- @return string|nil
+--- Canonical parsed→text serialization (the strip helpers' idiom, shared so
+--- install-time carries write the same shape the create path caches).
+--- @param data table Parsed X-Ray
+--- @return string|nil nil on encode failure (callers keep their original text)
+function XrayParser.serialize(data)
+    local ok, out = pcall(json.encode, data, { pretty = true, indent = true })
+    if ok and type(out) == "string" then return out end
+    return nil
+end
+
 function XrayParser.stripDormantJSON(json_str)
     if type(json_str) ~= "string"
         or not json_str:find('"__dormant"', 1, true) then

@@ -9481,7 +9481,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
       -- contradiction)
       if installed_progress and base_progress
           and base_progress > installed_progress + 0.005 then
-        state_line = T(_("Your installed X-Ray covers to %1%; checkpoints are built to %2%."),
+        -- "already built" spelled out (device: "checkpoints are built to X%"
+        -- read as a general statement about how checkpoints work)
+        state_line = T(_("Your installed X-Ray covers to %1%. A checkpoint up to %2% is already built."),
           math.floor(installed_progress * 100 + 0.5),
           math.floor(base_progress * 100 + 0.5))
       else
@@ -9692,6 +9694,15 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts)
     -- Round 24: rebuild picks carry the replacement fact in the hint too
     if pick_rebuild and mode == "extend" then
       hint = hint .. " " .. _("This range is already covered, so the X-Ray is rebuilt from scratch and replaces the current one (the outgoing version is archived).")
+    end
+    -- With a checkpoint already built ahead, "update to where I am" can read
+    -- as the mechanical/free install (device 2026-08-14) — say plainly that
+    -- this pick is a fresh paid request and the built checkpoint stays free
+    if mode == "extend" and not pick_rebuild and cr.coverage == "position"
+        and (base_progress or 0) > decimal + 0.005 then
+      hint = (hint and (hint .. " ") or "")
+        .. T(_("Note: this runs a fresh AI request — it does not use the checkpoint already built to %1%, which still installs for free as you read past it."),
+          math.floor((base_progress or 0) * 100 + 0.5))
     end
     if hint then
       table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })

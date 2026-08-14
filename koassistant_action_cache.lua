@@ -1856,6 +1856,43 @@ function ActionCache.promoteXrayLadderRung(document_path, rung, limit, opts)
         ActionCache.pushXrayCheckpoint(document_path, live, limit)
     end
 
+    -- Round-26 principle at the PROMOTION doorway (2026-08-14): a rung
+    -- install replaces the live artifact, and knowledge folded onto it
+    -- (cross-book background from group folds/links/dedup absorbs) died
+    -- with the swap — rebuild got the carry, the silent page-turn doorway
+    -- didn't. Re-stub the outgoing artifact's background carriers into the
+    -- incoming rung's OWN ledger (union by name — the rung's chain-carried
+    -- ledger stays the base; a wholesale copy would clobber it), then wake
+    -- whatever matches the rung's entities. The install keeps the rung's
+    -- timestamp, so rung identity (isXrayLadderRung) and the ring-dedup
+    -- skip are untouched; restoring the rung from "All versions" still
+    -- yields the pure rung. pcall-guarded: any failure installs verbatim —
+    -- the carry must never block a promotion.
+    local install_result = rung.result
+    if live and live.result and live.result ~= rung.result then
+        local ok_carry, carried_out, carried_n, woken_n = pcall(function()
+            local XrayParser = require("koassistant_xray_parser")
+            if not XrayParser.isJSON(live.result) or not XrayParser.isJSON(rung.result) then
+                return nil
+            end
+            local prev_parsed = XrayParser.parse(live.result)
+            if type(prev_parsed) ~= "table" or prev_parsed.error then return nil end
+            local parsed = XrayParser.parse(rung.result)
+            if type(parsed) ~= "table" or parsed.error then return nil end
+            local n = require("koassistant_xray_merge")
+                .carryActiveBackground(prev_parsed, parsed)
+            local woken = XrayParser.wakeDormant(parsed)
+            if n == 0 and #woken == 0 then return nil end
+            return XrayParser.serialize(parsed), n, #woken
+        end)
+        if ok_carry and type(carried_out) == "string" then
+            install_result = carried_out
+            logger.info("KOAssistant ActionCache: promotion carried background of",
+                tostring(carried_n), "entit(y/ies),", tostring(woken_n),
+                "woken, from the outgoing X-Ray")
+        end
+    end
+
     local function pickFlag(archived, fallback)
         if archived ~= nil then return archived end
         return fallback
@@ -1882,8 +1919,8 @@ function ActionCache.promoteXrayLadderRung(document_path, rung, limit, opts)
         merged_from_books = rung.merged_from_books,
         merged_from = rung.merged_from,
     }
-    local ok_doc = ActionCache.setXrayCache(document_path, rung.result, rung.progress_decimal or 0, meta)
-    local ok_action = ActionCache.set(document_path, "xray", rung.result, rung.progress_decimal or 0, meta)
+    local ok_doc = ActionCache.setXrayCache(document_path, install_result, rung.progress_decimal or 0, meta)
+    local ok_action = ActionCache.set(document_path, "xray", install_result, rung.progress_decimal or 0, meta)
     logger.info("KOAssistant ActionCache: Promoted X-Ray ladder rung at",
         tostring(rung.progress_decimal), "for", document_path)
     return (ok_doc and ok_action) == true
