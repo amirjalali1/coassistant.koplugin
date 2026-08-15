@@ -1991,6 +1991,250 @@ end
 -- derived capability cache (item 19 auto-derive, docs/model_capability_resolution_plan.md).
 -- ~2 KB endpoint; synchronous — only called behind explicit user actions (add custom
 -- model / refresh row). Returns true when metadata was fetched and recorded.
+-- Ollama server endpoints (GUI): features.ollama_endpoints = { active = <root url|nil>,
+-- list = { { url, name? }, ... } }. Absent/nil active = the shipped default
+-- (localhost:11434). Stored urls are normalized roots (ConfigHelper.normalizeServerUrl);
+-- the /api/chat path is appended at the consumers (mergeWithDefaults + descriptor).
+function AskGPT:getOllamaEndpoints()
+  local features = self.settings:readSetting("features") or {}
+  local eps = features.ollama_endpoints
+  if type(eps) ~= "table" then eps = {} end
+  if type(eps.list) ~= "table" then eps.list = {} end
+  return eps
+end
+
+-- The ACTIVE server's root url (no API path).
+function AskGPT:ollamaRootUrl()
+  local eps = self:getOllamaEndpoints()
+  if type(eps.active) == "string" and eps.active ~= "" then return eps.active end
+  local Defaults = require("koassistant_api.defaults")
+  local base = (Defaults.ProviderDefaults.ollama or {}).base_url or "http://localhost:11434/api/chat"
+  return (base:gsub("/api/chat$", ""))
+end
+
+-- Cached installed-model list for the ACTIVE server, or nil (never fetched /
+-- fetched from a different server). Ollama can only run PULLED models, so this
+-- live list is what the model menu renders — never the curated seed array.
+function AskGPT:getOllamaCachedModels()
+  local features = self.settings:readSetting("features") or {}
+  local cache = features.ollama_live_models
+  if type(cache) ~= "table" or type(cache.models) ~= "table" then return nil end
+  if cache.url ~= self:ollamaRootUrl() then return nil end
+  return cache.models
+end
+
+-- Refresh the cached installed-model list from the active server (/api/tags).
+-- Synchronous — only call behind an explicit user action (refresh row, server
+-- switch), NEVER from a menu builder (menu-search indexes those).
+function AskGPT:refreshOllamaModels(opts)
+  local ids, err = self:fetchProviderModels("ollama", opts)
+  if not ids then return nil, err end
+  local features = self.settings:readSetting("features") or {}
+  features.ollama_live_models = { url = self:ollamaRootUrl(), models = ids }
+  self.settings:saveSetting("features", features)
+  self.settings:flush()
+  return ids
+end
+
+-- Ollama server manager (key-manager pattern): tap a server to switch to it,
+-- hold a saved one to rename/remove. The default localhost row is virtual —
+-- never stored, never removable. Switching drops the model-list cache (another
+-- server has another set of pulled models) and refetches it right away.
+function AskGPT:showOllamaServerManager(on_change)
+  local self_ref = self
+  local ButtonDialog = require("ui/widget/buttondialog")
+  local ConfigHelper = require("koassistant_config_helper")
+  local Defaults = require("koassistant_api.defaults")
+  local default_root =
+    (((Defaults.ProviderDefaults.ollama or {}).base_url or "http://localhost:11434/api/chat")
+      :gsub("/api/chat$", ""))
+  local eps = self:getOllamaEndpoints()
+  local active_root = self:ollamaRootUrl()
+
+  local dialog
+  local function rebuild()
+    UIManager:close(dialog)
+    self_ref:showOllamaServerManager(on_change)
+    if on_change then on_change() end
+  end
+
+  local function hostLabel(url)
+    return (url:gsub("^https?://", ""))
+  end
+
+  -- Persist a mutation of the endpoints table. When the active server changed,
+  -- drop the old server's model cache and fetch the new server's list.
+  local function saveEndpoints(new_eps, switched)
+    local f = self_ref.settings:readSetting("features") or {}
+    f.ollama_endpoints = new_eps
+    if switched then f.ollama_live_models = nil end
+    self_ref.settings:saveSetting("features", f)
+    self_ref.settings:flush()
+    self_ref:updateConfigFromSettings()
+    if switched then
+      UIManager:show(Notification:new{
+        text = T(_("Ollama server: %1"), hostLabel(self_ref:ollamaRootUrl())),
+        timeout = 1.5,
+      })
+      -- Grab the new server's installed list right away; failure is silent
+      -- (the model menu shows its "no models listed" hint and the refresh row)
+      UIManager:scheduleIn(0.2, function()
+        self_ref:refreshOllamaModels({ timeout = 5 })
+        if on_change then on_change() end
+      end)
+    end
+  end
+
+  local buttons = {}
+  do  -- virtual default row
+    local is_active = active_root == default_root
+    table.insert(buttons, { {
+      text = (is_active and "● " or "○ ") .. T(_("This device (%1)"), hostLabel(default_root)),
+      align = "left",
+      callback = function()
+        UIManager:close(dialog)
+        if not is_active then
+          local new_eps = self_ref:getOllamaEndpoints()
+          new_eps.active = nil
+          saveEndpoints(new_eps, true)
+        end
+        if on_change then on_change() end
+      end,
+    } })
+  end
+
+  for idx, ep in ipairs(eps.list) do
+    local idx_copy, ep_copy = idx, ep
+    local is_active = ep.url == active_root
+    local shown = (type(ep.name) == "string" and ep.name ~= "")
+      and (ep.name .. "  " .. hostLabel(ep.url)) or hostLabel(ep.url)
+    table.insert(buttons, { {
+      text = (is_active and "● " or "○ ") .. shown,
+      align = "left",
+      callback = function()
+        UIManager:close(dialog)
+        if not is_active then
+          local new_eps = self_ref:getOllamaEndpoints()
+          new_eps.active = ep_copy.url
+          saveEndpoints(new_eps, true)
+        end
+        if on_change then on_change() end
+      end,
+      hold_callback = function()
+        local opts_dialog
+        opts_dialog = ButtonDialog:new{
+          title = shown,
+          buttons = {
+            { {
+              text = _("Rename..."),
+              callback = function()
+                UIManager:close(opts_dialog)
+                local InputDialog = require("ui/widget/inputdialog")
+                local rename_dialog
+                rename_dialog = InputDialog:new{
+                  title = T(_("Name for %1"), hostLabel(ep_copy.url)),
+                  input = ep_copy.name or "",
+                  input_hint = _("e.g. phone, desktop"),
+                  buttons = { {
+                    { text = _("Cancel"), id = "close",
+                      callback = function() UIManager:close(rename_dialog) end },
+                    { text = _("Save"), is_enter_default = true,
+                      callback = function()
+                        local name = rename_dialog:getInputText()
+                        name = name and name:match("^%s*(.-)%s*$") or ""
+                        local new_eps = self_ref:getOllamaEndpoints()
+                        if new_eps.list[idx_copy] and new_eps.list[idx_copy].url == ep_copy.url then
+                          new_eps.list[idx_copy].name = name ~= "" and name or nil
+                          saveEndpoints(new_eps, false)
+                        end
+                        UIManager:close(rename_dialog)
+                        rebuild()
+                      end },
+                  } },
+                }
+                UIManager:show(rename_dialog)
+                rename_dialog:onShowKeyboard()
+              end,
+            } },
+            { {
+              text = _("Remove server"),
+              callback = function()
+                UIManager:close(opts_dialog)
+                local new_eps = self_ref:getOllamaEndpoints()
+                if new_eps.list[idx_copy] and new_eps.list[idx_copy].url == ep_copy.url then
+                  table.remove(new_eps.list, idx_copy)
+                  local was_active = new_eps.active == ep_copy.url
+                  if was_active then new_eps.active = nil end
+                  saveEndpoints(new_eps, was_active)
+                end
+                rebuild()
+              end,
+            } },
+            { {
+              text = _("Cancel"),
+              callback = function() UIManager:close(opts_dialog) end,
+            } },
+          },
+        }
+        UIManager:show(opts_dialog)
+      end,
+    } })
+  end
+
+  table.insert(buttons, { {
+    text = _("Add server..."),
+    callback = function()
+      UIManager:close(dialog)
+      local InputDialog = require("ui/widget/inputdialog")
+      local input_dialog
+      input_dialog = InputDialog:new{
+        title = _("Add Ollama server"),
+        input = "",
+        input_hint = _("e.g. 192.168.1.20:11434"),
+        description = _("Address of a machine running Ollama (it must be serving on the network, not just localhost). The port is usually 11434."),
+        buttons = { {
+          { text = _("Cancel"), id = "close",
+            callback = function() UIManager:close(input_dialog) end },
+          { text = _("Add"), is_enter_default = true,
+            callback = function()
+              local url = ConfigHelper.normalizeServerUrl(input_dialog:getInputText())
+              UIManager:close(input_dialog)
+              if not url then
+                UIManager:show(InfoMessage:new{ text = _("That does not look like a server address.") })
+                return
+              end
+              local new_eps = self_ref:getOllamaEndpoints()
+              local exists = url == default_root
+              for _idx, e in ipairs(new_eps.list) do
+                if e.url == url then exists = true break end
+              end
+              if not exists then
+                table.insert(new_eps.list, { url = url })
+              end
+              -- Adding a server means wanting to use it: switch to it too
+              new_eps.active = url ~= default_root and url or nil
+              saveEndpoints(new_eps, true)
+              if on_change then on_change() end
+            end },
+        } },
+      }
+      UIManager:show(input_dialog)
+      input_dialog:onShowKeyboard()
+    end,
+  } })
+
+  table.insert(buttons, { {
+    text = _("Close"),
+    callback = function() UIManager:close(dialog) end,
+  } })
+
+  dialog = ButtonDialog:new{
+    title = _("Ollama servers\nTap to use. Hold a saved server to rename or remove it."),
+    buttons = buttons,
+  }
+  UIManager:show(dialog)
+end
+
 function AskGPT:fetchDerivedModelCaps(provider, model)
   if not model or model == "" then return false end
   -- Ollama: /api/show returns a per-model `capabilities` array (probed 0.17.7:
@@ -2066,10 +2310,16 @@ function AskGPT:getProviderDescriptor(provider_id)
   local Defaults = require("koassistant_api.defaults")
   local pd = Defaults.ProviderDefaults[provider_id]
   if not pd then return nil end
+  local base_url = pd.base_url
+  if provider_id == "ollama" then
+    -- Active GUI server (model-menu server manager) beats the shipped default,
+    -- so the fetch/derive/test tooling talks to the same server as the wire.
+    base_url = self:ollamaRootUrl() .. "/api/chat"
+  end
   return {
     id = provider_id,
     name = self:getProviderDisplayName(provider_id),
-    base_url = pd.base_url,
+    base_url = base_url,
     default_model = self:getEffectiveDefaultModel(provider_id) or pd.model,
     is_custom = false,
   }
@@ -2094,7 +2344,7 @@ end
 -- Fetch the live model list from a provider's list endpoint (18g; universal
 -- since REVISION 2 M2). Synchronous like fetchDerivedModelCaps — only called
 -- behind an explicit user action. Returns a sorted array of ids, or nil + error.
-function AskGPT:fetchProviderModels(provider_id)
+function AskGPT:fetchProviderModels(provider_id, opts)
   local d = self:getProviderDescriptor(provider_id)
   if not d or not d.base_url or d.base_url == "" then
     return nil, _("Provider has no base URL")
@@ -2126,7 +2376,8 @@ function AskGPT:fetchProviderModels(provider_id)
     headers = key and { ["Authorization"] = "Bearer " .. key } or nil
   end
 
-  local code, body = BaseHandler.fetchInSubprocess(models_url, { timeout = 15, headers = headers })
+  local code, body = BaseHandler.fetchInSubprocess(models_url,
+    { timeout = (opts and opts.timeout) or 15, headers = headers })
   if not tonumber(code) then
     return nil, T(_("Network error: %1"), tostring(body))
   end
@@ -2811,9 +3062,24 @@ function AskGPT:getEffectiveDefaultModel(provider)
     return custom_provider.default_model or ""
   end
 
-  -- Fall back to system default for built-in providers
   local Defaults = require("koassistant_api.defaults")
   local provider_defaults = Defaults.ProviderDefaults[provider]
+
+  -- Ollama: the shipped default is just a NAME — a local server can only run
+  -- pulled models, so when the live list says the name is not installed,
+  -- default to the first installed model instead of a guaranteed 404.
+  if provider == "ollama" then
+    local cached = self:getOllamaCachedModels()
+    if cached and #cached > 0 then
+      local shipped = provider_defaults and provider_defaults.model
+      for _idx, m in ipairs(cached) do
+        if m == shipped then return shipped end
+      end
+      return cached[1]
+    end
+  end
+
+  -- Fall back to system default for built-in providers
   if provider_defaults and provider_defaults.model then
     return provider_defaults.model
   end
@@ -3483,7 +3749,19 @@ function AskGPT:buildModelMenu(simplified, provider_override)
 
   -- Get models: built-in providers have model lists, custom providers only have custom models
   local models = {}
-  if not is_custom_provider then
+  local ollama_installed = nil  -- set = installed names on the active server (nil = never fetched)
+  if provider == "ollama" then
+    -- Live list: a local server can only run PULLED models, so the menu renders
+    -- the cached /api/tags list — never the curated seed array (that stays
+    -- internal for defaults/tiers). NO fetching here: menu-search indexes
+    -- sub_item_table_funcs, so the cache refreshes only behind explicit actions
+    -- (the refresh row, server switches).
+    models = self:getOllamaCachedModels() or {}
+    if #models > 0 then
+      ollama_installed = {}
+      for _idx, m in ipairs(models) do ollama_installed[m] = true end
+    end
+  elseif not is_custom_provider then
     models = ModelLists[provider] or {}
   end
 
@@ -3621,6 +3899,13 @@ function AskGPT:buildModelMenu(simplified, provider_override)
       display_name = display_name .. " · " .. table.concat(model_tiers[model], "/")
     end
 
+    -- Ollama: mark rows the active server does not have (custom adds and a
+    -- selected model that vanished from /api/tags). Only when a live list
+    -- exists — before the first fetch we know nothing.
+    if ollama_installed and not ollama_installed[model] then
+      display_name = display_name .. " " .. _("(not installed)")
+    end
+
     -- Add default indicators
     local is_system_default = (model == system_default)
     local is_user_default = (model == user_default)
@@ -3652,6 +3937,7 @@ function AskGPT:buildModelMenu(simplified, provider_override)
 
   -- Build unified list of all models (custom first, then built-in)
   local all_models = {}
+  local listed = {}
 
   -- Add custom models at the top (user-defined, most likely to be used)
   for _idx, model in ipairs(custom_models) do
@@ -3659,14 +3945,47 @@ function AskGPT:buildModelMenu(simplified, provider_override)
       name = model,
       is_custom = true,
     })
+    listed[model] = true
   end
 
-  -- Add built-in models (preserves order from model lists file)
+  -- Add built-in models (preserves order from model lists file). Skip names
+  -- already present as custom rows — with Ollama's live list a fetched-and-added
+  -- model would otherwise render twice.
   for i = 1, #models do
-    table.insert(all_models, {
-      name = models[i],
-      is_custom = false,
-    })
+    if not listed[models[i]] then
+      table.insert(all_models, {
+        name = models[i],
+        is_custom = false,
+      })
+      listed[models[i]] = true
+    end
+  end
+
+  if provider == "ollama" then
+    -- Keep the SELECTED model visible even when the server no longer lists it
+    -- (deleted there, or the list came from another server) — it renders with
+    -- the "(not installed)" marker instead of silently vanishing.
+    if self:getCurrentProvider() == "ollama" then
+      local f = self.settings:readSetting("features") or {}
+      local selected = f.model
+      if type(selected) == "string" and selected ~= "" and not listed[selected] then
+        table.insert(all_models, { name = selected, is_custom = false })
+        listed[selected] = true
+      end
+    end
+    if #all_models == 0 then
+      table.insert(items, {
+        text = _("No installed models listed yet"),
+        enabled = false,
+      })
+      if not simplified then
+        -- The refresh row only exists in the full menu; the QS popup points home
+        table.insert(items, {
+          text = _("Tap 'Refresh installed models' below with the server running."),
+          enabled = false,
+        })
+      end
+    end
   end
 
   -- Create menu items from model list
@@ -3734,6 +4053,28 @@ function AskGPT:buildModelMenu(simplified, provider_override)
   if not simplified then
     -- Split line on the last model row instead of a padded dash row
     if #items > 0 then items[#items].separator = true end
+
+    -- Ollama: server picker in the API-key row's place (keyless provider; the
+    -- server address is its equivalent of "where do requests go")
+    if provider == "ollama" then
+      table.insert(items, {
+        text_func = function()
+          local root = self_ref:ollamaRootUrl()
+          local label = root:gsub("^https?://", "")
+          for _idx, ep in ipairs(self_ref:getOllamaEndpoints().list) do
+            if ep.url == root and type(ep.name) == "string" and ep.name ~= "" then
+              label = ep.name
+              break
+            end
+          end
+          return T(_("Server: %1"), label)
+        end,
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+          self_ref:showOllamaServerManager(menuRefresher(touchmenu_instance))
+        end,
+      })
+    end
 
     -- Per-provider auth, right where you're looking at the provider (round 3;
     -- the top-level API Keys overview stays as the cross-provider view)
@@ -3949,8 +4290,33 @@ function AskGPT:buildModelMenu(simplified, provider_override)
     end
 
     -- Universal provider tooling (REVISION 2 M2): live model-list fetch and the
-    -- micro probe for ANY provider with a fetchable endpoint, built-in or custom
-    if self_ref:providerSupportsFetch(provider) then
+    -- micro probe for ANY provider with a fetchable endpoint, built-in or custom.
+    -- Ollama: the fetch is a cache REFRESH, not an add-picker — the live list IS
+    -- the menu, so there is nothing to hand-pick into it.
+    if provider == "ollama" then
+      table.insert(items, {
+        text = _("Refresh installed models"),
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+          local refresh = menuRefresher(touchmenu_instance)
+          UIManager:show(Notification:new{ text = _("Checking the server..."), timeout = 1 })
+          UIManager:scheduleIn(0.2, function()
+            local ids, err = self_ref:refreshOllamaModels()
+            if ids then
+              UIManager:show(Notification:new{
+                text = T(_("%1 installed model(s)"), #ids),
+                timeout = 1.5,
+              })
+              refresh()
+            else
+              UIManager:show(InfoMessage:new{
+                text = T(_("Could not reach the Ollama server: %1"), err or _("unknown error")),
+              })
+            end
+          end)
+        end,
+      })
+    elseif self_ref:providerSupportsFetch(provider) then
       table.insert(items, {
         text = _("Fetch models from provider..."),
         keep_menu_open = true, -- picker stacks on top; menu refreshes as models are added

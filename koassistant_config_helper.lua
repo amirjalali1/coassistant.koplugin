@@ -49,6 +49,18 @@ function ConfigHelper:mergeWithDefaults(config, provider)
         merged.provider_settings[provider].model = merged.model
     end
 
+    -- Ollama GUI server endpoint (Settings UI > configuration.lua > default):
+    -- the model menu's server manager stores a normalized ROOT url in
+    -- features.ollama_endpoints.active; the chat path is appended here so the
+    -- handler and every wire consumer see one canonical base_url.
+    if provider == "ollama" then
+        local eps = merged.features and merged.features.ollama_endpoints
+        if type(eps) == "table" and type(eps.active) == "string" and eps.active ~= "" then
+            provider_settings.base_url = eps.active .. "/api/chat"
+            merged.base_url = nil  -- re-propagated below from the GUI value
+        end
+    end
+
     -- Propagate provider-specific base_url to top-level for handler access.
     -- Handlers read config.base_url, not config.provider_settings[provider].base_url.
     -- This allows configuration.lua to set per-provider base_url overrides.
@@ -111,6 +123,24 @@ local SKIP_DEEP_COPY = {
     _rerun_ui = true,       -- UI objects for re-execution
     _rerun_plugin = true,   -- Plugin objects for re-execution
 }
+
+--- Normalize a user-entered local-server address to a root URL: trimmed,
+--- scheme defaulted to http, trailing slashes and a pasted /api/chat path
+--- stripped. "192.168.1.20:11434" -> "http://192.168.1.20:11434".
+--- Returns nil for empty/unusable input.
+function ConfigHelper.normalizeServerUrl(input)
+    if type(input) ~= "string" then return nil end
+    local url = input:gsub("^%s+", ""):gsub("%s+$", "")
+    if url == "" then return nil end
+    if not url:find("://", 1, true) then
+        url = "http://" .. url
+    end
+    url = url:gsub("/+$", "")
+    url = url:gsub("/api/chat$", ""):gsub("/+$", "")
+    local host = url:match("^https?://([^/]+)")
+    if not host or host == "" then return nil end
+    return url
+end
 
 function ConfigHelper:deepCopy(t, seen)
     if type(t) ~= "table" then return t end

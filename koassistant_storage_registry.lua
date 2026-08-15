@@ -95,6 +95,8 @@ Registry.SETTINGS_SUBKEYS = {
         "model_explicit",                                   -- which providers have a deliberate model pick
         "tier_overrides",                                   -- tier GUI placements (docs/tier_gui_plan.md)
         "global_tier_models",                               -- global tier pins (tier GUI phase 2)
+        "ollama_endpoints",                                 -- Ollama server list + active pick (model menu server manager)
+        "ollama_live_models",                               -- cached /api/tags list for the active server (safe to lose; refetched)
     },
     languages = {
         "translation_language", "dictionary_language",
