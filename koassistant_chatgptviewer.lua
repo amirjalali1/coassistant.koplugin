@@ -3708,15 +3708,31 @@ function ChatGPTViewer:landOnStreamPosition()
   if self.render_markdown then
     local box = self.scroll_text_w.htmlbox_widget
     if not (box and box.findText and self.scroll_text_w.scrollToRatio) then return false end
-    -- Same search + cleanup + repaint discipline as the marker landing below
-    -- (MuPDF's page search is case-insensitive and wrap-tolerant)
+    -- Same search + cleanup + repaint discipline as the marker landing below.
+    -- MuPDF's page search tolerates a line wrap only where the needle itself
+    -- carries whitespace at the wrapped spot — a spaceless (CJK) anchor
+    -- longer than one rendered line matches nothing (2026-08-15 device
+    -- round: 32-char Japanese anchor, "target: none"). The carry break
+    -- topped the landed page with the anchor, so a one-line prefix still
+    -- identifies that page — retry down a prefix ladder on a miss. Latin and
+    -- Arabic anchors wrap at spaces the needle shares, so they never needed
+    -- this.
     local painted_page = box.page_number
-    local found = box:findText(anchor)
-    local list = box._match_page_list
-    -- Copy the page list — the marker findText below overwrites it
     local pages = {}
-    if found and list then
-      for i = 1, #list do pages[i] = list[i] end
+    local needle_used
+    local tried = {}
+    for _idx, needle in ipairs({ anchor, uprefix(anchor, 16), uprefix(anchor, 10) }) do
+      if not tried[needle] then
+        tried[needle] = true
+        local found = box:findText(needle)
+        local list = box._match_page_list
+        if found and list and #list > 0 then
+          -- Copy the page list — the marker findText below overwrites it
+          for i = 1, #list do pages[i] = list[i] end
+          needle_used = needle
+          break
+        end
+      end
     end
     local target
     if #pages > 1 then
@@ -3749,7 +3765,8 @@ function ChatGPTViewer:landOnStreamPosition()
     end
     box.page_number = painted_page
     logger.info("KOAssistant: stream-position carry md — target:", target or "none",
-      "of", box.page_count, "anchor:", anchor)
+      "of", box.page_count, "needle chars:", needle_used and ulen(needle_used) or "none",
+      "anchor:", anchor)
     if not target then return false end
     if target ~= painted_page then
       self.scroll_text_w:scrollToRatio((target - 0.5) / math.max(1, box.page_count or 1))
