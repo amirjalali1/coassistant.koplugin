@@ -286,19 +286,22 @@ local ModelLists = {
     },
 
     fireworks = {
+        -- Live-verified against the keyed /v1/models catalog 2026-08-15
+        -- (24 serving ids; Fireworks encodes dots as "p": k2p6 = k2.6).
         -- DeepSeek (current)
         "accounts/fireworks/models/deepseek-v4-pro",                 -- flagship + reasoning
-        "accounts/fireworks/models/deepseek-r1",                     -- reasoning
-        -- Qwen 3
-        "accounts/fireworks/models/qwen3-235b-a22b",
+        "accounts/fireworks/models/deepseek-v4-flash-0731",          -- fast deepseek
+        -- Qwen
+        "accounts/fireworks/models/qwen3p8-max",
         -- Other
-        "accounts/fireworks/models/kimi-k2-thinking",                -- reasoning
+        "accounts/fireworks/models/kimi-k2p6",                       -- reasoning
+        "accounts/fireworks/models/glm-5p2",
         "accounts/fireworks/models/gpt-oss-120b",                    -- standard/fast
-        -- (Removed per Fireworks' changelog, T9 refresh 2026-08-14:
-        -- llama-v3p3-70b-instruct deprecated 2026-05-14, vendor migration
-        -- target = gpt-oss-120b above; glm-5 deprecated in the same batch —
-        -- its GLM 5.1/5.2 replacement SLUG is unconfirmed (Fireworks slugs
-        -- don't mirror display names), use "Fetch models" for a live id.)
+        "accounts/fireworks/models/gpt-oss-20b",                     -- small/fast
+        -- (Dead ids dropped 2026-08-15, absent from the live catalog:
+        -- deepseek-r1, qwen3-235b-a22b, kimi-k2-thinking. Earlier removals
+        -- per Fireworks' changelog, T9 refresh 2026-08-14: llama-v3p3-70b
+        -- deprecated 2026-05-14 -> gpt-oss-120b; glm-5 -> glm-5p2 above.)
     },
 
     sambanova = {
@@ -566,7 +569,7 @@ local ModelLists = {
             openrouter = "openai/gpt-5.4-mini",     -- mini-class, reasoning off by default (NOT gpt-oss-20b: open-weight oss models reason at medium effort by default — wrong surprise for ultrafast)
             requesty = "openai/gpt-4o-mini",
             together = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-            fireworks = "accounts/fireworks/models/gpt-oss-120b",
+            fireworks = "accounts/fireworks/models/gpt-oss-20b", -- smaller/faster sibling (in the array since the 2026-08-15 catalog refresh)
             sambanova = "Meta-Llama-3.3-70B-Instruct",
             qwen = "qwen-turbo",
             kimi = "kimi-k2-turbo-preview",

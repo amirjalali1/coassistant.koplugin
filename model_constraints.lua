@@ -214,12 +214,27 @@ ModelConstraints.capabilities = {
         },
     },
     fireworks = {
-        -- Models with reasoning_effort support
+        -- Live-probed 2026-08-15 (keyed account, model_audit battery on every
+        -- serving id in the curated list): reasoning_content comes back by
+        -- DEFAULT on all of them; tools + forced tool_choice + two-round
+        -- replay green (wave 2 — ToolWire alias added the same day).
         reasoning = {
             "accounts/fireworks/models/deepseek-v4-pro",
-            "accounts/fireworks/models/deepseek-r1",
-            "accounts/fireworks/models/kimi-k2-thinking",
-            "accounts/fireworks/models/qwen3-235b-a22b",
+            "accounts/fireworks/models/deepseek-v4-flash-0731",
+            "accounts/fireworks/models/qwen3p8-max",
+            "accounts/fireworks/models/kimi-k2p6",
+            "accounts/fireworks/models/glm-5p2",
+            "accounts/fireworks/models/gpt-oss-120b",
+            "accounts/fireworks/models/gpt-oss-20b",
+        },
+        tools = {
+            "accounts/fireworks/models/deepseek-v4-pro",
+            "accounts/fireworks/models/deepseek-v4-flash-0731",
+            "accounts/fireworks/models/qwen3p8-max",
+            "accounts/fireworks/models/kimi-k2p6",
+            "accounts/fireworks/models/glm-5p2",
+            "accounts/fireworks/models/gpt-oss-120b",
+            "accounts/fireworks/models/gpt-oss-20b", -- not probed directly; same model as the probed 120b/groq pair
         },
     },
     sambanova = {
@@ -876,18 +891,20 @@ ModelConstraints.reasoning_profiles = {
           stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
     },
     fireworks = {
-        { match = "accounts/fireworks/models/deepseek-v4-pro", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
+        -- Probed live 2026-08-15 (all six serving ids): every model reasons by
+        -- DEFAULT (reasoning_content present bare). The gpt-oss pair accepts
+        -- effort low/medium/high ONLY ("none"/"xhigh"/"max" rejected at the
+        -- model layer — cannot disable, same shape as groq's gpt-oss entries);
+        -- every other model accepts none..max, so the generic catch-all below
+        -- is disableable with the full ladder. Catch-all matches future
+        -- fireworks ids too; generic=true yields to derived no-reasoning
+        -- metadata should one turn up without reasoning.
+        { match = "accounts/fireworks/models/gpt-oss", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
-        { match = "accounts/fireworks/models/deepseek-r1", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
-          options = { "low", "medium", "high" }, default_option = "high",
-          stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
-        { match = "accounts/fireworks/models/kimi-k2-thinking", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
-          options = { "low", "medium", "high" }, default_option = "high",
-          stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
-        { match = "accounts/fireworks/models/qwen3-235b-a22b", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
-          options = { "low", "medium", "high" }, default_option = "high",
-          stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
+        { match = "accounts/fireworks/", axis = "effort", default_state = "on", can_disable = true, can_enable = true, generic = true,
+          options = { "low", "medium", "high", "xhigh", "max" }, default_option = "high", off_option = "none",
+          stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "max" } } },
     },
     xai = {
         -- grok-4.6 (probed 2026-08-14): reasons by default, effort "none" REJECTED

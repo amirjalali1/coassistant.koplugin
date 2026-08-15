@@ -227,7 +227,7 @@ TestRunner:suite("Fireworks reasoning injection")
 local FireworksHandler = require("fireworks")
 
 TestRunner:test("adds reasoning_effort for Qwen3", function()
-    local body = { model = "accounts/fireworks/models/qwen3-235b-a22b", messages = {} }
+    local body = { model = "accounts/fireworks/models/qwen3p8-max", messages = {} }
     local config = { api_params = { fireworks_reasoning = { effort = "medium" } } }
     local result = FireworksHandler:customizeRequestBody(body, config)
     TestRunner:assertEqual(result.reasoning_effort, "medium", "reasoning_effort")
@@ -580,7 +580,7 @@ local capability_checks = {
     { "together", "Qwen/Qwen3-235B-A22B", "reasoning", true },
     { "together", "Qwen/Qwen3.5-397B-A17B", "reasoning", true },
     { "together", "meta-llama/Llama-4-Maverick", "reasoning", false },
-    { "fireworks", "accounts/fireworks/models/deepseek-r1", "reasoning", true },
+    { "fireworks", "accounts/fireworks/models/deepseek-v4-flash-0731", "reasoning", true },
     { "fireworks", "accounts/fireworks/models/llama-v3p3-70b", "reasoning", false },
     { "sambanova", "DeepSeek-V3.1", "thinking", true },
     { "sambanova", "DeepSeek-V3.2", "thinking", true },

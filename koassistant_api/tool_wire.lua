@@ -198,6 +198,14 @@ ToolWire.adapters.xai = ToolWire.adapters.openai
 -- (fetchDerivedModelCaps) — local model names are user-specific, never curated.
 ToolWire.adapters.ollama = ToolWire.adapters.openai
 
+-- fireworks: tools wave 2, PROBED live 2026-08-15 on a keyed account (the
+-- model_audit battery's real-runner-spec legs: flat defs accepted, forced
+-- tool_choice "required"/"none" both honored, two-round replay through this
+-- adapter's encoding green on all six serving ids in the curated list).
+-- Plain OpenAI chat dialect; curated `tools` capability list in
+-- model_constraints.lua carries the membership half of the gate.
+ToolWire.adapters.fireworks = ToolWire.adapters.openai
+
 -- Community set (M1): plain OpenAI chat wire, parser key "openai" (shared
 -- _tool_calls extraction). The capability half of the runner's gate comes from
 -- the derived layer ("Test this provider") or user grants — never curated.
