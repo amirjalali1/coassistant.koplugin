@@ -9003,7 +9003,12 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           callback = function()
             UIManager:close(dialog)
             nc_xa.clearAutoSuppression(nc_file)
-            self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true })
+            -- A cancelled PRE-SWAP rebuild resumes as a rebuild (2026-08-15
+            -- A5 — the cancel path records the stop now, and this row must
+            -- honor it like the checkpoint-resume row below)
+            local nc_stop = nc_xa.lastLadderStop(nc_file)
+            self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true,
+              rebuild = (nc_stop and nc_stop.rebuild) or nil })
           end,
         }})
       elseif not nc_xa.isAutoSuppressed(self.ui.document.file)
@@ -9324,7 +9329,10 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           callback = function()
             UIManager:close(dialog)
             XrayAuto.clearAutoSuppression(sx_file)
-            self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true })
+            -- A cancelled PRE-SWAP rebuild resumes as a rebuild (2026-08-15 A5)
+            local sx_paused_stop = XrayAuto.lastLadderStop(sx_file)
+            self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true,
+              rebuild = (sx_paused_stop and sx_paused_stop.rebuild) or nil })
           end,
         }})
       else
@@ -14760,6 +14768,16 @@ function AskGPT:_cancelXrayLadderBuild()
   XrayAuto.markScheduled(os.time())
   XrayAuto.requestLadderCancel()
   XrayAuto.cancelInFlight()
+  -- 2026-08-15 (A5): the explicit cancel leaves the same resumable stop
+  -- record the failure paths leave — without it, cancelling a PRE-SWAP
+  -- rebuild silently resumed as a plain extend of the very lineage the
+  -- rebuild was replacing. Post-swap cancels record rebuild=nil: the new
+  -- lineage is live, the remaining rungs ARE a plain extend.
+  if build and build.file then
+    XrayAuto.recordLadderStop(build.file, { step = build.step or build.idx,
+      total = build.total, kind = "cancelled",
+      rebuild = (build.rebuild and not build.rebuild_swapped) or nil })
+  end
   XrayAuto.endLadderBuild()
   -- Short toast (Notification renders ONE line — long text truncates); the
   -- popup's "Resume automatic building (paused)…" / Resume rows are the way
@@ -14783,8 +14801,20 @@ function AskGPT:onCloseDocument()
     self._xray_ladder_promo_pending = nil
   end
   local XrayAuto = require("koassistant_xray_auto")
-  if XrayAuto.ladderBuild() then
-    -- Completed rungs stay on disk; the popup offers Resume next open
+  local closing_build = XrayAuto.ladderBuild()
+  if closing_build then
+    -- Completed rungs stay on disk; the popup offers Resume next open.
+    -- 2026-08-15 (A5): record the stop like the failure paths do — closing
+    -- the book mid-chain used to drop the PRE-SWAP rebuild flag, so the
+    -- resume row restarted the chain as a plain extend of the lineage the
+    -- rebuild was replacing (post-swap closes record rebuild=nil: correct,
+    -- the new lineage is live and the rest IS an extend)
+    if closing_build.file then
+      XrayAuto.recordLadderStop(closing_build.file, {
+        step = closing_build.step or closing_build.idx,
+        total = closing_build.total, kind = "interrupted",
+        rebuild = (closing_build.rebuild and not closing_build.rebuild_swapped) or nil })
+    end
     XrayAuto.endLadderBuild()
   end
   XrayAuto.cancelInFlight()

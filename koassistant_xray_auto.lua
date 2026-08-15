@@ -218,7 +218,8 @@ function XrayAuto.classifyStopReason(err)
 end
 
 --- Session-scoped "why the checkpoint chain last paused" (item 45): recorded
---- on a non-cancel stop, cleared when a chain (re)starts for the file.
+--- on failure stops AND (2026-08-15, A5) explicit cancels and book-close
+--- interruptions; cleared when a chain (re)starts for the file.
 function XrayAuto.recordLadderStop(file, info)
   -- rebuild (2026-08-15): a PRE-SWAP rebuild chain that stops must resume as a
   -- rebuild — without the flag the resume row restarted it as a plain extend
