@@ -134,14 +134,26 @@ end
 --- On dual-stack hosts, getpeername() may return IPv6, which inet_aton silently
 --- rejects — leaving sin_addr as 0.0.0.0 and the subprocess connecting to
 --- localhost (ECONNREFUSED).
---- @param url string HTTPS URL to resolve
+--- Covers plain http URLs too (2026-08-15): the forked child must NEVER call
+--- getaddrinfo on macOS — libinfo's si_destination_compare runs a pthread_once
+--- init that calls os_log_create on torn post-fork state and SIGSEGVs the
+--- child (one crash report per failed ollama request; intermittent because a
+--- parent-side resolve pre-completes the once-init, which the child inherits).
+--- http children keep http.request but connect by this pre-resolved IP via
+--- urlWithResolvedIP below.
+--- @param url string HTTP(S) URL to resolve
 --- @return string|nil resolved_ip, string|nil hostname, number port
 function BaseHandler.resolveForSubprocess(url)
-    if ffi.os ~= "OSX" or string.sub(url, 1, 8) ~= "https://" then
+    if ffi.os ~= "OSX" then
         return nil
     end
-    local host = url:match("https://([^/:]+)")
-    local port = tonumber(url:match("https://[^/:]+:(%d+)")) or 443
+    local scheme = url:match("^(https?)://")
+    if not scheme then
+        return nil
+    end
+    local host = url:match("^https?://([^/:]+)")
+    local port = tonumber(url:match("^https?://[^/:]+:(%d+)"))
+        or (scheme == "https" and 443 or 80)
     if not host then return nil end
 
     local resolved_ip
@@ -174,6 +186,22 @@ function BaseHandler.resolveForSubprocess(url)
     end
 
     return resolved_ip, host, port
+end
+
+--- Rewrite a URL to connect by a parent-resolved IP, keeping the original
+--- hostname for the Host header. The http.request path in a forked child must
+--- not trigger DNS (see resolveForSubprocess) — connecting by IP avoids
+--- getaddrinfo entirely while the Host header keeps name-based routing
+--- (reverse proxies in front of custom local providers) working.
+--- @param url string Original URL
+--- @param resolved_ip string|nil Parent-resolved IPv4 (nil = no rewrite)
+--- @return string url_to_use, string|nil host_header ("host[:port]" when rewritten)
+function BaseHandler.urlWithResolvedIP(url, resolved_ip)
+    if not resolved_ip then return url, nil end
+    local scheme, host, port, rest = url:match("^(https?)://([^/:]+)(:?%d*)(.*)$")
+    if not scheme or host == resolved_ip then return url, nil end
+    return scheme .. "://" .. resolved_ip .. (port or "") .. (rest or ""),
+        host .. (port or "")
 end
 
 --- Create a connected SSL socket in a subprocess, bypassing getaddrinfo.
@@ -487,11 +515,24 @@ function BaseHandler.fetchInSubprocess(url, opts)
     elseif is_https then
         https.TIMEOUT = timeout
     end
+    -- Forked-child callers that pass opts.resolved_ip get the macOS
+    -- DNS-in-child crash protection on plain http too (see urlWithResolvedIP);
+    -- in-parent callers without it are unaffected. https stays un-rewritten
+    -- here (an IP URL would break SNI on the LuaSec fallback path).
+    local rw_ip = nil
+    if not is_https then rw_ip = opts.resolved_ip end
+    local request_url, host_header = BaseHandler.urlWithResolvedIP(url, rw_ip)
+    local req_headers = opts.headers
+    if host_header then
+        req_headers = {}
+        for k, v in pairs(opts.headers or {}) do req_headers[k] = v end
+        req_headers["Host"] = host_header
+    end
     local chunks = {}
     local request = {
-        url = url,
+        url = request_url,
         method = method,
-        headers = opts.headers,
+        headers = req_headers,
         sink = ltn12.sink.table(chunks),
     }
     if opts.body then
@@ -557,11 +598,24 @@ function BaseHandler:backgroundRequest(url, headers, body)
                     https.TIMEOUT = 180
                 end
 
+                -- macOS http (ollama, custom local providers): connect by the
+                -- parent-resolved IP — getaddrinfo in the forked child SIGSEGVs
+                -- (see resolveForSubprocess). resolved_ip is nil off-macOS.
+                local request_url, host_header =
+                    BaseHandler.urlWithResolvedIP(url, resolved_ip)
+                local req_headers = headers or {}
+                if host_header then
+                    local h = {}
+                    for k, v in pairs(req_headers) do h[k] = v end
+                    h["Host"] = host_header
+                    req_headers = h
+                end
+
                 local pipe_w = wrap_fd(child_write_fd)
                 local request = {
-                    url = url,
+                    url = request_url,
                     method = "POST",
-                    headers = headers or {},
+                    headers = req_headers,
                     source = ltn12.source.string(body or ""),
                     sink = ltn12.sink.file(pipe_w),
                 }
