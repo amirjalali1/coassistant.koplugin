@@ -1517,6 +1517,22 @@ function ModelConstraints.isRateLimitError(err_msg)
         or l:find("too many requests", 1, true)) and true or false
 end
 
+--- True when an error message looks like a provider overload/capacity refusal (HTTP 503
+--- in its various wordings). Same "try again is the correct response" class as rate
+--- limits — a 2026-08-15 device round got a high-demand 503 as a vanishing toast with
+--- no retry button. Wordings mirror XrayAuto.classifyStopReason's overloaded class.
+--- @param err_msg string|nil
+--- @return boolean
+function ModelConstraints.isOverloadError(err_msg)
+    if type(err_msg) ~= "string" then return false end
+    local l = err_msg:lower()
+    return (l:find("503", 1, true)
+        or l:find("overload", 1, true)
+        or l:find("high demand", 1, true)
+        or l:find("capacity", 1, true)
+        or l:find("try again later", 1, true)) and true or false
+end
+
 --- Append a provider-neutral explanation of what a 429 actually means. Free-tier
 --- allowances are counted PER MODEL, and per minute as well as per day — the part users
 --- can't infer from "quota exceeded for your plan": the same key answers one action and

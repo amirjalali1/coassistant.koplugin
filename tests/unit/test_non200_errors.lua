@@ -343,6 +343,19 @@ TestRunner:test("does not fire on unrelated failures", function()
     TestRunner:assertTrue(not ModelConstraints.isRateLimitError(nil), "nil")
 end)
 
+TestRunner:test("isOverloadError: recognizes 503/overload wordings, ignores the rest", function()
+    for _idx, msg in ipairs({
+        "HTTP 503: Service Unavailable",
+        "The model is overloaded. Please try again later.",
+        "The service is experiencing high demand",
+    }) do
+        TestRunner:assertTrue(ModelConstraints.isOverloadError(msg), "should match: " .. msg)
+    end
+    TestRunner:assertTrue(not ModelConstraints.isOverloadError("HTTP 429: quota exceeded"), "429 is rate-limit class")
+    TestRunner:assertTrue(not ModelConstraints.isOverloadError("HTTP 401: API key not valid"), "auth")
+    TestRunner:assertTrue(not ModelConstraints.isOverloadError(nil), "nil")
+end)
+
 TestRunner:test("appends provider-neutral tip and names the provider", function()
     local out = ModelConstraints.maybeAppendRateLimitHint("HTTP 429: quota exceeded", "gemini", "gemini-3.5-flash-lite")
     TestRunner:assertContains(out, RATE_NEEDLE, "tip appended")

@@ -91,12 +91,13 @@ end
 -- becomes a scrollable TextViewer carrying the same buttons instead.
 local ERROR_DIALOG_MAX_CHARS = 400
 
---- Show a failed request. Rate/quota refusals get a persistent dialog with a retry
---- button instead of the usual 3-second toast: they are the one failure class where
---- trying again is the correct response (a per-minute limit recovers in seconds, and
---- the message now says how long to wait), and a toast that vanishes leaves the reader
---- with nothing to act on. Every other error keeps the toast — making all of them
---- unmissable would be worse. `retry_fn` is optional; without one this is just a toast.
+--- Show a failed request. Rate/quota refusals and overload/503s get a persistent
+--- dialog with a retry button instead of the usual 3-second toast: they are the
+--- failure classes where trying again is the correct response (a per-minute limit
+--- recovers in seconds, an overloaded model in moments, and the 429 message now says
+--- how long to wait), and a toast that vanishes leaves the reader with nothing to act
+--- on. Every other error keeps the toast — making all of them unmissable would be
+--- worse. `retry_fn` is optional; without one this is just a toast.
 --- @param err_text string: message to display (already decorated by ModelConstraints)
 --- @param retry_fn function|nil: re-runs the same request; called as retry_fn() for a
 ---        plain retry, retry_fn(true) to retry with the offered extras dropped (the
@@ -110,8 +111,12 @@ local ERROR_DIALOG_MAX_CHARS = 400
 ---        request minus the extras often succeeds; the drop is one-shot, the chat's
 ---        settings are untouched.
 local function showRequestError(err_text, retry_fn, timeout, drop_offer)
+    -- Overload/503 joins the persistent-dialog class (2026-08-15 device round: a
+    -- high-demand 503 vanished as a toast with no retry button), but the drop row
+    -- stays rate-limit-only — dropping web/tools does not heal an overloaded model.
+    local is_rate_limit = ModelConstraints.isRateLimitError(err_text)
     if retry_fn and type(err_text) == "string"
-            and ModelConstraints.isRateLimitError(err_text) then
+            and (is_rate_limit or ModelConstraints.isOverloadError(err_text)) then
         local dialog
         local buttons = {{
             {
@@ -126,7 +131,7 @@ local function showRequestError(err_text, retry_fn, timeout, drop_offer)
                 end,
             },
         }}
-        if drop_offer and (drop_offer.web or drop_offer.tools) then
+        if is_rate_limit and drop_offer and (drop_offer.web or drop_offer.tools) then
             local label
             if drop_offer.web and drop_offer.tools then
                 label = _("Try again without web search or book tools")
