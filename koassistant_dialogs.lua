@@ -8867,6 +8867,15 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                     -- No action specified, uses global behavior setting
                     buildUnifiedRequestConfig(configuration, domain_context, nil, plugin)
 
+                    -- The config of the CURRENT attempt: the web/tools-off retry rebases
+                    -- this onto its stripped copy, so a further failure computes its
+                    -- drop offer from what was actually sent (device round: the dialog
+                    -- re-offered "without web search" after a stripped retry failed)
+                    -- and a plain "Try again" keeps the stripped state instead of
+                    -- silently re-adding the extras. Success paths keep using
+                    -- `configuration` — the chat's own settings are untouched.
+                    local send_cfg = configuration
+
                     -- Callback to handle response (for both streaming and non-streaming)
                     local function onResponseReady(success, answer, err, reasoning, web_search_used)
                         if success and answer then
@@ -8913,21 +8922,21 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             -- failure, so re-issuing is the same call (the query layer
                             -- shows its own loading dialog). drop = the "without …" row:
                             -- re-issue on a config copy with web search and/or book
-                            -- tools forced off (Config Copy Pattern; one-shot — on
-                            -- success the viewer keeps the original config, so replies
-                            -- keep the chat's settings).
-                            local had_web = configuration.enable_web_search == true
-                                or (configuration.enable_web_search == nil
-                                    and configuration.features
-                                    and configuration.features.enable_web_search == true)
-                            local had_tools = BookToolRunner.shouldUse(configuration, ui_instance)
+                            -- tools forced off (Config Copy Pattern; rebased into
+                            -- send_cfg so retries stay stripped and a further failure
+                            -- offers no second drop; on success the viewer keeps the
+                            -- original config, so replies keep the chat's settings).
+                            local had_web = send_cfg.enable_web_search == true
+                                or (send_cfg.enable_web_search == nil
+                                    and send_cfg.features
+                                    and send_cfg.features.enable_web_search == true)
+                            local had_tools = BookToolRunner.shouldUse(send_cfg, ui_instance)
                             showRequestError(err_text, function(drop)
-                                local cfg = configuration
                                 if drop then
-                                    cfg = {}
-                                    for k, v in pairs(configuration) do cfg[k] = v end
+                                    local cfg = {}
+                                    for k, v in pairs(send_cfg) do cfg[k] = v end
                                     cfg.features = {}
-                                    for k, v in pairs(configuration.features or {}) do
+                                    for k, v in pairs(send_cfg.features or {}) do
                                         cfg.features[k] = v
                                     end
                                     if had_web then
@@ -8937,9 +8946,10 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                     if had_tools then
                                         cfg.features._tools_active = false
                                     end
+                                    send_cfg = cfg
                                 end
                                 BookToolRunner.queryWith(queryChatGPT, history:getMessages(),
-                                    cfg, onResponseReady, plugin, ui_instance)
+                                    send_cfg, onResponseReady, plugin, ui_instance)
                             end, recoverable and 6 or 3,
                                 (had_web or had_tools)
                                 and { web = had_web, tools = had_tools } or nil)
@@ -11146,11 +11156,18 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
     -- the quick-chip overrides are dialog-launch only).
     local sc_window = configuration and configuration.features
         and configuration.features._selection_context_window
+    -- A stripped retry re-enters this function recursively with the web-off session
+    -- transient still set (it is consumed later, inside handlePredefinedPrompt) —
+    -- stash it so the stripped state STICKS across further retries and this
+    -- invocation's failure dialog offers no second drop row (device round: the
+    -- dialog re-offered "without web search" after a stripped retry failed).
+    local web_off = configuration and configuration.features
+        and configuration.features._web_search_active == false
     -- Web-off retry offer: only when web resolved ON for this request from the
     -- book/global layer. An action's own enable_web_search pin wins over the session
     -- layer (governance matrix), so a pinned action (fact_check) is never offered a
     -- web-off retry it could not honor.
-    if action.enable_web_search == nil then
+    if action.enable_web_search == nil and not web_off then
         local ws = bookWebSearchOverride(configuration and configuration.features)
         if ws ~= nil then
             retry_web_was_on = ws == true
@@ -11164,10 +11181,11 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
             configuration.features._selection_context_window = sc_window
             -- Web-off retry rides the session-layer transient: createTempConfig copies
             -- it into the request config and buildUnifiedRequestConfig bakes-and-
-            -- consumes it, so the whole rebuild runs web-off exactly once. (Tools are
-            -- never in the direct-action offer: predefined actions get explicit
+            -- consumes it, so the whole rebuild runs web-off exactly once per attempt;
+            -- web_off re-arms it so plain retries after a strip stay stripped. (Tools
+            -- are never in the direct-action offer: predefined actions get explicit
             -- _tools_active = false at bake, so tools were off on the failed request.)
-            if drop then
+            if drop or web_off then
                 configuration.features._web_search_active = false
             end
         end
@@ -11431,7 +11449,11 @@ local function launchArtifactChat(user_question, artifact_content, artifact_type
     local consolidated_message = table.concat(parts, "\n")
     history:addUserMessage(consolidated_message, true)
 
-    -- Query AI with the consolidated message
+    -- Query AI with the consolidated message.
+    -- send_cfg = the config of the CURRENT attempt (see the freeform site): the
+    -- web/tools-off retry rebases it onto its stripped copy so retries stay
+    -- stripped and a further failure offers no second drop row.
+    local send_cfg = configuration
     local function onResponseReady(success, answer, err, reasoning, web_search_used)
         if success and answer then
             -- Add user's visible question and AI response
@@ -11460,19 +11482,19 @@ local function launchArtifactChat(user_question, artifact_content, artifact_type
             -- Rate-limit retry: the history/config are already built, so re-issuing is
             -- literally the same call. Nothing was appended to the history on failure.
             -- The "without …" row re-issues on a copy with web search and/or book tools
-            -- forced off (one-shot; the chat's own settings are untouched).
-            local had_web = configuration.enable_web_search == true
-                or (configuration.enable_web_search == nil
-                    and configuration.features
-                    and configuration.features.enable_web_search == true)
-            local had_tools = BookToolRunner.shouldUse(configuration, ui)
+            -- forced off, rebased into send_cfg (sticky across retries, no second drop
+            -- offer; the chat's own settings are untouched).
+            local had_web = send_cfg.enable_web_search == true
+                or (send_cfg.enable_web_search == nil
+                    and send_cfg.features
+                    and send_cfg.features.enable_web_search == true)
+            local had_tools = BookToolRunner.shouldUse(send_cfg, ui)
             showRequestError(_("Error: ") .. (err or "Unknown error"), function(drop)
-                local cfg = configuration
                 if drop then
-                    cfg = {}
-                    for k, v in pairs(configuration) do cfg[k] = v end
+                    local cfg = {}
+                    for k, v in pairs(send_cfg) do cfg[k] = v end
                     cfg.features = {}
-                    for k, v in pairs(configuration.features or {}) do
+                    for k, v in pairs(send_cfg.features or {}) do
                         cfg.features[k] = v
                     end
                     if had_web then
@@ -11482,8 +11504,9 @@ local function launchArtifactChat(user_question, artifact_content, artifact_type
                     if had_tools then
                         cfg.features._tools_active = false
                     end
+                    send_cfg = cfg
                 end
-                BookToolRunner.queryWith(queryChatGPT, history:getMessages(), cfg,
+                BookToolRunner.queryWith(queryChatGPT, history:getMessages(), send_cfg,
                     onResponseReady, plugin, ui)
             end, nil, (had_web or had_tools)
                 and { web = had_web, tools = had_tools } or nil)
