@@ -127,7 +127,10 @@ ModelConstraints.capabilities = {
         -- "gemini-3" = FAMILY FALLBACK (item 19a): new 3.x minors inherit without a
         -- plugin update; the specific entries stay for documentation value.
         thinking = { "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite", "gemini-3" },
-        -- Gemini 2.5 models use thinkingBudget (0=off, -1=dynamic, 128-24576)
+        -- Gemini 2.5 models use thinkingBudget (0=off, -1=dynamic, 128-24576).
+        -- gemini-3.1-pro-preview ALSO accepts thinkingBudget (probed 2026-08-15,
+        -- budget 0 rejected "only works in thinking mode") but its curated axis is
+        -- thinkingLevel like all 3.x — deliberately NOT listed here.
         thinking_budget = { "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite" },
         -- Google Search grounding ("gemini-3" = family fallback)
         google_search = {
@@ -1353,8 +1356,11 @@ local GROUNDING_TIP_HEAD = "Tip: This is a Google quota limit"
 --- 2026-08-14 on a free-tier key (provider_landscape doc 7b): Gemini 3.x rejects
 --- requests that include EITHER extra — googleSearch and functionDeclarations both
 --- 429 while the same model answers plain requests, and both work on 2.5 models with
---- the same key. The gating quota is separate from the per-model daily request quota
---- and can sit at 0 even with billing attached (paid tier not provisioned for it).
+--- the same key. The gating quota is separate from the per-model daily request quota.
+--- Paid tier VERIFIED to lift the gate 2026-08-15 (doc 7d): grounding + tools both
+--- work on 3.6/3.7 with prepaid credits. Caveat folded into the tip: the 2.5 family
+--- is locked for Google accounts created after ~mid-2026 ("no longer available to
+--- new users", even paid), so the "use a 2.5 model" option only helps older keys.
 --- Plain text (emoji don't render in MuPDF). Returns err_msg unchanged unless every
 --- condition holds.
 --- @param err_msg string: user-facing error message already built
@@ -1388,10 +1394,10 @@ function ModelConstraints.maybeAppendGemini3GroundingHint(err_msg, provider, mod
     return err_msg .. "\n\n" ..
         GROUNDING_TIP_HEAD .. ", not a plugin error. On free-tier keys, Gemini 3 models " ..
         "reject requests that include web search or book tools, even though plain requests " ..
-        "work (the limit for those can be 0, even with billing attached). Options: turn off " ..
-        "web search and book tools for this chat, use a Gemini 2.5 model (both work there " ..
-        "on free keys), switch to another provider, or enable paid-tier quota for Gemini 3 " ..
-        "in Google AI Studio."
+        "work. Options: turn off web search and book tools for this chat, use a Gemini 2.5 " ..
+        "model (works on free keys, but only for Google accounts old enough to still have " ..
+        "the 2.5 models), switch to another provider, or add paid credits to your Gemini " ..
+        "key in Google AI Studio (confirmed to lift this limit)."
 end
 
 --- Append an actionable tip when a request fails because the prompt (usually

@@ -67,7 +67,9 @@ local ModelLists = {
                                         -- free-tier grounding gated like the rest of 3.x)
         "gemini-3.6-flash",             -- previous default (kept available)
         "gemini-3.5-flash",             -- previous flash (kept available)
-        "gemini-3.1-pro-preview",       -- flagship, reasoning (paid only; no 3.5/3.6 pro yet)
+        "gemini-3.1-pro-preview",       -- frontier tier, reasoning (paid only; no 3.5/3.6 pro yet;
+                                        -- full battery green on a paid key 2026-08-15: effort
+                                        -- low/medium/high, no disable, tools + grounding work)
         "gemini-3.5-flash-lite",        -- fast/ultrafast (newest lite)
         "gemini-3.1-flash-lite",        -- ultrafast (previous)
         -- Gemini 2.5 (kept for popularity)
@@ -183,6 +185,7 @@ local ModelLists = {
         "openai/gpt-oss-20b",
 
         -- Google
+        "google/gemini-3.7-flash",      -- catalog-verified 2026-08-15 ($0.38/$1.88, half of 3.6 there)
         "google/gemini-3.6-flash",
         "google/gemini-3.5-flash",
         "google/gemini-3.5-flash-lite",
@@ -506,7 +509,7 @@ local ModelLists = {
             xai = "grok-4.20-0309-non-reasoning",
             cohere = "command-a-plus-05-2026",
             ollama = "llama3.3",
-            openrouter = "google/gemini-3.6-flash",
+            openrouter = "google/gemini-3.7-flash", -- mirrors the direct-gemini standard pick (catalog-verified 2026-08-15)
             requesty = "google/gemini-2.5-flash",   -- newer gemini rides vertex/ ids on Requesty; this is the verified google/ slug (2026-07-28)
             together = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             fireworks = "accounts/fireworks/models/gpt-oss-120b", -- llama-v3p3 deprecated 2026-05-14, vendor target gpt-oss-120b
