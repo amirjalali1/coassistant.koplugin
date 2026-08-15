@@ -44,6 +44,33 @@ function TestConfig.getPluginDir()
 end
 
 -- Load API keys from plugin directory
+-- Multi-key apikeys.lua support (2026-08-15): a provider entry may be a LIST of
+-- keys and/or { key, alias } tables. The test tooling wants exactly one key per
+-- provider, so flatten: pick the entry whose alias matches the env var
+-- KOA_KEY_ALIAS_<PROVIDER> (e.g. `KOA_KEY_ALIAS_GEMINI=paid lua tests/model_audit.lua
+-- --probe gemini gemini-3.7-flash`), else the FIRST entry — the same file-order
+-- default the plugin itself uses.
+local function flattenKeyValue(provider, value)
+    if type(value) ~= "table" then return value end
+    local want = os.getenv("KOA_KEY_ALIAS_" .. provider:upper():gsub("[^%w]", "_"))
+    local first
+    for _idx, entry in ipairs(value) do
+        local key = type(entry) == "string" and entry
+            or (type(entry) == "table" and entry.key)
+        local alias = type(entry) == "table" and entry.alias or nil
+        if type(key) == "string" and key ~= "" then
+            if want and alias == want then return key end
+            first = first or key
+        end
+    end
+    if want and first then
+        print(string.format(
+            "WARNING: no %s key with alias '%s' in apikeys.lua; using the first entry",
+            provider, want))
+    end
+    return first
+end
+
 function TestConfig.loadApiKeys()
     local plugin_dir = TestConfig.getPluginDir()
 
@@ -62,7 +89,11 @@ function TestConfig.loadApiKeys()
         os.exit(1)
     end
 
-    return keys
+    local flat = {}
+    for provider, value in pairs(keys) do
+        flat[provider] = flattenKeyValue(provider, value)
+    end
+    return flat
 end
 
 -- Check if an API key is valid (not empty, not placeholder)

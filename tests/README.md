@@ -359,6 +359,14 @@ sudo luarocks install dkjson
 
    Both sources are merged, with GUI keys taking priority over file keys.
 
+   **Multiple keys per provider**: when an apikeys.lua entry is a list (see the
+   sample file), the test tooling uses the FIRST entry by default — same rule as
+   the plugin. To run the suite or `model_audit.lua` against a specific key, set
+   `KOA_KEY_ALIAS_<PROVIDER>` to that entry's alias:
+   ```bash
+   KOA_KEY_ALIAS_GEMINI=paid lua tests/model_audit.lua --probe gemini gemini-3.7-flash
+   ```
+
 2. **Run from the plugin directory** (see [KOReader Plugin Paths](#koreader-plugin-paths-by-platform) above):
 
    ```bash
