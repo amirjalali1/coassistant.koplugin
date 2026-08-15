@@ -1878,6 +1878,9 @@ local function createSaveDialog(document_path, history, chat_history_manager, is
 end
 
 -- Helper function to create exportable text from history
+-- NOTE: pre-existing dead code (zero callers as of 2026-08-15 — the live export
+-- path is koassistant_export.lua). Kept per repo convention; role branding fixed
+-- alongside the debug-panel fix so it isn't a landmine for a future caller.
 local function createExportText(history, format)
     local result = {}
     local is_markdown = format == "markdown"
@@ -1895,7 +1898,8 @@ local function createExportText(history, format)
 
     -- Format messages
     for _idx, msg in ipairs(history:getMessages()) do
-        local role = msg.role:gsub("^%l", string.upper)
+        local role = msg.role == "assistant" and "KOAssistant"
+            or msg.role:gsub("^%l", string.upper)
         local content = msg.content
 
         -- Skip context messages in export by default
@@ -3623,12 +3627,14 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     local ladder_base = config and config.features and config.features._ladder_base
     local ladder_chapter_label = config and config.features and config.features._ladder_chapter_label
     local ladder_intro = config and config.features and config.features._ladder_intro
+    local ladder_fresh = config and config.features and config.features._ladder_fresh
     if config and config.features then
         config.features._ladder_build = nil
         config.features._ladder_target_ratio = nil
         config.features._ladder_base = nil
         config.features._ladder_chapter_label = nil
         config.features._ladder_intro = nil
+        config.features._ladder_fresh = nil
     end
     -- Merge engine (§6 slice 3): sentinel payload. Artifact JSON must NEVER pass
     -- through the placeholder machinery (the early passes strip lines and
@@ -3927,6 +3933,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         -- Round 20: introductory step — the rung saves at progress 0 with the
         -- intro flag (premise-only version, openable at any position)
         _ladder_intro = ladder_intro or nil,
+        -- Pre-swap rebuild rung (2026-08-15): no-base-by-design marker — the
+        -- cache-engagement fallback must not read the surviving old live
+        _ladder_fresh = ladder_fresh or nil,
     }
     message_data._merge_payload = merge_payload
     logger.info("KOAssistant: message_data.book_metadata=", message_data.book_metadata and "present" or "nil")
@@ -4635,8 +4644,15 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         local ActionCache = require("koassistant_action_cache")
         -- Ladder chain: rung N+1 continues from rung N (injected by the fire path),
         -- never from the live cache — the live X-Ray tracks the reader throughout
-        -- the build (§6 slice 1)
-        local cached_entry = message_data._ladder_base or ActionCache.get(cache_file, prompt.id)
+        -- the build (§6 slice 1). A pre-swap REBUILD rung carries no base BY
+        -- DESIGN (_ladder_fresh): nil here must not fall through to the
+        -- surviving old artifact, or the rebuild silently merges the very
+        -- lineage it is replacing back in (2026-08-15 device round, log:
+        -- "Using cached response from 9%" on a from-scratch rebuild step)
+        local cached_entry = message_data._ladder_base
+        if not cached_entry and not message_data._ladder_fresh then
+            cached_entry = ActionCache.get(cache_file, prompt.id)
+        end
         cache_entry_existed = (cached_entry ~= nil and cached_entry.result ~= nil)
 
         if cached_entry and message_data.progress_decimal then

@@ -1422,10 +1422,14 @@ function ContextExtractor:extractForAction(action)
         -- Ladder rung 1 (create from nothing, xray_ecosystem_plan.md §6 slice 1):
         -- bound the extraction at the rung boundary instead of the reader's
         -- position — the rung must only ever see text up to its own progress mark.
+        -- A goal-1.0 rung (one-shot "complete in background", 2026-08-15) is
+        -- bounded too: falling through to getBookText() extracted only to the
+        -- READER'S position while the request claimed 100% — a reader at 20%
+        -- got a 20% artifact stamped complete.
         if prompt:find("{book_text", 1, true) then
             local ladder_to = tonumber(self.settings._ladder_target_ratio)
             local book_text_result
-            if ladder_to and ladder_to > 0 and ladder_to < 1 then
+            if ladder_to and ladder_to > 0 and ladder_to <= 1 then
                 book_text_result = self:getBookTextRange(0, ladder_to, options)
             else
                 book_text_result = self:getBookText(options)

@@ -220,8 +220,12 @@ end
 --- Session-scoped "why the checkpoint chain last paused" (item 45): recorded
 --- on a non-cancel stop, cleared when a chain (re)starts for the file.
 function XrayAuto.recordLadderStop(file, info)
+  -- rebuild (2026-08-15): a PRE-SWAP rebuild chain that stops must resume as a
+  -- rebuild — without the flag the resume row restarted it as a plain extend
+  -- of the very lineage the rebuild was replacing
   last_ladder_stop = { file = file, step = info and info.step,
-    total = info and info.total, kind = info and info.kind }
+    total = info and info.total, kind = info and info.kind,
+    rebuild = info and info.rebuild }
 end
 
 --- @return table|nil { step, total, kind } for this file
@@ -418,8 +422,13 @@ end
 --- @param position number|nil reading position 0..1
 --- @param goal number|nil build target (nil = 1.0)
 --- @param spacing number|nil rung spacing (nil = LADDER_SPACING) — floor and ceiling
+--- @param force boolean|nil rebuild chains (2026-08-15): the swap at rung 1
+--- replaces the live X-Ray, so the reader MUST get a promotable rung right
+--- away — the half-step economics floor yields to the absolute minimum
+--- (without this, a reader below step/2 lost their live artifact until the
+--- chain reached the first spacing rung)
 --- @return number|nil seed ratio (3 decimals)
-function XrayAuto.seedForBuild(base_progress, position, goal, spacing)
+function XrayAuto.seedForBuild(base_progress, position, goal, spacing, force)
   local base = tonumber(base_progress) or 0
   if base >= 0.01 then return nil end
   local pos = tonumber(position)
@@ -427,7 +436,8 @@ function XrayAuto.seedForBuild(base_progress, position, goal, spacing)
   -- normalized first rung must still get a seed, or D1's "grid has a
   -- promotable point" premise fails for them
   local step = XrayAuto.normalizedSpacing(spacing, goal)
-  if not pos or pos < math.max(XrayAuto.LADDER_SEED_MIN, step / 2) then return nil end
+  if not pos or pos < (force and XrayAuto.LADDER_SEED_MIN
+      or math.max(XrayAuto.LADDER_SEED_MIN, step / 2)) then return nil end
   if pos >= step then return nil end
   local g = tonumber(goal)
   if not g or g <= 0 or g > 1.0 then g = 1.0 end
@@ -439,8 +449,8 @@ end
 --- half-spacing rule naturally drops a spacing rung the seed already covers
 --- (a seed at 12% with 15% spacing plans 30% next, not 15%). Pure.
 --- @return table ascending rung targets (seed first when present), number|nil seed
-function XrayAuto.planBuildRungs(base_progress, spacing, target_end, position)
-  local seed = XrayAuto.seedForBuild(base_progress, position, target_end, spacing)
+function XrayAuto.planBuildRungs(base_progress, spacing, target_end, position, force_seed)
+  local seed = XrayAuto.seedForBuild(base_progress, position, target_end, spacing, force_seed)
   local rungs = XrayAuto.planLadderRungs(seed or base_progress, spacing, target_end)
   if seed then table.insert(rungs, 1, seed) end
   return rungs, seed
@@ -601,6 +611,10 @@ function XrayAuto.beginLadderBuild(file, rungs, labels, opts)
     intro_pending = (opts and opts.intro) or nil,
     silent = (opts and opts.silent) or nil,
     rebuild = (opts and opts.rebuild) or nil,
+    -- 2026-08-15: a commissioned one-shot installs its goal rung at completion
+    -- regardless of the promotion posture (the user explicitly asked for that
+    -- coverage) — the completion handler keys off this flag
+    one_shot = (opts and opts.one_shot) or nil,
     step = 1 }
   -- A (re)start supersedes the last pause reason (item 45)
   if last_ladder_stop and last_ladder_stop.file == file then

@@ -9019,7 +9019,9 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
             or T(_("Resume building checkpoints (%1 so far)…"), nc_rungs),
           callback = function()
             UIManager:close(dialog)
-            self_ref:_startXrayLadderBuild()
+            -- A stopped PRE-SWAP rebuild resumes as a rebuild (2026-08-15)
+            self_ref:_startXrayLadderBuild(nc_stop and nc_stop.rebuild
+              and { rebuild = true } or nil)
           end,
         }})
       end
@@ -9345,7 +9347,9 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
                 math.floor((ladder_highest or 0) * 100 + 0.5)),
             callback = function()
               UIManager:close(dialog)
-              self_ref:_startXrayLadderBuild()
+              -- A stopped PRE-SWAP rebuild resumes as a rebuild (2026-08-15)
+              self_ref:_startXrayLadderBuild(sx_stop and sx_stop.rebuild
+                and { rebuild = true } or nil)
             end,
           }})
         end
@@ -10167,11 +10171,13 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
     return goalFor() <= (base_progress or 0) + 0.01
   end
 
-  -- Extend picks never plan an intro; create/rebuild picks do unless a
-  -- leftover intro rung exists (rebuild clears the ladder first, so it always
-  -- plans one). Also fixes the round-20 "chooser overcounts by 1" residual.
+  -- Extend picks never plan an intro; create picks do unless a leftover intro
+  -- rung exists. Rebuild chains deliberately never plan one (the reader keeps
+  -- the old live X-Ray until rung 1 lands, so a premise-only step buys
+  -- nothing — the engine forces has_intro there), and the count here must
+  -- match or the "In checkpoints, now" row overcounts by 1 (2026-08-15).
   local function planIntroStep()
-    if pickIsRebuild() then return true end
+    if pickIsRebuild() then return false end
     if mode == "extend" then return false end
     return not has_intro_rung
   end
@@ -10185,7 +10191,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
     -- from nothing (round 24).
     local rungs = XrayAuto.planBuildRungs(
       (mode == "extend" and not pickIsRebuild()) and base_progress or 0,
-      spacing, goalFor(), decimal)
+      spacing, goalFor(), decimal, pickIsRebuild())
     return #rungs
   end
 
@@ -10871,7 +10877,7 @@ function AskGPT:_xrayEstablishmentSteps(opts)
   local boundaries = features.xray_ladder_chapter_snap ~= false
     and self:_ladderChapterBoundaries() or nil
   local rungs, labels = self:_planXrayGrid(rebuild and nil or work.base,
-    spacing, work.goal, decimal, boundaries)
+    spacing, work.goal, decimal, boundaries, rebuild)
   rungs = XrayAuto.truncateToOneAhead(rungs, decimal, labels)
   if #rungs == 0 then return nil end
   return #rungs + ((not rebuild and work.plan_intro) and 1 or 0)
@@ -13432,7 +13438,7 @@ function AskGPT:_fireXrayAutoCheckpoints(opts)
   local boundaries = features.xray_ladder_chapter_snap ~= false
     and self:_ladderChapterBoundaries() or nil
   local rungs, labels = self:_planXrayGrid(chain_rebuild and nil or work.base,
-    spacing, work.goal, decimal, boundaries)
+    spacing, work.goal, decimal, boundaries, chain_rebuild)
   rungs, labels = XrayAuto.truncateToOneAhead(rungs, decimal, labels)
   if #rungs == 0 then return end
   local plan_intro = not chain_rebuild and work.plan_intro
@@ -14201,7 +14207,8 @@ function AskGPT:_startXrayLadderBuild(build_opts)
       if (base_progress or 0) >= goal - 0.01 then return {}, {} end
       return { goal }, (goal_label and { goal_label } or {})
     end
-    return self_ref:_planXrayGrid(base_progress, spacing, goal, seed_position, boundaries)
+    return self_ref:_planXrayGrid(base_progress, spacing, goal, seed_position, boundaries,
+      chain_rebuild)
   end
 
   -- Round 2 of the spacing slice (device: the confirm "fills the whole
@@ -14279,7 +14286,7 @@ function AskGPT:_startXrayLadderBuild(build_opts)
             -- Round 22 (D3): an explicit build start ends any cancel pause
             XrayAuto.clearAutoSuppression(file)
             XrayAuto.beginLadderBuild(file, rungs, rung_labels,
-              { intro = plan_intro, rebuild = chain_rebuild })
+              { intro = plan_intro, rebuild = chain_rebuild, one_shot = one_shot })
             self_ref:_fireXrayLadderRung()
           end,
         }},
@@ -14310,9 +14317,9 @@ end
 --- @param seed_position number|nil reader position (round-19 seed candidate)
 --- @param boundaries table|nil chapter boundaries (nil = no snapping)
 --- @return table rungs, table labels (sparse parallel), number|nil seed
-function AskGPT:_planXrayGrid(base_progress, spacing, goal, seed_position, boundaries)
+function AskGPT:_planXrayGrid(base_progress, spacing, goal, seed_position, boundaries, force_seed)
   local XrayAuto = require("koassistant_xray_auto")
-  local rungs, seed = XrayAuto.planBuildRungs(base_progress or 0, spacing, goal, seed_position)
+  local rungs, seed = XrayAuto.planBuildRungs(base_progress or 0, spacing, goal, seed_position, force_seed)
   local rung_labels = {}
   local snap_bounds = boundaries
   if goal and snap_bounds then
@@ -14450,6 +14457,11 @@ function AskGPT:_fireXrayLadderRung()
   config_copy.features._ladder_target_ratio = target
   config_copy.features._ladder_base = base
   config_copy.features._ladder_intro = is_intro or nil
+  -- Pre-swap rebuild rung (2026-08-15 device round): the step carries NO base
+  -- BY DESIGN — without this marker the dialogs cache-engagement fallback read
+  -- the surviving old live artifact as an incremental base and merged the very
+  -- lineage the rebuild was replacing back into the fresh create
+  config_copy.features._ladder_fresh = (build.rebuild and not build.rebuild_swapped) or nil
   config_copy.features._ladder_chapter_label = (not is_intro) and build.labels and build.labels[build.idx] or nil
   -- Item 50 follow-up: user-initiated builds keep the large-extraction warning
   -- on their FIRST request (it fires right after the confirm tap, so a dialog
@@ -14565,7 +14577,8 @@ function AskGPT:_fireXrayLadderRung()
         if err_text == "size_needs_review" then
           XrayAuto.endLadderBuild()
           XrayAuto.recordLadderStop(file, { step = cur.step or cur.idx, total = cur.total,
-            kind = "step_too_large" })
+            kind = "step_too_large",
+            rebuild = (cur.rebuild and not cur.rebuild_swapped) or nil })
           UIManager:show(InfoMessage:new{
             text = T(_("Checkpoint build paused at %1 of %2: the next step is a large request. Resume from the X-Ray popup to review it."),
               cur.step or cur.idx, cur.total),
@@ -14605,7 +14618,8 @@ function AskGPT:_fireXrayLadderRung()
         end
         XrayAuto.endLadderBuild()
         XrayAuto.recordLadderStop(file, { step = cur.step or cur.idx, total = cur.total,
-          kind = kind })
+          kind = kind,
+          rebuild = (cur.rebuild and not cur.rebuild_swapped) or nil })
         logger.info("KOAssistant: ladder build stopped at step", cur.step or cur.idx, "-",
           err_text)
         local reason = self_ref:_xrayStopReasonLabel(kind)
@@ -14642,16 +14656,48 @@ function AskGPT:_fireXrayLadderRung()
         end)
       else
         XrayAuto.endLadderBuild()
+        self_ref._file_dialog_row_cache = { file = nil, rows = nil }
+        -- 2026-08-15 device round: a commissioned ONE-SHOT installs its goal
+        -- rung regardless of the promotion posture — the user explicitly asked
+        -- for that coverage, so the position gate does not apply (deliberate
+        -- install, item 40: never auto-reverted; a complete install releases
+        -- the promotion hold like the switch rows do). Without this, a
+        -- "complete X-Ray in background" finished into the ladder and the
+        -- track posture never installed it — the user saw nothing (or a
+        -- position rung) plus phantom "checkpoints".
+        local installed_pct
+        if cur.one_shot then
+          local goal_t = cur.rungs and cur.rungs[#cur.rungs]
+          local goal_rung
+          for _idx2, r in ipairs(ActionCache.getXrayLadder(file)) do
+            local p = tonumber(r.progress_decimal)
+            if p and goal_t and r.result and not r.intro
+                and math.abs(p - goal_t) <= XrayAuto.LADDER_TOLERANCE then
+              goal_rung = r
+            end
+          end
+          if goal_rung and ActionCache.promoteXrayLadderRung(file, goal_rung,
+              ActionCache.checkpointLimitFromFeatures(features)) then
+            local gp = tonumber(goal_rung.progress_decimal) or 0
+            installed_pct = math.floor(gp * 100 + 0.5)
+            if gp >= 1.0 - 0.005 then
+              self_ref:_setXrayPromotionHold(file, false)
+            end
+            logger.info("KOAssistant: one-shot X-Ray installed at", tostring(gp))
+          end
+        end
         if not cur.silent or features.xray_auto_notify == true then
           UIManager:show(Notification:new{
-            text = cur.total == 1 and _("X-Ray ready.")
+            text = installed_pct and T(_("X-Ray ready (covers to %1%)."), installed_pct)
+              or cur.total == 1 and _("X-Ray ready.")
               or T(_("X-Ray checkpoints built (%1)."), cur.total),
           })
         end
-        self_ref._file_dialog_row_cache = { file = nil, rows = nil }
         self_ref:_refreshXrayAutoState()
-        -- Bring the live X-Ray up to the reader's position for free
-        self_ref:_fireXrayLadderPromotion()
+        if not installed_pct then
+          -- Bring the live X-Ray up to the reader's position for free
+          self_ref:_fireXrayLadderPromotion()
+        end
       end
     end)
 end

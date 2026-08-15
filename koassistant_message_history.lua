@@ -663,7 +663,11 @@ function MessageHistory:createResultText(highlightedText, config)
         -- Show all messages up to and including the last user message
         for i = 1, last_user_index do
             local msg = self.messages[i]
-            local role_text = msg.role:gsub("^%l", string.upper)
+            -- Brand the assistant role like the main renderer below and the
+            -- export path do — the generic capitalization showed prior replies
+            -- as "Assistant" in the debug panel (2026-08-15)
+            local role_text = msg.role == self.ROLES.ASSISTANT and "KOAssistant"
+                or msg.role:gsub("^%l", string.upper)
             local context_tag = msg.is_context and " [Initial]" or ""
             local prefix = ""
             if msg.role == self.ROLES.USER then
