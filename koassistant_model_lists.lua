@@ -294,15 +294,14 @@ local ModelLists = {
     fireworks = {
         -- Live-verified against the keyed /v1/models catalog 2026-08-15
         -- (24 serving ids; Fireworks encodes dots as "p": k2p6 = k2.6).
-        -- DeepSeek (current)
+        -- Default = the cheap workhorse, not the flagship (maintainer,
+        -- same-day device round): deepseek-v4-pro stays the flagship tier.
+        "accounts/fireworks/models/gpt-oss-120b",                    -- standard/fast (default)
         "accounts/fireworks/models/deepseek-v4-pro",                 -- flagship + reasoning
         "accounts/fireworks/models/deepseek-v4-flash-0731",          -- fast deepseek
-        -- Qwen
         "accounts/fireworks/models/qwen3p8-max",
-        -- Other
         "accounts/fireworks/models/kimi-k2p6",                       -- reasoning
         "accounts/fireworks/models/glm-5p2",
-        "accounts/fireworks/models/gpt-oss-120b",                    -- standard/fast
         "accounts/fireworks/models/gpt-oss-20b",                     -- small/fast
         -- (Dead ids dropped 2026-08-15, absent from the live catalog:
         -- deepseek-r1, qwen3-235b-a22b, kimi-k2-thinking. Earlier removals
@@ -473,7 +472,7 @@ local ModelLists = {
         qwen       = { "qwen3-max" },
         kimi       = { "kimi-k2.6", "kimi-k2.5", "kimi-k2-0905-preview" },
         together   = { "deepseek-ai/DeepSeek-V4-Pro", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8" },
-        fireworks  = { "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/llama4-maverick-instruct-basic" },
+        fireworks  = { "accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/llama4-maverick-instruct-basic" },
         sambanova  = { "gpt-oss-120b", "Llama-4-Maverick-17B-128E-Instruct", "Meta-Llama-4-Maverick-17B-128E-Instruct" },
         cohere     = { "command-a-plus-05-2026", "command-a-03-2025" },
         doubao     = { "doubao-seed-2.0-pro-32k", "doubao-1.8-pro-32k" },

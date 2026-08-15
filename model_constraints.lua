@@ -256,10 +256,19 @@ ModelConstraints.capabilities = {
         -- qwen3-max = no default reasoning, temp free in [0, 2), out 65536,
         -- tools + forced tool_choice + two-round replay all green (wave 2 —
         -- ToolWire alias added same day). Other qwen ids unprobed for tools;
-        -- grant as batteries run. enable_search web probing: works server-side
-        -- (results injected; no sources on the compatible-mode wire) — handler
-        -- integration is a recorded follow-up, not a capability here.
+        -- grant as batteries run. enable_search web search is wired in
+        -- qwen.lua (server-side injection; no sources on this wire).
         tools = { "qwen3-max" },
+    },
+    kimi = {
+        -- kimi-k2.6 probed live 2026-08-15 (international platform): thinks by
+        -- default, disable via thinking={type="disabled"} (anthropic shape);
+        -- tools green ONLY with thinking disabled (tool_choice=required is
+        -- "incompatible with thinking enabled") — kimi.lua forces the disable
+        -- on tool sessions (deepseek precedent) and drops temperature
+        -- (mode-locked, see forced params).
+        thinking = { "kimi-k2.6" },
+        tools = { "kimi-k2.6" },
     },
     xai = {
         -- grok-4.6 supports reasoning_effort minimal..xhigh ("none" rejected — probe 2026-08-14);
@@ -845,6 +854,17 @@ ModelConstraints.reasoning_profiles = {
         { match = "DeepSeek-V3.2", axis = "binary", default_state = "on", can_disable = true, can_enable = true,
           stance_map = { minimal = { state = "off" }, maximum = { state = "on" } } },
     },
+    kimi = {
+        -- kimi-k2.6 international (probed 2026-08-15): thinks by DEFAULT
+        -- (311 reasoning tokens bare), disable works via thinking
+        -- {type="disabled"} (reasoning tokens → 1). The resolver emits the
+        -- neutral kimi_thinking param only on an explicit OFF (on = the API
+        -- default, nothing sent); kimi.lua translates + drops temperature.
+        -- The China-only -thinking/-turbo ids deliberately get no profile
+        -- (unknown/unprobeable) — they resolve to passthrough.
+        { match = "kimi-k2.6", axis = "binary", default_state = "on", can_disable = true, can_enable = true,
+          stance_map = { minimal = { state = "off" }, maximum = { state = "on" } } },
+    },
     openrouter = {
         -- OpenRouter is a meta-provider: reasoning-disable support varies by backend, so
         -- families are matched before the catch-all (first match wins). Reasoning-MANDATORY
@@ -1004,6 +1024,10 @@ ModelConstraints._web_search_providers = {
     { id = "perplexity", label = "Perplexity", mode = "all" },
     { id = "openrouter", label = "OpenRouter", mode = "all" },
     { id = "zai",        label = "Z.AI",       mode = "all" },
+    -- DashScope enable_search: server-side search injection, probed 2026-08-15
+    -- (no sources returned on the compatible-mode wire — grounded answers, no
+    -- provenance). Wiring in qwen.lua.
+    { id = "qwen",       label = "Qwen",       mode = "all" },
 }
 
 --- Check if a provider/model can actually perform web search in this plugin.
@@ -1865,7 +1889,7 @@ end
 -- dialog inspects them for display.
 ModelConstraints.REASONING_WIRE_KEYS = {
     "thinking", "output_config", "reasoning", "thinking_budget", "thinking_level",
-    "deepseek_thinking", "zai_thinking", "sambanova_thinking",
+    "deepseek_thinking", "zai_thinking", "sambanova_thinking", "kimi_thinking",
     "openrouter_reasoning", "requesty_reasoning", "groq_reasoning",
     "together_reasoning", "fireworks_reasoning", "xai_reasoning",
     "perplexity_reasoning", "custom_reasoning", "_reasoning",
@@ -1925,6 +1949,13 @@ function ModelConstraints.applyReasoningParams(provider, api_params, decision)
         end
     elseif provider == "deepseek" then
         api_params.deepseek_thinking = { type = on and "enabled" or "disabled" }
+    elseif provider == "kimi" then
+        -- kimi-k2.6 thinks by DEFAULT; only an explicit OFF needs a wire param
+        -- (thinking = {type="disabled"}, probed 2026-08-15 — reasoning tokens
+        -- 311 → 1). {type="enabled"} never probed, and on == the API default,
+        -- so emit nothing for on. kimi.lua translates and drops temperature
+        -- (temp is mode-locked; see the forced-params note).
+        if not on then api_params.kimi_thinking = { type = "disabled" } end
     elseif provider == "zai" then
         api_params.zai_thinking = { type = on and "enabled" or "disabled" }
     elseif provider == "sambanova" then

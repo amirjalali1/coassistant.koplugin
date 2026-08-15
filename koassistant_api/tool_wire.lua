@@ -203,6 +203,12 @@ ToolWire.adapters.ollama = ToolWire.adapters.openai
 -- through this adapter — all green; curated tools list carries membership).
 ToolWire.adapters.qwen = ToolWire.adapters.openai
 
+-- kimi: tools wave 2, PROBED live 2026-08-15 (kimi-k2.6 international):
+-- forced tool_choice works ONLY with thinking disabled — kimi.lua forces
+-- thinking={type="disabled"} + drops temperature on tool sessions (probed:
+-- disabled + tool_choice=required → clean function call). OpenAI dialect.
+ToolWire.adapters.kimi = ToolWire.adapters.openai
+
 -- fireworks: tools wave 2, PROBED live 2026-08-15 on a keyed account (the
 -- model_audit battery's real-runner-spec legs: flat defs accepted, forced
 -- tool_choice "required"/"none" both honored, two-round replay through this

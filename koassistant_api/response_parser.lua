@@ -932,9 +932,24 @@ local RESPONSE_TRANSFORMERS = {
         end
         if response.choices and response.choices[1] and response.choices[1].message then
             local message = response.choices[1].message
+            local content = message.content
+            -- Tool turns carry content:null (luajson sentinel) or "" — normalize
+            if type(content) ~= "string" then content = nil end
+
+            -- Book-tool function calls → neutral shape (tools wave 2, qwen3-max)
+            local calls = extractOpenAIToolCalls(message)
+            if calls then
+                return true, {
+                    _tool_calls = true,
+                    calls = calls,
+                    raw_assistant_turn = message,
+                }
+            end
+
             -- Passive extraction: Qwen thinking models return reasoning_content
-            local reasoning = message.reasoning_content
-            return true, message.content, reasoning
+            local reasoning = type(message.reasoning_content) == "string"
+                and message.reasoning_content or nil
+            return true, content, reasoning
         end
         return false, "Unexpected response format"
     end,
@@ -945,9 +960,25 @@ local RESPONSE_TRANSFORMERS = {
         end
         if response.choices and response.choices[1] and response.choices[1].message then
             local message = response.choices[1].message
+            local content = message.content
+            -- Tool turns carry content:null (luajson sentinel) or "" — normalize
+            if type(content) ~= "string" then content = nil end
+
+            -- Book-tool function calls → neutral shape (kimi-k2.6; kimi.lua
+            -- forces thinking off on tool sessions — see model_constraints)
+            local calls = extractOpenAIToolCalls(message)
+            if calls then
+                return true, {
+                    _tool_calls = true,
+                    calls = calls,
+                    raw_assistant_turn = message,
+                }
+            end
+
             -- Passive extraction: Kimi thinking models return reasoning_content
-            local reasoning = message.reasoning_content
-            return true, message.content, reasoning
+            local reasoning = type(message.reasoning_content) == "string"
+                and message.reasoning_content or nil
+            return true, content, reasoning
         end
         return false, "Unexpected response format"
     end,
@@ -957,10 +988,27 @@ local RESPONSE_TRANSFORMERS = {
             return false, response.error.message or response.error.type or "Unknown error"
         end
         if response.choices and response.choices[1] and response.choices[1].message then
-            local content = response.choices[1].message.content
-            -- Extract <think> tags from R1 models
-            local clean_content, reasoning = extractThinkTags(content)
-            return true, clean_content, reasoning
+            local message = response.choices[1].message
+            local content = message.content
+            -- Tool turns carry content:null (luajson sentinel) or "" — normalize
+            if type(content) ~= "string" then content = nil end
+
+            -- Book-tool function calls → neutral shape (tools wave 2; same
+            -- dropped-tool_calls class the fireworks device round exposed)
+            local calls = extractOpenAIToolCalls(message)
+            if calls then
+                return true, {
+                    _tool_calls = true,
+                    calls = calls,
+                    raw_assistant_turn = message,
+                }
+            end
+
+            -- Passive reasoning_content, <think> tags as fallback
+            local reasoning = type(message.reasoning_content) == "string"
+                and message.reasoning_content or nil
+            local clean_content, think_reasoning = extractThinkTags(content)
+            return true, clean_content, reasoning or think_reasoning
         end
         return false, "Unexpected response format"
     end,
@@ -970,10 +1018,30 @@ local RESPONSE_TRANSFORMERS = {
             return false, response.error.message or response.error.type or "Unknown error"
         end
         if response.choices and response.choices[1] and response.choices[1].message then
-            local content = response.choices[1].message.content
-            -- Extract <think> tags from R1 models
-            local clean_content, reasoning = extractThinkTags(content)
-            return true, clean_content, reasoning
+            local message = response.choices[1].message
+            local content = message.content
+            -- Tool turns carry content:null (luajson sentinel) or "" — normalize
+            if type(content) ~= "string" then content = nil end
+
+            -- Book-tool function calls → neutral shape for the tool runner.
+            -- Device 2026-08-15: the old content-only read DROPPED tool_calls
+            -- (fireworks sends content:"" beside them), so the gather loop saw
+            -- an empty answer and ended the chat with no round 2.
+            local calls = extractOpenAIToolCalls(message)
+            if calls then
+                return true, {
+                    _tool_calls = true,
+                    calls = calls,
+                    raw_assistant_turn = message,
+                }
+            end
+
+            -- Passive: every fireworks-hosted thinking model returns
+            -- reasoning_content (probed 2026-08-15); <think> tags as fallback.
+            local reasoning = type(message.reasoning_content) == "string"
+                and message.reasoning_content or nil
+            local clean_content, think_reasoning = extractThinkTags(content)
+            return true, clean_content, reasoning or think_reasoning
         end
         return false, "Unexpected response format"
     end,

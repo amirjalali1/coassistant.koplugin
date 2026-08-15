@@ -40,6 +40,31 @@ function KimiHandler:customizeUrl(url, config)
     return REGIONAL_ENDPOINTS[region] or REGIONAL_ENDPOINTS.international
 end
 
+-- kimi-k2.6 wire quirks (all probed live 2026-08-15 on the international platform):
+--   * Thinks by DEFAULT; disable = anthropic-shaped thinking = {type="disabled"}
+--     (reasoning tokens 311 -> 1). The resolver emits the neutral
+--     api_params.kimi_thinking only on an explicit OFF decision.
+--   * tool_choice "required" (the runner's gather mode) is "incompatible with
+--     thinking enabled" -- tool sessions force the disable (deepseek precedent;
+--     phase 2 of gather mode carries no config.tools, so the streamed answer
+--     keeps the model's default thinking).
+--   * Temperature is MODE-LOCKED: thinking on accepts ONLY 1 (forced in
+--     model_constraints), thinking off accepts ONLY 0.6, omitting works in
+--     both -- so whenever thinking is disabled here, temperature is dropped.
+function KimiHandler:customizeRequestBody(request_body, config)
+    local api_params = config.api_params or {}
+    if type(api_params.kimi_thinking) == "table" then
+        request_body.thinking = api_params.kimi_thinking
+    end
+    if config.tools and config.tools.specs then
+        request_body.thinking = { type = "disabled" }
+    end
+    if request_body.thinking and request_body.thinking.type == "disabled" then
+        request_body.temperature = nil
+    end
+    return request_body
+end
+
 -- Add hint for auth errors about region setting (keys are region-locked)
 function KimiHandler:enhanceErrorMessage(error_msg, config)
     local err_lower = error_msg:lower()

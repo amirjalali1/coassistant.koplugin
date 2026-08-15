@@ -828,9 +828,18 @@ TestRunner:test("openai unlisted model does NOT support web search", function()
         "gpt-4o should NOT support web search")
 end)
 
+TestRunner:test("qwen supports web search (enable_search, 2026-08-15)", function()
+    TestRunner:assertTrue(
+        ModelConstraints.supportsWebSearch("qwen", "qwen3-max"),
+        "qwen should support web search via DashScope enable_search")
+end)
+
 -- Providers WITHOUT web search (toggle is a no-op there) — root cause of issue #81
+-- (qwen moved OUT 2026-08-15: DashScope enable_search wired in qwen.lua; kimi's
+-- $web_search builtin is probed but unwired — it stays in this list until the
+-- tool-loop integration lands.)
 for _idx, p in ipairs({ "deepseek", "xai", "mistral", "groq",
-                        "qwen", "kimi", "together", "fireworks", "sambanova",
+                        "kimi", "together", "fireworks", "sambanova",
                         "cohere", "doubao", "ollama", "requesty" }) do
     TestRunner:test(p .. " does NOT support web search", function()
         TestRunner:assertFalse(
