@@ -670,9 +670,26 @@ function ChatHistoryDialog:showChatsForDocument(ui, document, chat_history_manag
 
     local chats = chat_history_manager:getChatsUnified(ui, document.path)
 
+    -- Launch-tag filter (device round 2026-08-15): the X-Ray browser's
+    -- "X-Ray chats" row opens this list narrowed to chats launched from
+    -- entity pages; everything else (tap → options → resume, holds) is the
+    -- normal book-chat surface. The hamburger is suppressed while filtered —
+    -- its rows (delete all, export all) act on ALL the book's chats.
+    if nav_context.filter_launched_from then
+        local filtered = {}
+        for _idx, c in ipairs(chats) do
+            if c.launched_from == nav_context.filter_launched_from then
+                table.insert(filtered, c)
+            end
+        end
+        chats = filtered
+    end
+
     if #chats == 0 then
         UIManager:show(InfoMessage:new{
-            text = _("No saved chats found for this document"),
+            text = nav_context.filter_launched_from
+                and _("No matching chats found for this document")
+                or _("No saved chats found for this document"),
             timeout = 2,
         })
         return
@@ -748,6 +765,7 @@ function ChatHistoryDialog:showChatsForDocument(ui, document, chat_history_manag
     chat_menu = Menu:new{
         title = nav_context.select_mode
             and T(_("Select chat to attach: %1"), document.title)
+            or nav_context.list_title
             or T(_("Chats: %1"), document.title),
         item_table = menu_items,
         is_borderless = true,
@@ -755,8 +773,10 @@ function ChatHistoryDialog:showChatsForDocument(ui, document, chat_history_manag
         width = Screen:getWidth(),
         height = Screen:getHeight(),
         -- Select mode: the options menu carries destructive rows (delete all)
-        -- — hidden while picking, back-arrow still navigates
-        title_bar_left_icon = not nav_context.select_mode and "appbar.menu" or nil,
+        -- — hidden while picking, back-arrow still navigates. Same while a
+        -- launch-tag filter narrows the list (those rows act on ALL chats)
+        title_bar_left_icon = (not nav_context.select_mode
+            and not nav_context.filter_launched_from) and "appbar.menu" or nil,
         items_per_page = 8,
         multilines_show_more_text = true,
         items_max_lines = 2,

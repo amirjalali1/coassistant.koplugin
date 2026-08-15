@@ -31,6 +31,7 @@ local TextBoxWidget = require("ui/widget/textboxwidget")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Screen = Device.screen
+local _ = require("koassistant_gettext")
 
 local MinimalPopup = InputContainer:extend{
     text = nil,             -- the response text (markdown already stripped by the
@@ -91,12 +92,33 @@ function MinimalPopup:init()
         auto_para_direction = self.para_direction_rtl == nil,
         lang = self.lang,
     }
+    -- Overflow affordance (device round 2026-08-15): in "Always" mode a long
+    -- response renders ellipsized, and the bare "…" read as "that's all of
+    -- it" — make the way out visible (the footnote card's muted "Tap for the
+    -- full entry" precedent). Fitting popups stay chrome-free.
+    local content = self.textw
+    if self:hasOverflow() then
+        local TextWidget = require("ui/widget/textwidget")
+        local VerticalGroup = require("ui/widget/verticalgroup")
+        local VerticalSpan = require("ui/widget/verticalspan")
+        content = VerticalGroup:new{
+            align = "left",
+            self.textw,
+            VerticalSpan:new{ width = Size.padding.small },
+            TextWidget:new{
+                text = _("Tap to show the full response"),
+                face = Font:getFace("xx_smallinfofont"),
+                fgcolor = Blitbuffer.COLOR_DARK_GRAY,
+                max_width = self.width - 2 * padding,
+            },
+        }
+    end
     self.frame = FrameContainer:new{
         radius = Size.radius.window,
         bordersize = Size.border.window,
         padding = padding,
         background = Blitbuffer.COLOR_WHITE,
-        self.textw,
+        content,
     }
     self.movable = MovableContainer:new{
         anchor = self:buildAnchor(),

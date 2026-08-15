@@ -1301,6 +1301,40 @@ function XrayBrowser:buildCategoryItems()
         end,
     })
 
+    -- X-Ray chats (device round 2026-08-15): chats launched from entity
+    -- pages save as ordinary book chats and were hard to find again — count
+    -- the launch-tagged ones and open the book's chat list narrowed to them
+    -- (chats saved before the tag existed stay in the full Chat History).
+    -- One sidecar read; main live views only, the browsing home.
+    if not self.scope and not self.metadata.checkpoint
+            and self.metadata.plugin and self.metadata.book_file then
+        local xchat_n = 0
+        local ok_list, chats = pcall(function()
+            local ChatHistoryManager = require("koassistant_chat_history_manager")
+            return ChatHistoryManager:new():getChatsUnified(self.ui, self.metadata.book_file)
+        end)
+        if ok_list and type(chats) == "table" then
+            for _idx, c in ipairs(chats) do
+                if c.launched_from == "xray_chat" then xchat_n = xchat_n + 1 end
+            end
+        end
+        if xchat_n > 0 then
+            table.insert(items, {
+                text = Constants.getEmojiText("💬", _("X-Ray chats"), enable_emoji),
+                mandatory = tostring(xchat_n),
+                callback = function()
+                    self_ref.metadata.plugin:showChatHistoryForFile(self_ref.metadata.book_file, {
+                        close_on_up = true,
+                        filter_launched_from = "xray_chat",
+                        list_title = self_ref.metadata.title
+                            and T(_("X-Ray chats: %1"), self_ref.metadata.title)
+                            or _("X-Ray chats"),
+                    })
+                end,
+            })
+        end
+    end
+
     -- Other artifacts for this book (if any)
     local artifacts = self:_getAvailableArtifacts()
     if #artifacts > 0 then
@@ -4153,6 +4187,29 @@ function XrayBrowser:showMentions(chapter)
         local display_chapter = chapter  -- track what we're showing for the picker
         local mentions_gate = self_ref:_spoilerGate()  -- F2: posture-routed, position-strict
 
+        -- Gate-crossing chapter clip (device round 2026-08-15): the chapter
+        -- the reader is INSIDE crosses the gate — this surface used to
+        -- extract its WHOLE span (the tree and the per-entity mention pages
+        -- already clipped), so just entering chapter N revealed every entity
+        -- in its unread tail. Clip the extraction at the gate page; the
+        -- session-level reveal flag (_mentions_spoiler_warned, same one the
+        -- picker's beyond-gate confirm sets) lifts the clip.
+        local clipped_to
+        local function gatedChapterText(ch)
+            if mentions_gate and not self_ref._mentions_spoiler_warned
+                    and ch.start_page and ch.start_page <= mentions_gate
+                    and (ch.end_page or 0) > mentions_gate then
+                clipped_to = mentions_gate
+                return self_ref:_getChapterText({
+                    title = ch.title,
+                    start_page = ch.start_page,
+                    end_page = mentions_gate,
+                    depth = ch.depth,
+                }), ch.title or ""
+            end
+            return self_ref:_getChapterText(ch), ch.title or ""
+        end
+
         if is_all then
             -- Aggregate: page range depends on context
             -- Section X-Ray "all" = scope bounds; main X-Ray "all" = the
@@ -4182,11 +4239,17 @@ function XrayBrowser:showMentions(chapter)
             chapter_title = ""
         elseif type(chapter) == "table" then
             -- Specific chapter from picker
-            text = self_ref:_getChapterText(chapter)
-            chapter_title = chapter.title or ""
+            text, chapter_title = gatedChapterText(chapter)
         else
-            -- Current chapter (default — deepest TOC match)
-            text, chapter_title = getCurrentChapterText(self_ref.ui, nil, self_ref)
+            -- Current chapter (default — deepest TOC match; flat page chunk
+            -- when there is no TOC)
+            local cur = getChapterBoundaries(self_ref.ui, nil)
+                or getPageRangeChapter(self_ref.ui)
+            if cur then
+                text, chapter_title = gatedChapterText(cur)
+            else
+                text, chapter_title = getCurrentChapterText(self_ref.ui, nil, self_ref)
+            end
         end
 
         if not text or text == "" then
@@ -4224,9 +4287,13 @@ function XrayBrowser:showMentions(chapter)
                 picker_label = T(_("To p. %1 \u{25BE}"), mentions_gate)
             end
         elseif chapter_title and chapter_title ~= "" then
-            picker_label = chapter_title .. " \u{25BE}"
+            picker_label = clipped_to
+                and T(_("%1 (up to p. %2) \u{25BE}"), chapter_title, clipped_to)
+                or (chapter_title .. " \u{25BE}")
         else
-            picker_label = _("This Chapter \u{25BE}")
+            picker_label = clipped_to
+                and T(_("This Chapter (up to p. %1) \u{25BE}"), clipped_to)
+                or _("This Chapter \u{25BE}")
         end
 
         table.insert(items, {
@@ -4239,6 +4306,40 @@ function XrayBrowser:showMentions(chapter)
             end,
             separator = true,
         })
+
+        -- Reveal row while the span is clipped: one confirm, then this
+        -- session's Mentions views show unclipped (same flag the picker's
+        -- beyond-gate confirm sets)
+        if clipped_to then
+            table.insert(items, {
+                text = _("Show the whole chapter…"),
+                mandatory = _("may contain spoilers"),
+                mandatory_dim = true,
+                callback = function()
+                    self_ref._spoiler_dialog = ButtonDialog:new{
+                        text = _("The rest of this chapter is beyond your reading position.\n\nReveal mentions?"),
+                        buttons = {
+                            {{
+                                text = _("Cancel"),
+                                callback = function()
+                                    UIManager:close(self_ref._spoiler_dialog)
+                                end,
+                            }},
+                            {{
+                                text = _("Reveal"),
+                                callback = function()
+                                    UIManager:close(self_ref._spoiler_dialog)
+                                    self_ref._mentions_spoiler_warned = true
+                                    self_ref:navigateBack()
+                                    self_ref:showMentions(chapter)
+                                end,
+                            }},
+                        },
+                    }
+                    UIManager:show(self_ref._spoiler_dialog)
+                end,
+            })
+        end
 
         if #found == 0 then
             -- No results: show picker with empty-state message so user can try other chapters
