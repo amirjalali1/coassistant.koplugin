@@ -416,8 +416,12 @@ local ModelLists = {
     ---------------------------------------------------------------------------
     _community = {
         -- pre-2026-08 built-ins, never maintainer-tested
-        groq = true, together = true, fireworks = true, sambanova = true,
-        cohere = true, requesty = true, qwen = true, kimi = true, doubao = true,
+        -- (fireworks + cohere PROMOTED OUT 2026-08-15: keyed, catalog-validated,
+        -- probed — fireworks full batteries incl. tools wave 2, cohere live
+        -- validation + the reasoning-parse fix. together/sambanova stay: keys
+        -- exist but generation is credit/card-gated, so still unverified.)
+        groq = true, together = true, sambanova = true,
+        requesty = true, qwen = true, kimi = true, doubao = true,
         -- M1 additions (ex hosted presets)
         cerebras = true, minimax = true, deepinfra = true, novita = true,
         hyperbolic = true, nebius = true, chutes = true, featherless = true,

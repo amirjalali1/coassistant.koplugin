@@ -2821,7 +2821,7 @@ Backup and restore functionality, index maintenance, plus reset options. See [Ba
 - **Provider Settings**:
   - **Z.AI Region**: Select endpoint (International: api.z.ai / China: open.bigmodel.cn). Same API key works on both.
   - **Qwen Region**: Select your Alibaba Cloud region (International: Singapore / China: Beijing / US: Virginia). API keys are region-specific and NOT interchangeable.
-- **AI Book Tools (Experimental)**: Let the AI search and read the open book on demand to ground its answers in the actual text. See [AI Book Tools](#ai-book-tools-experimental). Supported on Gemini, Claude (Anthropic), OpenAI (API or Subscription), OpenRouter (Claude/GPT/Gemini models), plus DeepSeek, Mistral, Groq, and xAI; other providers fall back to normal chat. Requires "Allow Text Extraction".
+- **AI Book Tools (Experimental)**: Let the AI search and read the open book on demand to ground its answers in the actual text. See [AI Book Tools](#ai-book-tools-experimental). Supported on Gemini, Claude (Anthropic), OpenAI (API or Subscription), OpenRouter (Claude/GPT/Gemini models), plus DeepSeek, Mistral, Groq, xAI, Fireworks, and Ollama; other providers fall back to normal chat. Requires "Allow Text Extraction".
   - **AI Book Tools** (posture): Off (no tool use anywhere; the Tools chip disappears) / Manual (the Tools chip in book chats starts OFF) / Auto (default; the Tools chip starts ON — the AI still decides per question whether to actually search). Predefined actions never use tools unless they explicitly offer smart retrieval. Overridable per book, and per-chat via the **Tools** chip.
   - **Book Tools Mode**: Gather then answer (default; the AI quietly collects passages first, then answers as a normal streamed request with web search available) or Interactive (the original agentic loop; no streaming or web search while tools run).
   - **Book Tools Lookup Effort**: Quick (up to 4 lookups in 2 rounds) / Standard (up to 8 in 4 rounds) / Thorough (up to 16 in 6 rounds, larger passage budget).
@@ -3239,7 +3239,7 @@ When chatting about an open book, the AI can call **local tools to look things u
 
   Set the posture globally in Settings, or **per book** (Book Settings, or hold the Tools chip for a For-this-book / Global picker). The per-book value wins over the global one; the Tools chip wins for the current chat once you tap it.
 - **Lookup effort dial** (quick / standard / thorough): caps how many lookups the AI may make per question — **quick** (2 turns / 4 calls), **standard** (4 / 8), **thorough** (6 / 16) — and tells the model its remaining budget so it plans its searches (broad → narrow) instead of being cut off mid-search.
-- **Providers**: **Gemini**, **Claude (Anthropic)**, **OpenAI** (API or Subscription), and **OpenRouter**, plus **DeepSeek, Mistral, Groq, and xAI** on tool-capable models. Providers/models without tool support automatically fall back to normal chat.
+- **Providers**: **Gemini**, **Claude (Anthropic)**, **OpenAI** (API or Subscription), and **OpenRouter**, plus **DeepSeek, Mistral, Groq, xAI, Fireworks** (and **Ollama** locally) on tool-capable models. Providers/models without tool support automatically fall back to normal chat.
 - **Requires** "Allow Text Extraction" — the tools read book text (see [Text Extraction and Double-gating](#text-extraction-and-double-gating)). A trusted provider also satisfies this.
 - **Where it applies**: freeform chat and replies about an **open book** (book/highlight context), plus **Smart retrieval** for two context-aware actions (below). Not predefined artifact actions like X-Ray or Summary (those extract their own context and are deliberately kept tools-free, including their follow-up replies), and not general, library, or X-Ray chat.
 - **Smart retrieval (as an action source)**: two highlight-context actions — **Explain in Context** and **Analyze in Context** — offer "Smart retrieval (AI searches the book)" as a fourth source in the scope/source popup (alongside full text / summary / AI knowledge). The AI gathers the passages relevant to your highlight and question, then answers from them. It is **preselected** when your session is tools-capable; the row is shown grayed with the reason when it isn't (unsupported provider, extraction consent off, tools posture Off, or a non-full scope). Direct entry points (highlight long-press, dictionary) run the same gather silently, with no popup.
@@ -3563,14 +3563,14 @@ KOAssistant supports **28 built-in AI providers** — a **curated set** the main
 | **Gemini** | Google's Gemini models | Tested | [aistudio.google.com](https://aistudio.google.com/) |
 | **Ollama** | Local models (no API key needed) | Tested | [ollama.ai](https://ollama.ai/) |
 | **Groq** | Extremely fast inference | Docs-based* | [console.groq.com](https://console.groq.com/) |
-| **Fireworks** | Fast inference for open models | Docs-based* | [fireworks.ai](https://fireworks.ai/) |
+| **Fireworks** | Fast inference for open models; book tools supported | Tested | [fireworks.ai](https://fireworks.ai/) |
 | **SambaNova** | Fastest inference; small free tier (3 models, 20 requests/day) | Docs-based* | [cloud.sambanova.ai](https://cloud.sambanova.ai/) |
 | **Together** | 200+ open source models | Docs-based* | [api.together.xyz](https://api.together.xyz/) |
 | **Mistral** | European provider, coding models | Tested | [console.mistral.ai](https://console.mistral.ai/) |
 | **xAI** | Grok models, up to 1M context | Tested | [console.x.ai](https://console.x.ai/) |
 | **OpenRouter** | Meta-provider, 500+ models | Tested | [openrouter.ai](https://openrouter.ai/) |
 | **Requesty** | OpenAI-compatible model router | Docs-based* | [requesty.ai](https://requesty.ai/) |
-| **Cohere** | Command models | Docs-based* | [dashboard.cohere.com](https://dashboard.cohere.com/) |
+| **Cohere** | Command models | Tested | [dashboard.cohere.com](https://dashboard.cohere.com/) |
 | **Qwen** | Alibaba's Qwen models | Docs-based* | [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com/) |
 | **Kimi** | Moonshot models | Docs-based* | [platform.moonshot.cn](https://platform.moonshot.cn/) |
 | **Doubao** | ByteDance Volcano Engine | Docs-based* | [console.volcengine.com](https://console.volcengine.com/) |

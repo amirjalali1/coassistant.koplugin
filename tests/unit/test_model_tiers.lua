@@ -110,12 +110,20 @@ end
 
 -- The relabeling is honest but must not LOSE placements that already exist:
 -- pre-2026-08 community members keep their curated tier rows until promotion.
-for _idx, legacy in ipairs({ "groq", "together", "fireworks", "sambanova",
-                             "cohere", "requesty", "qwen", "kimi", "doubao" }) do
+-- (fireworks + cohere promoted OUT 2026-08-15: keyed, catalog-validated,
+-- probed — they now assert NOT-community while keeping their tier rows.)
+for _idx, legacy in ipairs({ "groq", "together", "sambanova",
+                             "requesty", "qwen", "kimi", "doubao" }) do
     TestRunner.assert(ModelLists.isCommunity(legacy),
         legacy .. " is in the community set (never maintainer-tested)")
     TestRunner.assert(ModelLists._tiers.standard[legacy] ~= nil,
         legacy .. " keeps its existing tier placements despite community relabel")
+end
+for _idx, promoted in ipairs({ "fireworks", "cohere" }) do
+    TestRunner.assert(not ModelLists.isCommunity(promoted),
+        promoted .. " was promoted out of the community set (2026-08-15 keys session)")
+    TestRunner.assert(ModelLists._tiers.standard[promoted] ~= nil,
+        promoted .. " keeps its tier placements after promotion")
 end
 
 print("== normalizeTier ==")
