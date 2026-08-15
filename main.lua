@@ -16364,7 +16364,7 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       if doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOLS) ~= nil then
         label = label .. _(" (book)")
       end
-      return E("\u{1F4D6}", T(_("Book Tools: %1"), label))
+      return E("\u{1F50D}", T(_("Book Tools: %1"), label))
     end)(),
     callback = function()
       local BookSettings = require("koassistant_book_settings")
@@ -16506,7 +16506,7 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
         -- Provider can't search — annotate but keep the global default toggle usable
         base = base .. " \u{00B7} " .. T(_("N/A for %1"), provider_display)
       end
-      return E("\u{1F50D}", base)
+      return E("\u{1F310}", base)
     end)(),
     callback = function()
       local f = self_ref.settings:readSetting("features") or {}
