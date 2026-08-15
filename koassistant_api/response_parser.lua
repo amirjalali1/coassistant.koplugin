@@ -996,11 +996,29 @@ local RESPONSE_TRANSFORMERS = {
         if response.error then
             return false, response.message or response.error or "Unknown error"
         end
-        -- Cohere v2 returns message.content as array of content blocks
+        -- Cohere v2 returns message.content as array of content blocks.
+        -- Reasoning models (command-a-reasoning) put a {type="thinking"} block
+        -- FIRST, then the {type="text"} answer (probed 2026-08-15) — walk all
+        -- blocks: concatenate text, surface thinking as reasoning (3rd return,
+        -- doubao pattern). The old first-block-only read failed every
+        -- reasoning response with "Unexpected response format".
         if response.message and response.message.content then
             local content = response.message.content
-            if type(content) == "table" and content[1] and content[1].text then
-                return true, content[1].text
+            if type(content) == "table" then
+                local texts, thinks = {}, {}
+                for _idx, block in ipairs(content) do
+                    if type(block) == "table" then
+                        if type(block.text) == "string" and block.type ~= "thinking" then
+                            table.insert(texts, block.text)
+                        elseif type(block.thinking) == "string" then
+                            table.insert(thinks, block.thinking)
+                        end
+                    end
+                end
+                if #texts > 0 or #thinks > 0 then
+                    local reasoning = #thinks > 0 and table.concat(thinks, "\n") or nil
+                    return true, table.concat(texts, ""), reasoning
+                end
             elseif type(content) == "string" then
                 return true, content
             end

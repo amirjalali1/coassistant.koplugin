@@ -3622,7 +3622,7 @@ Several providers offer free tiers for testing or budget-conscious users. Detail
 | **Mistral** | Free tier ("free mode" / Experiment plan) covers **all** La Plateforme models, roughly 1B tokens/month; phone verification required, no card. The catch is a very low request rate (~2 requests/min -- fine for chat, slow for multi-request builds); Mistral no longer publishes exact numbers, check Admin Console → Limits. (Separately, `mistral-small-latest` and `magistral-small-latest` are Apache 2.0 open-weight -- you can also self-host them via Ollama) |
 | **OpenRouter** | `:free` model variants (rotating roster -- DeepSeek, Llama, `gpt-oss`, and more): 20 requests/min and 50 requests/day account-wide; a one-time $10 credit purchase permanently raises that to 1,000 requests/day |
 | **Z.AI** | GLM-4.7-Flash free (genuinely free, not trial credits); 1 concurrent request, ~1,000 requests/day |
-| **SambaNova** | Free tier limited to 3 models (DeepSeek-V3.1, Llama-3.3-70B, gpt-oss-120b) at 20 requests/day and 200K tokens/day per model -- fine for a quick trial, too small for daily use |
+| **SambaNova** | The advertised free tier (3 models at 20 requests/day) no longer works card-free: new accounts get "a payment method is required" on every API call until a card is added (verified August 2026). Treat as paid-with-trial rather than free |
 
 > **Note:** Some providers widely described as "free" online are actually time-limited trials -- e.g. Cerebras offers $5 in credits that expire after 30 days, not a persistent free tier. When in doubt, check whether the allowance renews.
 

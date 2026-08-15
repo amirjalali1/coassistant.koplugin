@@ -273,7 +273,7 @@ local ModelLists = {
     together = {
         -- DeepSeek V4 (current)
         "deepseek-ai/DeepSeek-V4-Pro",                       -- flagship + reasoning
-        "deepseek-ai/DeepSeek-V4-Flash",
+        "deepseek-ai/DeepSeek-V4-Flash-0731", -- dated variant is the live id (catalog-verified 2026-08-15; the bare -Flash slug is gone)
         -- Llama 3.3
         "meta-llama/Llama-3.3-70B-Instruct-Turbo",           -- standard/fast
         -- Other
