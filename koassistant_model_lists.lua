@@ -264,10 +264,16 @@ local ModelLists = {
     },
 
     kimi = {
-        -- Kimi K2.6 (current, multimodal)
-        "kimi-k2.6",                    -- flagship (default)
-        "kimi-k2.6-thinking",           -- reasoning
-        "kimi-k2-turbo-preview",        -- fast
+        -- Kimi K2.6 (current, multimodal). Probed on the INTERNATIONAL
+        -- platform 2026-08-15: it serves ONLY kimi-k2.6 (+ a k2.7-code slug),
+        -- thinks by default, and temperature is mode-locked (see
+        -- model_constraints kimi note). The -thinking and -turbo ids 404
+        -- there ("Not found ... or Permission denied") but stay listed for
+        -- CN-platform users (region split; codex-precedent: never strip
+        -- models that other plans/regions may serve — the error is clear).
+        "kimi-k2.6",                    -- flagship (default; the one id served internationally)
+        "kimi-k2.6-thinking",           -- reasoning (CN platform)
+        "kimi-k2-turbo-preview",        -- fast (CN platform)
     },
 
     together = {
@@ -420,8 +426,10 @@ local ModelLists = {
         -- probed — fireworks full batteries incl. tools wave 2, cohere live
         -- validation + the reasoning-parse fix. together/sambanova stay: keys
         -- exist but generation is credit/card-gated, so still unverified.)
+        -- (qwen + kimi promoted 2026-08-15 evening: keyed, validated, batteries
+        -- on the defaults, both native web-search wires probed working.)
         groq = true, together = true, sambanova = true,
-        requesty = true, qwen = true, kimi = true, doubao = true,
+        requesty = true, doubao = true,
         -- M1 additions (ex hosted presets)
         cerebras = true, minimax = true, deepinfra = true, novita = true,
         hyperbolic = true, nebius = true, chutes = true, featherless = true,
@@ -552,7 +560,7 @@ local ModelLists = {
             fireworks = "accounts/fireworks/models/gpt-oss-120b", -- llama-v3p3 deprecated 2026-05-14
             sambanova = "Meta-Llama-3.3-70B-Instruct",
             qwen = "qwen3.5-flash",
-            kimi = "kimi-k2-turbo-preview",
+            kimi = "kimi-k2.6", -- turbo-preview 404s on the international platform (2026-08-15); k2.6 serves everywhere
             doubao = "doubao-seed-2.0-lite",
             zai = "glm-5-turbo",
             perplexity = "sonar",
@@ -576,7 +584,7 @@ local ModelLists = {
             fireworks = "accounts/fireworks/models/gpt-oss-20b", -- smaller/faster sibling (in the array since the 2026-08-15 catalog refresh)
             sambanova = "Meta-Llama-3.3-70B-Instruct",
             qwen = "qwen-turbo",
-            kimi = "kimi-k2-turbo-preview",
+            kimi = "kimi-k2.6", -- turbo-preview 404s on the international platform (2026-08-15); k2.6 serves everywhere
             doubao = "doubao-seed-2.0-lite",
             zai = "glm-4.7-flash",
             perplexity = "sonar",

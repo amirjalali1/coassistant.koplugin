@@ -27,6 +27,16 @@ local ModelConstraints = {
         _provider_max_temperature = 1.0,
         -- Extended thinking also requires temp=1.0, handled separately in handler
     },
+    kimi = {
+        -- kimi-k2.6 international (probed 2026-08-15): temperature is
+        -- MODE-LOCKED — thinking on (the API default) accepts ONLY 1,
+        -- thinking disabled accepts ONLY 0.6; omitting it works in both
+        -- modes. The plugin never disables kimi thinking today, so forcing
+        -- 1.0 keeps every current request valid (our old 0.7 default 400'd).
+        -- If a future tool-session accommodation disables thinking
+        -- (deepseek-class, verified viable), it must adjust/drop temp too.
+        ["kimi-k2.6"] = { temperature = 1.0 },
+    },
     -- Add more providers/models as discovered
 }
 
@@ -241,6 +251,16 @@ ModelConstraints.capabilities = {
         -- Models with thinking toggle (chat_template_kwargs.enable_thinking)
         thinking = { "DeepSeek-V3.1", "DeepSeek-V3.2" },
     },
+    qwen = {
+        -- Probed live 2026-08-15 (DashScope international, model_audit battery):
+        -- qwen3-max = no default reasoning, temp free in [0, 2), out 65536,
+        -- tools + forced tool_choice + two-round replay all green (wave 2 —
+        -- ToolWire alias added same day). Other qwen ids unprobed for tools;
+        -- grant as batteries run. enable_search web probing: works server-side
+        -- (results injected; no sources on the compatible-mode wire) — handler
+        -- integration is a recorded follow-up, not a capability here.
+        tools = { "qwen3-max" },
+    },
     xai = {
         -- grok-4.6 supports reasoning_effort minimal..xhigh ("none" rejected — probe 2026-08-14);
         -- grok-4.5/4.3 and the grok-4.20 reasoning variant support reasoning_effort (none/low/medium/high)
@@ -332,6 +352,9 @@ ModelConstraints._max_output_tokens = {
     zai = {
         ["glm-5"] = 128000,              -- GLM-5.x documented 128K max output
         ["glm-4.7"] = 96000,             -- family ≥96K since GLM-4.5; exact value unprobed
+    },
+    qwen = {
+        ["qwen3-max"] = 65536,           -- ceiling from oversized-max_tokens error (probed 2026-08-15)
     },
     openrouter = {
         -- All values = top_provider.max_completion_tokens from the public

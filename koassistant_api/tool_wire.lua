@@ -198,6 +198,11 @@ ToolWire.adapters.xai = ToolWire.adapters.openai
 -- (fetchDerivedModelCaps) — local model names are user-specific, never curated.
 ToolWire.adapters.ollama = ToolWire.adapters.openai
 
+-- qwen: tools wave 2, PROBED live 2026-08-15 on DashScope international
+-- (qwen3-max: flat defs, forced tool_choice required/none, two-round replay
+-- through this adapter — all green; curated tools list carries membership).
+ToolWire.adapters.qwen = ToolWire.adapters.openai
+
 -- fireworks: tools wave 2, PROBED live 2026-08-15 on a keyed account (the
 -- model_audit battery's real-runner-spec legs: flat defs accepted, forced
 -- tool_choice "required"/"none" both honored, two-round replay through this

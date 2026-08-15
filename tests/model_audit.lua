@@ -1124,6 +1124,9 @@ local OPENAI_FAMILY = {
     deepseek   = { binary_key = "thinking" },   -- {type="enabled"/"disabled"}
     zai        = { binary_key = "thinking" },
     mistral    = {},                            -- no reasoning params (magistral always-on)
+    qwen       = {},                            -- DashScope compatible-mode; enable_thinking probing TODO (2026-08-15)
+    kimi       = {},                            -- Moonshot international; k2.6 has no reasoning params
+                                                -- CAUTION: lowest tier = org-wide 3 RPM — expect 429 retries
     openrouter = { reasoning_obj = true,        -- reasoning={effort=..}/{enabled=false}
                    extra_headers = { ["HTTP-Referer"] = "https://github.com/zeeyado/koassistant.koplugin",
                                      ["X-Title"] = "KOAssistant model audit" } },
@@ -2039,7 +2042,7 @@ local function probeModel(provider, model, api_key, verbose)
         facts = probeOpenAIFamily(provider, model, api_key, verbose)
     else
         printf("  %sno probe adapter for %q yet%s (have: anthropic, gemini, %s)",
-            C.red, provider, C.off, "openai/deepseek/xai/zai/mistral/perplexity/openrouter/groq/together/fireworks")
+            C.red, provider, C.off, "openai/deepseek/xai/zai/mistral/perplexity/openrouter/groq/together/fireworks/qwen/kimi")
         return nil
     end
 

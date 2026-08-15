@@ -113,13 +113,13 @@ end
 -- (fireworks + cohere promoted OUT 2026-08-15: keyed, catalog-validated,
 -- probed — they now assert NOT-community while keeping their tier rows.)
 for _idx, legacy in ipairs({ "groq", "together", "sambanova",
-                             "requesty", "qwen", "kimi", "doubao" }) do
+                             "requesty", "doubao" }) do
     TestRunner.assert(ModelLists.isCommunity(legacy),
         legacy .. " is in the community set (never maintainer-tested)")
     TestRunner.assert(ModelLists._tiers.standard[legacy] ~= nil,
         legacy .. " keeps its existing tier placements despite community relabel")
 end
-for _idx, promoted in ipairs({ "fireworks", "cohere" }) do
+for _idx, promoted in ipairs({ "fireworks", "cohere", "qwen", "kimi" }) do
     TestRunner.assert(not ModelLists.isCommunity(promoted),
         promoted .. " was promoted out of the community set (2026-08-15 keys session)")
     TestRunner.assert(ModelLists._tiers.standard[promoted] ~= nil,
