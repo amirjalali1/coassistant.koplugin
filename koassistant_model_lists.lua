@@ -61,11 +61,11 @@ local ModelLists = {
 
     gemini = {
         -- Gemini 3.x (current generation)
-        "gemini-3.6-flash",             -- standard (default)
-        "gemini-3.7-flash",             -- newest flash (probed 2026-08-15: thinks by default,
-                                        -- thinkingLevel accepted, free-tier grounding gated like
-                                        -- the rest of 3.x; rides the gemini-3 family fallbacks —
-                                        -- "minimal" effort unprobed, so no curated profile yet)
+        "gemini-3.7-flash",             -- newest flash (default since 2026-08-15; full free-key
+                                        -- battery: default thinking ON, effort low/medium/high,
+                                        -- MINIMAL rejected (unlike 3.6), tools + streaming green,
+                                        -- free-tier grounding gated like the rest of 3.x)
+        "gemini-3.6-flash",             -- previous default (kept available)
         "gemini-3.5-flash",             -- previous flash (kept available)
         "gemini-3.1-pro-preview",       -- flagship, reasoning (paid only; no 3.5/3.6 pro yet)
         "gemini-3.5-flash-lite",        -- fast/ultrafast (newest lite)
@@ -438,7 +438,7 @@ local ModelLists = {
         anthropic  = { "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929" },
         openai     = { "gpt-5.6-terra", "gpt-5.5", "gpt-5.4", "gpt-5.2" },
         openai_codex = { "gpt-5.6-terra", "gpt-5.5", "gpt-5.4" },
-        gemini     = { "gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-3-flash-preview" },
+        gemini     = { "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-3-flash-preview" },
         deepseek   = { "deepseek-v4-pro", "deepseek-chat" },
         ollama     = { "llama4", "llama3.3" },
         groq       = { "openai/gpt-oss-120b", "llama-3.3-70b-versatile" },
@@ -476,7 +476,7 @@ local ModelLists = {
             openai = "gpt-5.6-sol",
             openai_codex = "gpt-5.6-sol",
             deepseek = "deepseek-v4-pro",
-            gemini = "gemini-3.6-flash",             -- Pro models are paid-only; keep tier free-tier usable (3.6 flash assumed free-tier)
+            gemini = "gemini-3.7-flash",             -- Pro models are paid-only; keep tier free-tier usable (3.7-flash battery-probed on a free key 2026-08-15)
             groq = "openai/gpt-oss-120b",            -- llama picks deprecated by Groq 2026-08-16
             mistral = "mistral-large-latest",
             xai = "grok-4.6",
@@ -500,7 +500,7 @@ local ModelLists = {
             openai = "gpt-5.6-terra",  -- standard/default
             openai_codex = "gpt-5.6-terra",
             deepseek = "deepseek-v4-flash",
-            gemini = "gemini-3.6-flash",
+            gemini = "gemini-3.7-flash",
             groq = "openai/gpt-oss-120b",
             mistral = "mistral-medium-latest",
             xai = "grok-4.20-0309-non-reasoning",

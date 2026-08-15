@@ -126,19 +126,19 @@ ModelConstraints.capabilities = {
         -- Gemini 3 models use thinkingLevel (minimal/low/medium/high).
         -- "gemini-3" = FAMILY FALLBACK (item 19a): new 3.x minors inherit without a
         -- plugin update; the specific entries stay for documentation value.
-        thinking = { "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite", "gemini-3" },
+        thinking = { "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite", "gemini-3" },
         -- Gemini 2.5 models use thinkingBudget (0=off, -1=dynamic, 128-24576)
         thinking_budget = { "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite" },
         -- Google Search grounding ("gemini-3" = family fallback)
         google_search = {
-            "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite",
+            "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite",
             "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite",
             "gemini-3",
         },
         -- Function calling for the book-tool workflows (same models as google_search).
         -- The runner's shouldUse gates on this + a tool_wire.lua adapter being registered.
         tools = {
-            "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite",
+            "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite",
             "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite",
             "gemini-3",
         },
@@ -718,6 +718,14 @@ ModelConstraints.reasoning_profiles = {
     gemini = {
         -- Gemini 3 (thinkingLevel). Pro has no "minimal" floor; flash variants do.
         { match = "gemini-3.1-pro-preview", axis = "effort", default_state = "on",
+          can_disable = false, can_enable = true,
+          options = { "low", "medium", "high" }, default_option = "high",
+          stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
+        -- gemini-3.7-flash (full free-key battery 2026-08-15): pro-shaped, NOT a 3.6
+        -- mirror — thinkingLevel MINIMAL is REJECTED ("not supported for this model");
+        -- low/medium/high probed OK, default thinking ON (362 thought tokens bare),
+        -- temp free, tools + gather/final modes + replay + SSE all green.
+        { match = "gemini-3.7-flash", axis = "effort", default_state = "on",
           can_disable = false, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
