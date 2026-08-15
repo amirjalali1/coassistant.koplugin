@@ -914,6 +914,35 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
         iw:scrollToBottom()
     end
 
+    -- Paused in page mode: keep padding the CURRENT page — no page advance, no
+    -- scroll. Without this, the paused tick's unpadded setText re-init hits
+    -- TextBoxWidget's no-blank-at-end clamp (scrollViewToCharPos,
+    -- max_empty_lines = 0) and yanks the frozen view up by however much of the
+    -- page was still blank — "pressing Autoscroll OFF moves you up almost a
+    -- whole page" (2026-08-15 device round). The reader's page stays put; text
+    -- keeps filling it, and once real content passes the page end the padding
+    -- condition stops applying by itself.
+    local function holdPageScroll(iw, display, keep_charpos, keep_top)
+        local stw = iw.text_widget
+        local inner = stw and stw.text_widget
+        if not inner or not inner.lines_per_page or inner.lines_per_page <= 0 then return end
+        local lpp = inner.lines_per_page
+        local total_lines = #(inner.vertical_string_list or {})
+        local page_end = page_top_line + lpp - 1
+        if total_lines < page_end then
+            -- The unpadded setText that just ran clamp-yanked the view AND
+            -- initTextBox's trailing resyncPos ("Get back possibly modified
+            -- charpos and virtual_line_num") wrote the yanked position back
+            -- onto the InputText — restore the reader's pre-tick position
+            -- first, or the padded re-init below re-reads the yank and the
+            -- freeze fails exactly as before (2026-08-15 second report)
+            if keep_top then
+                iw.charpos, iw.top_line_num = keep_charpos, keep_top
+            end
+            iw:setText(display .. string.rep("\n", page_end - total_lines), true)
+        end
+    end
+
     -- Reading-position carry (forward-declared above finishStream): when the
     -- reader paused the follow (setting off, button, or by scrolling) and the
     -- stream ends, capture the response text at the TOP of their current view.
@@ -1012,9 +1041,16 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
             ui_update_task = nil
             if not completed and streamDialog and streamDialog._input_widget then
                 local iw = streamDialog._input_widget
+                local keep_charpos, keep_top
                 if not auto_scroll_active then
                     -- Preserve user's manual scroll position
                     iw:resyncPos()
+                    -- Capture NOW: the unpadded setText below clamp-yanks the
+                    -- view once the page padding vanishes (no-blank-at-end),
+                    -- and initTextBox's trailing resyncPos writes the YANKED
+                    -- position back onto the InputText — holdPageScroll
+                    -- restores from these before re-initing with padding
+                    keep_charpos, keep_top = iw.charpos, iw.top_line_num
                 end
                 local display
                 if hidden_streaming and not hidden_output_visible then
@@ -1042,11 +1078,15 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
                 end
                 iw:setText(display, true)
 
-                if auto_scroll_active and not (hidden_streaming and not hidden_output_visible) then
-                    if page_scroll then
-                        applyPageScroll(iw, display)
-                    else
-                        iw:scrollToBottom()
+                if not (hidden_streaming and not hidden_output_visible) then
+                    if auto_scroll_active then
+                        if page_scroll then
+                            applyPageScroll(iw, display)
+                        else
+                            iw:scrollToBottom()
+                        end
+                    elseif page_scroll then
+                        holdPageScroll(iw, display, keep_charpos, keep_top)
                     end
                 end
             end
@@ -1218,11 +1258,14 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
     -- tail with no way to pause by scrolling. turnOffAutoScroll no-ops while
     -- following is already off, so the hooks are inert until it matters.
     --
-    -- Directional rule: an UPWARD scroll always pauses, even a no-op one —
-    -- page-up on page 1 means "let me look back" (the long-standing behavior).
-    -- A DOWNWARD scroll pauses only when the view actually moved: page-down
-    -- while sitting at the tail moves nothing, and silently stopping the
-    -- follow there left the stream stalled exactly where the reader wanted it.
+    -- Directional rule: an UPWARD step input (button, key, swipe) while
+    -- FOLLOWING pauses in place and is CONSUMED — "stop the page where it is"
+    -- (maintainer 2026-08-15); looking back is the NEXT press, which scrolls
+    -- normally once following is off. A DOWNWARD scroll pauses only when the
+    -- view actually moved: page-down while sitting at the tail moves nothing,
+    -- and silently stopping the follow there left the stream stalled exactly
+    -- where the reader wanted it. Pan/drag is direct manipulation — it pauses
+    -- AND honors the dragged position, never consumed.
     do
         local function innerLineNum(stw)
             local tb = stw and stw.text_widget
@@ -1234,7 +1277,11 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
         -- inner hooks below never see them).
         local original_scrollUp = streamDialog._input_widget.scrollUp
         streamDialog._input_widget.scrollUp = function(self_widget, ...)
-            turnOffAutoScroll("scroll-up button")
+            if auto_scroll_active then
+                -- First upward press while following: freeze in place, eat the scroll
+                turnOffAutoScroll("scroll-up button")
+                return
+            end
             return original_scrollUp(self_widget, ...)
         end
 
@@ -1261,7 +1308,11 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
             if orig_scrollText then
                 inner.scrollText = function(self_w, direction, ...)
                     if direction and direction < 0 then
-                        turnOffAutoScroll("swipe/key up")
+                        if auto_scroll_active then
+                            -- First upward step while following: freeze in place
+                            turnOffAutoScroll("swipe/key up")
+                            return
+                        end
                         return orig_scrollText(self_w, direction, ...)
                     end
                     local before = innerLineNum(self_w)
@@ -1294,7 +1345,12 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
             local orig_onScrollUp = inner.onScrollUp
             if orig_onScrollUp then
                 inner.onScrollUp = function(self_w, ...)
-                    turnOffAutoScroll("page-up")
+                    if auto_scroll_active then
+                        -- First upward key while following: freeze in place,
+                        -- consume the event (true = handled, no propagation)
+                        turnOffAutoScroll("page-up")
+                        return true
+                    end
                     return orig_onScrollUp(self_w, ...)
                 end
             end
