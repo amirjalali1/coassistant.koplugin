@@ -412,6 +412,71 @@ TestRunner:test("mark entities: families mapped, excluded categories out, norms 
     TestRunner:eq(by_name["Mira"].terms[1].norm, "mira")
 end)
 
+TestRunner:suite("sanitizeEntries — weak-model schema garbage (2026-08-15 A0)")
+TestRunner:test("foreign-schema/no-content entries dropped, legit sparse entries kept", function()
+    local d = {
+        characters = {
+            { name = "Jack", description = "a man" },                       -- keep: content
+            { name = "Wendy", role = "his wife" },                          -- keep: role counts
+            { name = "GHOST_A", relationships = {}, current_position = "hall",
+              current_state = "fiction" },                                  -- drop: zero content fields
+            { name = "Hollow", aliases = { "H" } },                         -- drop: aliases don't count
+        },
+        locations = {
+            { name = "Overlook", significance = "the hotel" },              -- keep
+            { name = "BARE_PLACE" },                                        -- drop: name only
+        },
+    }
+    local dropped = XrayParser.sanitizeEntries(d)
+    TestRunner:eq(dropped, 3, "dropped count")
+    TestRunner:eq(#d.characters, 2, "characters kept")
+    TestRunner:eq(d.characters[1].name, "Jack", "order preserved 1")
+    TestRunner:eq(d.characters[2].name, "Wendy", "order preserved 2")
+    TestRunner:eq(#d.locations, 1, "locations kept")
+end)
+TestRunner:test("missing/empty name field drops regardless of content", function()
+    local d = { characters = {
+        { description = "orphaned description with no name" },
+        { name = "", description = "empty name" },
+        { name = "Danny", description = "the son" },
+    } }
+    TestRunner:eq(XrayParser.sanitizeEntries(d), 2, "two dropped")
+    TestRunner:eq(#d.characters, 1, "one kept")
+end)
+TestRunner:test("event lists keep name-only entries; term categories use their fields", function()
+    local d = {
+        type = "fiction",  -- classify: lexicon/timeline are fiction categories
+        timeline = { { event = "The family arrives", chapter = "1" } },     -- keep: event IS content
+        lexicon = {
+            { term = "shining", definition = "the gift" },                  -- keep
+            { term = "bare_term" },                                         -- drop: no definition/content
+        },
+    }
+    TestRunner:eq(XrayParser.sanitizeEntries(d), 1, "one dropped")
+    TestRunner:eq(#d.timeline, 1, "timeline untouched")
+    TestRunner:eq(#d.lexicon, 1, "lexicon garbage dropped")
+end)
+TestRunner:test("connections-only entries count as content; arrays checked non-empty", function()
+    local d = { characters = {
+        { name = "Linked", connections = { "Jack" } },                      -- keep: array content
+        { name = "Empty", connections = {} },                               -- drop: empty array
+    } }
+    TestRunner:eq(XrayParser.sanitizeEntries(d), 1, "one dropped")
+    TestRunner:eq(d.characters[1].name, "Linked", "connections-only kept")
+end)
+TestRunner:test("singletons and the dormant ledger are untouched", function()
+    local d = {
+        characters = { { name = "Jack", description = "a man" } },
+        current_state = { summary = "mid-book" },
+        conclusion = { summary = "the end" },
+        [XrayParser.DORMANT_KEY] = { { name = "Carried", category = "characters" } },
+    }
+    TestRunner:eq(XrayParser.sanitizeEntries(d), 0, "nothing dropped")
+    TestRunner:ok(d.current_state and d.current_state.summary == "mid-book", "current_state intact")
+    TestRunner:ok(d.conclusion and d.conclusion.summary == "the end", "conclusion intact")
+    TestRunner:eq(#d[XrayParser.DORMANT_KEY], 1, "dormant ledger intact")
+end)
+
 print("")
 print(string.rep("-", 50))
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))

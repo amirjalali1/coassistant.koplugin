@@ -5015,6 +5015,11 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     -- a background field would replace the stored one — drop them
                     -- from every fresh response before any merge
                     XrayParser.dropModelBackground(parsed)
+                    -- 2026-08-15 (A0): drop foreign-schema/no-content entries
+                    -- before they can become (or merge into) the artifact —
+                    -- weak local models emitted entries with no description
+                    -- that polluted the installed X-Ray verbatim
+                    XrayParser.sanitizeEntries(parsed)
                     -- Merge partial update into existing data when available
                     if using_cache and message_data._parsed_old_xray then
                         -- To debug X-Ray merge: uncomment koassistant_debug_utils.dumpXrayMerge() below
@@ -5092,27 +5097,39 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                                 parsed, cache_file, ui)
                         end)
                     end
-                    local book_meta = message_data.book_metadata or {}
-                    local display_progress = message_data.reading_progress or ""
-                    if config.features and config.features._full_document_xray then
-                        display_progress = "Complete"
-                    end
-                    -- Round 28 (#90 crash.log): a render crash must cost the
-                    -- markdown view only — never the merged artifact or the app
-                    local render_ok, rendered = pcall(XrayParser.renderToMarkdown,
-                        parsed,
-                        book_meta.title or "",
-                        display_progress
-                    )
-                    if render_ok then
-                        display_answer = rendered
+                    if not using_cache and not XrayParser.hasEntityContent(parsed) then
+                        -- Post-sanitize re-check (2026-08-15, A0): a create whose
+                        -- entries were ALL dropped as malformed must not become an
+                        -- empty artifact — same verdict as the round-28 no-entity
+                        -- gate above (updates stay exempt: a small delta may
+                        -- legitimately touch only singletons). Raw text stays on
+                        -- display so the user can see what the model produced.
+                        xray_unusable = _("the response was missing X-Ray content (no characters or other entries)")
+                        cache_answer = nil
+                        logger.info("KOAssistant: X-Ray create had only malformed entries after sanitize, skipping cache")
                     else
-                        logger.warn("KOAssistant: X-Ray render failed, showing raw response:", rendered)
+                        local book_meta = message_data.book_metadata or {}
+                        local display_progress = message_data.reading_progress or ""
+                        if config.features and config.features._full_document_xray then
+                            display_progress = "Complete"
+                        end
+                        -- Round 28 (#90 crash.log): a render crash must cost the
+                        -- markdown view only — never the merged artifact or the app
+                        local render_ok, rendered = pcall(XrayParser.renderToMarkdown,
+                            parsed,
+                            book_meta.title or "",
+                            display_progress
+                        )
+                        if render_ok then
+                            display_answer = rendered
+                        else
+                            logger.warn("KOAssistant: X-Ray render failed, showing raw response:", rendered)
+                        end
+                        -- Pretty-print cached JSON so future updates receive readable structured data
+                        local json_mod = require("json")
+                        cache_answer = json_mod.encode(parsed, { pretty = true, indent = true })
+                        logger.info("KOAssistant: X-Ray JSON parsed successfully, rendered to markdown for display")
                     end
-                    -- Pretty-print cached JSON so future updates receive readable structured data
-                    local json_mod = require("json")
-                    cache_answer = json_mod.encode(parsed, { pretty = true, indent = true })
-                    logger.info("KOAssistant: X-Ray JSON parsed successfully, rendered to markdown for display")
                 else
                     -- Round 28 (#90): junk must never OVERWRITE a real X-Ray. With
                     -- no previous X-Ray the legacy behavior stands (the raw text is

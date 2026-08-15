@@ -619,7 +619,10 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
         -- Capture the reader's spot BEFORE the dialog closes: if they paused the
         -- follow and were reading mid-response, the completion viewer lands there.
         -- Captured always, handed over only on the success path below.
-        local read_pos_snippet = captureReadPosition and captureReadPosition() or nil
+        local read_pos_snippet, read_pos_occurrence
+        if captureReadPosition then
+            read_pos_snippet, read_pos_occurrence = captureReadPosition()
+        end
         cleanup()
         -- Clear streaming flag immediately (all exit paths)
         _G.KOAssistantStreaming = nil
@@ -829,8 +832,10 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
         -- once by the completion viewer's landing (TTL-guarded there — a stream
         -- that completes into a non-chat surface never consumes it).
         if read_pos_snippet then
-            StreamHandler.pending_read_position = { snippet = read_pos_snippet, ts = os.time() }
-            logger.info("KOAssistant: stream read-position captured,", #read_pos_snippet, "bytes")
+            StreamHandler.pending_read_position = { snippet = read_pos_snippet,
+                occurrence = read_pos_occurrence, ts = os.time() }
+            logger.info("KOAssistant: stream read-position captured,", #read_pos_snippet,
+                "bytes, occurrence:", read_pos_occurrence or 1)
         end
         if on_complete then on_complete(true, result, nil, reasoning_content, search_used, usage_data) end
 
@@ -938,7 +943,28 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
         -- some lines", logged device round).
         local snippet = table.concat(charlist, "", line.offset, math.min(#charlist, line.offset + 320))
         if snippet:match("^%s*$") then return nil end
-        return snippet
+        -- Occurrence ordinal (2026-08-15): short anchors (Arabic especially)
+        -- can repeat inside the reply — count how many times the anchor the
+        -- viewer will extract from this snippet already occurred BEFORE the
+        -- reader's line, so the completion viewer splits at THEIR occurrence
+        -- instead of blindly at the first after the reply marker. Shared
+        -- extractor (viewer export) so both sides count the same text.
+        local occurrence
+        local ok_v, Viewer = pcall(require, "koassistant_chatgptviewer")
+        local anchor = ok_v and Viewer.extractCarryAnchor
+            and Viewer.extractCarryAnchor(snippet) or nil
+        if anchor and line.offset > 1 then
+            local prefix = table.concat(charlist, "", 1, line.offset - 1)
+            occurrence = 1
+            local from = 1
+            while true do
+                local s = prefix:find(anchor, from, true)
+                if not s then break end
+                occurrence = occurrence + 1
+                from = s + 1
+            end
+        end
+        return snippet, occurrence
     end
 
     -- Hidden streaming: build placeholder text with animated dots

@@ -261,18 +261,45 @@ end
 -- pipes) and may be stripped in plain-text mode. Split on syntax chars and
 -- newlines, take the first clean run's first ~4 words with their original
 -- inter-word punctuation — every search that uses the anchor is literal.
+-- UTF-8 aware char count / prefix. The anchor gates below are CHARACTER
+-- counts: byte counts passed 6-character Arabic runs as "long enough to be
+-- unique" (2-3 bytes per char) and rejected every CJK run outright, so Arabic
+-- landings split at the wrong paragraph and CJK carries never fired
+-- (2026-08-15 device round).
+local function ulen(s)
+  local _stripped, n = s:gsub("[^\128-\191]", "")
+  return n
+end
+local function uprefix(s, n)
+  local count, i, len = 0, 1, #s
+  while i <= len do
+    local c = s:byte(i)
+    local step = (c >= 240 and 4) or (c >= 224 and 3) or (c >= 192 and 2) or 1
+    count = count + 1
+    if count == n then return s:sub(1, i + step - 1) end
+    i = i + step
+  end
+  return s
+end
+
 local function extractCarryAnchor(snippet)
   if type(snippet) ~= "string" then return nil end
   for raw_run in snippet:gmatch("[^\n%*_#>|~%[%]%(%)`]+") do
     local run = raw_run:match("^%s*(.-)%s*$") or ""
     -- List markers render as bullets/numbers the search would never see
     run = run:gsub("^[-+]%s+", ""):gsub("^%d+%.%s+", "")
-    if #run >= 12 and not run:find("://", 1, true) then
-      local words = run:match("%S+%s+%S+%s+%S+%s+%S+")
-      local candidate = (words and #words >= 12) and words or run
-      if #candidate <= 100 then
-        return candidate
+    if ulen(run) >= 12 and not run:find("://", 1, true) then
+      -- Prefer ~6 words (4 was ambiguity-prone in Arabic, where short words
+      -- are the norm), fall back to 4. A spaceless script (CJK) matches
+      -- neither and takes a bounded character prefix of the run instead —
+      -- the old whole-run candidate always overflowed the byte cap there.
+      local words = run:match("%S+%s+%S+%s+%S+%s+%S+%s+%S+%s+%S+")
+        or run:match("%S+%s+%S+%s+%S+%s+%S+")
+      local candidate = (words and ulen(words) >= 12) and words or run
+      if ulen(candidate) > 100 then
+        candidate = uprefix(candidate, 32)
       end
+      return candidate
     end
   end
   return nil
@@ -291,16 +318,19 @@ end
 -- 15b 500-char version of this skip ate the first-message carry entirely) and
 -- spot-at-the-reply-start (the reply marker break already tops it).
 -- Display-only, like the reply break.
-local function applyCarryPageBreak(html_body, carry_anchor)
+local function applyCarryPageBreak(html_body, carry_anchor, carry_occurrence)
   if not carry_anchor then return html_body end
-  -- The anchor came from the NEWEST reply, so scope the search to it: first
-  -- occurrence AFTER the newest reply marker. "Last occurrence overall"
-  -- mis-split when the phrase repeats INSIDE the reply itself (device
-  -- 2026-08-13: a duplicated sentence landed the reader on the second copy —
-  -- the reply is generated linearly, the reader's spot is the earliest
-  -- occurrence). Marker-less bodies (streamed artifact text) keep the
-  -- last-occurrence rule: no marker to scope by, and last still beats first
-  -- across older turns.
+  -- The anchor came from the NEWEST reply, so scope the search to it: the
+  -- reader's occurrence AFTER the newest reply marker. "Last occurrence
+  -- overall" mis-split when the phrase repeats INSIDE the reply itself
+  -- (device 2026-08-13: a duplicated sentence landed the reader on the
+  -- second copy). 2026-08-15: short anchors (Arabic especially) repeat more
+  -- than long English ones, so the capture side now counts the anchor's
+  -- ordinal BEFORE the reader's line and this walks to THAT occurrence
+  -- (fewer hits than counted keeps the last one found — best effort; no
+  -- ordinal = 1 = the old first-after-marker rule). Marker-less bodies
+  -- (streamed artifact text) keep the last-occurrence rule: no marker to
+  -- scope by, and last still beats first across older turns.
   local marker = "<p>◉ KOAssistant:</p>"
   local mpos, msearch = nil, 1
   while true do
@@ -311,7 +341,15 @@ local function applyCarryPageBreak(html_body, carry_anchor)
   end
   local anchor_pos
   if mpos then
-    anchor_pos = html_body:find(carry_anchor, mpos + #marker, true)
+    local remaining = tonumber(carry_occurrence) or 1
+    local from = mpos + #marker
+    while remaining > 0 do
+      local s = html_body:find(carry_anchor, from, true)
+      if not s then break end
+      anchor_pos = s
+      remaining = remaining - 1
+      from = s + 1
+    end
   end
   if not anchor_pos then
     local search_start = 1
@@ -347,16 +385,20 @@ local function applyCarryPageBreak(html_body, carry_anchor)
     return html_body
   end
   -- Nothing-above guard: whitespace-collapsed visible text before the spot
-  -- under ~40 chars means at most a bare marker line would fill the page
+  -- under ~40 CHARS means at most a bare marker line would fill the page
   local visible_prefix = html_body:sub(1, anchor_pos - 1):gsub("<[^>]*>", ""):gsub("%s+", "")
-  if #visible_prefix < 40 then
+  if ulen(visible_prefix) < 40 then
     logger.info("KOAssistant: carry page break — skipped, nothing above the spot")
     return html_body
   end
   -- Spot at the newest reply's very start: the marker break already tops it
-  -- (marker/mpos computed at the top for the scoped anchor search)
+  -- (marker/mpos computed at the top for the scoped anchor search). Bidi
+  -- marks (RLM/RLI/PDI) count as nothing — this runs POST-bidi since
+  -- 2026-08-15, and an RTL first paragraph starts with an inserted mark.
+  local RLM = "\226\128\143"
   if mpos and mpos < anchor_pos then
     local between = html_body:sub(mpos + #marker, anchor_pos - 1):gsub("<[^>]*>", "")
+      :gsub(RLM, ""):gsub("\226\129[\167\169]", "")
     if between:match("^%s*$") then
       logger.info("KOAssistant: carry page break — spot is the reply start, marker break suffices")
       return html_body
@@ -366,8 +408,20 @@ local function applyCarryPageBreak(html_body, carry_anchor)
   if best_tag == "p" then
     local content_start = html_body:find(">", best, true)
     content_start = content_start and (content_start + 1) or best
+    -- Post-bidi paragraphs may carry attributes (text-align for RTL) and a
+    -- leading direction mark: the reopened half must copy the opening tag
+    -- verbatim (and the RLM) or the landed half flips to LTR — the visible
+    -- "Arabic starts a line" mis-render (2026-08-15 device round)
+    local open_tag = html_body:sub(best, content_start - 1)
+    local starts_rli = html_body:sub(content_start, content_start + 2) == "\226\129\167"
     local before_in_block = html_body:sub(content_start, anchor_pos - 1):gsub("<[^>]*>", "")
-    if not before_in_block:match("^%s*$") then
+      :gsub(RLM, "")
+    if starts_rli then
+      -- RLI-isolated paragraph (bullet conversion): a mid-split would strand
+      -- the isolate unbalanced across the break — fall through to the
+      -- before-block break below (bullets are short; near-exact anyway)
+      logger.info("KOAssistant: carry page break — isolate paragraph, breaking before block")
+    elseif not before_in_block:match("^%s*$") then
       -- Mid-paragraph spot: split at the anchor. Balance walk over inline tags
       -- between the paragraph's start and the anchor — depth 0 at the anchor
       -- means a clean cut; otherwise back the split to just before the open run
@@ -391,9 +445,15 @@ local function applyCarryPageBreak(html_body, carry_anchor)
         j = ts + 1
       end
       local split_at = depth > 0 and last_balanced or anchor_pos
+      local reopen = open_tag
+      if html_body:sub(content_start, content_start + 2) == RLM then
+        -- Keep the original base-direction mark on the landed half
+        reopen = reopen .. RLM
+      end
       logger.info("KOAssistant: carry page break — paragraph split at reader's line",
-        depth > 0 and "(backed to tag-balanced point)" or "(exact)")
-      return html_body:sub(1, split_at - 1) .. "</p>" .. DIV .. "<p>" .. html_body:sub(split_at)
+        depth > 0 and "(backed to tag-balanced point)" or "(exact)",
+        "anchor chars:", ulen(carry_anchor), "occurrence:", tonumber(carry_occurrence) or 1)
+      return html_body:sub(1, split_at - 1) .. "</p>" .. DIV .. reopen .. html_body:sub(split_at)
     end
     -- Spot at the paragraph's first words: plain break before the block
   end
@@ -401,10 +461,15 @@ local function applyCarryPageBreak(html_body, carry_anchor)
   return html_body:sub(1, best - 1) .. DIV .. html_body:sub(best)
 end
 
-local function applyExchangePageBreaks(html_body, configuration, carry_anchor)
+local function applyExchangePageBreaks(html_body, configuration, carry_anchor, carry_occurrence)
+  -- Runs AFTER addHtmlBidiAttributes since 2026-08-15: splitting a mixed
+  -- Arabic paragraph BEFORE the bidi pass made the two halves classify
+  -- differently (isPureRTL = has-RTL AND no-Latin), so the landed half
+  -- rendered left-aligned. Post-bidi, the splitter copies the classified
+  -- opening tag onto the reopened half instead.
   -- The carry break rides its own setting (stream_keep_read_position, gated at
   -- capture time) — it must not die with the exchange-break toggle below
-  html_body = applyCarryPageBreak(html_body, carry_anchor)
+  html_body = applyCarryPageBreak(html_body, carry_anchor, carry_occurrence)
   local f = configuration and configuration.features
   -- Default ON since 2026-08-12 (maintainer: no longer experimental)
   if f and f.chat_exchange_page_breaks == false then return html_body end
@@ -1646,8 +1711,10 @@ function ChatGPTViewer:init()
       SH.pending_read_position = nil
       if type(pending.snippet) == "string" and os.time() - (pending.ts or 0) <= 15 then
         self._stream_carry_anchor = extractCarryAnchor(pending.snippet)
+        self._stream_carry_occurrence = pending.occurrence
         logger.info("KOAssistant: stream carry anchor:",
-          self._stream_carry_anchor or "none (no usable text in snippet)")
+          self._stream_carry_anchor or "none (no usable text in snippet)",
+          "occurrence:", pending.occurrence or 1)
       else
         logger.info("KOAssistant: stream carry — stale slot dropped")
       end
@@ -3036,10 +3103,13 @@ function ChatGPTViewer:init()
       -- Fallback to plain text if HTML generation fails
       html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
     end
-    html_body = applyExchangePageBreaks(html_body, self.configuration, self._stream_carry_anchor)
     -- For dictionary popup with RTL language, use "starts with RTL" detection
     local bidi_opts = { use_starts_with_rtl = needs_rtl_fix }
     html_body = addHtmlBidiAttributes(html_body, bidi_opts)
+    -- Page breaks run POST-bidi (2026-08-15): the paragraph splitter copies
+    -- the classified opening tag so a split Arabic paragraph keeps direction
+    html_body = applyExchangePageBreaks(html_body, self.configuration,
+      self._stream_carry_anchor, self._stream_carry_occurrence)
     self.scroll_text_w = ScrollHtmlWidget:new {
       html_body = html_body,
       css = getViewerCSS(self.text_align),
@@ -4560,12 +4630,15 @@ function ChatGPTViewer:update(new_text, scroll_to_bottom)
       logger.warn("ChatGPTViewer: could not generate HTML", err)
       html_body = "<pre>" .. (new_text or "Missing text.") .. "</pre>"
     end
-    html_body = applyExchangePageBreaks(html_body, self.configuration, self._stream_carry_anchor)
     -- For dictionary popup with RTL language, use "starts with RTL" detection
     local dict_lang = self.configuration and self.configuration.features
         and self.configuration.features.dictionary_language
     local bidi_opts = { use_starts_with_rtl = (self.compact_view or self.dictionary_view) and Languages.isRTL(dict_lang) }
     html_body = addHtmlBidiAttributes(html_body, bidi_opts)
+    -- Page breaks run POST-bidi (2026-08-15): the paragraph splitter copies
+    -- the classified opening tag so a split Arabic paragraph keeps direction
+    html_body = applyExchangePageBreaks(html_body, self.configuration,
+      self._stream_carry_anchor, self._stream_carry_occurrence)
 
     -- Recreate the ScrollHtmlWidget with new content
     self.scroll_text_w = ScrollHtmlWidget:new {
@@ -4740,10 +4813,13 @@ function ChatGPTViewer:rebuildScrollWidget()
       logger.warn("ChatGPTViewer: could not generate HTML", err)
       html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
     end
-    html_body = applyExchangePageBreaks(html_body, self.configuration, self._stream_carry_anchor)
     -- For dictionary popup with RTL language, use "starts with RTL" detection
     local bidi_opts = { use_starts_with_rtl = needs_rtl_fix }
     html_body = addHtmlBidiAttributes(html_body, bidi_opts)
+    -- Page breaks run POST-bidi (2026-08-15): the paragraph splitter copies
+    -- the classified opening tag so a split Arabic paragraph keeps direction
+    html_body = applyExchangePageBreaks(html_body, self.configuration,
+      self._stream_carry_anchor, self._stream_carry_occurrence)
     self.scroll_text_w = ScrollHtmlWidget:new {
       html_body = html_body,
       css = getViewerCSS(self.text_align),
@@ -5354,12 +5430,15 @@ function ChatGPTViewer:toggleTranslateQuoteVisibility()
       logger.warn("ChatGPTViewer: could not generate HTML", err)
       html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
     end
-    html_body = applyExchangePageBreaks(html_body, self.configuration, self._stream_carry_anchor)
     -- For dictionary popup with RTL language, use "starts with RTL" detection
     local dict_lang = self.configuration and self.configuration.features
         and self.configuration.features.dictionary_language
     local bidi_opts = { use_starts_with_rtl = (self.compact_view or self.dictionary_view) and Languages.isRTL(dict_lang) }
     html_body = addHtmlBidiAttributes(html_body, bidi_opts)
+    -- Page breaks run POST-bidi (2026-08-15): the paragraph splitter copies
+    -- the classified opening tag so a split Arabic paragraph keeps direction
+    html_body = applyExchangePageBreaks(html_body, self.configuration,
+      self._stream_carry_anchor, self._stream_carry_occurrence)
     self.scroll_text_w = ScrollHtmlWidget:new {
       html_body = html_body,
       css = getViewerCSS(self.text_align),
@@ -6255,12 +6334,15 @@ function ChatGPTViewer:refreshMarkdownDisplay()
     logger.warn("ChatGPTViewer: could not generate HTML", err)
     html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
   end
-  html_body = applyExchangePageBreaks(html_body, self.configuration, self._stream_carry_anchor)
   -- For dictionary popup with RTL language, use "starts with RTL" detection
   local dict_lang = self.configuration and self.configuration.features
       and self.configuration.features.dictionary_language
   local bidi_opts = { use_starts_with_rtl = (self.compact_view or self.dictionary_view) and Languages.isRTL(dict_lang) }
   html_body = addHtmlBidiAttributes(html_body, bidi_opts)
+  -- Page breaks run POST-bidi (2026-08-15): the paragraph splitter copies
+  -- the classified opening tag so a split Arabic paragraph keeps direction
+  html_body = applyExchangePageBreaks(html_body, self.configuration,
+    self._stream_carry_anchor, self._stream_carry_occurrence)
 
   -- Calculate current height
   local textw_height = self.textw:getSize().h
@@ -6295,5 +6377,11 @@ end
 ChatGPTViewer.stripMarkdown = stripMarkdown
 ChatGPTViewer.fixIPABidi = fixIPABidi
 ChatGPTViewer.hasDominantRTL = hasDominantRTL
+
+-- Exported for the stream capture side (2026-08-15): the occurrence ordinal
+-- must be counted against the SAME anchor the viewer will extract, so the
+-- extractor is shared rather than duplicated (inline-required there — no
+-- module cycle: capture runs long after both modules are loaded)
+ChatGPTViewer.extractCarryAnchor = extractCarryAnchor
 
 return ChatGPTViewer

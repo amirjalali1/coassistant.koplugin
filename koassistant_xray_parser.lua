@@ -953,6 +953,82 @@ function XrayParser.dropModelBackground(data)
     end
 end
 
+-- Fields whose presence makes an entry worth keeping: identity alone (name/
+-- term/event, aliases, chapter) is not an entry. Mirrors the schema vocabulary
+-- in prompts/actions.lua across all three tracks.
+local SANITIZE_CONTENT_FIELDS = { "role", "description", "significance",
+    "importance", "details", "definition", "evidence" }
+local SANITIZE_CONTENT_ARRAYS = { "connections", "references", "characters" }
+
+--- 2026-08-15 (device round, A0): weak models can emit foreign-schema entries
+--- (e.g. {relationships={}, current_position=..., current_state=...} carrying
+--- no description at all) that parse fine and merge verbatim into the live
+--- artifact. Drop entries that lack their name field or carry ZERO known
+--- content fields, and say so in the log (one warn per affected category —
+--- background/ladder builds surface it there). Same contract as
+--- dropModelBackground above: runs ONLY on freshly parsed MODEL responses
+--- before a merge/write, never on stored artifacts (their sparse legacy
+--- entries keep displaying). Append/event lists (timeline,
+--- argument_development) keep name-only entries — the event text IS the
+--- content. `__dormant` is untouched by construction (getCategories never
+--- yields it); parse/normalizeItem stay permissive so shape-healing
+--- (arrays-as-maps, string items) keeps working upstream of this gate.
+--- @param data table Freshly parsed model response (mutated)
+--- @return number dropped Total entries dropped
+function XrayParser.sanitizeEntries(data)
+    if type(data) ~= "table" then return 0 end
+    local total = 0
+    for _idx, cat in ipairs(XrayParser.getCategories(data)) do
+        local list = data[cat.key]
+        if not NON_ENTITY_KEYS[cat.key] and type(list) == "table" then
+            local name_field = ENTITY_NAME_FIELD[cat.key] or "name"
+            local event_list = name_field == "event"
+            local kept, dropped = {}, 0
+            for _idx2, item in ipairs(list) do
+                local ok = false
+                if type(item) == "table" then
+                    local id = item[name_field]
+                    if type(id) == "string" and id ~= "" then
+                        if event_list then
+                            ok = true
+                        else
+                            for _idx3, f in ipairs(SANITIZE_CONTENT_FIELDS) do
+                                local v = item[f]
+                                if type(v) == "string" and v ~= "" then
+                                    ok = true
+                                    break
+                                end
+                            end
+                            if not ok then
+                                for _idx3, f in ipairs(SANITIZE_CONTENT_ARRAYS) do
+                                    local v = item[f]
+                                    if type(v) == "table" and #v > 0 then
+                                        ok = true
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+                if ok then
+                    kept[#kept + 1] = item
+                else
+                    dropped = dropped + 1
+                end
+            end
+            if dropped > 0 then
+                for i = #list, 1, -1 do list[i] = nil end
+                for i, it in ipairs(kept) do list[i] = it end
+                total = total + dropped
+                logger.warn("KOAssistant XrayParser: dropped", dropped,
+                    "malformed entr(y/ies) from", cat.key, "(foreign schema or no content)")
+            end
+        end
+    end
+    return total
+end
+
 --- Get the display name for an item depending on category
 --- @param item table The item entry
 --- @param category_key string The category key

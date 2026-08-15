@@ -313,6 +313,9 @@ function WriteBack.parseXrayAnswer(answer, base, transform, never_pairs)
     -- transform, whose cross-book carry attaches the legitimate, code-owned
     -- background onto delta entries.
     XrayParser.dropModelBackground(parsed)
+    -- 2026-08-15 (A0): drop foreign-schema/no-content entries from the fresh
+    -- response before they can merge into the artifact (weak-model pollution)
+    XrayParser.sanitizeEntries(parsed)
     if base ~= nil then
         local base_parsed = base
         if type(base) == "table" and base.result ~= nil then
