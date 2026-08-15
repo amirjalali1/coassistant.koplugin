@@ -17,6 +17,28 @@ local function hasContent(msg)
     return true
 end
 
+-- Ollama allocates the context window PER REQUEST (default num_ctx = 4096) and
+-- silently truncates longer prompts — a 19.7K-char recap prompt came back
+-- reporting exactly 4096 input tokens with the model answering from scraps
+-- (device 2026-08-15). Size num_ctx to the prompt (~chars/3 covers dense
+-- scripts and JSON escaping) plus output headroom, bucketed to powers of two:
+-- a CHANGED num_ctx forces ollama to reload the model, so nearby request
+-- sizes must land in the same bucket to keep the runner warm.
+local function contextBucket(messages)
+    local chars = 0
+    for _, m in ipairs(messages) do
+        if type(m.content) == "string" then
+            chars = chars + #m.content
+        end
+    end
+    local needed = math.ceil(chars / 3) + 4096
+    local bucket = 8192
+    while bucket < needed and bucket < 65536 do
+        bucket = bucket * 2
+    end
+    return bucket
+end
+
 -- Book tools (Track 35; every fact probed live on Ollama 0.17.7, 2026-08-14):
 -- Ollama's /api/chat speaks the OpenAI tool dialect with two deltas — call
 -- `arguments` arrive as a DECODED OBJECT (handled in response_parser), and
@@ -105,6 +127,7 @@ function OllamaHandler:buildRequestBody(message_history, config)
 
     request_body.options = {
         temperature = api_params.temperature or default_params.temperature or 0.7,
+        num_ctx = api_params.num_ctx or contextBucket(request_body.messages),
     }
 
     local headers = {
@@ -150,6 +173,7 @@ function OllamaHandler:query(message_history, config)
     -- Ollama uses options object for parameters
     request_body.options = {
         temperature = api_params.temperature or default_params.temperature or 0.7,
+        num_ctx = api_params.num_ctx or contextBucket(request_body.messages),
     }
 
     -- Check if streaming is enabled
