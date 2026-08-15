@@ -162,8 +162,12 @@ end
 -- Used as fallback when no user-customized order is stored
 -- Settings path: features.qs_show_{id} (visibility toggles)
 Constants.QS_ITEMS_DEFAULT_ORDER = {
+    -- (temperature retired from the panel 2026-08-15, maintainer pick: most
+    -- current frontier models reject or pin it, actions set their own, and the
+    -- dial lives on in Settings > Advanced. processOrderedList prunes the id
+    -- from stored orders automatically.)
     "provider", "model", "behavior", "domain",
-    "temperature", "extended_thinking", "web_search",
+    "extended_thinking", "web_search",
     "book_tools", "text_extraction", "quick_answer", "spoiler",
     "h_bypass", "d_bypass",
     "language", "translation_language", "dictionary_language",
@@ -258,7 +262,6 @@ function Constants.getQsItemText(id, _)
         model = _("Model"),
         behavior = _("Behavior"),
         domain = _("Domain"),
-        temperature = _("Temperature"),
         extended_thinking = _("Reasoning"),
         web_search = _("Web Search"),
         book_tools = _("Book Tools"),

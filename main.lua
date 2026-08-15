@@ -16196,7 +16196,6 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
   local provider_display = self:getProviderDisplayName(provider)
   local model = self:getCurrentModel() or "default"
   local behavior_id = features.selected_behavior or "standard"
-  local temp = features.default_temperature or 0.7
   local streaming = features.enable_streaming ~= false  -- Default true
   -- Reasoning chip reflects the EFFECTIVE state for the active provider/model
   -- (resolved from the global stance + per-provider/per-model prefs).
@@ -16205,9 +16204,6 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
   -- The picker stays usable (it sets the defaults); we just annotate when N/A.
   local ModelConstraints = require("model_constraints")
   local web_search_supported = ModelConstraints.supportsWebSearch(provider, model)
-  -- Same annotate-don't-disable rule for temperature (item 19c): "rejected" models
-  -- have it stripped from the request, "forced" ones pin it to a fixed value.
-  local temp_mode = ModelConstraints.temperatureSupport(provider, model)
   local text_extraction = features.enable_book_text_extraction == true  -- Default false
 
   -- Get behavior display name (with source indicator)
@@ -16344,51 +16340,6 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       opening_subdialog = true
       UIManager:close(dialog)
       self_ref:showDomainPopup(reopenQuickSettings)
-    end,
-  }
-
-  button_defs["temperature"] = {
-    text = (function()
-      local base = T(_("Temp: %1"), string.format("%.1f", temp))
-      if temp_mode == "rejected" then
-        base = base .. " \u{00B7} " .. T(_("N/A for %1"), model)
-      elseif temp_mode == "forced" then
-        base = base .. " \u{00B7} " .. T(_("fixed for %1"), model)
-      end
-      return E("\u{1F321}\u{FE0F}", base)
-    end)(),
-    callback = function()
-      opening_subdialog = true
-      UIManager:close(dialog)
-      local spin = SpinWidget:new{
-        value = temp,
-        value_min = 0,
-        value_max = 2,
-        value_step = 0.1,
-        precision = "%.1f",
-        ok_text = _("Set"),
-        title_text = _("Temperature"),
-        info_text = _("Range: 0.0-2.0 (Anthropic max 1.0)\nLower = focused, deterministic\nHigher = creative, varied\n\nApplies to free-form chat: most built-in actions set their own temperature."),
-        default_value = 0.7,
-        callback = function(spin_widget)
-          local f = self_ref.settings:readSetting("features") or {}
-          f.default_temperature = spin_widget.value
-          self_ref.settings:saveSetting("features", f)
-          self_ref.settings:flush()
-          self_ref:updateConfigFromSettings()
-          -- Saved as the global default, but say so if the ACTIVE model won't use it
-          if temp_mode ~= "free" then
-            UIManager:show(Notification:new{
-              text = temp_mode == "rejected"
-                and T(_("Saved as default. %1 ignores temperature."), model)
-                or T(_("Saved as default. %1 uses a fixed temperature."), model),
-              timeout = 3,
-            })
-          end
-          reopenQuickSettings()
-        end,
-      }
-      UIManager:show(spin)
     end,
   }
 
