@@ -44,13 +44,19 @@ local ModelLists = {
         -- OpenAI ChatGPT subscription (Codex OAuth) reuses the same curated
         -- subscription model slugs as direct OpenAI, but authenticates with
         -- device-code OAuth against ChatGPT's Codex backend.
-        "gpt-5.6-terra",                -- balanced (default)
-        "gpt-5.6-sol",                  -- flagship (most capable)
-        "gpt-5.6-luna",                 -- cost-optimized
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.4-nano",
+        -- Probed live 2026-08-15 on a FREE ChatGPT account: terra/luna/5.5/
+        -- 5.4-mini answer; sol, 5.4 and 5.4-nano are refused there ("not
+        -- supported when using Codex with a ChatGPT account") with a clear
+        -- error. ALL slugs stay listed (paid plans unverified, may serve
+        -- more); default + tier picks use free-served slugs only, so
+        -- auto-selection never 400s (maintainer ruling 2026-08-15).
+        "gpt-5.6-terra",                -- balanced (default; served on free accounts)
+        "gpt-5.6-sol",                  -- flagship (most capable; refused on free accounts)
+        "gpt-5.6-luna",                 -- cost-optimized (served on free accounts)
+        "gpt-5.5",                      -- served on free accounts
+        "gpt-5.4",                      -- refused on free accounts
+        "gpt-5.4-mini",                 -- served on free accounts
+        "gpt-5.4-nano",                 -- refused on free accounts
     },
 
     deepseek = {
@@ -477,7 +483,7 @@ local ModelLists = {
         flagship = {
             anthropic = "claude-opus-5",             -- deep-reasoning flagship; sonnet-5 is the standard tier
             openai = "gpt-5.6-sol",
-            openai_codex = "gpt-5.6-sol",
+            openai_codex = "gpt-5.6-terra", -- best slug served on ALL plans (sol 400s on free accounts; still pickable manually)
             deepseek = "deepseek-v4-pro",
             gemini = "gemini-3.7-flash",             -- Pro models are paid-only; keep tier free-tier usable (3.7-flash battery-probed on a free key 2026-08-15)
             groq = "openai/gpt-oss-120b",            -- llama picks deprecated by Groq 2026-08-16
@@ -549,7 +555,7 @@ local ModelLists = {
         ultrafast = {
             anthropic = "claude-haiku-4-5-20251001",
             openai = "gpt-5.4-nano",
-            openai_codex = "gpt-5.4-nano",
+            openai_codex = "gpt-5.4-mini", -- smallest slug served on ALL plans (nano 400s on free accounts; still pickable manually)
             deepseek = "deepseek-v4-flash",
             gemini = "gemini-3.5-flash-lite",
             groq = "openai/gpt-oss-20b",            -- see fast-tier note: Groq retired every non-reasoning production model 2026-08-16
