@@ -351,25 +351,87 @@ function BaseHandler.isPlaceholderKey(key)
         or upper:find("API_KEY", 1, true) ~= nil
 end
 
---- Resolve a provider's API key: GUI-entered keys first, then apikeys.lua
---- (ignoring placeholders). Shared by the query router and image generation.
-function BaseHandler.getApiKey(provider, settings)
+--- Masked fingerprint of a key, e.g. "AIz...x3Fq:39:189406354" (first 3 + last 4 +
+--- length + djb2 hash of the whole key). Used as the stored selection handle
+--- (features.api_key_selected) — the full key never needs to be written outside
+--- its own store. The hash matters: same-provider keys share prefix and length
+--- (every Google key starts "AIza" at 39 chars), so mask+length alone can collide
+--- and silently select the wrong key (caught by test_api_keys).
+function BaseHandler.keyFingerprint(key)
+    if type(key) ~= "string" or key == "" then return "" end
+    local mask
+    if #key <= 8 then
+        mask = string.rep("*", #key)
+    else
+        mask = key:sub(1, 3) .. "..." .. key:sub(-4)
+    end
+    local h = 5381
+    for i = 1, #key do
+        h = (h * 33 + key:byte(i)) % 4294967296
+    end
+    return mask .. ":" .. #key .. ":" .. h
+end
+
+-- Fold one provider's store value (legacy string, array of strings, or array of
+-- { key, alias } tables) into `out` as { key, alias, source } entries. Keys are
+-- trimmed (Kindle clipboard adds trailing whitespace) and placeholders dropped.
+local function foldKeyEntries(out, value, source)
+    local function addOne(key, alias)
+        if type(key) ~= "string" then return end
+        key = key:match("^%s*(.-)%s*$")
+        if key == "" or BaseHandler.isPlaceholderKey(key) then return end
+        out[#out + 1] = { key = key, alias = alias, source = source }
+    end
+    if type(value) == "string" then
+        addOne(value)
+    elseif type(value) == "table" then
+        for _idx, entry in ipairs(value) do
+            if type(entry) == "string" then
+                addOne(entry)
+            elseif type(entry) == "table" then
+                addOne(entry.key, type(entry.alias) == "string" and entry.alias or nil)
+            end
+        end
+    end
+end
+
+--- Enumerate a provider's configured keys in resolution order: GUI entries first,
+--- then apikeys.lua entries (matching the long-standing GUI-overrides-file rule).
+--- @return table array of { key, alias|nil, source = "gui"|"file" }
+function BaseHandler.listApiKeys(provider, settings)
+    local out = {}
     if settings then
         local features = settings:readSetting("features") or {}
-        local gui_keys = features.api_keys or {}
-        if gui_keys[provider] and gui_keys[provider] ~= "" then
-            -- Trim whitespace (Kindle clipboard can add trailing spaces/newlines)
-            return gui_keys[provider]:match("^%s*(.-)%s*$")
-        end
+        foldKeyEntries(out, (features.api_keys or {})[provider], "gui")
     end
     local success, apikeys = pcall(function() return require("apikeys") end)
-    if success and apikeys and apikeys[provider] then
-        local file_key = apikeys[provider]:match("^%s*(.-)%s*$")
-        if not BaseHandler.isPlaceholderKey(file_key) then
-            return file_key
+    if success and type(apikeys) == "table" then
+        foldKeyEntries(out, apikeys[provider], "file")
+    end
+    return out
+end
+
+--- Resolve a provider's API key. A stored selection (features.api_key_selected
+--- [provider] = fingerprint, written by the key manager) wins when it still
+--- matches a configured key; otherwise the first configured key in GUI-then-file
+--- order — exactly the pre-multi-key behavior. Shared by the query router,
+--- provider tests and image generation, so a selection reaches every request.
+function BaseHandler.getApiKey(provider, settings)
+    local keys = BaseHandler.listApiKeys(provider, settings)
+    if #keys == 0 then return nil end
+    if settings then
+        local features = settings:readSetting("features") or {}
+        local selected = (features.api_key_selected or {})[provider]
+        if selected and selected ~= "" then
+            for _idx, entry in ipairs(keys) do
+                if BaseHandler.keyFingerprint(entry.key) == selected then
+                    return entry.key
+                end
+            end
+            -- Stale selection (key deleted / file edited): fall through to default.
         end
     end
-    return nil
+    return keys[1].key
 end
 
 --- Write the whole buffer to a pipe fd. ffiutil.writeToFD is a single

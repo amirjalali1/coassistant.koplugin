@@ -2443,9 +2443,10 @@ These launch entries sit at the top of the menu:
 
 ### API Keys
 - Enter API keys directly via the GUI (no file editing needed)
-- Shows status indicators: `[set]` for GUI-entered keys, `(file)` for keys from apikeys.lua, `[connected]` for OpenAI Subscription
+- Shows status indicators: `[set]` for GUI-entered keys, `(file)` for keys from apikeys.lua, `[N keys]` when several are configured, `[connected]` for OpenAI Subscription
 - GUI keys take priority over file-based keys
-- Tap a provider to enter, view (masked), or clear its key
+- Tap a provider to enter its first key, or -- once any key exists -- to open the **key manager**
+- **Multiple keys per provider**: keep several keys (say a free and a paid Gemini key) and switch between them. The manager lists every key masked (`AIz...x3Fq`) with its origin (added in app / apikeys.lua): tap a key to use it for that provider, hold to rename or delete keys added in the app (file keys are edited in apikeys.lua, where an entry can also be named: `{ key = "...", alias = "paid" }`; a provider entry there can be a plain string or a list). The switch takes effect on the next request -- chat, provider tests, and image generation all follow it. Also reachable from the provider's model menu ("API keys (N)...")
 - **OpenAI Subscription** is managed here too, but opens a Connect / Disconnect dialog instead of key entry (device login with your ChatGPT plan). See [Quick Setup, Option C](#2-add-your-api-key)
 
 ### Temperature

@@ -5,6 +5,16 @@
 -- 1. apikeys.lua - API credentials for AI providers (this file)
 -- 2. custom_actions.lua - User-defined actions
 -- 3. configuration.lua - Advanced settings and provider overrides
+--
+-- MULTIPLE KEYS PER PROVIDER (optional): a provider can hold a LIST of keys,
+-- each optionally named. The plugin lists them all (Settings > API Keys >
+-- provider), shows which is in use, and lets you switch. Keys added in the
+-- app are checked first; within this file, list order decides the default.
+--     gemini = {
+--         "AIza...first-key",
+--         { key = "AIza...second-key", alias = "paid" },
+--     },
+-- A plain single string (as below) keeps working unchanged.
 
 return {
     -- Anthropic API key (Claude models)

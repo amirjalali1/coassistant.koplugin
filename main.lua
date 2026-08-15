@@ -3749,11 +3749,22 @@ function AskGPT:buildModelMenu(simplified, provider_override)
         and not (is_custom_provider and custom_provider_config
                  and custom_provider_config.api_key_required == false) then
       table.insert(items, {
-        text = _("API key..."),
+        text_func = function()
+          local n = #require("koassistant_api.base").listApiKeys(provider, self_ref.settings)
+          if n > 1 then
+            return T(_("API keys (%1)..."), n)
+          end
+          return _("API key...")
+        end,
         keep_menu_open = true, -- dialog stacks on top
         callback = function(touchmenu_instance)
-          self_ref:showApiKeyDialog(provider, provider_display_name, false,
-            menuRefresher(touchmenu_instance))
+          if #require("koassistant_api.base").listApiKeys(provider, self_ref.settings) > 0 then
+            self_ref:showApiKeyManager(provider, provider_display_name, false,
+              menuRefresher(touchmenu_instance))
+          else
+            self_ref:showApiKeyDialog(provider, provider_display_name, false,
+              menuRefresher(touchmenu_instance))
+          end
         end,
       })
     end
@@ -4353,18 +4364,28 @@ end
 
 -- Helper: Check if apikeys.lua has a real (non-placeholder) key for provider
 local function hasFileApiKey(provider)
-  local success, apikeys = pcall(function() return require("apikeys") end)
-  if not success or not apikeys or not apikeys[provider] then
-    return false
+  -- Shape-safe via the shared enumerator (string / array / {key, alias} entries;
+  -- placeholders filtered): nil settings = file entries only.
+  return #require("koassistant_api.base").listApiKeys(provider, nil) > 0
+end
+
+-- Count of usable entries in one provider's GUI key store value (legacy string
+-- or the multi-key array shape).
+local function guiKeyCount(value)
+  if type(value) == "string" then
+    return value ~= "" and 1 or 0
   end
-  return not isPlaceholderKey(apikeys[provider])
+  if type(value) == "table" then
+    return #value
+  end
+  return 0
 end
 
 -- Helper: Check if user has any API keys configured (GUI or file), excluding a specific provider
 local function hasAnyApiKeys(gui_keys, exclude_provider)
   -- Check GUI keys
   for provider, key in pairs(gui_keys or {}) do
-    if provider ~= exclude_provider and key and key ~= "" then
+    if provider ~= exclude_provider and guiKeyCount(key) > 0 then
       return true
     end
   end
@@ -4393,11 +4414,15 @@ function AskGPT:buildApiKeysMenu()
   -- Add built-in providers
   for _i, provider in ipairs(builtin_providers) do
     local is_subscription = provider == "openai_codex"
-    local has_gui_key = not is_subscription and gui_keys[provider] and gui_keys[provider] ~= ""
+    local has_gui_key = not is_subscription and guiKeyCount(gui_keys[provider]) > 0
     local has_file_key = hasFileApiKey(provider)
+    local key_count = not is_subscription
+      and #require("koassistant_api.base").listApiKeys(provider, self.settings) or 0
     local status = ""
     if is_subscription and require("koassistant_openai_codex_oauth").isConfigured(self.settings) then
       status = " [connected]"
+    elseif key_count > 1 then
+      status = " [" .. key_count .. " " .. _("keys") .. "]"
     elseif has_gui_key then
       status = " [set]"
     elseif has_file_key then
@@ -4414,9 +4439,11 @@ function AskGPT:buildApiKeysMenu()
 
   -- Add custom providers
   for _i, cp in ipairs(custom_providers) do
-    local has_gui_key = gui_keys[cp.id] and gui_keys[cp.id] ~= ""
+    local cp_count = guiKeyCount(gui_keys[cp.id])
     local status = ""
-    if has_gui_key then
+    if cp_count > 1 then
+      status = " [" .. cp_count .. " " .. _("keys") .. "]"
+    elseif cp_count > 0 then
       status = " [set]"
     elseif not cp.api_key_required then
       status = " (not required)"
@@ -4457,6 +4484,10 @@ function AskGPT:buildApiKeysMenu()
       callback = function(touchmenu_instance)
         if prov_copy.id == "openai_codex" then
           require("koassistant_openai_codex_oauth").showManageDialog(self_ref)
+        elseif #require("koassistant_api.base").listApiKeys(prov_copy.id, self_ref.settings) > 0 then
+          -- Keys exist: the manager (list / select / add / rename / delete)
+          self_ref:showApiKeyManager(prov_copy.id, prov_copy.display_name, prov_copy.api_key_optional,
+            menuRefresher(touchmenu_instance))
         else
           self_ref:showApiKeyDialog(prov_copy.id, prov_copy.display_name, prov_copy.api_key_optional,
             menuRefresher(touchmenu_instance))
@@ -4473,18 +4504,24 @@ end
 -- @param display_name string: Display name (optional, defaults to capitalized provider)
 -- @param key_optional boolean: If true, shows hint that key is optional (for local servers)
 -- @param on_change function: optional, called after save/clear (status markers in menu rows)
-function AskGPT:showApiKeyDialog(provider, display_name, key_optional, on_change)
+-- @param append boolean: optional, Save ADDS a key to the GUI list instead of replacing
+--        the stored value (the key manager's "Add API key..." row; Clear is hidden —
+--        per-key deletion lives in the manager)
+function AskGPT:showApiKeyDialog(provider, display_name, key_optional, on_change, append)
   local self_ref = self
   display_name = display_name or provider:gsub("^%l", string.upper)
   local features = self.settings:readSetting("features") or {}
   local gui_keys = features.api_keys or {}
-  local current_key = gui_keys[provider] or ""
+  local current_value = gui_keys[provider]
+  local current_key = (not append and type(current_value) == "string") and current_value or ""
   local masked = maskApiKey(current_key)
   local has_file_key = hasFileApiKey(provider)
 
   -- Build hint text
   local hint_text
-  if masked ~= "" then
+  if append then
+    hint_text = _("Enter additional API key...")
+  elseif masked ~= "" then
     hint_text = T(_("Current: %1"), masked)
   elseif has_file_key then
     hint_text = _("Using key from apikeys.lua")
@@ -4542,7 +4579,24 @@ function AskGPT:showApiKeyDialog(provider, display_name, key_optional, on_change
               f.api_keys = f.api_keys or {}
               -- Check if this is the user's first API key (before saving)
               local is_first_key = not hasAnyApiKeys(f.api_keys, provider)
-              f.api_keys[provider] = new_key
+              local stored = f.api_keys[provider]
+              if append or type(stored) == "table" then
+                -- Multi-key shape: append as a { key } entry, converting a legacy
+                -- single string in place. Never replace an existing list — even a
+                -- non-append call must not nuke keys the manager owns.
+                local list
+                if type(stored) == "table" then
+                  list = stored
+                elseif type(stored) == "string" and stored ~= "" then
+                  list = { { key = stored } }
+                else
+                  list = {}
+                end
+                table.insert(list, { key = new_key })
+                f.api_keys[provider] = list
+              else
+                f.api_keys[provider] = new_key
+              end
               local message = T(_("%1 API key saved"), display_name)
               -- Auto-select provider if this is the first API key
               if is_first_key then
@@ -4569,6 +4623,199 @@ function AskGPT:showApiKeyDialog(provider, display_name, key_optional, on_change
   }
   UIManager:show(input_dialog)
   input_dialog:onShowKeyboard()
+end
+
+-- Multi-key manager (2026-08-15): list every configured key for a provider with
+-- provenance, pick the active one, add / rename / delete keys added in the app.
+-- apikeys.lua entries are listed read-only (edit the file to change them; entries
+-- there may carry their own alias: { key = "...", alias = "name" }). The selection
+-- is stored as a masked FINGERPRINT (features.api_key_selected[provider]), never
+-- the key itself, and resolves inside BaseHandler.getApiKey — the single
+-- chokepoint — so chat, provider tests and image generation all follow it. A
+-- stale fingerprint (key deleted, file edited) silently falls back to the default
+-- GUI-then-file order.
+function AskGPT:showApiKeyManager(provider, display_name, key_optional, on_change)
+  local self_ref = self
+  local Base = require("koassistant_api.base")
+  display_name = display_name or provider:gsub("^%l", string.upper)
+  local ButtonDialog = require("ui/widget/buttondialog")
+
+  -- Normalize this provider's GUI store to the list shape and run fn(list, idx)
+  -- on the entry matching fp; persists and returns true when fn changed it.
+  local function mutateGuiEntry(fp, fn)
+    local f = self_ref.settings:readSetting("features") or {}
+    f.api_keys = f.api_keys or {}
+    local stored = f.api_keys[provider]
+    local list
+    if type(stored) == "string" and stored ~= "" then
+      list = { { key = stored } }
+    elseif type(stored) == "table" then
+      list = stored
+    else
+      return false
+    end
+    for idx, entry in ipairs(list) do
+      local key = type(entry) == "string" and entry or entry.key
+      if type(key) == "string"
+          and Base.keyFingerprint(key:match("^%s*(.-)%s*$")) == fp then
+        -- Normalize the touched entry to table shape so fn can set fields
+        if type(entry) == "string" then
+          entry = { key = entry }
+          list[idx] = entry
+        end
+        fn(list, idx)
+        if #list == 0 then
+          f.api_keys[provider] = nil
+        else
+          f.api_keys[provider] = list
+        end
+        self_ref.settings:saveSetting("features", f)
+        self_ref.settings:flush()
+        self_ref:updateConfigFromSettings()
+        return true
+      end
+    end
+    return false
+  end
+
+  local dialog
+  local function rebuild()
+    UIManager:close(dialog)
+    self_ref:showApiKeyManager(provider, display_name, key_optional, on_change)
+    if on_change then on_change() end
+  end
+
+  local features = self.settings:readSetting("features") or {}
+  local keys = Base.listApiKeys(provider, self.settings)
+  local selected_fp = (features.api_key_selected or {})[provider]
+  -- The entry getApiKey would actually use: selection match, else the first
+  local active_idx = 1
+  if selected_fp then
+    for i, e in ipairs(keys) do
+      if Base.keyFingerprint(e.key) == selected_fp then
+        active_idx = i
+        break
+      end
+    end
+  end
+
+  local buttons = {}
+  for i, entry in ipairs(keys) do
+    local fp = Base.keyFingerprint(entry.key)
+    local shown = entry.alias and (entry.alias .. "  " .. maskApiKey(entry.key))
+      or maskApiKey(entry.key)
+    local source_label = entry.source == "gui" and _("added in app") or "apikeys.lua"
+    table.insert(buttons, { {
+      text = (i == active_idx and "● " or "○ ") .. shown .. "  (" .. source_label .. ")",
+      align = "left",
+      callback = function()
+        local f = self_ref.settings:readSetting("features") or {}
+        f.api_key_selected = f.api_key_selected or {}
+        f.api_key_selected[provider] = fp
+        self_ref.settings:saveSetting("features", f)
+        self_ref.settings:flush()
+        self_ref:updateConfigFromSettings()
+        UIManager:show(Notification:new{
+          text = T(_("%1 now uses %2"), display_name, entry.alias or maskApiKey(entry.key)),
+          timeout = 2,
+        })
+        rebuild()
+      end,
+      hold_callback = function()
+        if entry.source ~= "gui" then
+          UIManager:show(InfoMessage:new{
+            text = _("This key comes from apikeys.lua. Edit that file to change or remove it. A file entry can carry a name too: { key = \"...\", alias = \"paid\" }"),
+          })
+          return
+        end
+        local opts
+        opts = ButtonDialog:new{
+          title = shown,
+          buttons = {
+            { {
+              text = _("Rename..."),
+              callback = function()
+                UIManager:close(opts)
+                local InputDialog = require("ui/widget/inputdialog")
+                local rename_dialog
+                rename_dialog = InputDialog:new{
+                  title = T(_("Name for %1"), maskApiKey(entry.key)),
+                  input = entry.alias or "",
+                  input_hint = _("e.g. personal, work, paid"),
+                  buttons = { {
+                    { text = _("Cancel"), id = "close",
+                      callback = function() UIManager:close(rename_dialog) end },
+                    { text = _("Save"), is_enter_default = true,
+                      callback = function()
+                        local alias = rename_dialog:getInputText()
+                        alias = alias and alias:match("^%s*(.-)%s*$") or ""
+                        mutateGuiEntry(fp, function(list, idx)
+                          list[idx].alias = alias ~= "" and alias or nil
+                        end)
+                        UIManager:close(rename_dialog)
+                        UIManager:close(dialog)
+                        self_ref:showApiKeyManager(provider, display_name, key_optional, on_change)
+                        if on_change then on_change() end
+                      end },
+                  } },
+                }
+                UIManager:show(rename_dialog)
+                rename_dialog:onShowKeyboard()
+              end,
+            } },
+            { {
+              text = _("Delete this key"),
+              callback = function()
+                UIManager:close(opts)
+                UIManager:show(require("ui/widget/confirmbox"):new{
+                  text = T(_("Delete key %1 for %2?"), shown, display_name),
+                  ok_text = _("Delete"),
+                  ok_callback = function()
+                    mutateGuiEntry(fp, function(list, idx)
+                      table.remove(list, idx)
+                    end)
+                    -- A selection pointing at the deleted key is stale: clear it
+                    -- so resolution returns to the default order explicitly.
+                    local f = self_ref.settings:readSetting("features") or {}
+                    if f.api_key_selected and f.api_key_selected[provider] == fp then
+                      f.api_key_selected[provider] = nil
+                      self_ref.settings:saveSetting("features", f)
+                      self_ref.settings:flush()
+                    end
+                    rebuild()
+                  end,
+                })
+              end,
+            } },
+            { { text = _("Cancel"), callback = function() UIManager:close(opts) end } },
+          },
+        }
+        UIManager:show(opts)
+      end,
+    } })
+  end
+
+  table.insert(buttons, { {
+    text = _("Add API key..."),
+    callback = function()
+      UIManager:close(dialog)
+      self_ref:showApiKeyDialog(provider, display_name, key_optional, function()
+        self_ref:showApiKeyManager(provider, display_name, key_optional, on_change)
+        if on_change then on_change() end
+      end, true)
+    end,
+  } })
+  table.insert(buttons, { {
+    text = _("Close"),
+    callback = function() UIManager:close(dialog) end,
+  } })
+
+  dialog = ButtonDialog:new{
+    title = T(_("%1 API keys (tap to use, hold to manage)"), display_name),
+    title_align = "left",
+    buttons = buttons,
+  }
+  UIManager:show(dialog)
 end
 
 -- Get the effective primary language (with override support)
@@ -18485,6 +18732,7 @@ function AskGPT:resetAllCustomizations()
   -- Apply defaults, preserving only API keys
   local new_features = SettingsSchema.applyDefaults(features, {
     "features.api_keys",
+    "features.api_key_selected",
     "features.openai_codex_oauth",
   })
 
@@ -18700,6 +18948,7 @@ end
 function AskGPT:resetAPIKeys()
   local features = self.settings:readSetting("features") or {}
   features.api_keys = nil
+  features.api_key_selected = nil
   features.openai_codex_oauth = nil
   self.settings:saveSetting("features", features)
   self.settings:flush()
