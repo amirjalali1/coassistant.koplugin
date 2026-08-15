@@ -16364,7 +16364,20 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       if doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOLS) ~= nil then
         label = label .. _(" (book)")
       end
-      return E("\u{1F50D}", T(_("Book Tools: %1"), label))
+      local base = T(_("Book Tools: %1"), label)
+      -- Same annotate-don't-disable rule as the Web Search tile: the toggle
+      -- still edits the global default, but say when the ACTIVE model can't
+      -- run tool sessions (capability list + a ToolWire adapter — the
+      -- membership half of BookToolRunner.shouldUse; for local/custom models
+      -- the capability side comes from derived caps or custom_models.lua
+      -- grants, so a model reads N/A until it has been derived/granted).
+      local ToolWire = require("koassistant_api.tool_wire")
+      local ModelConstraintsQS = require("model_constraints")
+      if not (ModelConstraintsQS.supportsCapability(provider, model, "tools")
+              and ToolWire.hasAdapter(provider)) then
+        base = base .. " \u{00B7} " .. T(_("N/A for %1"), model)
+      end
+      return E("\u{1F50D}", base)
     end)(),
     callback = function()
       local BookSettings = require("koassistant_book_settings")
