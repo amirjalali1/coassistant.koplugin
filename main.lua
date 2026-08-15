@@ -10889,7 +10889,14 @@ function AskGPT:_xrayEstablishmentSteps(opts)
   local spacing = self:_xrayLadderSpacing()
   local boundaries = features.xray_ladder_chapter_snap ~= false
     and self:_ladderChapterBoundaries() or nil
-  local rungs, labels = self:_planXrayGrid(rebuild and nil or work.base,
+  -- No and/or chain for the base: `rebuild and nil or work.base` folds to
+  -- work.base ALWAYS (the tri-state pitfall) — the 2026-08-15 device round's
+  -- broken rebuild: the plan started at the OLD ladder top, seedForBuild saw
+  -- a non-zero base and refused the position seed, and the chain's only rung
+  -- landed ahead of the reader (nothing promotable after the swap)
+  local plan_base = nil
+  if not rebuild then plan_base = work.base end
+  local rungs, labels = self:_planXrayGrid(plan_base,
     spacing, work.goal, decimal, boundaries, rebuild)
   rungs = XrayAuto.truncateToOneAhead(rungs, decimal, labels)
   if #rungs == 0 then return nil end
@@ -13450,7 +13457,12 @@ function AskGPT:_fireXrayAutoCheckpoints(opts)
   local spacing = self:_xrayLadderSpacing()
   local boundaries = features.xray_ladder_chapter_snap ~= false
     and self:_ladderChapterBoundaries() or nil
-  local rungs, labels = self:_planXrayGrid(chain_rebuild and nil or work.base,
+  -- No and/or chain for the base (see _xrayEstablishmentSteps): the fold sent
+  -- the old ladder top into a REBUILD plan — seed refused, single ahead rung,
+  -- live lost at the swap (2026-08-15 device round)
+  local plan_base = nil
+  if not chain_rebuild then plan_base = work.base end
+  local rungs, labels = self:_planXrayGrid(plan_base,
     spacing, work.goal, decimal, boundaries, chain_rebuild)
   rungs, labels = XrayAuto.truncateToOneAhead(rungs, decimal, labels)
   if #rungs == 0 then return end
