@@ -209,7 +209,7 @@ return {
 }
 ```
 
-> **Note:** GUI-entered keys take priority over file-based keys. The API Keys menu shows `[set]` for GUI keys and `(file)` for keys from apikeys.lua. Provider pickers only list providers that have a key configured (plus local/no-key providers like Ollama), so the menus stay short.
+> **Note:** GUI-entered keys take priority over file-based keys. The API Keys menu shows `[set]` for GUI keys and `(file)` for keys from apikeys.lua. Provider pickers only list providers that have a key configured (plus local/no-key providers like Ollama), so the menus stay short. You can also keep several keys for one provider (for example a free and a paid one) and switch between them -- see [API Keys](#api-keys).
 
 **Option C: OpenAI Subscription (device login)**
 
@@ -2445,8 +2445,24 @@ These launch entries sit at the top of the menu:
 - Enter API keys directly via the GUI (no file editing needed)
 - Shows status indicators: `[set]` for GUI-entered keys, `(file)` for keys from apikeys.lua, `[N keys]` when several are configured, `[connected]` for OpenAI Subscription
 - GUI keys take priority over file-based keys
-- Tap a provider to enter its first key, or -- once any key exists -- to open the **key manager**
-- **Multiple keys per provider**: keep several keys (say a free and a paid Gemini key) and switch between them. The manager lists every key masked (`AIz...x3Fq`) with its origin (added in app / apikeys.lua): tap a key to use it for that provider, hold to rename or delete keys added in the app (file keys are edited in apikeys.lua, where an entry can also be named: `{ key = "...", alias = "paid" }`; a provider entry there can be a plain string or a list). The switch takes effect on the next request -- chat, provider tests, and image generation all follow it. Also reachable from the provider's model menu ("API keys (N)...")
+- Tap a provider to enter its first key. Once a key exists, tapping opens the **key manager** instead
+
+**Multiple keys per provider** -- for example a free Gemini key and a paid one, switchable without editing files:
+
+- The key manager lists every key you have for that provider, masked (`AIz...x3Fq`), each labeled with where it came from (added in app, or apikeys.lua) and which one is currently in use
+- **Tap a key to use it.** The switch applies from the next request, everywhere (chat, provider tests, image generation)
+- **Hold a key** to rename or delete it (keys from apikeys.lua are changed by editing that file instead)
+- **Add API key...** adds another key; give keys names like "free" or "paid" so the list stays readable
+- The manager is also reachable from the provider's own model menu (the "API keys..." row)
+- In apikeys.lua, multiple keys are written as a list of named entries:
+
+```lua
+gemini = {
+    { key = "KEY1", alias = "free" },
+    { key = "KEY2", alias = "paid" },
+},
+```
+
 - **OpenAI Subscription** is managed here too, but opens a Connect / Disconnect dialog instead of key entry (device login with your ChatGPT plan). See [Quick Setup, Option C](#2-add-your-api-key)
 
 ### Temperature
