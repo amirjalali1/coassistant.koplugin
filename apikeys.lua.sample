@@ -6,15 +6,27 @@
 -- 2. custom_actions.lua - User-defined actions
 -- 3. configuration.lua - Advanced settings and provider overrides
 --
--- MULTIPLE KEYS PER PROVIDER (optional): a provider can hold a LIST of keys,
--- each optionally named. The plugin lists them all (Settings > API Keys >
--- provider), shows which is in use, and lets you switch. Keys added in the
--- app are checked first; within this file, list order decides the default.
+-- OPTIONAL: You can store MORE THAN ONE key for the same provider.
+-- Example: you have a free Gemini key and a paid one, and want to switch
+-- between them without editing files each time.
+--
+-- To do that, write a list of entries instead of a single key. Give each
+-- entry the key and a short name of your choosing (the name is just a
+-- label, so the app can say "free" or "paid" instead of showing an
+-- unreadable key):
+--
 --     gemini = {
---         "AIza...first-key",
---         { key = "AIza...second-key", alias = "paid" },
+--         { key = "KEY1",  alias = "free" },
+--         { key = "KEY2", alias = "paid" },
 --     },
--- A plain single string (as below) keeps working unchanged.
+--
+-- The plugin uses the first key in the list unless you pick another one.
+-- To see all your keys and pick which one is used, open:
+--     Settings > API Keys > (tap the provider)
+-- Keys entered inside the app take priority over keys from this file.
+--
+-- If you only have one key per provider, ignore all of this: keep writing
+-- it the simple way shown below, nothing changes for you.
 
 return {
     -- Anthropic API key (Claude models)
