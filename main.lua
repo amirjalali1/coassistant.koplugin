@@ -2023,6 +2023,22 @@ function AskGPT:getOllamaCachedModels()
   return cache.models
 end
 
+-- Per-server model memory: remember the last deliberate model pick for each
+-- server (keyed by root url, the virtual localhost default included) so
+-- switching servers restores the model you actually use there (phone runs a
+-- small model, the desktop a big one).
+function AskGPT:recordOllamaModelPick(model)
+  if type(model) ~= "string" or model == "" then return end
+  local features = self.settings:readSetting("features") or {}
+  local eps = features.ollama_endpoints
+  if type(eps) ~= "table" then eps = {} end
+  if type(eps.models) ~= "table" then eps.models = {} end
+  eps.models[self:ollamaRootUrl()] = model
+  features.ollama_endpoints = eps
+  self.settings:saveSetting("features", features)
+  self.settings:flush()
+end
+
 -- Refresh the cached installed-model list from the active server (/api/tags).
 -- Synchronous — only call behind an explicit user action (refresh row, server
 -- switch), NEVER from a menu builder (menu-search indexes those).
@@ -2068,12 +2084,28 @@ function AskGPT:showOllamaServerManager(on_change)
     local f = self_ref.settings:readSetting("features") or {}
     f.ollama_endpoints = new_eps
     if switched then f.ollama_live_models = nil end
+    -- Per-server model memory: coming back to a server restores the model last
+    -- picked there. Active-provider only — never clobber another provider's pick.
+    local restored
+    if switched and self_ref:getCurrentProvider() == "ollama" then
+      local root = (type(new_eps.active) == "string" and new_eps.active ~= "")
+        and new_eps.active or default_root
+      local mem = type(new_eps.models) == "table" and new_eps.models[root] or nil
+      if type(mem) == "string" and mem ~= "" and mem ~= f.model then
+        f.model = mem
+        f.model_explicit = f.model_explicit or {}
+        f.model_explicit.ollama = true
+        restored = mem
+      end
+    end
     self_ref.settings:saveSetting("features", f)
     self_ref.settings:flush()
     self_ref:updateConfigFromSettings()
     if switched then
       UIManager:show(Notification:new{
-        text = T(_("Ollama server: %1"), hostLabel(self_ref:ollamaRootUrl())),
+        text = restored
+          and T(_("Ollama server: %1, model %2"), hostLabel(self_ref:ollamaRootUrl()), restored)
+          or T(_("Ollama server: %1"), hostLabel(self_ref:ollamaRootUrl())),
         timeout = 1.5,
       })
       -- Grab the new server's installed list right away; failure is silent
@@ -2185,19 +2217,22 @@ function AskGPT:showOllamaServerManager(on_change)
     text = _("Add server..."),
     callback = function()
       UIManager:close(dialog)
-      local InputDialog = require("ui/widget/inputdialog")
       local input_dialog
-      input_dialog = InputDialog:new{
+      input_dialog = MultiInputDialog:new{
         title = _("Add Ollama server"),
-        input = "",
-        input_hint = _("e.g. 192.168.1.20:11434"),
+        fields = {
+          { text = "", hint = _("Address, e.g. 192.168.1.20:11434") },
+          { text = "", hint = _("Name (optional), e.g. phone") },
+        },
         description = _("Address of a machine running Ollama (it must be serving on the network, not just localhost). The port is usually 11434."),
         buttons = { {
           { text = _("Cancel"), id = "close",
             callback = function() UIManager:close(input_dialog) end },
           { text = _("Add"), is_enter_default = true,
             callback = function()
-              local url = ConfigHelper.normalizeServerUrl(input_dialog:getInputText())
+              local fields = input_dialog:getFields()
+              local url = ConfigHelper.normalizeServerUrl(fields[1])
+              local name = type(fields[2]) == "string" and fields[2]:match("^%s*(.-)%s*$") or ""
               UIManager:close(input_dialog)
               if not url then
                 UIManager:show(InfoMessage:new{ text = _("That does not look like a server address.") })
@@ -2206,10 +2241,14 @@ function AskGPT:showOllamaServerManager(on_change)
               local new_eps = self_ref:getOllamaEndpoints()
               local exists = url == default_root
               for _idx, e in ipairs(new_eps.list) do
-                if e.url == url then exists = true break end
+                if e.url == url then
+                  exists = true
+                  if name ~= "" then e.name = name end  -- re-add with a name = rename
+                  break
+                end
               end
               if not exists then
-                table.insert(new_eps.list, { url = url })
+                table.insert(new_eps.list, { url = url, name = name ~= "" and name or nil })
               end
               -- Adding a server means wanting to use it: switch to it too
               new_eps.active = url ~= default_root and url or nil
@@ -4030,6 +4069,7 @@ function AskGPT:buildModelMenu(simplified, provider_override)
         -- local model names can't be curated). Deferred so the notification
         -- paints first; server-down failure is silent, retried on next pick.
         if provider == "ollama" then
+          self_ref:recordOllamaModelPick(model_copy)
           UIManager:scheduleIn(0.2, function()
             self_ref:fetchDerivedModelCaps("ollama", model_copy)
           end)
@@ -4249,6 +4289,9 @@ function AskGPT:buildModelMenu(simplified, provider_override)
                         -- the curated lists. Delayed so the notification paints first;
                         -- offline failure is silent (family fallbacks still apply,
                         -- retry via Manage custom models -> Refresh).
+                        if provider == "ollama" then
+                          self_ref:recordOllamaModelPick(new_model)
+                        end
                         if provider == "openrouter" or provider == "ollama" then
                           UIManager:scheduleIn(0.2, function()
                             if self_ref:fetchDerivedModelCaps(provider, new_model) then
