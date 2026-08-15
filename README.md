@@ -3743,12 +3743,12 @@ The first model in each provider's list is its default. Current defaults (subjec
 | Provider | Default | Notable alternatives |
 |----------|---------|----------------------|
 | **Anthropic** | `claude-sonnet-5` | `claude-opus-4-8` (most capable / reasoning), `claude-haiku-4-5` (fast), `claude-sonnet-4-6` (1M context) |
-| **OpenAI** | `gpt-5.5` | `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano` |
+| **OpenAI** | `gpt-5.6-terra` | `gpt-5.6-sol` (most capable), `gpt-5.6-luna` (cost-saver), `gpt-5.5`, `gpt-5.4-mini` |
 | **DeepSeek** | `deepseek-v4-pro` | `deepseek-v4-flash` (V4, 1M context, thinking on by default) |
 | **Gemini** | `gemini-3.7-flash` | `gemini-3.6-flash`, `gemini-3.1-pro-preview` (paid only), `gemini-3.5-flash-lite` (ultrafast), `gemini-2.5-flash/pro` (older accounts only) |
-| **Groq** | `llama-3.3-70b-versatile` | `llama-3.1-8b-instant`, `openai/gpt-oss-120b`, `groq/compound` |
+| **Groq** | `openai/gpt-oss-120b` | `openai/gpt-oss-20b` (fast), `groq/compound`, `groq/compound-mini` |
 | **Mistral** | `mistral-large-latest` | `mistral-medium-latest`, `mistral-small-latest`, `magistral-medium-latest` (reasoning) |
-| **xAI** | `grok-4.5` | `grok-4.3`, `grok-4.20-0309-reasoning`/`-non-reasoning` |
+| **xAI** | `grok-4.6` | `grok-4.5`, `grok-4.3`, `grok-4.20-0309-reasoning`/`-non-reasoning` |
 | **Perplexity** | `sonar-pro` | `sonar-reasoning-pro`, `sonar-deep-research`, `sonar` |
 | **Z.AI** | `glm-5.2` | `glm-5.1`, `glm-5`, `glm-4.7` (reasoning), `glm-4.7-flash` (free) |
 | **Cohere** | `command-a-plus-05-2026` | `command-a-reasoning-08-2025`, `command-r7b-12-2024` (fast) |

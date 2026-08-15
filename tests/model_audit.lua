@@ -1804,12 +1804,226 @@ function ModelAudit.draftStanzas(facts, current)
     return lines
 end
 
+-- ---- Ollama wire (native /api/chat, plain http, keyless) --------------------
+--
+-- Local server: root from KOA_OLLAMA_URL (default localhost:11434). Ollama
+-- capabilities are DERIVED at runtime (/api/show at model pick), so this
+-- battery verifies WIRE behavior per local model and prints the caps — it
+-- drafts no stanzas. Request bodies come from the REAL handler
+-- (OllamaHandler:buildRequestBody), per the T7 real-shape discipline.
+
+local function ollamaPostJson(url, body_tbl, timeout)
+    local http = require("socket.http")
+    local ltn12 = require("ltn12")
+    local prev_timeout = http.TIMEOUT
+    if timeout then http.TIMEOUT = timeout end
+    local payload = json.encode(body_tbl)
+    local chunks = {}
+    local ok, code = http.request({
+        url = url, method = "POST",
+        headers = { ["Content-Type"] = "application/json",
+                    ["Content-Length"] = tostring(#payload) },
+        source = ltn12.source.string(payload),
+        sink = ltn12.sink.table(chunks),
+    })
+    http.TIMEOUT = prev_timeout
+    local text = table.concat(chunks)
+    if not ok then return nil, nil, "network: " .. tostring(code) end
+    local decoded
+    if text ~= "" then
+        local dok, d = pcall(json.decode, text)
+        if dok and type(d) == "table" then decoded = d end
+    end
+    return tonumber(code) or code, decoded, text
+end
+
+-- Ollama streams NDJSON (one JSON object per line), never SSE.
+local function looksLikeNDJSON(text)
+    if type(text) ~= "string" then return false end
+    local first = text:match("^([^\n]+)\n")
+    if not first then return false end
+    local ok, d = pcall(json.decode, first)
+    return ok and type(d) == "table" and (d.message ~= nil or d.done ~= nil)
+end
+
+-- Where thinking landed in a response: "field" (message.thinking), "tags"
+-- (<think> in content — the form the plugin's parser extracts), or nil.
+local function ollamaThinkingIn(decoded)
+    local msg = type(decoded) == "table" and type(decoded.message) == "table"
+        and decoded.message or nil
+    if not msg then return nil end
+    if type(msg.thinking) == "string" and msg.thinking:match("%S") then return "field" end
+    if type(msg.content) == "string" and msg.content:find("<think>", 1, true) then return "tags" end
+    return nil
+end
+
+local function probeOllama(model, _verbose)
+    local facts = newFacts("ollama", "ollama", model)
+    local root = os.getenv("KOA_OLLAMA_URL")
+    root = ((root and root ~= "") and root or "http://localhost:11434"):gsub("/+$", "")
+    local chat_url = root .. "/api/chat"
+    printf("  %sserver: %s (override with KOA_OLLAMA_URL); local inference - legs can take a while%s",
+        C.dim, root, C.off)
+
+    local OllamaHandler = require("koassistant_api.ollama")
+    local ResponseParser = require("koassistant_api.response_parser")
+    local function handlerBody(history, config)
+        config = config or {}
+        config.model = model
+        config.base_url = chat_url
+        local built = OllamaHandler:buildRequestBody(history, config)
+        return built.body
+    end
+
+    -- 1. /api/show — the source the runtime capability derive reads
+    local scode, sdec, sraw = ollamaPostJson(root .. "/api/show", { model = model }, 30)
+    if scode ~= 200 then
+        recordProbe(facts, "/api/show (capability derive)", false,
+            sraw and tostring(sraw):sub(1, 120) or "unreachable")
+        printf("  %sserver or model unavailable - aborting (is Ollama running? model pulled?)%s",
+            C.red, C.off)
+        return facts
+    end
+    local caps = {}
+    if type(sdec) == "table" and type(sdec.capabilities) == "table" then
+        for _i, c in ipairs(sdec.capabilities) do
+            if type(c) == "string" then table.insert(caps, c) end
+        end
+    end
+    facts.ollama_caps = caps
+    recordProbe(facts, "/api/show (capability derive)", true,
+        "capabilities: " .. (#caps > 0 and table.concat(caps, ", ") or "(none reported)"))
+    local has_tools_cap, has_thinking_cap = false, false
+    for _i, c in ipairs(caps) do
+        if c == "tools" then has_tools_cap = true end
+        if c == "thinking" then has_thinking_cap = true end
+    end
+
+    -- 2. baseline through the real handler shape; where does thinking land?
+    local body = handlerBody({ { role = "user", content = REASONING_PROBE_PROMPT } })
+    local code, decoded, raw = ollamaPostJson(chat_url, body, 300)
+    if code ~= 200 then
+        recordProbe(facts, "baseline (handler shape)", false, tostring(raw):sub(1, 160))
+        printf("  %sbaseline failed - aborting battery%s", C.red, C.off)
+        return facts
+    end
+    facts.reachable = true
+    local where = ollamaThinkingIn(decoded)
+    facts.default_reasoning = where ~= nil
+    recordProbe(facts, "baseline (handler shape)", true,
+        where and ("thinks by default - thinking in "
+            .. (where == "tags" and "<think> tags (the form the plugin extracts)"
+                or "message.thinking FIELD"))
+        or "no thinking in bare response -> default OFF")
+
+    -- 3. the plugin's own transformer on the real response
+    local pok, pcontent, preasoning = ResponseParser:parseResponse(decoded, "ollama")
+    recordProbe(facts, "plugin parser (content extraction)",
+        (pok and type(pcontent) == "string" and pcontent:match("%S") ~= nil) or false,
+        pok and (preasoning and "content + reasoning extracted" or "content extracted")
+            or tostring(pcontent))
+
+    -- 4/5. think param (thinking-capable models only)
+    if has_thinking_cap then
+        body = handlerBody({ { role = "user", content = REASONING_PROBE_PROMPT } })
+        body.think = false
+        local dcode, ddec = ollamaPostJson(chat_url, body, 300)
+        local dwhere = ollamaThinkingIn(ddec)
+        facts.disable_ok = (dcode == 200 and dwhere == nil) or false
+        recordProbe(facts, "think=false (suppression)", facts.disable_ok,
+            dcode ~= 200 and ("HTTP " .. tostring(dcode))
+            or (dwhere and "thinking STILL present" or "thinking suppressed"))
+
+        body = handlerBody({ { role = "user", content = REASONING_PROBE_PROMPT } })
+        body.think = true
+        local ecode, edec = ollamaPostJson(chat_url, body, 300)
+        local ewhere = ollamaThinkingIn(edec)
+        recordProbe(facts, "think=true (explicit)", (ecode == 200 and ewhere ~= nil) or false,
+            ecode ~= 200 and ("HTTP " .. tostring(ecode))
+            or (ewhere and ("thinking in " .. (ewhere == "field" and "message.thinking FIELD"
+                    or "<think> tags"))
+                or "no thinking came back"))
+    end
+
+    -- 6. real-dispatch shape (system + consecutive user turns)
+    body = handlerBody(realHistory(), { system = { text = realSystemText() } })
+    local rcode, _rdec, rraw = ollamaPostJson(chat_url, body, 300)
+    recordProbe(facts, "real-dispatch shape (system+history)", rcode == 200,
+        rcode ~= 200 and tostring(rraw):sub(1, 120) or nil)
+
+    -- 7. streaming smoke: NDJSON framing
+    body = handlerBody({ { role = "user", content = PROBE_PROMPT } })
+    body.stream = true
+    local stcode, _stdec, straw = ollamaPostJson(chat_url, body, 300)
+    facts.stream_ok = (stcode == 200 and looksLikeNDJSON(straw)) or false
+    recordProbe(facts, "streaming (NDJSON framing)", facts.stream_ok,
+        stcode ~= 200 and ("HTTP " .. tostring(stcode))
+        or (facts.stream_ok and "NDJSON lines" or "200 but non-NDJSON body"))
+
+    -- 8/9. tools: two-round replay through the REAL handler + ToolWire adapter.
+    -- tool_choice is IGNORED by ollama (probed 0.17.7): "required" cannot force
+    -- a call, so a prose round 1 is INCONCLUSIVE, not a rejection (the runner's
+    -- prose fallback covers it). Round 2 replays with NO declarations — the
+    -- plugin's mode NONE stray-call guard, under test here.
+    local specs = realToolSpecs()
+    if has_tools_cap and specs then
+        local messages = { { role = "user", content = TOOL_REPLAY_PROMPT } }
+        body = handlerBody(messages, { tools = { specs = specs, mode = "ANY" } })
+        local t1code, t1dec, t1raw = ollamaPostJson(chat_url, body, 300)
+        if t1code ~= 200 then
+            facts.tools_ok = false
+            recordProbe(facts, "tools round 1 (real specs, mode ANY)", false,
+                tostring(t1raw):sub(1, 160))
+        else
+            local parsed = parseToolCalls(t1dec, "ollama")
+            if parsed then
+                facts.tools_ok = true
+                recordProbe(facts, "tools round 1 (real specs, mode ANY)", true,
+                    "called " .. tostring(parsed.calls[1] and parsed.calls[1].name))
+                if appendReplayTurn("ollama", messages, parsed) then
+                    body = handlerBody(messages, { tools = { specs = specs, mode = "NONE" } })
+                    local t2code, t2dec, t2raw = ollamaPostJson(chat_url, body, 300)
+                    local t2ok = false
+                    if t2code == 200 then
+                        local ok2, c2 = ResponseParser:parseResponse(t2dec, "ollama")
+                        t2ok = (ok2 and type(c2) == "string" and c2:match("%S") ~= nil) or false
+                    end
+                    facts.tool_replay_ok = t2ok
+                    recordProbe(facts, "tool replay round 2 (adapter echo)", t2ok,
+                        t2code ~= 200 and tostring(t2raw):sub(1, 120)
+                        or (t2ok and "grounded prose after replay (no declarations sent)"
+                            or "no prose content"))
+                end
+            else
+                facts.tools_ok = nil
+                recordProbe(facts, "tools round 1 (real specs, mode ANY)", nil,
+                    "no call - prose answer (tool_choice ignored; runner prose-fallback covers this)")
+            end
+        end
+    elseif not has_tools_cap then
+        recordProbe(facts, "tools (capability gate)", false,
+            "/api/show reports no tools capability - the Tools chip stays off for this model")
+    end
+
+    return facts
+end
+
 --------------------------------------------------------------------------------
 -- Probe dispatch
 --------------------------------------------------------------------------------
 
 local function probeModel(provider, model, api_key, verbose)
     banner("PROBE " .. provider .. " / " .. model)
+    -- Ollama: local + keyless; capabilities are derived at runtime, no stanzas
+    if provider == "ollama" then
+        local facts = probeOllama(model, verbose)
+        if facts and facts.reachable then
+            print("")
+            printf("  %sollama capabilities are DERIVED at runtime (/api/show at model pick) - nothing to draft%s",
+                C.dim, C.off)
+        end
+        return facts
+    end
     if not TestConfig.isValidApiKey(api_key) then
         printf("  %sno API key for %s in apikeys.lua%s", C.red, provider, C.off)
         return nil
