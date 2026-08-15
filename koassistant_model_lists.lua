@@ -61,7 +61,11 @@ local ModelLists = {
 
     gemini = {
         -- Gemini 3.x (current generation)
-        "gemini-3.6-flash",             -- standard (default), newest flash
+        "gemini-3.6-flash",             -- standard (default)
+        "gemini-3.7-flash",             -- newest flash (probed 2026-08-15: thinks by default,
+                                        -- thinkingLevel accepted, free-tier grounding gated like
+                                        -- the rest of 3.x; rides the gemini-3 family fallbacks —
+                                        -- "minimal" effort unprobed, so no curated profile yet)
         "gemini-3.5-flash",             -- previous flash (kept available)
         "gemini-3.1-pro-preview",       -- flagship, reasoning (paid only; no 3.5/3.6 pro yet)
         "gemini-3.5-flash-lite",        -- fast/ultrafast (newest lite)
