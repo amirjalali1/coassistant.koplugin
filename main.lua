@@ -9459,7 +9459,18 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
         end,
       }})
     end
-    addGroupRow(mf_rows, _("Merge / fold…"), _("Merge / fold"))
+    -- 2026-08-15 (maintainer): the popup surfaces Merge / fold only when it
+    -- is actionable here — the book is in a group (cross-book fold) or holds
+    -- section X-Rays (within-book merge). Ungrouped books keep full access
+    -- via the browser hamburger; this just stops the clutter.
+    local mf_relevant = c_sx_count > 0
+    if not mf_relevant and sx_file then
+      local ok_bg, BookGroups = pcall(require, "koassistant_book_groups")
+      mf_relevant = ok_bg and #(BookGroups.groupsFor(sx_file) or {}) > 0
+    end
+    if mf_relevant then
+      addGroupRow(mf_rows, _("Merge / fold…"), _("Merge / fold"))
+    end
     -- Per-book Automatic X-Ray (§7 P1): tri-state, universal — mirrored in
     -- Book Settings. Flowing docs only.
     local af = self.settings:readSetting("features") or {}
@@ -9524,7 +9535,9 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       text = _("Marking & lookup…"),
       callback = function()
         UIManager:close(dialog)
-        self_ref:_showXrayMarkingQuickSettings({ back = function()
+        -- file threaded (2026-08-15): the marking rows write THIS book's
+        -- sidecar override, so the dialog must know which book it serves
+        self_ref:_showXrayMarkingQuickSettings({ file = sx_file, back = function()
           self_ref:_showXrayScopePopup(action, action_id, on_update, cached_entry, opts)
         end })
       end,
@@ -15330,6 +15343,29 @@ function AskGPT:executeFileBrowserAction(file, title, authors, book_props, actio
 
     if self:_checkRequirements(action, file) then return end
 
+    -- Spoiler consent (2026-08-15 device-round audit, the named file-browser
+    -- gap): the open-book scope popup confirms unread coverage at Run, but
+    -- the file-browser path has no popup, so a whole-book run on a
+    -- protection-ON book fired with no consent at all. Closed books extract
+    -- no text (the answer comes from AI knowledge), but it covers the whole
+    -- book just the same. Finished/research books resolve unprotected.
+    local self_outer = self
+    local function confirmSpoilerThenRun(run_fn)
+      if not action.source_selection then return run_fn() end
+      local BookSettings = require("koassistant_book_settings")
+      local sp_ds = require("koassistant_doc_settings").resolve(file, self_outer.ui)
+      local sp_feats = self_outer.settings:readSetting("features") or {}
+      if not BookSettings.resolveSpoilerFree(sp_ds, sp_feats) then return run_fn() end
+      local pf = sp_ds and tonumber(sp_ds:readSetting("percent_finished")) or 0
+      if pf >= 0.995 then return run_fn() end
+      local ConfirmBox = require("ui/widget/confirmbox")
+      UIManager:show(ConfirmBox:new{
+        text = _("Spoiler protection is on for this book. Running this from the file browser covers the whole book, including parts you haven't read yet. Continue?"),
+        ok_text = _("Run"),
+        ok_callback = run_fn,
+      })
+    end
+
     if action.use_response_caching and not action.source_selection then
       local self_ref = self
       self:showCacheActionPopup(action, action_id, function(update_opts)
@@ -15377,7 +15413,9 @@ function AskGPT:executeFileBrowserAction(file, title, authors, book_props, actio
           text = T(_("New %1…"), action_name),
           callback = function()
             UIManager:close(fb_dialog)
-            Dialogs.executeDirectAction(self_ref.ui, action, book_context, config_copy, self_ref)
+            confirmSpoilerThenRun(function()
+              Dialogs.executeDirectAction(self_ref.ui, action, book_context, config_copy, self_ref)
+            end)
           end,
         }})
         table.insert(fb_buttons, {{
@@ -15392,10 +15430,14 @@ function AskGPT:executeFileBrowserAction(file, title, authors, book_props, actio
         }
         UIManager:show(fb_dialog)
       else
-        Dialogs.executeDirectAction(self.ui, action, book_context, config_copy, self)
+        confirmSpoilerThenRun(function()
+          Dialogs.executeDirectAction(self.ui, action, book_context, config_copy, self)
+        end)
       end
     else
-      Dialogs.executeDirectAction(self.ui, action, book_context, config_copy, self)
+      confirmSpoilerThenRun(function()
+        Dialogs.executeDirectAction(self.ui, action, book_context, config_copy, self)
+      end)
     end
   end)
 end
@@ -18606,6 +18648,31 @@ end
 function AskGPT:_showXrayMarkingQuickSettings(opts)
   local self_ref = self
   local features = self.settings:readSetting("features") or {}
+  local BookSettings = require("koassistant_book_settings")
+  -- 2026-08-15 (maintainer): the popup's MARKING rows edit THIS BOOK (sticky
+  -- sidecar override, nil = follow global); the Settings menu rows stay the
+  -- global defaults. Lookup rows (selection intercept, card) stay global and
+  -- say so. Each marking value is tagged (book)/(global) for its source.
+  local ds
+  if opts and opts.file then
+    ds = require("koassistant_doc_settings").resolve(opts.file, self.ui)
+  elseif self.ui and self.ui.doc_settings then
+    ds = self.ui.doc_settings
+  end
+  local marking = BookSettings.resolveXrayMarking(ds, features)
+  local function writeMarking(book_key, feature_key, value)
+    if ds then
+      ds:saveSetting(book_key, value)
+      if ds.flush then ds:flush() end
+    else
+      -- No book identity (defensive): the pre-2026-08-15 global edit
+      features[feature_key] = value
+    end
+  end
+  local function scopeTag(book_key)
+    if ds and ds:readSetting(book_key) ~= nil then return _("book") end
+    return _("global")
+  end
   local ButtonDialog = require("ui/widget/buttondialog")
   local dialog
   local function row(text, change_fn, resync_fn)
@@ -18619,10 +18686,14 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
   end
   local buttons = {}
   table.insert(buttons, row(
-    T(_("Passive marking: %1"), features.xray_marking ~= false and _("On") or _("Off")),
-    function() features.xray_marking = features.xray_marking == false end))
-  if features.xray_marking ~= false then
-    local dens = features.xray_marking_density or "10"
+    T(_("Passive marking: %1 (%2)"),
+      marking.enabled and _("On") or _("Off"),
+      scopeTag(BookSettings.KEY_XRAY_MARKING)),
+    function()
+      writeMarking(BookSettings.KEY_XRAY_MARKING, "xray_marking", not marking.enabled)
+    end))
+  if marking.enabled then
+    local dens = marking.density
     local dens_labels = {
       first = _("Once per page"),
       ["10"] = _("After 10 unseen pages"),
@@ -18633,9 +18704,13 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
     local dens_next = { first = "10", ["10"] = "25", ["25"] = "once",
       once = "all", all = "first" }
     table.insert(buttons, row(
-      T(_("Density: %1"), dens_labels[dens] or dens),
-      function() features.xray_marking_density = dens_next[dens] or "first" end))
-    local fam = features.xray_marking_families or "all"
+      T(_("Density: %1 (%2)"), dens_labels[dens] or dens,
+        scopeTag(BookSettings.KEY_XRAY_MARKING_DENSITY)),
+      function()
+        writeMarking(BookSettings.KEY_XRAY_MARKING_DENSITY, "xray_marking_density",
+          dens_next[dens] or "first")
+      end))
+    local fam = marking.families
     local fam_labels = {
       all = _("All entities"),
       people = _("People only"),
@@ -18643,23 +18718,37 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
     }
     local fam_next = { all = "people", people = "people_places", people_places = "all" }
     table.insert(buttons, row(
-      T(_("Mark: %1"), fam_labels[fam] or fam),
-      function() features.xray_marking_families = fam_next[fam] or "all" end))
-    table.insert(buttons, row(
-      T(_("Tap marked words to open: %1"),
-        features.xray_marking_tap ~= false and _("On") or _("Off")),
+      T(_("Mark: %1 (%2)"), fam_labels[fam] or fam,
+        scopeTag(BookSettings.KEY_XRAY_MARKING_FAMILIES)),
       function()
-        if features.xray_marking_tap == false then
-          features.xray_marking_tap = true
-        else
-          features.xray_marking_tap = false
-        end
+        writeMarking(BookSettings.KEY_XRAY_MARKING_FAMILIES, "xray_marking_families",
+          fam_next[fam] or "all")
+      end))
+    table.insert(buttons, row(
+      T(_("Tap marked words to open: %1 (%2)"),
+        marking.tap and _("On") or _("Off"),
+        scopeTag(BookSettings.KEY_XRAY_MARKING_TAP)),
+      function()
+        writeMarking(BookSettings.KEY_XRAY_MARKING_TAP, "xray_marking_tap", not marking.tap)
+      end))
+  end
+  if ds and marking.has_override then
+    table.insert(buttons, row(
+      _("Use global marking settings for this book"),
+      function()
+        ds:delSetting(BookSettings.KEY_XRAY_MARKING)
+        ds:delSetting(BookSettings.KEY_XRAY_MARKING_DENSITY)
+        ds:delSetting(BookSettings.KEY_XRAY_MARKING_FAMILIES)
+        ds:delSetting(BookSettings.KEY_XRAY_MARKING_TAP)
+        if ds.flush then ds:flush() end
       end))
   end
   -- The long-press layer (independent of marking): a held selection that
-  -- exactly matches an entity opens it, everything else falls through
+  -- exactly matches an entity opens it, everything else falls through.
+  -- Global on purpose (lookup behavior, not per-book visuals) — labeled so
+  -- the book/global split above stays honest.
   table.insert(buttons, row(
-    T(_("Matching selections open entries: %1"),
+    T(_("Matching selections open entries: %1 (all books)"),
       features.xray_selection_intercept ~= false and _("On") or _("Off")),
     function() features.xray_selection_intercept = features.xray_selection_intercept == false end,
     function() self_ref:syncDictionaryBypass() end))
@@ -18676,7 +18765,7 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
     card_mode_label = _("Footnote panel")
   end
   table.insert(buttons, row(
-    T(_("Exact hits open: %1"), card_mode_label),
+    T(_("Exact hits open: %1 (all books)"), card_mode_label),
     function()
       if features.xray_card_landing == false then
         features.xray_card_landing = true

@@ -645,7 +645,11 @@ function XrayMarks.tapTarget(plugin, ges)
   if not (marks and ges and ges.pos) then return nil end
   local features = plugin and plugin.settings
       and plugin.settings:readSetting("features") or {}
-  if features.xray_marking_tap == false then return nil end
+  -- Book override > global (2026-08-15: the popup's quick settings write the
+  -- book layer; sidecar reads are memory-cached, so this stays a cheap tap)
+  local marking = require("koassistant_book_settings").resolveXrayMarking(
+      plugin and plugin.ui and plugin.ui.doc_settings, features)
+  if not marking.tap then return nil end
   local Screen = require("device").screen
   local pad = Screen:scaleBySize(3)
   local tx, ty = ges.pos.x, ges.pos.y
@@ -665,8 +669,12 @@ function XrayMarks.sync(plugin)
   local features = plugin and plugin.settings
       and plugin.settings:readSetting("features") or {}
   -- Opt-out since round 10 (default ON — read pattern must match the schema
-  -- default): nil counts as enabled, explicit false is the opt-out
-  local eligible = features.xray_marking ~= false
+  -- default): nil counts as enabled, explicit false is the opt-out.
+  -- 2026-08-15: book override > global (the X-Ray popup's quick settings
+  -- write the book layer, Settings menu stays the global default)
+  local marking = require("koassistant_book_settings").resolveXrayMarking(
+      ui and ui.doc_settings, features)
+  local eligible = marking.enabled
       and ui and ui.document and ui.rolling and ui.view
   if not eligible then
     XrayMarks.teardown(plugin)
@@ -680,7 +688,7 @@ function XrayMarks.sync(plugin)
   -- per page, "10"/"25" only after that many pages unseen, "once" only the
   -- first appearance in the book. Default flipped to "10" round 9 —
   -- returning names stand out, constant companions stay quiet.
-  local density = features.xray_marking_density or "10"
+  local density = marking.density
   if density == "all" then
     st.spacing = 0
   elseif density == "once" then
@@ -693,7 +701,7 @@ function XrayMarks.sync(plugin)
   -- its region refresh is sized to the NEW marks, and a mode change that
   -- shrinks the set would leave removed marks visible outside it
   st.full_refresh = true
-  local fam = features.xray_marking_families or "all"
+  local fam = marking.families
   if fam == "people" then
     st.families = { people = true }
   elseif fam == "people_places" then

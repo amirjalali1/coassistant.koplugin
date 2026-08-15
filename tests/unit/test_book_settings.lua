@@ -834,7 +834,42 @@ TestRunner:test("KEY_WEB_SEARCH and KEY_DOMAIN/KEY_RESEARCH are in SIDECAR_KEYS"
         "koassistant_book_background missing from SIDECAR_KEYS (book_background_plan.md)")
     TestRunner:assertEqual(found[BookSettings.KEY_XRAY_SPACING] == true, true,
         "koassistant_book_xray_spacing missing from SIDECAR_KEYS (spacing slice)")
-    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 26, "26 per-book keys expected (incl. 4 privacy overrides + xray promotion hold + checkpoint spacing)")
+    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 30, "30 per-book keys expected (incl. 4 privacy overrides + xray promotion hold + checkpoint spacing + 4 marking overrides)")
+end)
+
+TestRunner:suite("resolveXrayMarking (2026-08-15: popup edits the book layer)")
+TestRunner:test("nothing set: schema defaults, no override", function()
+    local m = BookSettings.resolveXrayMarking(makeDocSettings({}), {})
+    TestRunner:assertEqual(m.enabled, true, "marking default ON")
+    TestRunner:assertEqual(m.density, "10", "density default")
+    TestRunner:assertEqual(m.families, "all", "families default")
+    TestRunner:assertEqual(m.tap, true, "tap default ON")
+    TestRunner:assertEqual(m.has_override, false, "no override")
+end)
+TestRunner:test("globals flow through when book layer empty", function()
+    local m = BookSettings.resolveXrayMarking(makeDocSettings({}),
+        { xray_marking = false, xray_marking_density = "all", xray_marking_families = "people" })
+    TestRunner:assertEqual(m.enabled, false, "global off honored")
+    TestRunner:assertEqual(m.density, "all", "global density")
+    TestRunner:assertEqual(m.families, "people", "global families")
+    TestRunner:assertEqual(m.has_override, false, "still no book override")
+end)
+TestRunner:test("book layer beats globals both directions", function()
+    local m = BookSettings.resolveXrayMarking(makeDocSettings({
+        [BookSettings.KEY_XRAY_MARKING] = true,
+        [BookSettings.KEY_XRAY_MARKING_DENSITY] = "once",
+        [BookSettings.KEY_XRAY_MARKING_TAP] = false,
+    }), { xray_marking = false, xray_marking_density = "all", xray_marking_tap = true })
+    TestRunner:assertEqual(m.enabled, true, "book ON beats global off")
+    TestRunner:assertEqual(m.density, "once", "book density wins")
+    TestRunner:assertEqual(m.tap, false, "book tap-off beats global on")
+    TestRunner:assertEqual(m.families, "all", "unset family follows global default chain")
+    TestRunner:assertEqual(m.has_override, true, "override flagged")
+end)
+TestRunner:test("nil doc_settings = global-only resolution", function()
+    local m = BookSettings.resolveXrayMarking(nil, { xray_marking_density = "25" })
+    TestRunner:assertEqual(m.density, "25", "globals only")
+    TestRunner:assertEqual(m.has_override, false, "no ds, no override")
 end)
 
 TestRunner:test("xraySpacingOverride: valid ratio passes, junk and out-of-range are nil", function()

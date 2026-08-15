@@ -315,8 +315,24 @@ local function liveSpoilerLine(cfg, ui)
     local posture = BookSettings.resolveSpoilerPosture(ds, features,
         { session = features._spoiler_free_active })
     if not posture.protected then return nil end
+    -- Privacy gate (2026-08-15 device-round audit): the reader's position is
+    -- basic-stats data — with stats sharing off (and the provider untrusted)
+    -- this line must NOT disclose it, exactly as extractForAction already
+    -- withholds {reading_progress}. The no-progress nudge variant covers it.
+    local stats_ok = features.enable_basic_stats ~= false
+    if not stats_ok and cfg and cfg.provider
+        and type(features.trusted_providers) == "table" then
+        for _idx, p in ipairs(features.trusted_providers) do
+            if p == cfg.provider then
+                stats_ok = true
+                break
+            end
+        end
+    end
     local progress
-    if book_open then
+    if not stats_ok then
+        progress = nil
+    elseif book_open then
         local rp = require("koassistant_context_extractor"):new(ui):getReadingProgress()
         progress = rp and rp.formatted
     elseif ds and ds.readSetting then

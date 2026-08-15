@@ -161,6 +161,54 @@ BookSettings.KEY_XRAY_PROMOTION = "koassistant_book_xray_promotion"
 -- checkpoints planned from now on — plans always start at the ladder top, so
 -- built rungs keep their spans by construction.
 BookSettings.KEY_XRAY_SPACING = "koassistant_book_xray_spacing"
+-- X-Ray marking overrides (2026-08-15 device round, maintainer: "changing
+-- density, visual stuff, from the X-Ray popup should be book settings"): the
+-- popup's Marking quick settings write THESE (nil = follow global); the
+-- Settings menu rows stay the global defaults. Lookup-side settings
+-- (selection intercept, card style) stay global on purpose.
+BookSettings.KEY_XRAY_MARKING = "koassistant_book_xray_marking"                    -- true | false | nil
+BookSettings.KEY_XRAY_MARKING_DENSITY = "koassistant_book_xray_marking_density"    -- "all"|"first"|"10"|"25"|"once" | nil
+BookSettings.KEY_XRAY_MARKING_FAMILIES = "koassistant_book_xray_marking_families"  -- "all"|"people"|"people_places" | nil
+BookSettings.KEY_XRAY_MARKING_TAP = "koassistant_book_xray_marking_tap"            -- true | false | nil
+
+--- Effective X-Ray marking config for a book: book override > global > default.
+--- Pure. Read pattern must match the schema defaults (marking ON, tap ON,
+--- density "10", families "all").
+--- @return table { enabled, density, families, tap, has_override }
+function BookSettings.resolveXrayMarking(doc_settings, features)
+    features = features or {}
+    -- No and/or chain here: it would fold an explicit book-level FALSE into
+    -- nil and let the global leak through (the classic tri-state pitfall)
+    local function rd(key)
+        if doc_settings and doc_settings.readSetting then
+            return doc_settings:readSetting(key)
+        end
+        return nil
+    end
+    local b_on = rd(BookSettings.KEY_XRAY_MARKING)
+    local b_dens = rd(BookSettings.KEY_XRAY_MARKING_DENSITY)
+    local b_fam = rd(BookSettings.KEY_XRAY_MARKING_FAMILIES)
+    local b_tap = rd(BookSettings.KEY_XRAY_MARKING_TAP)
+    local enabled
+    if b_on ~= nil then
+        enabled = b_on ~= false
+    else
+        enabled = features.xray_marking ~= false
+    end
+    local tap
+    if b_tap ~= nil then
+        tap = b_tap ~= false
+    else
+        tap = features.xray_marking_tap ~= false
+    end
+    return {
+        enabled = enabled,
+        density = b_dens or features.xray_marking_density or "10",
+        families = b_fam or features.xray_marking_families or "all",
+        tap = tap,
+        has_override = b_on ~= nil or b_dens ~= nil or b_fam ~= nil or b_tap ~= nil,
+    }
+end
 
 --- X-Ray promotion hold. Pure.
 --- @return boolean true = promotion follows the reading position for this book
@@ -595,6 +643,10 @@ BookSettings.SIDECAR_KEYS = {
     BookSettings.KEY_XRAY_GOAL,
     BookSettings.KEY_XRAY_PROMOTION,
     BookSettings.KEY_XRAY_SPACING,
+    BookSettings.KEY_XRAY_MARKING,
+    BookSettings.KEY_XRAY_MARKING_DENSITY,
+    BookSettings.KEY_XRAY_MARKING_FAMILIES,
+    BookSettings.KEY_XRAY_MARKING_TAP,
     -- (KEY_XRAY_COVERAGE_ASKED is deliberately NOT here: a stamp, not an
     -- override — it must not count as "customized" nor block on reset;
     -- registered as its own storage-registry entry like the last-opened stamp)
