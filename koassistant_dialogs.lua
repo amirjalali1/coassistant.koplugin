@@ -8089,10 +8089,16 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             end,
             spoiler = function()
                 if not chips_book_or_highlight then return nil end
-                -- State labels name the OUTCOME ("ON/OFF" over a negated feature read
-                -- backwards — maintainer 2026-07-12). No emoji variant: the words carry
-                -- the state, an icon would just add width.
-                local spoiler_state = session_spoiler_free and _("No spoilers") or _("Spoilers OK")
+                -- Shield + ON/OFF states the PROTECTION directly (maintainer 2026-08-16:
+                -- now that the feature is named "Spoiler Protection" with the shield icon,
+                -- the chip follows it; the old No-spoilers/Spoilers-OK outcome labels read
+                -- inverted against the feature name). Emoji off: the name substitutes.
+                local spoiler_state
+                if session_spoiler_free then
+                    spoiler_state = enable_emoji and ("\u{1F6E1}\u{FE0F} " .. _("ON")) or _("Spoiler Protection ON")
+                else
+                    spoiler_state = enable_emoji and ("\u{1F6E1}\u{FE0F} " .. _("OFF")) or _("Spoiler Protection OFF")
+                end
                 return {
                     text = spoiler_state,
                     callback = function()
