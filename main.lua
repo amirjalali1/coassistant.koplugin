@@ -7385,6 +7385,38 @@ end
 --- @param action_id string: The action ID
 --- @param on_update function: Callback to execute the action (update/re-run)
 --- @param opts table|nil: Optional {file, book_title, book_author} fallback for closed-book contexts
+--- Consent for CLOSED-book generation runs of source_selection actions
+--- (consolidation Q4, 2026-08-16). Open books route through the unified scope
+--- popup whose Run button owns this ask (C3); a closed book has no scope
+--- popup — New/Regenerate there covers the whole book from AI knowledge — so
+--- under spoiler protection it asks once before running. Re-homes the
+--- 2026-08-15 file-browser consent, which sat in an unreachable arm and never
+--- fired. Covers all three closed-book dispatch points: the cache popup's
+--- Update/Regenerate, its no-cache fallthrough, and the artifact viewer's
+--- Regenerate.
+function AskGPT:_confirmClosedBookSpoilerRun(action, file, run_fn)
+  if not (action and action.source_selection and file) then return run_fn() end
+  local SafeDocSettings = require("koassistant_doc_settings")
+  if self.ui and self.ui.document
+      and SafeDocSettings.samePath(self.ui.document.file, file) then
+    return run_fn()  -- open book: the scope popup owns consent
+  end
+  local BookSettings = require("koassistant_book_settings")
+  local sp_ds = SafeDocSettings.resolve(file, self.ui)
+  local sp_feats = self.settings:readSetting("features") or {}
+  -- resolveSpoilerFree already stands down for research mode and books marked
+  -- finished; the progress check below covers read-to-the-end-but-unmarked
+  if not BookSettings.resolveSpoilerFree(sp_ds, sp_feats) then return run_fn() end
+  local pf = sp_ds and tonumber(sp_ds:readSetting("percent_finished")) or 0
+  if pf >= 0.995 then return run_fn() end
+  local ConfirmBox = require("ui/widget/confirmbox")
+  UIManager:show(ConfirmBox:new{
+    text = _("Spoiler protection is on for this book. This covers the whole book, including parts you haven't read yet. Continue?"),
+    ok_text = _("Run"),
+    ok_callback = run_fn,
+  })
+end
+
 function AskGPT:showCacheActionPopup(action, action_id, on_update, opts)
   local file = self.ui and self.ui.document and self.ui.document.file
       or (opts and opts.file)
@@ -7506,7 +7538,7 @@ function AskGPT:showCacheActionPopup(action, action_id, on_update, opts)
       UIManager:show(no_cache_dialog)
     else
       if self:_checkRequirements(action) then return end
-      on_update()
+      self:_confirmClosedBookSpoilerRun(action, file, on_update)
     end
     return
   end
@@ -7612,7 +7644,7 @@ function AskGPT:showCacheActionPopup(action, action_id, on_update, opts)
     callback = function()
       UIManager:close(dialog)
       if self_ref:_checkRequirements(action) then return end
-      on_update()
+      self_ref:_confirmClosedBookSpoilerRun(action, file, on_update)
     end,
   }})
   if section_prefix and self.ui and self.ui.document and self.ui.toc
@@ -10649,6 +10681,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
               UIManager:close(current_dialog)
               self_ref:_showXraySpacingPicker{
                 current = sp_now,
+                override = self_ref.ui and self_ref.ui.doc_settings
+                  and require("koassistant_book_settings").xraySpacingOverride(
+                    self_ref.ui.doc_settings) or nil,
                 title = _("Checkpoint spacing for this book:"),
                 count_for = function(s)
                   local rungs = XrayAuto.planBuildRungs(
@@ -10667,6 +10702,19 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
                     UIManager:show(Notification:new{
                       text = T(_("Checkpoint spacing for this book: every %1%"),
                         self_ref:_xraySpacingPctLabel(s)),
+                    })
+                  end
+                  fixDelivery()
+                  buildAndShow()
+                end,
+                on_reset = function()
+                  if self_ref.ui and self_ref.ui.doc_settings then
+                    self_ref.ui.doc_settings:saveSetting(
+                      require("koassistant_book_settings").KEY_XRAY_SPACING, nil)
+                    self_ref.ui.doc_settings:flush()
+                    UIManager:show(Notification:new{
+                      text = T(_("Checkpoint spacing for this book: recommended (every %1%)"),
+                        self_ref:_xraySpacingPctLabel(self_ref:_xrayLadderSpacing())),
                     })
                   end
                   fixDelivery()
@@ -12638,6 +12686,7 @@ function AskGPT:viewCachedAction(action, action_id, cached_entry, opts)
       if not Actions.requiresOpenBook(action) then
         on_regenerate = function()
           if self_ref2:_checkRequirements(action, file) then return end
+          self_ref2:_confirmClosedBookSpoilerRun(action, file, function()
           self_ref2._file_dialog_row_cache = { file = nil, rows = nil }
           -- Set up context flags (same as executeFileBrowserAction)
           -- Required for cache_file resolution in handlePredefinedPrompt
@@ -12662,6 +12711,7 @@ function AskGPT:viewCachedAction(action, action_id, cached_entry, opts)
             end
             Dialogs.executeDirectAction(self_ref2.ui, action,
                 config_copy.features.book_context or "", config_copy, self_ref2)
+          end)
           end)
         end
         regenerate_label = _("Regenerate")
@@ -13321,6 +13371,7 @@ function AskGPT:_xrayCoverageAskBeforeCreate(file, features, decimal, has_intro)
             UIManager:close(ask)
             self_ref:_showXraySpacingPicker{
               current = spacing,
+              override = BookSettings.xraySpacingOverride(self_ref.ui.doc_settings),
               title = _("Checkpoint spacing for this book:"),
               count_for = function(s)
                 return #(self_ref:_planXrayGrid(nil, s, nil, decimal, boundaries)) + intro_extra
@@ -13332,6 +13383,16 @@ function AskGPT:_xrayCoverageAskBeforeCreate(file, features, decimal, has_intro)
                 UIManager:show(Notification:new{
                   text = T(_("Checkpoint spacing for this book: every %1%"),
                     self_ref:_xraySpacingPctLabel(s)),
+                })
+                showAsk()
+              end,
+              on_reset = function()
+                self_ref.ui.doc_settings:saveSetting(
+                  BookSettings.KEY_XRAY_SPACING, nil)
+                self_ref.ui.doc_settings:flush()
+                UIManager:show(Notification:new{
+                  text = T(_("Checkpoint spacing for this book: recommended (every %1%)"),
+                    self_ref:_xraySpacingPctLabel(self_ref:_xrayLadderSpacing())),
                 })
                 showAsk()
               end,
@@ -14063,22 +14124,33 @@ function AskGPT:_xraySpacingPctLabel(s)
   return pct % 1 == 0 and tostring(math.floor(pct)) or string.format("%.1f", pct)
 end
 
---- Shared checkpoint-spacing picker (spacing slice). Options 2.5–50% plus the
---- formula recommendation; each row may carry a live step count via
---- opts.count_for. The caller decides persistence in opts.on_pick — the form
---- and the coverage ask write the per-book key, the build confirm stays
---- per-run.
---- @param opts table { current, title, count_for(spacing)->n|nil,
----   on_pick(spacing), on_back() }
+--- Shared checkpoint-spacing picker (spacing slice; consolidation P2
+--- 2026-08-16: current-selection radio dots + the explicit reset row the Q3
+--- invariant requires). Options 2.5–50% plus the formula recommendation; each
+--- row may carry a live step count via opts.count_for. The caller decides
+--- persistence in opts.on_pick — the form and the coverage ask write the
+--- per-book key and pass opts.override + opts.on_reset; a per-run caller
+--- passes neither and the dots follow opts.current instead.
+--- @param opts table { current, override, title, count_for(spacing)->n|nil,
+---   on_pick(spacing), on_reset()|nil, on_back() }
 function AskGPT:_showXraySpacingPicker(opts)
   local ButtonDialog = require("ui/widget/buttondialog")
   local XrayAuto = require("koassistant_xray_auto")
   local recommended = XrayAuto.ladderSpacingFor(
     self.ui and self.ui.document and self.ui.document:getPageCount())
+  -- Half-percent resolution so 2.5% survives the dedupe rounding
+  local function skey(s) return math.floor((tonumber(s) or 0) * 200 + 0.5) end
+  local function dot(on) return on and "● " or "○ " end
+  -- With a reset row the dots mirror the PIN: an explicit override marks its
+  -- value row, no override marks the reset row (picking a value that equals
+  -- the recommendation is still a pin, Q3). Without on_reset (per-run pick)
+  -- the dots follow the resolved current value. Explicit if — override may
+  -- legitimately be nil.
+  local marked
+  if opts.on_reset then marked = opts.override else marked = opts.current end
   local choices, seen = {}, {}
   for _idx, s in ipairs({ 0.025, 0.05, 0.10, 0.15, 0.20, 0.25, 0.50, recommended }) do
-    -- Half-percent resolution so 2.5% survives the dedupe rounding
-    local key = math.floor(s * 200 + 0.5)
+    local key = skey(s)
     if not seen[key] then
       seen[key] = true
       choices[#choices + 1] = { spacing = s }
@@ -14087,6 +14159,16 @@ function AskGPT:_showXraySpacingPicker(opts)
   table.sort(choices, function(a, b) return a.spacing < b.spacing end)
   local picker
   local rows = {}
+  if opts.on_reset then
+    rows[#rows + 1] = {{
+      text = dot(opts.override == nil)
+        .. T(_("Use recommended (every %1%)"), self:_xraySpacingPctLabel(recommended)),
+      callback = function()
+        UIManager:close(picker)
+        opts.on_reset()
+      end,
+    }}
+  end
   for _idx, c in ipairs(choices) do
     local n = opts.count_for and opts.count_for(c.spacing) or nil
     local label
@@ -14095,12 +14177,12 @@ function AskGPT:_showXraySpacingPicker(opts)
     else
       label = T(_("Every %1%"), self:_xraySpacingPctLabel(c.spacing))
     end
-    if math.floor(c.spacing * 200 + 0.5) == math.floor(recommended * 200 + 0.5) then
+    if skey(c.spacing) == skey(recommended) then
       label = label .. " " .. _("(recommended)")
     end
     local captured = c.spacing
     rows[#rows + 1] = {{
-      text = label,
+      text = dot(marked ~= nil and skey(marked) == skey(captured)) .. label,
       callback = function()
         UIManager:close(picker)
         opts.on_pick(captured)
@@ -15385,30 +15467,13 @@ function AskGPT:executeFileBrowserAction(file, title, authors, book_props, actio
 
     if self:_checkRequirements(action, file) then return end
 
-    -- Spoiler consent (2026-08-15 device-round audit, the named file-browser
-    -- gap): the open-book scope popup confirms unread coverage at Run, but
-    -- the file-browser path has no popup, so a whole-book run on a
-    -- protection-ON book fired with no consent at all. Closed books extract
-    -- no text (the answer comes from AI knowledge), but it covers the whole
-    -- book just the same. Finished/research books resolve unprotected.
-    local self_outer = self
-    local function confirmSpoilerThenRun(run_fn)
-      if not action.source_selection then return run_fn() end
-      local BookSettings = require("koassistant_book_settings")
-      local sp_ds = require("koassistant_doc_settings").resolve(file, self_outer.ui)
-      local sp_feats = self_outer.settings:readSetting("features") or {}
-      if not BookSettings.resolveSpoilerFree(sp_ds, sp_feats) then return run_fn() end
-      local pf = sp_ds and tonumber(sp_ds:readSetting("percent_finished")) or 0
-      if pf >= 0.995 then return run_fn() end
-      local ConfirmBox = require("ui/widget/confirmbox")
-      UIManager:show(ConfirmBox:new{
-        text = _("Spoiler protection is on for this book. Running this from the file browser covers the whole book, including parts you haven't read yet. Continue?"),
-        ok_text = _("Run"),
-        ok_callback = run_fn,
-      })
-    end
-
-    if action.use_response_caching and not action.source_selection then
+    -- Consolidation Q4 (2026-08-16): the old `use_response_caching and
+    -- source_selection` arm here (a bespoke View/New dialog carrying the
+    -- 2026-08-15 spoiler consent) was UNREACHABLE — the file-browser
+    -- long-press list filters out every source_selection action via
+    -- requiresOpenBook — so it is gone, and the consent lives at the live
+    -- closed-book dispatch points instead (_confirmClosedBookSpoilerRun).
+    if action.use_response_caching then
       local self_ref = self
       self:showCacheActionPopup(action, action_id, function(update_opts)
         if update_opts and update_opts.complete_analysis then
@@ -15416,70 +15481,8 @@ function AskGPT:executeFileBrowserAction(file, title, authors, book_props, actio
         end
         Dialogs.executeDirectAction(self_ref.ui, action, book_context, config_copy, self_ref)
       end, { file = file, book_title = title, book_author = authors })
-    elseif action.use_response_caching and action.source_selection then
-      -- Cache + source_selection: View/New popup (file browser — no scope available)
-      local ActionCache = require("koassistant_action_cache")
-      local cached = ActionCache.get(file, action_id)
-      if not cached or not cached.result then
-        if action.cache_as_summary then
-          cached = ActionCache.getSummaryCache(file)
-        elseif action.cache_as_analyze then
-          cached = ActionCache.getAnalyzeCache(file)
-        end
-      end
-      if cached and cached.result then
-        local action_name = action.text or action_id
-        local view_detail = ""
-        if cached.timestamp then
-          local rel_time = formatRelativeTime(cached.timestamp)
-          if rel_time ~= "" then
-            view_detail = " (" .. rel_time .. ")"
-          end
-        end
-        local ButtonDialog = require("ui/widget/buttondialog")
-        local self_ref = self
-        local fb_dialog
-        local fb_buttons = {}
-        table.insert(fb_buttons, {{
-          text = T(_("View %1"), action_name .. view_detail),
-          callback = function()
-            UIManager:close(fb_dialog)
-            self_ref:viewCachedAction(action, action_id, cached, {
-              file = file,
-              book_title = title,
-              book_author = authors,
-            })
-          end,
-        }})
-        table.insert(fb_buttons, {{
-          text = T(_("New %1…"), action_name),
-          callback = function()
-            UIManager:close(fb_dialog)
-            confirmSpoilerThenRun(function()
-              Dialogs.executeDirectAction(self_ref.ui, action, book_context, config_copy, self_ref)
-            end)
-          end,
-        }})
-        table.insert(fb_buttons, {{
-          text = _("Cancel"),
-          callback = function()
-            UIManager:close(fb_dialog)
-          end,
-        }})
-        fb_dialog = ButtonDialog:new{
-          title = action_name,
-          buttons = fb_buttons,
-        }
-        UIManager:show(fb_dialog)
-      else
-        confirmSpoilerThenRun(function()
-          Dialogs.executeDirectAction(self.ui, action, book_context, config_copy, self)
-        end)
-      end
     else
-      confirmSpoilerThenRun(function()
-        Dialogs.executeDirectAction(self.ui, action, book_context, config_copy, self)
-      end)
+      Dialogs.executeDirectAction(self.ui, action, book_context, config_copy, self)
     end
   end)
 end
@@ -18676,18 +18679,17 @@ function AskGPT:syncXrayMarks()
 end
 
 --- Slice-2 quick settings (X-Ray popup "Marking & lookup…"): SELF-REBUILDING
---- — every toggle re-shows this dialog with fresh labels instead of dumping
---- the reader back at the main popup (device 2026-08-14). Edits the GLOBAL
---- toggles; the book-layer-with-hold shape is the recorded follow-up.
+--- — every change re-shows this dialog with fresh labels instead of dumping
+--- the reader back at the main popup (device 2026-08-14). Consolidation P2
+--- (2026-08-16): the four MARKING rows open the canonical two-layer pickers
+--- (BookSettings.showXrayMarkingPicker) landed on the book tab — per-field
+--- Follow-global rows, Global one tap away; the old tap-cycles are gone. The
+--- lookup rows (selection intercept, card) stay global-only tap-cycles.
 --- opts.back reopens whatever launched this.
 function AskGPT:_showXrayMarkingQuickSettings(opts)
   local self_ref = self
   local features = self.settings:readSetting("features") or {}
   local BookSettings = require("koassistant_book_settings")
-  -- 2026-08-15 (maintainer): the popup's MARKING rows edit THIS BOOK (sticky
-  -- sidecar override, nil = follow global); the Settings menu rows stay the
-  -- global defaults. Lookup rows (selection intercept, card) stay global and
-  -- say so. Each marking value is tagged (book)/(global) for its source.
   local ds
   if opts and opts.file then
     ds = require("koassistant_doc_settings").resolve(opts.file, self.ui)
@@ -18695,21 +18697,13 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
     ds = self.ui.doc_settings
   end
   local marking = BookSettings.resolveXrayMarking(ds, features)
-  local function writeMarking(book_key, feature_key, value)
-    if ds then
-      ds:saveSetting(book_key, value)
-      if ds.flush then ds:flush() end
-    else
-      -- No book identity (defensive): the pre-2026-08-15 global edit
-      features[feature_key] = value
-    end
-  end
   local function scopeTag(book_key)
     if ds and ds:readSetting(book_key) ~= nil then return _("book") end
     return _("global")
   end
   local ButtonDialog = require("ui/widget/buttondialog")
   local dialog
+  -- Tap-cycle row (the two global-only lookup settings below)
   local function row(text, change_fn, resync_fn)
     return {{ text = text, callback = function()
       UIManager:close(dialog)
@@ -18719,53 +18713,37 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
       self_ref:_showXrayMarkingQuickSettings(opts)
     end }}
   end
+  -- Marking row: opens the canonical picker for one marking key, book tab
+  -- first (this popup is book-scoped chrome, like Book Settings)
+  local function pickerRow(text, kind)
+    return {{ text = text, callback = function()
+      UIManager:close(dialog)
+      BookSettings.showXrayMarkingPicker({
+        plugin = self_ref, ui = self_ref.ui,
+        document_path = opts and opts.file or nil,
+        kind = kind, target_override = "book",
+        on_close = function() self_ref:_showXrayMarkingQuickSettings(opts) end,
+      })
+    end }}
+  end
   local buttons = {}
-  table.insert(buttons, row(
+  table.insert(buttons, pickerRow(
     T(_("Passive marking: %1 (%2)"),
       marking.enabled and _("On") or _("Off"),
-      scopeTag(BookSettings.KEY_XRAY_MARKING)),
-    function()
-      writeMarking(BookSettings.KEY_XRAY_MARKING, "xray_marking", not marking.enabled)
-    end))
+      scopeTag(BookSettings.KEY_XRAY_MARKING)), "enabled"))
   if marking.enabled then
-    local dens = marking.density
-    local dens_labels = {
-      first = _("Once per page"),
-      ["10"] = _("After 10 unseen pages"),
-      ["25"] = _("After 25 unseen pages"),
-      once = _("First appearance only"),
-      all = _("All occurrences"),
-    }
-    local dens_next = { first = "10", ["10"] = "25", ["25"] = "once",
-      once = "all", all = "first" }
-    table.insert(buttons, row(
-      T(_("Density: %1 (%2)"), dens_labels[dens] or dens,
-        scopeTag(BookSettings.KEY_XRAY_MARKING_DENSITY)),
-      function()
-        writeMarking(BookSettings.KEY_XRAY_MARKING_DENSITY, "xray_marking_density",
-          dens_next[dens] or "first")
-      end))
-    local fam = marking.families
-    local fam_labels = {
-      all = _("All entities"),
-      people = _("People only"),
-      people_places = _("People & places"),
-    }
-    local fam_next = { all = "people", people = "people_places", people_places = "all" }
-    table.insert(buttons, row(
-      T(_("Mark: %1 (%2)"), fam_labels[fam] or fam,
-        scopeTag(BookSettings.KEY_XRAY_MARKING_FAMILIES)),
-      function()
-        writeMarking(BookSettings.KEY_XRAY_MARKING_FAMILIES, "xray_marking_families",
-          fam_next[fam] or "all")
-      end))
-    table.insert(buttons, row(
+    table.insert(buttons, pickerRow(
+      T(_("Density: %1 (%2)"),
+        BookSettings.xrayMarkingDensityLabel(marking.density),
+        scopeTag(BookSettings.KEY_XRAY_MARKING_DENSITY)), "density"))
+    table.insert(buttons, pickerRow(
+      T(_("Mark: %1 (%2)"),
+        BookSettings.xrayMarkingFamiliesLabel(marking.families),
+        scopeTag(BookSettings.KEY_XRAY_MARKING_FAMILIES)), "families"))
+    table.insert(buttons, pickerRow(
       T(_("Tap marked words to open: %1 (%2)"),
         marking.tap and _("On") or _("Off"),
-        scopeTag(BookSettings.KEY_XRAY_MARKING_TAP)),
-      function()
-        writeMarking(BookSettings.KEY_XRAY_MARKING_TAP, "xray_marking_tap", not marking.tap)
-      end))
+        scopeTag(BookSettings.KEY_XRAY_MARKING_TAP)), "tap"))
   end
   if ds and marking.has_override then
     table.insert(buttons, row(
@@ -18780,10 +18758,10 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
   end
   -- The long-press layer (independent of marking): a held selection that
   -- exactly matches an entity opens it, everything else falls through.
-  -- Global on purpose (lookup behavior, not per-book visuals) — labeled so
-  -- the book/global split above stays honest.
+  -- Global on purpose (lookup behavior, not per-book visuals) — the
+  -- "(global)" tag matches the marking rows' source tags (P2 one-grammar).
   table.insert(buttons, row(
-    T(_("Matching selections open entries: %1 (all books)"),
+    T(_("Matching selections open entries: %1 (global)"),
       features.xray_selection_intercept ~= false and _("On") or _("Off")),
     function() features.xray_selection_intercept = features.xray_selection_intercept == false end,
     function() self_ref:syncDictionaryBypass() end))
@@ -18800,7 +18778,7 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
     card_mode_label = _("Footnote panel")
   end
   table.insert(buttons, row(
-    T(_("Exact hits open: %1 (all books)"), card_mode_label),
+    T(_("Exact hits open: %1 (global)"), card_mode_label),
     function()
       if features.xray_card_landing == false then
         features.xray_card_landing = true

@@ -815,6 +815,7 @@ end
 --   is_book_target  bool   -- currently editing the per-book layer (vs global)
 --   book_domain     id | "_none" | nil
 --   global_domain   id | nil
+--   global_domain_label string|nil -- display name for the Follow-global row
 --   book_research   true | false | nil
 --   global_research bool
 --   background_label string|nil -- preview for the Background row (book target only)
@@ -851,9 +852,12 @@ function BookSettings.buildDomainResearchButtons(state, cb, opts)
     end
 
     if state.is_book_target then
-        -- Book target: "Use global" + "None" + each domain
+        -- Book target: "Follow global (<value>)" + "None" + each domain (Q3
+        -- invariant: the follow row always names the current global value)
         table.insert(buttons, {{
-            text = dot(state.book_domain == nil) .. _("Use global"),
+            text = dot(state.book_domain == nil)
+                .. T(_("Follow global (%1)"),
+                    state.global_domain_label or state.global_domain or _("None")),
             callback = function() cb.pick_book_domain(nil) end,
         }})
         table.insert(buttons, {{
@@ -889,10 +893,12 @@ function BookSettings.buildDomainResearchButtons(state, cb, opts)
     }})
 
     if state.is_book_target then
-        -- Book target: Use global / On / Off
+        -- Book target: Follow global (<value>) / On / Off
         table.insert(buttons, {
             {
-                text = dot(state.book_research == nil) .. _("Use global"),
+                text = dot(state.book_research == nil)
+                    .. T(_("Follow global (%1)"),
+                        state.global_research and _("On") or _("Off")),
                 callback = function() cb.set_book_research(nil) end,
             },
             {
@@ -1005,6 +1011,7 @@ function BookSettings.showDomainResearch(opts)
         is_book_target = (doc_settings and domain_target == "book") or false,
         book_domain = book_domain,
         global_domain = features.selected_domain,
+        global_domain_label = domainDisplayName(features.selected_domain, features),
         book_research = book_research,
         global_research = features.research_mode,
         background_label = doc_settings and BookSettings.backgroundRowLabel(doc_settings) or nil,
@@ -1333,8 +1340,8 @@ function BookSettings.showToolsPosture(opts)
             f.tools_posture = nil
         end,
         options = {
-            { value = true, label = _("On (Tools chip starts ON)") },
-            { value = false, label = _("Off (Tools chip starts OFF)") },
+            { value = true, label = _("On") },
+            { value = false, label = _("Off") },
         },
         value_label = function(v) return v and _("On") or _("Off") end,
         bottom_rows = function(ctx)
@@ -1532,6 +1539,116 @@ function BookSettings.showHighlightContext(opts)
     }, opts)
 end
 
+--- Scope-aware dictionary-context mode picker (For this book / Global) — the
+-- Chat behavior row's target (consolidation P2, 2026-08-16; was a book-only
+-- local picker with no global reach). Sets the PERSISTENT defaults for the
+-- dictionary {context_section} channel; the dictionary popup's Ctx button
+-- stays the per-lookup toggle. Book: Follow global / modes
+-- (KEY_DICTIONARY_CONTEXT). Global: features.dictionary_context_mode
+-- (default "sentence" — the resolver owns it, see resolveDictionaryContext).
+-- @param opts table: { plugin, ui, document_path, on_close, target_override }
+function BookSettings.showDictionaryContext(opts)
+    local options = {}
+    for _idx, m in ipairs({ "none", "sentence", "paragraph", "characters" }) do
+        table.insert(options, { value = m, label = BookSettings.contextModeLabel(m) })
+    end
+    BookSettings.showLayeredPicker({
+        title = _("Context Around Dictionary Lookups"),
+        key = BookSettings.KEY_DICTIONARY_CONTEXT,
+        field = "dictionary_context_mode",
+        global = function(f) return f.dictionary_context_mode or "sentence" end,
+        value_label = BookSettings.contextModeLabel,
+        options = options,
+    }, opts)
+end
+
+--- Short labels for the X-Ray marking values — shared by the Marking & lookup
+-- popup rows and the pickers below (P3's X-Ray sub-screen reuses both).
+function BookSettings.xrayMarkingDensityLabel(v)
+    if v == "all" then return _("All occurrences")
+    elseif v == "first" then return _("Once per page")
+    elseif v == "10" then return _("After 10 unseen pages")
+    elseif v == "25" then return _("After 25 unseen pages")
+    elseif v == "once" then return _("First appearance only") end
+    return tostring(v)
+end
+
+function BookSettings.xrayMarkingFamiliesLabel(v)
+    if v == "people" then return _("People only")
+    elseif v == "people_places" then return _("People & places")
+    elseif v == "all" then return _("All entities") end
+    return tostring(v)
+end
+
+--- Scope-aware X-Ray marking pickers (For this book / Global) — consolidation
+-- P2 flagship (2026-08-16): the Marking & lookup popup's tap-cycles became
+-- these canonical pickers. One wrapper serves the four marking keys via
+-- opts.kind: "enabled" | "density" | "families" | "tap". Defaults mirror
+-- resolveXrayMarking (marking ON, tap ON, density "10", families "all").
+-- @param opts table: { plugin, ui, document_path, on_close, target_override, kind }
+function BookSettings.showXrayMarkingPicker(opts)
+    opts = opts or {}
+    -- Any write re-syncs the ambient marks so the change shows this page
+    local function commit(plugin)
+        if plugin and plugin.syncXrayMarks then plugin:syncXrayMarks() end
+    end
+    local on_off = {
+        { value = true, label = _("On") },
+        { value = false, label = _("Off") },
+    }
+    local spec
+    if opts.kind == "density" then
+        local options = {}
+        for _idx, v in ipairs({ "all", "first", "10", "25", "once" }) do
+            table.insert(options, { value = v, label = BookSettings.xrayMarkingDensityLabel(v) })
+        end
+        spec = {
+            title = _("Marking Density"),
+            key = BookSettings.KEY_XRAY_MARKING_DENSITY,
+            field = "xray_marking_density",
+            global = function(f) return f.xray_marking_density or "10" end,
+            value_label = BookSettings.xrayMarkingDensityLabel,
+            options = options,
+            on_commit = commit,
+        }
+    elseif opts.kind == "families" then
+        local options = {}
+        for _idx, v in ipairs({ "all", "people", "people_places" }) do
+            table.insert(options, { value = v, label = BookSettings.xrayMarkingFamiliesLabel(v) })
+        end
+        spec = {
+            title = _("Entities to Mark"),
+            key = BookSettings.KEY_XRAY_MARKING_FAMILIES,
+            field = "xray_marking_families",
+            global = function(f) return f.xray_marking_families or "all" end,
+            value_label = BookSettings.xrayMarkingFamiliesLabel,
+            options = options,
+            on_commit = commit,
+        }
+    elseif opts.kind == "tap" then
+        spec = {
+            title = _("Tap Marked Words"),
+            key = BookSettings.KEY_XRAY_MARKING_TAP,
+            field = "xray_marking_tap",
+            global = function(f) return f.xray_marking_tap ~= false end,
+            value_label = function(v) return v and _("On") or _("Off") end,
+            options = on_off,
+            on_commit = commit,
+        }
+    else -- "enabled"
+        spec = {
+            title = _("Passive Marking"),
+            key = BookSettings.KEY_XRAY_MARKING,
+            field = "xray_marking",
+            global = function(f) return f.xray_marking ~= false end,
+            value_label = function(v) return v and _("On") or _("Off") end,
+            options = on_off,
+            on_commit = commit,
+        }
+    end
+    BookSettings.showLayeredPicker(spec, opts)
+end
+
 --- Per-book "Book Settings" — a dedicated per-book configuration screen. Every row is
 -- about THIS book (no For-this-book/Global toggle); each setting offers "Follow global"
 -- plus per-book overrides. Compact rows that open small sub-pickers, so the screen scales
@@ -1562,61 +1679,19 @@ function BookSettings.show(opts)
     end
     local function dot(active) return active and "● " or "○ " end
 
-    -- Sub-picker: this book's domain (Follow global / None / a specific domain)
-    local function showDomainSubPicker()
+    -- Seam 2 (2026-08-12) + consolidation P2 (2026-08-16): rows open the SHARED
+    -- scope-aware pickers on the book tab (Global one tap away) instead of
+    -- hand-rolled book-only locals — the same dialogs as the chip holds and QS
+    -- tiles. Domain and Research share one dialog (showDomainResearch). The
+    -- Chat behavior sub-screen keeps its own copy of this helper for the
+    -- tools/web/quick/highlight-context rows.
+    local function sharedPicker(show_fn)
         closeDialog()
-        local sorted = DomainLoader.getSortedDomains(features.custom_domains or {})
-        local cur = doc_settings:readSetting(BookSettings.KEY_DOMAIN)  -- id | "_none" | nil
-        local picker
-        local function pick(val)
-            doc_settings:saveSetting(BookSettings.KEY_DOMAIN, val)
-            doc_settings:flush()
-            syncConfig()
-            UIManager:close(picker)
-            BookSettings.show(opts)
-        end
-        local global_name = domainDisplayName(features.selected_domain, features) or _("None")
-        local rows = {
-            {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), global_name),
-                callback = function() pick(nil) end }},
-            {{ text = dot(cur == "_none") .. _("None"), callback = function() pick("_none") end }},
-        }
-        for _i, d in ipairs(sorted) do
-            local id = d.id
-            table.insert(rows, {{ text = dot(cur == id) .. (d.display_name or d.name or id),
-                callback = function() pick(id) end }})
-        end
-        table.insert(rows, {{ text = _("Cancel"), id = "close",
-            callback = function() UIManager:close(picker); BookSettings.show(opts) end }})
-        picker = ButtonDialog:new{ title = _("Domain (this book)"), buttons = rows,
-            tap_close_callback = function() BookSettings.show(opts) end }
-        UIManager:show(picker)
-    end
-
-    -- Sub-picker for a tri-state per-book boolean (Follow global / On / Off).
-    -- Used by Research mode; the privacy rows' twin lives in showPrivacyConfig.
-    local function showBoolSubPicker(key, dialog_title, global_on)
-        closeDialog()
-        local cur = doc_settings:readSetting(key)  -- true | false | nil
-        local picker
-        local function pick(val)
-            doc_settings:saveSetting(key, val)
-            doc_settings:flush()
-            syncConfig()
-            UIManager:close(picker)
-            BookSettings.show(opts)
-        end
-        local rows = {
-            {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), global_on and _("On") or _("Off")),
-                callback = function() pick(nil) end }},
-            {{ text = dot(cur == true) .. _("On"), callback = function() pick(true) end }},
-            {{ text = dot(cur == false) .. _("Off"), callback = function() pick(false) end }},
-            {{ text = _("Cancel"), id = "close",
-                callback = function() UIManager:close(picker); BookSettings.show(opts) end }},
-        }
-        picker = ButtonDialog:new{ title = dialog_title, buttons = rows,
-            tap_close_callback = function() BookSettings.show(opts) end }
-        UIManager:show(picker)
+        show_fn({
+            plugin = plugin, ui = ui, document_path = opts.document_path,
+            target_override = "book",
+            on_close = function() BookSettings.show(opts) end,
+        })
     end
 
     -- Current per-book values → row labels
@@ -1662,7 +1737,8 @@ function BookSettings.show(opts)
         table.insert(buttons, { btn })
     end
 
-    addButton({ text = T(_("Domain: %1"), domain_label), callback = showDomainSubPicker })
+    addButton({ text = T(_("Domain: %1"), domain_label),
+        callback = function() sharedPicker(BookSettings.showDomainResearch) end })
     -- Background: the reader's standing note about this book (book_background_plan.md)
     addButton({ text = T(_("Background: %1"), BookSettings.backgroundRowLabel(doc_settings)),
         callback = function()
@@ -1673,10 +1749,7 @@ function BookSettings.show(opts)
             })
         end })
     addButton({ text = T(_("Research mode: %1"), research_label),
-        callback = function()
-            showBoolSubPicker(BookSettings.KEY_RESEARCH,
-                _("Research mode (this book)"), features.research_mode == true)
-        end })
+        callback = function() sharedPicker(BookSettings.showDomainResearch) end })
     -- §5 research labelling, never graying: when research mode or the
     -- Finished status disables protection the row says so but keeps showing
     -- (and editing) the stored state — graying would hide a value the user set.
@@ -1693,19 +1766,7 @@ function BookSettings.show(opts)
     else
         spoiler_row = T(_("Spoiler protection: %1"), spoiler_label)
     end
-    -- Seam 2 (2026-08-12): opens the SHARED scope-aware picker on the book tab
-    -- (Global one tap away) instead of a hand-rolled local — the same dialog as
-    -- the chip hold and QS tile; it carries the research/finished note lines
-    -- itself. The Chat behavior sub-screen keeps its own copy of this helper
-    -- for the tools/web/quick/highlight-context rows.
-    local function sharedPicker(show_fn)
-        closeDialog()
-        show_fn({
-            plugin = plugin, ui = ui, document_path = opts.document_path,
-            target_override = "book",
-            on_close = function() BookSettings.show(opts) end,
-        })
-    end
+    -- The spoiler picker carries the research/finished note lines itself.
     addButton({ text = spoiler_row,
         callback = function() sharedPicker(BookSettings.showSpoilerFree) end })
     -- Tri-state Automatic X-Ray (§7 P1): On = create + update + promotion for
@@ -1937,33 +1998,6 @@ function BookSettings.showChatBehaviorConfig(opts)
         UIManager:show(picker)
     end
 
-    -- Dictionary-channel surrounding-context sub-picker (the highlight channel
-    -- rides the shared picker; no shared sibling for this one yet)
-    local function showContextModeSubPicker(key, dialog_title, global_mode)
-        closeDialog()
-        local cur = doc_settings:readSetting(key)  -- nil | "none" | "sentence" | "paragraph" | "characters"
-        local picker
-        local function setVal(val)
-            doc_settings:saveSetting(key, val)
-            doc_settings:flush()
-            syncConfig()
-            UIManager:close(picker)
-            BookSettings.showChatBehaviorConfig(opts)
-        end
-        local rows = {
-            {{ text = dot(cur == nil) .. T(_("Follow global (%1)"), BookSettings.contextModeLabel(global_mode)),
-                callback = function() setVal(nil) end }},
-            {{ text = dot(cur == "none") .. _("None"), callback = function() setVal("none") end }},
-            {{ text = dot(cur == "sentence") .. _("Sentence"), callback = function() setVal("sentence") end }},
-            {{ text = dot(cur == "paragraph") .. _("Paragraph(s)"), callback = function() setVal("paragraph") end }},
-            {{ text = dot(cur == "characters") .. _("Characters"), callback = function() setVal("characters") end }},
-            {{ text = _("Cancel"), id = "close",
-                callback = function() UIManager:close(picker); BookSettings.showChatBehaviorConfig(opts) end }},
-        }
-        picker = ButtonDialog:new{ title = dialog_title, buttons = rows,
-            tap_close_callback = function() BookSettings.showChatBehaviorConfig(opts) end }
-        UIManager:show(picker)
-    end
     local function contextRowLabel(v)
         if v == nil then return _("Follow global") end
         return BookSettings.contextModeLabel(v)
@@ -1987,10 +2021,7 @@ function BookSettings.showChatBehaviorConfig(opts)
         {{ text = T(_("Highlight context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHT_CONTEXT))),
             callback = function() sharedPicker(BookSettings.showHighlightContext) end }},
         {{ text = T(_("Dictionary context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_DICTIONARY_CONTEXT))),
-            callback = function()
-                showContextModeSubPicker(BookSettings.KEY_DICTIONARY_CONTEXT,
-                    _("Dictionary context (this book)"), features.dictionary_context_mode or "sentence")
-            end }},
+            callback = function() sharedPicker(BookSettings.showDictionaryContext) end }},
         {{ text = _("Close"), id = "close", callback = function()
             closeDialog()
             if on_close then on_close() end

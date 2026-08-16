@@ -927,6 +927,10 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
     self._text_cache = nil
     self._scope_reveal_warned = nil
     self._dormant_archived = nil
+    -- Q6: browsing sessions default to parent-reveal on the entity X; the
+    -- direct-entry openers (lookup exact-match, card tap-through) set this
+    -- AFTER show, and the entity close_callback consumes it
+    self._direct_entry_exit = nil
     -- Widgets to close when launching book text search (e.g., dictionary popup, cross-section results)
     self._cleanup_widgets = metadata._cleanup_widgets
 
@@ -2112,6 +2116,18 @@ end
 --- @param title string Display title
 --- @param source table|nil Back-navigation chain (from connection links)
 --- @param nav_context table|nil Category navigation {items, index, category_key, category_label}
+--- Close the entity-detail overlay from an INTERNAL flow (back, arrows,
+--- connections, group jump, manage ops, wiki, distribution) — never the
+--- reader's own exit. Q6: showItemDetail's close_callback treats any onClose
+--- OUTSIDE this wrapper as the reader closing the page, which on a direct
+--- entry also closes the whole browser. onClose runs synchronously, so the
+--- flag window is race-free.
+function XrayBrowser:_dismissDetail(viewer)
+    self._detail_nav_close = true
+    if viewer then viewer:onClose() end
+    self._detail_nav_close = nil
+end
+
 function XrayBrowser:showItemDetail(item, category_key, title, source, nav_context)
     -- Location for the group jump (round 25): the entity's own identity
     -- handles travel, so the next book resolves it even under another name.
@@ -2200,10 +2216,15 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
     table.insert(row, {
         text = back_text,
         callback = function()
-            if viewer then viewer:onClose() end
+            self_ref:_dismissDetail(viewer)
             if source then
                 self_ref:showItemDetail(source.item, source.category_key,
                     source.title, source.source, source.nav_context)
+            else
+                -- Q6: ← with no source reveals the category list — on a
+                -- direct entry that is the reader CHOOSING to browse, so the
+                -- one-X exit stands down for this session
+                self_ref._direct_entry_exit = nil
             end
         end,
     })
@@ -2219,7 +2240,7 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         local next_idx = nav_idx < total and nav_idx + 1 or 1
 
         navigatePrev = function()
-            if viewer then viewer:onClose() end
+            self_ref:_dismissDetail(viewer)
             if is_mixed then
                 local entry = nav_list[prev_idx]
                 self_ref:showItemDetail(entry.item, entry.category_key, entry.name, nav_context.source, {
@@ -2236,7 +2257,7 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
             end
         end
         navigateNext = function()
-            if viewer then viewer:onClose() end
+            self_ref:_dismissDetail(viewer)
             if is_mixed then
                 local entry = nav_list[next_idx]
                 self_ref:showItemDetail(entry.item, entry.category_key, entry.name, nav_context.source, {
@@ -2305,7 +2326,7 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
                 plugin_ref:_showGroupMembersPopup(group_file, "xray", {
                     location = jump_location,
                     before_open = function()
-                        if viewer then viewer:onClose() end
+                        self_ref:_dismissDetail(viewer)
                         if self_ref.menu then UIManager:close(self_ref.menu) end
                     end,
                 })
@@ -2446,7 +2467,7 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
                 table.insert(conn_row, {
                     text = entry.button_text,
                     callback = function()
-                        if viewer then viewer:onClose() end
+                        self_ref:_dismissDetail(viewer)
                         self_ref:showItemDetail(entry.item,
                             entry.category_key,
                             entry.name, current_source, {
@@ -2496,6 +2517,19 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         close_callback = function()
             if self_ref.metadata and self_ref.metadata.book_file == owner_file then
                 self_ref.location = restore_location
+            end
+            -- Q6 (consolidation round, 2026-08-16): a DIRECTLY-entered entity
+            -- page (mark tap, dict/highlight intercepts, lookup exact-match,
+            -- card tap-through — the opener sets _direct_entry_exit) exits the
+            -- WHOLE browser in one X: the reader came to read one entry, not
+            -- to browse, and the category list underneath is chrome they
+            -- never opened. Internal close-then-reopen flows (back, arrows,
+            -- connections, group jump, manage ops, distribution) go through
+            -- _dismissDetail, which suppresses this; browsing entries never
+            -- set the flag, so their X keeps the parent-reveal.
+            if self_ref._direct_entry_exit and not self_ref._detail_nav_close then
+                self_ref._direct_entry_exit = nil
+                if self_ref.menu then UIManager:close(self_ref.menu) end
             end
         end,
         text_selection_callback = function(text, hold_duration)
@@ -2589,7 +2623,7 @@ function XrayBrowser:_showEntityManagePopup(item, category_key, title, source, n
             text = _("Merge with another entry…"),
             callback = function()
                 UIManager:close(dialog)
-                if viewer then viewer:onClose() end
+                self_ref:_dismissDetail(viewer)
                 self_ref:_unwindToRoot()
                 require("koassistant_xray_dedup").startFlow({
                     file = self_ref.metadata.book_file,
@@ -2641,7 +2675,7 @@ function XrayBrowser:_showEntityManagePopup(item, category_key, title, source, n
                         text = T(_("Move \"%1\" out of this book's X-Ray and back to the carried list?\nIts history from earlier books is kept, and its entry page can add it back."), demote_name),
                         ok_text = _("Move"),
                         ok_callback = function()
-                            if viewer then viewer:onClose() end
+                            self_ref:_dismissDetail(viewer)
                             if self_ref:_commitDormantOp(
                                 function(data)
                                     return XrayParser.demoteToStub(data, category_key, demote_name)
@@ -2832,7 +2866,7 @@ function XrayBrowser:_commitLink(member_file, member_title, entry, parsed,
             timeout = 4 })
         return
     end
-    if viewer then viewer:onClose() end
+    self:_dismissDetail(viewer)
     if self:_commitDormantOp(
         function(data)
             return XrayParser.addItemAliases(data, category_key, link_name, their_names)
@@ -2925,7 +2959,7 @@ function XrayBrowser:_commitRename(category_key, old_name, new_name, viewer)
     -- STAY IN PLACE (maintainer 2026-08-09, replacing the unwind-to-root):
     -- rebuild the path to the renamed detail synchronously, so no page in the
     -- fresh stack holds pre-rename item tables
-    if viewer then viewer:onClose() end
+    self:_dismissDetail(viewer)
     self:_rebuildToDetail(category_key, new_name)
     local ConfirmBox = require("ui/widget/confirmbox")
     local self_ref = self
@@ -4836,7 +4870,7 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
         end
         -- Close the item detail TextViewer now that distribution is ready underneath
         if detail_context and detail_context.dismiss_viewer then
-            detail_context.dismiss_viewer:onClose()
+            self:_dismissDetail(detail_context.dismiss_viewer)
         end
     end
 

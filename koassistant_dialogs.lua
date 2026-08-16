@@ -6703,12 +6703,20 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             refreshInputDialog()
         end
 
+        local global_domain_label = nil
+        for _i, d in ipairs(sorted_domains) do
+            if d.id == selected_domain then
+                global_domain_label = d.name or d.display_name or d.id
+                break
+            end
+        end
         local state = {
             domains = sorted_domains,
             has_book = doc_settings ~= nil,
             is_book_target = (doc_settings and domain_target == "book") or false,
             book_domain = book_domain_id,
             global_domain = selected_domain,
+            global_domain_label = global_domain_label,
             book_research = book_research_id,
             global_research = configuration.features and configuration.features.research_mode,
             background_label = doc_settings and BookSettings.backgroundRowLabel(doc_settings) or nil,
@@ -10459,6 +10467,8 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
                             break
                         end
                     end
+                    -- Q6: direct entry — one X from the entity page exits the browser
+                    XrayBrowser._direct_entry_exit = true
                     XrayBrowser:showItemDetail(titem, card_target.category_key, card_target.name)
                     return
                 end
@@ -10524,6 +10534,8 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
                                     break
                                 end
                             end
+                            -- Q6: direct entry — one X exits the browser
+                            XrayBrowser._direct_entry_exit = true
                             XrayBrowser:showItemDetail(target_item, target_cat_key, target_name)
                         end,
                     }
@@ -10575,6 +10587,10 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
                     break
                 end
             end
+            -- Q6 (consolidation round): a directly-entered entity page exits
+            -- the whole browser in one X — the category stack underneath is
+            -- chrome the reader never opened; ← still reveals it for browsing
+            XrayBrowser._direct_entry_exit = true
             XrayBrowser:showItemDetail(result.item, result.category_key, name)
         elseif #exact > 1 then
             -- Several entities share the exact handle (round 19, device: a
@@ -10600,6 +10616,8 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
                                 break
                             end
                         end
+                        -- Q6: still the direct lookup flow — one X exits
+                        XrayBrowser._direct_entry_exit = true
                         XrayBrowser:showItemDetail(captured.item, captured.category_key, nm)
                     end,
                 }}

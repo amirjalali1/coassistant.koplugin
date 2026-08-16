@@ -1346,6 +1346,7 @@ local SettingsSchema = {
                         return T(_("Context Mode: %1"), labels[mode] or mode)
                     end,
                     callback = "buildDictionaryContextModeMenu",
+                    help_text = _("How much text around the looked-up word is sent with dictionary actions. The Ctx button on the dictionary popup toggles it per lookup; Book Settings can override it per book."),
                 },
                 {
                     id = "dictionary_context_chars",
