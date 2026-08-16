@@ -1677,7 +1677,6 @@ function BookSettings.show(opts)
     local function syncConfig()
         if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
     end
-    local function dot(active) return active and "● " or "○ " end
 
     -- Seam 2 (2026-08-12) + consolidation P2 (2026-08-16): rows open the SHARED
     -- scope-aware pickers on the book tab (Global one tap away) instead of
@@ -1711,7 +1710,8 @@ function BookSettings.show(opts)
     local spoiler_label = boolLabel(doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE))
 
     -- Regrouped 2026-08-12 (release prep A7 — the flat screen ran 13 "AI behavior"
-    -- rows): headline rows carry the identity of the reading (domain, background,
+    -- rows; consolidation P3 2026-08-16 moved the X-Ray rows into their own
+    -- sub-screen): headline rows carry the identity of the reading (domain, background,
     -- research, spoiler protection, X-Ray, group); the dial-shaped rows moved to
     -- the Chat behavior / Privacy / Identity sub-screens below. Setting buttons
     -- stay paired two per row (maintainer 2026-07-12 — the screen got long); an
@@ -1769,71 +1769,8 @@ function BookSettings.show(opts)
     -- The spoiler picker carries the research/finished note lines itself.
     addButton({ text = spoiler_row,
         callback = function() sharedPicker(BookSettings.showSpoilerFree) end })
-    -- Tri-state Automatic X-Ray (§7 P1): On = create + update + promotion for
-    -- this book, standalone — no global master required. Page-based books get
-    -- the honest no-effect marker (auto is flowing-only) instead of a gray row.
-    addButton({ text = T(_("Automatic X-Ray: %1"),
-            BookSettings.xrayAutoLabel(doc_settings, features))
-            .. (isPageBased(ui, opts.document_path) and (" " .. _("(no effect: page-based book)")) or ""),
-        callback = function()
-            closeDialog()
-            BookSettings.showXrayAutoPicker({
-                plugin = plugin, ui = ui, document_path = opts.document_path,
-                on_change = function()
-                    syncConfig()
-                    -- Refresh the page-turn pre-filter so the change takes effect this session
-                    if plugin and plugin._refreshXrayAutoState then plugin:_refreshXrayAutoState() end
-                    reopen()
-                end,
-                on_cancel = reopen,
-            })
-        end })
-    -- §5 (51g): the promotion hold surfaced as a first-class pick — before this
-    -- row it was only ever set as a side effect of an install choice, which the
-    -- device round found mysterious. Mechanical only: which built version
-    -- installs; prompts and build cadence untouched.
-    addButton({ text = T(_("X-Ray updates: %1"),
-            BookSettings.xrayPromotionHold(doc_settings)
-                and _("Follow my position") or _("Newest first")),
-        callback = function()
-            closeDialog()
-            local hold = BookSettings.xrayPromotionHold(doc_settings)
-            local picker
-            local function pickHold(on)
-                if on then
-                    doc_settings:saveSetting(BookSettings.KEY_XRAY_PROMOTION, "position")
-                else
-                    doc_settings:delSetting(BookSettings.KEY_XRAY_PROMOTION)
-                end
-                doc_settings:flush()
-                syncConfig()
-                -- Let an open book's promotion re-evaluate now (safe no-op otherwise)
-                if plugin and plugin._scheduleXrayLadderPromotion then
-                    plugin:_scheduleXrayLadderPromotion()
-                end
-                UIManager:close(picker)
-                BookSettings.show(opts)
-            end
-            local xr_title = _("X-Ray updates (this book)")
-            if (BookSettings.resolveXrayPosture(doc_settings, features)) == "track" then
-                -- Research labelling rule applied here too: under spoiler
-                -- protection updates follow the position regardless — say so,
-                -- keep the stored pick editable.
-                xr_title = xr_title .. "\n"
-                    .. _("Spoiler protection is on: updates follow your position regardless of this pick.")
-            end
-            local rows = {
-                {{ text = dot(not hold) .. _("Newest first (install checkpoints as they are built)"),
-                    callback = function() pickHold(false) end }},
-                {{ text = dot(hold) .. _("Follow my reading position"),
-                    callback = function() pickHold(true) end }},
-                {{ text = _("Cancel"), id = "close",
-                    callback = function() UIManager:close(picker); BookSettings.show(opts) end }},
-            }
-            picker = ButtonDialog:new{ title = xr_title, buttons = rows,
-                tap_close_callback = function() BookSettings.show(opts) end }
-            UIManager:show(picker)
-        end })
+    -- (Automatic X-Ray + X-Ray updates moved to the X-Ray sub-screen —
+    -- consolidation P3 / Q1b, 2026-08-16.)
     -- Book groups (item 46): membership lives in the groups store, not a
     -- sidecar key — never counts toward "(N customized)"
     local groups_file = opts.document_path or (ui and ui.document and ui.document.file)
@@ -1872,6 +1809,12 @@ function BookSettings.show(opts)
             end,
         }
     end
+    addButton(subScreenRow(_("X-Ray"), groupCount({
+        BookSettings.KEY_XRAY_AUTO, BookSettings.KEY_XRAY_GOAL,
+        BookSettings.KEY_XRAY_PROMOTION, BookSettings.KEY_XRAY_SPACING,
+        BookSettings.KEY_XRAY_MARKING, BookSettings.KEY_XRAY_MARKING_DENSITY,
+        BookSettings.KEY_XRAY_MARKING_FAMILIES, BookSettings.KEY_XRAY_MARKING_TAP,
+    }), BookSettings.showXrayConfig))
     addButton(subScreenRow(_("Chat behavior"), groupCount({
         BookSettings.KEY_TOOLS, BookSettings.KEY_WEB_SEARCH,
         BookSettings.KEY_QUICK_ANSWER, BookSettings.KEY_BOOK_INFO,
@@ -1923,11 +1866,10 @@ function BookSettings.show(opts)
 end
 
 --- Per-book CHAT BEHAVIOR dials — a sub-screen of Book Settings (2026-08-12 regrouping;
--- the flat screen ran 13 "AI behavior" rows). Tools / web search / quick answer /
--- highlight context open the SHARED scope-aware pickers on the book tab (seam 2) — the
--- same dialogs as the chip holds and QS tiles, which keeps the web/tool effort dials
--- reachable from here; book info and dictionary context keep local pickers (no shared
--- sibling yet).
+-- the flat screen ran 13 "AI behavior" rows). Every row but Book info opens a SHARED
+-- scope-aware picker on the book tab (seam 2 / consolidation P2) — the same dialogs
+-- as the chip holds and QS tiles. The effort dials have first-class rows since P3
+-- (deviation 12); Book info keeps a local picker (no shared sibling yet).
 -- @param opts table: { plugin, ui, document_path, on_close }
 function BookSettings.showChatBehaviorConfig(opts)
     opts = opts or {}
@@ -1954,14 +1896,19 @@ function BookSettings.showChatBehaviorConfig(opts)
         return _("Follow global")
     end
 
-    -- Shared scope-aware pickers (seam 2), opened on the book tab; back here on close.
-    local function sharedPicker(show_fn)
+    -- Shared scope-aware pickers (seam 2), opened on the book tab; back here on
+    -- close. `extra` merges picker-specific opts (showEffortPicker's kind).
+    local function sharedPicker(show_fn, extra)
         closeDialog()
-        show_fn({
+        local picker_opts = {
             plugin = plugin, ui = ui, document_path = opts.document_path,
             target_override = "book",
             on_close = function() BookSettings.showChatBehaviorConfig(opts) end,
-        })
+        }
+        if extra then
+            for k, v in pairs(extra) do picker_opts[k] = v end
+        end
+        show_fn(picker_opts)
     end
 
     -- Book-info level: label + sub-picker (None / Title & author / +position)
@@ -2009,11 +1956,23 @@ function BookSettings.showChatBehaviorConfig(opts)
         return on and _("On") or _("Off")
     end
 
+    -- Effort dials as first-class rows (consolidation P3, deviation 12 — they
+    -- were only reachable through the Tools/Web pickers' inner rows, yet their
+    -- keys already counted toward this group's badge)
+    local tool_effort = doc_settings:readSetting(BookSettings.KEY_TOOL_EFFORT)
+    local web_effort = doc_settings:readSetting(BookSettings.KEY_WEB_EFFORT)
+
     local buttons = {
         {{ text = T(_("AI Book Tools: %1"), toolsRowLabel(doc_settings:readSetting(BookSettings.KEY_TOOLS))),
             callback = function() sharedPicker(BookSettings.showToolsPosture) end }},
+        {{ text = T(_("Lookup effort: %1"),
+                tool_effort and BookSettings.toolEffortLabel(tool_effort) or _("Follow global")),
+            callback = function() sharedPicker(BookSettings.showEffortPicker, { kind = "tool" }) end }},
         {{ text = T(_("Web search: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_WEB_SEARCH))),
             callback = function() sharedPicker(BookSettings.showWebSearch) end }},
+        {{ text = T(_("Search depth: %1"),
+                web_effort and BookSettings.webEffortLabel(web_effort) or _("Follow global")),
+            callback = function() sharedPicker(BookSettings.showEffortPicker, { kind = "web" }) end }},
         {{ text = T(_("Quick answer default: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_QUICK_ANSWER))),
             callback = function() sharedPicker(BookSettings.showQuickAnswerDefault) end }},
         {{ text = T(_("Book info: %1"), bookInfoLabel(doc_settings:readSetting(BookSettings.KEY_BOOK_INFO))),
@@ -2029,6 +1988,258 @@ function BookSettings.showChatBehaviorConfig(opts)
     }
 
     dialog = ButtonDialog:new{ title = _("Chat behavior (this book)"), buttons = buttons,
+        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
+    UIManager:show(dialog)
+end
+
+--- Per-book X-RAY dials — a sub-screen of Book Settings (consolidation P3,
+-- 2026-08-16): the Automatic X-Ray tri-state and the promotion hold move here
+-- from the root screen (Q1b), and the previously popup-only keys (coverage
+-- goal, checkpoint spacing, the 4 marking overrides) get first-class rows — no
+-- per-book X-Ray key is reachable only through an X-Ray popup anymore. Marking
+-- rows open the canonical two-layer pickers (P2); goal and promotion are
+-- book-only by design (no global sibling exists). Spacing/goal edits only
+-- shape rungs planned from now on — plans start at the ladder top.
+-- @param opts table: { plugin, ui, document_path, on_close }
+function BookSettings.showXrayConfig(opts)
+    opts = opts or {}
+    local plugin = opts.plugin
+    local ui = opts.ui
+    local on_close = opts.on_close
+
+    local doc_settings = resolveDocSettings(ui, opts.document_path)
+    if not doc_settings then return end
+
+    local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
+
+    local dialog
+    local function closeDialog()
+        if dialog then UIManager:close(dialog); dialog = nil end
+    end
+    local function reopen()
+        closeDialog()
+        BookSettings.showXrayConfig(opts)
+    end
+    local function syncConfig()
+        if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
+    end
+    local function dot(active) return active and "● " or "○ " end
+    local function boolLabel(v)
+        if v == true then return _("On")
+        elseif v == false then return _("Off") end
+        return _("Follow global")
+    end
+    local function pctLabel(s)
+        if plugin and plugin._xraySpacingPctLabel then return plugin:_xraySpacingPctLabel(s) end
+        local pct = (tonumber(s) or 0) * 100
+        return pct % 1 == 0 and tostring(math.floor(pct)) or string.format("%.1f", pct)
+    end
+
+    -- The reader instance's document, ONLY when it is this book — the section
+    -- picker and the page-count-derived spacing recommendation must never read
+    -- another open book (Book Settings can target any book from hub surfaces).
+    local book_file = opts.document_path or (ui and ui.document and ui.document.file)
+    local open_here = (ui and ui.document and ui.document.file and book_file
+        and require("koassistant_doc_settings").samePath(ui.document.file, book_file)) or false
+
+    -- Canonical marking pickers (P2), opened on the book tab; back here on close.
+    local function markingPicker(kind)
+        closeDialog()
+        BookSettings.showXrayMarkingPicker({
+            plugin = plugin, ui = ui, document_path = opts.document_path,
+            kind = kind, target_override = "book",
+            on_close = function() BookSettings.showXrayConfig(opts) end,
+        })
+    end
+
+    local buttons = {}
+
+    -- Tri-state Automatic X-Ray (§7 P1): On = create + update + promotion for
+    -- this book, standalone — no global master required. Page-based books get
+    -- the honest no-effect marker (auto is flowing-only) instead of a gray row.
+    table.insert(buttons, {{ text = T(_("Automatic X-Ray: %1"),
+            BookSettings.xrayAutoLabel(doc_settings, features))
+            .. (isPageBased(ui, opts.document_path) and (" " .. _("(no effect: page-based book)")) or ""),
+        callback = function()
+            closeDialog()
+            BookSettings.showXrayAutoPicker({
+                plugin = plugin, ui = ui, document_path = opts.document_path,
+                on_change = function()
+                    syncConfig()
+                    -- Refresh the page-turn pre-filter so the change takes effect this session
+                    if plugin and plugin._refreshXrayAutoState then plugin:_refreshXrayAutoState() end
+                    reopen()
+                end,
+                on_cancel = reopen,
+            })
+        end }})
+
+    -- §5 (51g): the promotion hold as a first-class pick — before this row it
+    -- was only ever set as a side effect of an install choice, which the device
+    -- round found mysterious. Mechanical only: which built version installs;
+    -- prompts and build cadence untouched. Book-only by design (P3 deviation 5:
+    -- no global sibling — the "default" marker on the nil row is its reset).
+    table.insert(buttons, {{ text = T(_("X-Ray updates: %1"),
+            BookSettings.xrayPromotionHold(doc_settings)
+                and _("Follow my position") or _("Newest first")),
+        callback = function()
+            closeDialog()
+            local hold = BookSettings.xrayPromotionHold(doc_settings)
+            local picker
+            local function pickHold(on)
+                if on then
+                    doc_settings:saveSetting(BookSettings.KEY_XRAY_PROMOTION, "position")
+                else
+                    doc_settings:delSetting(BookSettings.KEY_XRAY_PROMOTION)
+                end
+                doc_settings:flush()
+                syncConfig()
+                -- Let an open book's promotion re-evaluate now (safe no-op otherwise)
+                if plugin and plugin._scheduleXrayLadderPromotion then
+                    plugin:_scheduleXrayLadderPromotion()
+                end
+                UIManager:close(picker)
+                BookSettings.showXrayConfig(opts)
+            end
+            local xr_title = _("X-Ray updates (this book)")
+            if (BookSettings.resolveXrayPosture(doc_settings, features)) == "track" then
+                -- Research labelling rule applied here too: under spoiler
+                -- protection updates follow the position regardless — say so,
+                -- keep the stored pick editable.
+                xr_title = xr_title .. "\n"
+                    .. _("Spoiler protection is on: updates follow your position regardless of this pick.")
+            end
+            local rows = {
+                {{ text = dot(not hold) .. _("Newest first (default: install checkpoints as they are built)"),
+                    callback = function() pickHold(false) end }},
+                {{ text = dot(hold) .. _("Follow my reading position"),
+                    callback = function() pickHold(true) end }},
+                {{ text = _("Cancel"), id = "close",
+                    callback = function() UIManager:close(picker); BookSettings.showXrayConfig(opts) end }},
+            }
+            picker = ButtonDialog:new{ title = xr_title, buttons = rows,
+                tap_close_callback = function() BookSettings.showXrayConfig(opts) end }
+            UIManager:show(picker)
+        end }})
+
+    -- Coverage goal (creation-chooser rounds 21/23: a BOOK property bounding
+    -- the auto scheduler; target picks in the create/extend form store it,
+    -- whole-book picks clear it). First-class row so the bound is visible and
+    -- clearable without opening the form; picking a NEW section target needs
+    -- this book open (TOC).
+    local goal = tonumber(doc_settings:readSetting(BookSettings.KEY_XRAY_GOAL))
+    if goal and (goal <= 0.01 or goal >= 0.995) then goal = nil end
+    table.insert(buttons, {{ text = T(_("Coverage goal: %1"),
+            goal and T(_("to %1%"), math.floor(goal * 100 + 0.5)) or _("Whole book")),
+        callback = function()
+            closeDialog()
+            local picker
+            local function setGoal(val)
+                doc_settings:saveSetting(BookSettings.KEY_XRAY_GOAL, val)
+                doc_settings:flush()
+                syncConfig()
+                if picker then UIManager:close(picker) end
+                BookSettings.showXrayConfig(opts)
+            end
+            local rows = {
+                {{ text = dot(goal == nil) .. _("Whole book (default)"),
+                    callback = function() setGoal(nil) end }},
+            }
+            if open_here and plugin and plugin._showSectionPicker then
+                rows[#rows + 1] = {{ text = dot(goal ~= nil)
+                        .. (goal and T(_("To the end of a section… (now %1%)"), math.floor(goal * 100 + 0.5))
+                            or _("To the end of a section…")),
+                    callback = function()
+                        UIManager:close(picker); picker = nil
+                        plugin:_showSectionPicker(nil, {
+                            title = _("Build the X-Ray up to the end of…"),
+                            on_cancel = function() BookSettings.showXrayConfig(opts) end,
+                            on_select = function(entry)
+                                -- Same ratio math as the create/extend form's target pick
+                                local total = ui.document:getPageCount() or 0
+                                local ratio = total > 0 and (entry.end_page or 0) / total or 0
+                                if ratio >= 1.0 - 0.005 then
+                                    setGoal(nil)  -- end of the book = whole book
+                                elseif ratio > 0.01 then
+                                    setGoal(ratio)
+                                else
+                                    BookSettings.showXrayConfig(opts)
+                                end
+                            end,
+                        })
+                    end }}
+            end
+            rows[#rows + 1] = {{ text = _("Cancel"), id = "close",
+                callback = function() UIManager:close(picker); BookSettings.showXrayConfig(opts) end }}
+            local title = _("X-Ray coverage goal (this book)") .. "\n"
+                .. _("How far automatic building goes: checkpoints stop at the goal until you raise it. Target picks in the create/extend form set it too.")
+            if not open_here then
+                title = title .. "\n" .. _("Open the book to pick a section target.")
+            end
+            picker = ButtonDialog:new{ title = title, buttons = rows,
+                tap_close_callback = function() BookSettings.showXrayConfig(opts) end }
+            UIManager:show(picker)
+        end }})
+
+    -- Checkpoint spacing (spacing slice): the sticky per-book override, edited
+    -- through the shared picker (P2 dots + reset). The recommendation falls
+    -- back to the formula default when this book isn't the open one (the
+    -- picker has no page count to size from).
+    local sp_override = BookSettings.xraySpacingOverride(doc_settings)
+    table.insert(buttons, {{ text = T(_("Checkpoint spacing: %1"),
+            sp_override and T(_("every %1%"), pctLabel(sp_override)) or _("Recommended")),
+        callback = function()
+            if not (plugin and plugin._showXraySpacingPicker) then return end
+            closeDialog()
+            local cur
+            if open_here and plugin._xrayLadderSpacing then
+                cur = plugin:_xrayLadderSpacing()
+            else
+                cur = sp_override or require("koassistant_xray_auto").ladderSpacingFor(nil)
+            end
+            plugin:_showXraySpacingPicker{
+                current = cur,
+                override = sp_override,
+                title = _("Checkpoint spacing for this book:"),
+                on_pick = function(s)
+                    doc_settings:saveSetting(BookSettings.KEY_XRAY_SPACING, s)
+                    doc_settings:flush()
+                    syncConfig()
+                    BookSettings.showXrayConfig(opts)
+                end,
+                on_reset = function()
+                    doc_settings:saveSetting(BookSettings.KEY_XRAY_SPACING, nil)
+                    doc_settings:flush()
+                    syncConfig()
+                    BookSettings.showXrayConfig(opts)
+                end,
+                on_back = function() BookSettings.showXrayConfig(opts) end,
+            }
+        end }})
+
+    -- Marking overrides (P2 canonical pickers — the same four the X-Ray
+    -- popup's "Marking & lookup" shortcut opens, homed here)
+    local b_marking = doc_settings:readSetting(BookSettings.KEY_XRAY_MARKING)
+    local b_density = doc_settings:readSetting(BookSettings.KEY_XRAY_MARKING_DENSITY)
+    local b_families = doc_settings:readSetting(BookSettings.KEY_XRAY_MARKING_FAMILIES)
+    local b_tap = doc_settings:readSetting(BookSettings.KEY_XRAY_MARKING_TAP)
+    table.insert(buttons, {{ text = T(_("Passive marking: %1"), boolLabel(b_marking)),
+        callback = function() markingPicker("enabled") end }})
+    table.insert(buttons, {{ text = T(_("Marking density: %1"),
+            b_density and BookSettings.xrayMarkingDensityLabel(b_density) or _("Follow global")),
+        callback = function() markingPicker("density") end }})
+    table.insert(buttons, {{ text = T(_("Entities to mark: %1"),
+            b_families and BookSettings.xrayMarkingFamiliesLabel(b_families) or _("Follow global")),
+        callback = function() markingPicker("families") end }})
+    table.insert(buttons, {{ text = T(_("Tap marked words: %1"), boolLabel(b_tap)),
+        callback = function() markingPicker("tap") end }})
+
+    table.insert(buttons, {{ text = _("Close"), id = "close", callback = function()
+        closeDialog()
+        if on_close then on_close() end
+    end }})
+
+    dialog = ButtonDialog:new{ title = _("X-Ray (this book)"), buttons = buttons,
         tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
     UIManager:show(dialog)
 end
