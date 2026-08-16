@@ -1693,21 +1693,28 @@ function BookSettings.show(opts)
         })
     end
 
-    -- Current per-book values → row labels
-    local function boolLabel(v)
+    -- Current per-book values → row labels. Consolidation P4 (2026-08-16,
+    -- maintainer ask): follow-global rows carry the effective global value —
+    -- "Follow global (On)" — matching the pickers' reset rows.
+    local function boolLabel(v, global_on)
         if v == true then return _("On")
         elseif v == false then return _("Off")
-        else return _("Follow global") end
+        else return T(_("Follow global (%1)"), global_on and _("On") or _("Off")) end
     end
 
     local book_domain = doc_settings:readSetting(BookSettings.KEY_DOMAIN)
     local domain_label
     if book_domain == "_none" then domain_label = _("None")
-    elseif book_domain == nil then domain_label = _("Follow global")
+    elseif book_domain == nil then
+        local g = features.selected_domain
+        domain_label = T(_("Follow global (%1)"),
+            g and (domainDisplayName(g, features) or g) or _("None"))
     else domain_label = domainDisplayName(book_domain, features) or book_domain end
 
-    local research_label = boolLabel(doc_settings:readSetting(BookSettings.KEY_RESEARCH))
-    local spoiler_label = boolLabel(doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE))
+    local research_label = boolLabel(doc_settings:readSetting(BookSettings.KEY_RESEARCH),
+        features.research_mode == true)
+    local spoiler_label = boolLabel(doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE),
+        features.spoiler_free_chat ~= false)
 
     -- Regrouped 2026-08-12 (release prep A7 — the flat screen ran 13 "AI behavior"
     -- rows; consolidation P3 2026-08-16 moved the X-Ray rows into their own
@@ -1890,10 +1897,11 @@ function BookSettings.showChatBehaviorConfig(opts)
         if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
     end
     local function dot(active) return active and "● " or "○ " end
-    local function boolLabel(v)
+    -- P4: follow-global rows carry the effective global value
+    local function boolLabel(v, global_on)
         if v == true then return _("On")
         elseif v == false then return _("Off") end
-        return _("Follow global")
+        return T(_("Follow global (%1)"), global_on and _("On") or _("Off"))
     end
 
     -- Shared scope-aware pickers (seam 2), opened on the book tab; back here on
@@ -1945,14 +1953,19 @@ function BookSettings.showChatBehaviorConfig(opts)
         UIManager:show(picker)
     end
 
-    local function contextRowLabel(v)
-        if v == nil then return _("Follow global") end
+    local function contextRowLabel(v, global_mode)
+        if v == nil then
+            return T(_("Follow global (%1)"), BookSettings.contextModeLabel(global_mode))
+        end
         return BookSettings.contextModeLabel(v)
     end
     -- AI Book Tools: On/Off label (legacy posture strings read through)
     local function toolsRowLabel(v)
         local on = toolsValueOn(v)
-        if on == nil then return _("Follow global") end
+        if on == nil then
+            return T(_("Follow global (%1)"),
+                BookSettings.resolveBookTools(nil, features) and _("On") or _("Off"))
+        end
         return on and _("On") or _("Off")
     end
 
@@ -1962,24 +1975,35 @@ function BookSettings.showChatBehaviorConfig(opts)
     local tool_effort = doc_settings:readSetting(BookSettings.KEY_TOOL_EFFORT)
     local web_effort = doc_settings:readSetting(BookSettings.KEY_WEB_EFFORT)
 
+    local book_info_v = doc_settings:readSetting(BookSettings.KEY_BOOK_INFO)
     local buttons = {
         {{ text = T(_("AI Book Tools: %1"), toolsRowLabel(doc_settings:readSetting(BookSettings.KEY_TOOLS))),
             callback = function() sharedPicker(BookSettings.showToolsPosture) end }},
         {{ text = T(_("Lookup effort: %1"),
-                tool_effort and BookSettings.toolEffortLabel(tool_effort) or _("Follow global")),
+                tool_effort and BookSettings.toolEffortLabel(tool_effort)
+                    or T(_("Follow global (%1)"),
+                        BookSettings.toolEffortLabel(features.tool_lookup_effort or "standard"))),
             callback = function() sharedPicker(BookSettings.showEffortPicker, { kind = "tool" }) end }},
-        {{ text = T(_("Web search: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_WEB_SEARCH))),
+        {{ text = T(_("Web search: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_WEB_SEARCH),
+                features.enable_web_search == true)),
             callback = function() sharedPicker(BookSettings.showWebSearch) end }},
         {{ text = T(_("Search depth: %1"),
-                web_effort and BookSettings.webEffortLabel(web_effort) or _("Follow global")),
+                web_effort and BookSettings.webEffortLabel(web_effort)
+                    or T(_("Follow global (%1)"),
+                        BookSettings.webEffortLabel(features.web_search_effort or "standard"))),
             callback = function() sharedPicker(BookSettings.showEffortPicker, { kind = "web" }) end }},
-        {{ text = T(_("Quick answer default: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_QUICK_ANSWER))),
+        {{ text = T(_("Quick answer default: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_QUICK_ANSWER),
+                features.quick_answer_default == true)),
             callback = function() sharedPicker(BookSettings.showQuickAnswerDefault) end }},
-        {{ text = T(_("Book info: %1"), bookInfoLabel(doc_settings:readSetting(BookSettings.KEY_BOOK_INFO))),
+        {{ text = T(_("Book info: %1"),
+                book_info_v and bookInfoLabel(book_info_v)
+                    or T(_("Follow global (%1)"), bookInfoLabel(features.book_info_in_chat or "basic"))),
             callback = showBookInfoSubPicker }},
-        {{ text = T(_("Highlight context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHT_CONTEXT))),
+        {{ text = T(_("Highlight context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHT_CONTEXT),
+                features.highlight_context_mode or "none")),
             callback = function() sharedPicker(BookSettings.showHighlightContext) end }},
-        {{ text = T(_("Dictionary context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_DICTIONARY_CONTEXT))),
+        {{ text = T(_("Dictionary context: %1"), contextRowLabel(doc_settings:readSetting(BookSettings.KEY_DICTIONARY_CONTEXT),
+                features.dictionary_context_mode or "sentence")),
             callback = function() sharedPicker(BookSettings.showDictionaryContext) end }},
         {{ text = _("Close"), id = "close", callback = function()
             closeDialog()
@@ -2024,10 +2048,11 @@ function BookSettings.showXrayConfig(opts)
         if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
     end
     local function dot(active) return active and "● " or "○ " end
-    local function boolLabel(v)
+    -- P4: follow-global rows carry the effective global value
+    local function boolLabel(v, global_on)
         if v == true then return _("On")
         elseif v == false then return _("Off") end
-        return _("Follow global")
+        return T(_("Follow global (%1)"), global_on and _("On") or _("Off"))
     end
     local function pctLabel(s)
         if plugin and plugin._xraySpacingPctLabel then return plugin:_xraySpacingPctLabel(s) end
@@ -2223,15 +2248,21 @@ function BookSettings.showXrayConfig(opts)
     local b_density = doc_settings:readSetting(BookSettings.KEY_XRAY_MARKING_DENSITY)
     local b_families = doc_settings:readSetting(BookSettings.KEY_XRAY_MARKING_FAMILIES)
     local b_tap = doc_settings:readSetting(BookSettings.KEY_XRAY_MARKING_TAP)
-    table.insert(buttons, {{ text = T(_("Passive marking: %1"), boolLabel(b_marking)),
+    table.insert(buttons, {{ text = T(_("Passive marking: %1"),
+            boolLabel(b_marking, features.xray_marking ~= false)),
         callback = function() markingPicker("enabled") end }})
     table.insert(buttons, {{ text = T(_("Marking density: %1"),
-            b_density and BookSettings.xrayMarkingDensityLabel(b_density) or _("Follow global")),
+            b_density and BookSettings.xrayMarkingDensityLabel(b_density)
+                or T(_("Follow global (%1)"),
+                    BookSettings.xrayMarkingDensityLabel(features.xray_marking_density or "10"))),
         callback = function() markingPicker("density") end }})
     table.insert(buttons, {{ text = T(_("Entities to mark: %1"),
-            b_families and BookSettings.xrayMarkingFamiliesLabel(b_families) or _("Follow global")),
+            b_families and BookSettings.xrayMarkingFamiliesLabel(b_families)
+                or T(_("Follow global (%1)"),
+                    BookSettings.xrayMarkingFamiliesLabel(features.xray_marking_families or "all"))),
         callback = function() markingPicker("families") end }})
-    table.insert(buttons, {{ text = T(_("Tap marked words: %1"), boolLabel(b_tap)),
+    table.insert(buttons, {{ text = T(_("Tap marked words: %1"),
+            boolLabel(b_tap, features.xray_marking_tap ~= false)),
         callback = function() markingPicker("tap") end }})
 
     table.insert(buttons, {{ text = _("Close"), id = "close", callback = function()
@@ -2269,10 +2300,11 @@ function BookSettings.showPrivacyConfig(opts)
         if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
     end
     local function dot(active) return active and "● " or "○ " end
-    local function boolLabel(v)
+    -- P4: follow-global rows carry the effective global value
+    local function boolLabel(v, global_on)
         if v == true then return _("On")
         elseif v == false then return _("Off") end
-        return _("Follow global")
+        return T(_("Follow global (%1)"), global_on and _("On") or _("Off"))
     end
 
     -- Tri-state picker (Follow global / On / Off) for one privacy key.
@@ -2301,23 +2333,27 @@ function BookSettings.showPrivacyConfig(opts)
     end
 
     local buttons = {
-        {{ text = T(_("Highlights sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHTS_SHARING))),
+        {{ text = T(_("Highlights sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_HIGHLIGHTS_SHARING),
+                features.enable_highlights_sharing == true or features.enable_annotations_sharing == true)),
             callback = function()
                 showBoolSubPicker(BookSettings.KEY_HIGHLIGHTS_SHARING,
                     _("Highlights sharing (this book)"),
                     features.enable_highlights_sharing == true or features.enable_annotations_sharing == true)
             end }},
-        {{ text = T(_("Annotations sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_ANNOTATIONS_SHARING))),
+        {{ text = T(_("Annotations sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_ANNOTATIONS_SHARING),
+                features.enable_annotations_sharing == true)),
             callback = function()
                 showBoolSubPicker(BookSettings.KEY_ANNOTATIONS_SHARING,
                     _("Annotations sharing (this book)"), features.enable_annotations_sharing == true)
             end }},
-        {{ text = T(_("Notebook sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_NOTEBOOK_SHARING))),
+        {{ text = T(_("Notebook sharing: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_NOTEBOOK_SHARING),
+                features.enable_notebook_sharing == true)),
             callback = function()
                 showBoolSubPicker(BookSettings.KEY_NOTEBOOK_SHARING,
                     _("Notebook sharing (this book)"), features.enable_notebook_sharing == true)
             end }},
-        {{ text = T(_("Text extraction: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_TEXT_EXTRACTION))),
+        {{ text = T(_("Text extraction: %1"), boolLabel(doc_settings:readSetting(BookSettings.KEY_TEXT_EXTRACTION),
+                features.enable_book_text_extraction == true)),
             callback = function()
                 showBoolSubPicker(BookSettings.KEY_TEXT_EXTRACTION,
                     _("Text extraction (this book)"), features.enable_book_text_extraction == true)
@@ -2566,22 +2602,28 @@ function BookSettings.showQuizConfig(opts)
     end
 
     local cur = bq()
-    local function triLabel(v)
+    -- P4: follow-global labels carry the effective global value
+    local function follow(global_label)
+        return T(_("Follow global (%1)"), global_label)
+    end
+    local function triLabel(v, global_on)
         if v == true then return _("On")
         elseif v == false then return _("Off") end
-        return _("Follow global")
+        return follow(global_on and _("On") or _("Off"))
     end
-    local function numLabel(v) return (v == nil) and _("Follow global") or tostring(v) end
+    local function numLabel(v, global_num)
+        return (v == nil) and follow(tostring(global_num)) or tostring(v)
+    end
     local function minPagesLabel(v)
-        if v == nil then return _("Follow global")
-        elseif v == 0 then return _("No minimum") end
+        if v == 0 then return _("No minimum") end
         return T(_("%1 pages"), v)
     end
     local function minTimeLabel(v)
-        if v == nil then return _("Follow global")
-        elseif v == 0 then return _("No minimum") end
+        if v == 0 then return _("No minimum") end
         return T(_("%1 min"), v)
     end
+    local global_min_pages = features.quiz_min_chapter_pages or 5
+    local global_min_time = features.quiz_min_chapter_time or 3
 
     -- `enabled` is suppress-only (the global gate runs before the per-book read in the
     -- page-turn hot path), so it's an honest two-state: Follow global / Off-for-this-book.
@@ -2589,7 +2631,7 @@ function BookSettings.showQuizConfig(opts)
     -- globally-disabled quiz.
     local function enabledLabel(v)
         if v == false then return _("Off (this book)") end
-        return _("Follow global")
+        return follow(features.enable_chapter_quiz == true and _("On") or _("Off"))
     end
 
     local buttons = {
@@ -2599,12 +2641,14 @@ function BookSettings.showQuizConfig(opts)
                     features.enable_chapter_quiz == true and _("On") or _("Off"),
                     { { value = false, label = _("Off: never quiz this book") } })
             end }},
-        {{ text = T(_("Question count: %1"), numLabel(cur.count)),
+        {{ text = T(_("Question count: %1"), numLabel(cur.count, features.quiz_question_count or 8)),
             callback = function()
                 showSpinner("count", _("Question count (this book)"), 3, 15,
                     features.quiz_question_count or 8)
             end }},
-        {{ text = T(_("Difficulty: %1"), (cur.difficulty == nil) and _("Follow global") or quizDifficultyLabel(cur.difficulty)),
+        {{ text = T(_("Difficulty: %1"), (cur.difficulty == nil)
+                and follow(quizDifficultyLabel(features.quiz_difficulty or "medium"))
+                or quizDifficultyLabel(cur.difficulty)),
             callback = function()
                 showOptions("difficulty", _("Difficulty (this book)"),
                     quizDifficultyLabel(features.quiz_difficulty or "medium"), {
@@ -2613,19 +2657,21 @@ function BookSettings.showQuizConfig(opts)
                         { value = "hard", label = _("Hard") },
                     })
             end }},
-        {{ text = T(_("Multiple choice: %1"), triLabel(cur.mc)),
+        {{ text = T(_("Multiple choice: %1"), triLabel(cur.mc, features.quiz_mc_enabled ~= false)),
             callback = function()
                 showTriState("mc", _("Multiple choice (this book)"), features.quiz_mc_enabled ~= false)
             end }},
-        {{ text = T(_("Short answer: %1"), triLabel(cur.sa)),
+        {{ text = T(_("Short answer: %1"), triLabel(cur.sa, features.quiz_short_answer_enabled ~= false)),
             callback = function()
                 showTriState("sa", _("Short answer (this book)"), features.quiz_short_answer_enabled ~= false)
             end }},
-        {{ text = T(_("Discussion: %1"), triLabel(cur.essay)),
+        {{ text = T(_("Discussion: %1"), triLabel(cur.essay, features.quiz_essay_enabled ~= false)),
             callback = function()
                 showTriState("essay", _("Discussion (this book)"), features.quiz_essay_enabled ~= false)
             end }},
-        {{ text = T(_("Chapter level: %1"), (cur.chapter_depth == nil) and _("Follow global") or quizLevelLabel(cur.chapter_depth)),
+        {{ text = T(_("Chapter level: %1"), (cur.chapter_depth == nil)
+                and follow(quizLevelLabel(features.quiz_chapter_depth or 2))
+                or quizLevelLabel(cur.chapter_depth)),
             callback = function()
                 showOptions("chapter_depth", _("Quiz chapter level (this book)"),
                     quizLevelLabel(features.quiz_chapter_depth or 2), {
@@ -2636,15 +2682,17 @@ function BookSettings.showQuizConfig(opts)
                         { value = "toc_filter", label = _("All TOC headings") },
                     })
             end }},
-        {{ text = T(_("Min chapter length: %1"), minPagesLabel(cur.min_pages)),
+        {{ text = T(_("Min chapter length: %1"), (cur.min_pages == nil)
+                and follow(minPagesLabel(global_min_pages)) or minPagesLabel(cur.min_pages)),
             callback = function()
                 showSpinner("min_pages", _("Min chapter length, pages (this book)"), 0, 30,
-                    features.quiz_min_chapter_pages or 5)
+                    global_min_pages)
             end }},
-        {{ text = T(_("Min reading time: %1"), minTimeLabel(cur.min_minutes)),
+        {{ text = T(_("Min reading time: %1"), (cur.min_minutes == nil)
+                and follow(minTimeLabel(global_min_time)) or minTimeLabel(cur.min_minutes)),
             callback = function()
                 showSpinner("min_minutes", _("Min reading time, minutes (this book)"), 0, 60,
-                    features.quiz_min_chapter_time or 3)
+                    global_min_time)
             end }},
         {{ text = _("Close"), id = "close", callback = function()
             closeDialog()
@@ -2743,8 +2791,9 @@ function BookSettings.showLanguageConfig(opts)
         if v == nil or v == "" then return _("primary language") end
         return Languages.getDisplay(v)
     end
-    local function langLabel(v)
-        if v == nil or v == "" then return _("Follow global") end
+    -- P4: follow-global rows carry the effective global value
+    local function langLabel(v, global_display)
+        if v == nil or v == "" then return T(_("Follow global (%1)"), global_display) end
         return Languages.getDisplay(v)
     end
 
@@ -2775,17 +2824,17 @@ function BookSettings.showLanguageConfig(opts)
     local cur_d = doc_settings:readSetting(BookSettings.KEY_DICTIONARY_LANG)
 
     local buttons = {
-        {{ text = T(_("AI response language: %1"), langLabel(cur_r)),
+        {{ text = T(_("AI response language: %1"), langLabel(cur_r, gdisp(global_response))),
             callback = function()
                 showLangPicker(BookSettings.KEY_RESPONSE_LANG,
                     _("AI response language (this book)"), gdisp(global_response))
             end }},
-        {{ text = T(_("Translation language: %1"), langLabel(cur_t)),
+        {{ text = T(_("Translation language: %1"), langLabel(cur_t, gdisp(global_trans))),
             callback = function()
                 showLangPicker(BookSettings.KEY_TRANSLATION_LANG,
                     _("Translation language (this book)"), gdisp(global_trans))
             end }},
-        {{ text = T(_("Dictionary language: %1"), langLabel(cur_d)),
+        {{ text = T(_("Dictionary language: %1"), langLabel(cur_d, gdisp(global_dict))),
             callback = function()
                 showLangPicker(BookSettings.KEY_DICTIONARY_LANG,
                     _("Dictionary language (this book)"), gdisp(global_dict))

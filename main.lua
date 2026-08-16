@@ -16467,6 +16467,16 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       UIManager:close(dialog)
       self_ref:showDomainPopup(reopenQuickSettings)
     end,
+    -- P4 (deviation 9): hold parity with the sibling tiles — the scope-aware
+    -- Domain & Research picker on the book tab (book open only)
+    hold_callback = has_document and function()
+      opening_subdialog = true
+      UIManager:close(dialog)
+      require("koassistant_book_settings").showDomainResearch({
+        plugin = self_ref, ui = self_ref.ui,
+        on_close = reopenQuickSettings,
+      })
+    end or nil,
   }
 
   button_defs["extended_thinking"] = {
@@ -16675,34 +16685,63 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
     end,
   }
 
+  -- Language tiles (P4 deviation 8): the panel family rule — label shows the
+  -- EFFECTIVE value for the open book with "(book)" when a per-book language
+  -- override masks the global; tap keeps editing the global picker; hold (book
+  -- open only) lands on the per-book Languages screen.
+  local function bookLangOverride(key)
+    local doc_settings = has_document and self.ui.doc_settings or nil
+    local ov = doc_settings and doc_settings:readSetting(key)
+    if ov and ov ~= "" then return ov end
+    return nil
+  end
+  local holdLanguageConfig = has_document and function()
+    opening_subdialog = true
+    UIManager:close(dialog)
+    require("koassistant_book_settings").showLanguageConfig({
+      plugin = self_ref, ui = self_ref.ui,
+      on_close = reopenQuickSettings,
+    })
+  end or nil
+  local BookSettingsQS = require("koassistant_book_settings")
+
+  local resp_ov = bookLangOverride(BookSettingsQS.KEY_RESPONSE_LANG)
   button_defs["language"] = {
-    text = E("\u{1F30D}", T(_("Language: %1"), lang_display)),
+    text = E("\u{1F30D}", T(_("Language: %1"),
+      resp_ov and (getLanguageDisplay(resp_ov) .. _(" (book)")) or lang_display)),
     callback = function()
       opening_subdialog = true
       UIManager:close(dialog)
       local menu_items = self_ref:buildPrimaryLanguageMenu()
       self_ref:showQuickSettingsPopup(_("Primary Language"), menu_items, true, reopenQuickSettings)
     end,
+    hold_callback = holdLanguageConfig,
   }
 
+  local trans_ov = bookLangOverride(BookSettingsQS.KEY_TRANSLATION_LANG)
   button_defs["translation_language"] = {
-    text = E("\u{1F30D}", T(_("Translate: %1"), trans_display)),
+    text = E("\u{1F30D}", T(_("Translate: %1"),
+      trans_ov and (getLanguageDisplay(trans_ov) .. _(" (book)")) or trans_display)),
     callback = function()
       opening_subdialog = true
       UIManager:close(dialog)
       local menu_items = self_ref:buildTranslationLanguageMenu()
       self_ref:showQuickSettingsPopup(_("Translation Language"), menu_items, true, reopenQuickSettings)
     end,
+    hold_callback = holdLanguageConfig,
   }
 
+  local dict_ov = bookLangOverride(BookSettingsQS.KEY_DICTIONARY_LANG)
   button_defs["dictionary_language"] = {
-    text = E("\u{1F30D}", T(_("Dictionary: %1"), dict_display)),
+    text = E("\u{1F30D}", T(_("Dictionary: %1"),
+      dict_ov and (getLanguageDisplay(dict_ov) .. _(" (book)")) or dict_display)),
     callback = function()
       opening_subdialog = true
       UIManager:close(dialog)
       local menu_items = self_ref:buildDictionaryLanguageMenu()
       self_ref:showQuickSettingsPopup(_("Dictionary Language"), menu_items, true, reopenQuickSettings)
     end,
+    hold_callback = holdLanguageConfig,
   }
 
   -- ⏩ = the bypass class icon; ⚡ is reserved for Quick Answer (A7b de-collision)
@@ -16745,7 +16784,19 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
   }
 
   button_defs["text_extraction"] = {
-    text = E("\u{1F4C4}", text_extraction and _("Text Extraction: ON") or _("Text Extraction: OFF")),
+    text = (function()
+      -- P4 (deviation 7): the panel family rule — label shows the EFFECTIVE
+      -- state for the open book, "(book)" when a per-book privacy override
+      -- masks the global; tap keeps toggling the global, hold opens the
+      -- per-book Privacy screen.
+      local doc_settings = has_document and self.ui.doc_settings or nil
+      local ov = doc_settings and doc_settings:readSetting(BookSettingsQS.KEY_TEXT_EXTRACTION)
+      local on = text_extraction
+      if ov ~= nil then on = ov end
+      local label = on and _("On") or _("Off")
+      if ov ~= nil then label = label .. _(" (book)") end
+      return E("\u{1F4C4}", T(_("Text Extraction: %1"), label))
+    end)(),
     callback = function()
       local f = self_ref.settings:readSetting("features") or {}
       -- First-time guard: must enable via Settings → Privacy & Data first
@@ -16760,10 +16811,28 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       self_ref.settings:saveSetting("features", f)
       self_ref.settings:flush()
       self_ref:updateConfigFromSettings()
+      -- Masked-global rule (the spoiler tile's pattern): the global saved
+      -- either way; if this book's own override masks it, say so — a silent
+      -- no-op reads as a dead button.
+      local doc_settings = has_document and self_ref.ui and self_ref.ui.doc_settings or nil
+      if doc_settings and doc_settings:readSetting(BookSettingsQS.KEY_TEXT_EXTRACTION) ~= nil then
+        UIManager:show(Notification:new{
+          text = _("Saved as default. This book has its own override — hold the button to change it."),
+          timeout = 3,
+        })
+      end
       opening_subdialog = true
       UIManager:close(dialog)
       reopenQuickSettings()
     end,
+    hold_callback = has_document and function()
+      opening_subdialog = true
+      UIManager:close(dialog)
+      require("koassistant_book_settings").showPrivacyConfig({
+        plugin = self_ref, ui = self_ref.ui,
+        on_close = reopenQuickSettings,
+      })
+    end or nil,
   }
 
   button_defs["chat_history"] = {
