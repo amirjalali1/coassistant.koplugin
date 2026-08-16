@@ -1694,7 +1694,21 @@ local SettingsSchema = {
                         { value = "both", label = _("Both sides") },
                         { value = "before", label = _("Before the selection only") },
                     },
-                    help_text = _("Which side of the selection surrounding context is taken from. While spoiler protection is on for a book, the after side is always left out regardless of this setting (it can reach into text you have not read yet). Also applies to dictionary context."),
+                    help_text = _("Which side of the selection surrounding context is taken from. Also applies to dictionary context. While spoiler protection is on for a book, the after side is additionally limited by the next setting."),
+                },
+                {
+                    id = "spoiler_context_limit",
+                    type = "dropdown",
+                    text = _("Context Under Spoiler Protection"),
+                    path = "features.spoiler_context_limit",
+                    default = "paragraph",
+                    options = {
+                        { value = "selection", label = _("Nothing after the selection") },
+                        { value = "sentence", label = _("To the end of its sentence") },
+                        { value = "paragraph", label = _("To the end of its paragraph") },
+                        { value = "off", label = _("No limit") },
+                    },
+                    help_text = _("How far past the selection context may reach while spoiler protection is on. The context window can otherwise include up to 1000 characters after the selection, which may be text you have not read yet; the sentence or paragraph you are selecting from is on the page in front of you. Applies to highlight and dictionary context."),
                 },
                 {
                     id = "highlight_context_paragraphs",

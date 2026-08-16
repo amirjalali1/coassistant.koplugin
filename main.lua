@@ -8425,10 +8425,14 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
     -- === Source section ===
     addLabel(_("Source"))
 
-    -- Smart retrieval needs the full-document scope: a section scope bounds EXTRACTION,
-    -- not the tool search, so the combination would mislead.
-    if state.source == "smart_retrieval" and state.scope ~= "full" then
-      -- Scope switched away from full while smart retrieval was selected — fall back
+    -- Smart retrieval rides the full or up-to-position scope (round 4, maintainer:
+    -- scope means SCOPE regardless of source — full searches the whole document,
+    -- read-so-far clamps the tool session to the position). Section scopes stay
+    -- out: their START bound can't be told to the tools, so the combination would
+    -- mislead (deferred by maintainer).
+    if state.source == "smart_retrieval" and state.scope ~= "full"
+        and state.scope ~= "read_so_far" then
+      -- Scope switched to a section scope while smart retrieval was selected — fall back
       state.source = text_extraction_enabled and "full_text" or "ai_knowledge"
     end
 
@@ -8520,8 +8524,13 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
     -- Always shown for pilot actions; disabled (not hidden) with the reason when the
     -- session can't use it or the scope isn't full — stable popup height, discoverable.
     if smart_row_shown then
+      -- Round 4 (maintainer): the SCOPE pick governs the tool session — full =
+      -- whole document (the normal Run consent fires under protection, like any
+      -- other source), read-so-far = tools clamped to the position. No special
+      -- label: scope says what it covers.
       local sr_label = _("Smart retrieval (AI searches the book)")
-      local sr_enabled = smart_eligible == true and state.scope == "full"
+      local sr_scope_ok = state.scope == "full" or state.scope == "read_so_far"
+      local sr_enabled = smart_eligible == true and sr_scope_ok
       local sr_text
       if not smart_eligible then
         if smart_block_reason == "consent" then
@@ -8529,8 +8538,8 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
         else
           sr_text = sr_label .. "  (" .. _("not supported by this provider") .. ")"
         end
-      elseif state.scope ~= "full" then
-        sr_text = sr_label .. "  (" .. _("full scope only") .. ")"
+      elseif not sr_scope_ok then
+        sr_text = sr_label .. "  (" .. _("full or up-to-position only") .. ")"
       else
         sr_text = sr_label
       end
@@ -8679,7 +8688,9 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
             local covers_unread
             if state.scope == "full" then
               -- Unless this is a to-position action, whose "full" extraction
-              -- already stops at the reading position.
+              -- already stops at the reading position. Smart retrieval is NOT
+              -- exempt (round 4 reversal): full scope means the tool session
+              -- reads the whole document, so the consent is exactly right.
               covers_unread = not is_to_position and reading_progress
                   and reading_progress.decimal < 1
             elseif (state.scope == "section" or state.scope == "range")
@@ -18161,9 +18172,8 @@ function AskGPT:syncDictionaryBypass()
           or (self_ref.ui and self_ref.ui.document and self_ref.ui.document.file)
         -- Memoized route index (slice 2): a stat per tap instead of the old
         -- full cache parse per tap — the #63 one-parse-per-tap cost is gone
-        local i_feats = self_ref.settings:readSetting("features") or {}
         if i_file and ActionCache.matchAnyXrayExact(i_file, word,
-            { include_ahead = i_feats.xray_show_ahead_entities ~= false }) then
+            { include_ahead = self_ref:_xrayAheadEnabled(i_file) }) then
           logger.info("KOAssistant: X-Ray intercept - word matches entity, opening X-Ray")
           local lookup_book = dict_self._koassistant_lookup_book
           dict_self._koassistant_non_reader_lookup = nil
@@ -18544,9 +18554,8 @@ function AskGPT:syncHighlightBypass()
         local i_file = self_ref.ui and self_ref.ui.document and self_ref.ui.document.file
         -- Memoized route index (slice 2): a stat per release instead of the
         -- old full cache parse
-        local i_feats = self_ref.settings:readSetting("features") or {}
         if i_file and ActionCache.matchAnyXrayExact(i_file, sel,
-            { include_ahead = i_feats.xray_show_ahead_entities ~= false }) then
+            { include_ahead = self_ref:_xrayAheadEnabled(i_file) }) then
           logger.info("KOAssistant: X-Ray intercept - selection matches entity, opening X-Ray")
           -- Selection geometry anchors the floating-popup card style —
           -- captured as fresh copies BEFORE clear() releases the selection
@@ -18638,13 +18647,23 @@ end
 --- protection is on. `features.xray_card_landing == false` restores the
 --- straight-to-full-entry behavior — except ahead-only entities, which keep
 --- the reveal flow (the position-tier lookup cannot show them).
+--- Effective Upcoming Entities toggle for a book: book override > global,
+--- default ON (BookSettings.resolveXrayMarking .ahead). The three
+--- ahead-peek sites read this per call: the dict/highlight intercepts'
+--- matchAnyXrayExact include_ahead flag and the card resolver.
+function AskGPT:_xrayAheadEnabled(file)
+  local features = self.settings:readSetting("features") or {}
+  local ds = file and require("koassistant_doc_settings").resolve(file, self.ui) or nil
+  return require("koassistant_book_settings").resolveXrayMarking(ds, features).ahead
+end
+
 function AskGPT:openXrayCard(query, opts)
   local features = self.settings:readSetting("features") or {}
   local file = (opts and opts.document_path)
     or (self.ui and self.ui.document and self.ui.document.file)
   local XrayCard = require("koassistant_xray_card")
   local ok, hit = pcall(XrayCard.resolve, file, query,
-    { include_ahead = features.xray_show_ahead_entities ~= false })
+    { include_ahead = self:_xrayAheadEnabled(file) })
   if not ok or not hit then
     -- The exact gate said yes but the resolver disagreed (disk moved,
     -- parse hiccup): the old path handles it — incl. its no-result flows
@@ -18830,6 +18849,15 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
         marking.tap and _("On") or _("Off"),
         scopeTag(BookSettings.KEY_XRAY_MARKING_TAP)), "tap"))
   end
+  -- Upcoming Entities (device round 3, maintainer: same pattern as the other
+  -- marking keys) — ahead-checkpoint entities in marking/lookup/cards (dash
+  -- marks, identification only). Book override > global via the canonical
+  -- picker like its siblings; outside the marking-gated group since lookup
+  -- and cards consult it even with passive marking off.
+  table.insert(buttons, pickerRow(
+    T(_("Upcoming entities: %1 (%2)"),
+      marking.ahead and _("On") or _("Off"),
+      scopeTag(BookSettings.KEY_XRAY_AHEAD)), "ahead"))
   if ds and marking.has_override then
     table.insert(buttons, row(
       _("Use global marking settings for this book"),
@@ -18838,6 +18866,7 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
         ds:delSetting(BookSettings.KEY_XRAY_MARKING_DENSITY)
         ds:delSetting(BookSettings.KEY_XRAY_MARKING_FAMILIES)
         ds:delSetting(BookSettings.KEY_XRAY_MARKING_TAP)
+        ds:delSetting(BookSettings.KEY_XRAY_AHEAD)
         if ds.flush then ds:flush() end
       end))
   end

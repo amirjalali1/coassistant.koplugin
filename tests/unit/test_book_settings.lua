@@ -834,7 +834,7 @@ TestRunner:test("KEY_WEB_SEARCH and KEY_DOMAIN/KEY_RESEARCH are in SIDECAR_KEYS"
         "koassistant_book_background missing from SIDECAR_KEYS (book_background_plan.md)")
     TestRunner:assertEqual(found[BookSettings.KEY_XRAY_SPACING] == true, true,
         "koassistant_book_xray_spacing missing from SIDECAR_KEYS (spacing slice)")
-    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 30, "30 per-book keys expected (incl. 4 privacy overrides + xray promotion hold + checkpoint spacing + 4 marking overrides)")
+    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 31, "31 per-book keys expected (incl. 4 privacy overrides + xray promotion hold + checkpoint spacing + 5 marking overrides incl. upcoming-entities)")
 end)
 
 TestRunner:suite("resolveXrayMarking (2026-08-15: popup edits the book layer)")
@@ -870,6 +870,23 @@ TestRunner:test("nil doc_settings = global-only resolution", function()
     local m = BookSettings.resolveXrayMarking(nil, { xray_marking_density = "25" })
     TestRunner:assertEqual(m.density, "25", "globals only")
     TestRunner:assertEqual(m.has_override, false, "no ds, no override")
+end)
+TestRunner:test("ahead (Upcoming Entities): default ON, tri-state book layer beats global", function()
+    local m = BookSettings.resolveXrayMarking(makeDocSettings({}), {})
+    TestRunner:assertEqual(m.ahead, true, "ahead default ON")
+    m = BookSettings.resolveXrayMarking(makeDocSettings({}),
+        { xray_show_ahead_entities = false })
+    TestRunner:assertEqual(m.ahead, false, "global off honored")
+    TestRunner:assertEqual(m.has_override, false, "global off is not a book override")
+    m = BookSettings.resolveXrayMarking(makeDocSettings({
+        [BookSettings.KEY_XRAY_AHEAD] = true,
+    }), { xray_show_ahead_entities = false })
+    TestRunner:assertEqual(m.ahead, true, "book ON beats global off")
+    TestRunner:assertEqual(m.has_override, true, "override flagged")
+    m = BookSettings.resolveXrayMarking(makeDocSettings({
+        [BookSettings.KEY_XRAY_AHEAD] = false,
+    }), {})
+    TestRunner:assertEqual(m.ahead, false, "book OFF beats default-on global")
 end)
 
 TestRunner:test("xraySpacingOverride: valid ratio passes, junk and out-of-range are nil", function()

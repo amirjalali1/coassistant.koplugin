@@ -189,10 +189,12 @@ local function ensureIndex(plugin, pageno)
     -- meets them. Full entries stay position-gated in the card router.
     -- P5: the Upcoming Entities setting stands the peek down (default on);
     -- with it off the key drops its "|ahead:" part, so a flip rebuilds the
-    -- index on the next sync/scan by itself.
+    -- index on the next sync/scan by itself. Round 3: book override > global
+    -- via the marking resolver, like the other marking keys.
     st.ahead = nil
     local marks_feats = plugin.settings and plugin.settings:readSetting("features") or {}
-    if marks_feats.xray_show_ahead_entities ~= false then
+    if require("koassistant_book_settings").resolveXrayMarking(
+        plugin.ui and plugin.ui.doc_settings, marks_feats).ahead then
       local live_p = st.live and (st.live.full_document and 1.0
         or tonumber(st.live.progress_decimal)) or 0
       for _idx, rg in ipairs(ActionCache.getXrayLadder(st.file)) do
@@ -715,8 +717,12 @@ function XrayMarks.sync(plugin)
   else
     st.families = nil
   end
-  -- Settings may have changed what the index feeds on — force a re-pick
+  -- Settings may have changed what the index feeds on — force a re-pick.
+  -- st.stamps too (P5 device round): the sections + ahead-rung snapshot only
+  -- refreshes when file stamps change, so a flip of the Upcoming Entities
+  -- setting kept the STALE st.ahead until the book was reopened.
   st.artifact_key = nil
+  st.stamps = nil
 
   if not ui.view.view_modules[MODULE_NAME] then
     ui.view:registerViewModule(MODULE_NAME, paint_widget)

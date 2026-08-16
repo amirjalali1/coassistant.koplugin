@@ -197,11 +197,12 @@ BookSettings.KEY_XRAY_MARKING = "koassistant_book_xray_marking"                 
 BookSettings.KEY_XRAY_MARKING_DENSITY = "koassistant_book_xray_marking_density"    -- "all"|"first"|"10"|"25"|"once" | nil
 BookSettings.KEY_XRAY_MARKING_FAMILIES = "koassistant_book_xray_marking_families"  -- "all"|"people"|"people_places" | nil
 BookSettings.KEY_XRAY_MARKING_TAP = "koassistant_book_xray_marking_tap"            -- true | false | nil
+BookSettings.KEY_XRAY_AHEAD = "koassistant_book_xray_ahead"                        -- true | false | nil (Upcoming Entities peek)
 
 --- Effective X-Ray marking config for a book: book override > global > default.
 --- Pure. Read pattern must match the schema defaults (marking ON, tap ON,
---- density "10", families "all").
---- @return table { enabled, density, families, tap, has_override }
+--- density "10", families "all", ahead ON).
+--- @return table { enabled, density, families, tap, ahead, has_override }
 function BookSettings.resolveXrayMarking(doc_settings, features)
     features = features or {}
     -- No and/or chain here: it would fold an explicit book-level FALSE into
@@ -216,6 +217,7 @@ function BookSettings.resolveXrayMarking(doc_settings, features)
     local b_dens = rd(BookSettings.KEY_XRAY_MARKING_DENSITY)
     local b_fam = rd(BookSettings.KEY_XRAY_MARKING_FAMILIES)
     local b_tap = rd(BookSettings.KEY_XRAY_MARKING_TAP)
+    local b_ahead = rd(BookSettings.KEY_XRAY_AHEAD)
     local enabled
     if b_on ~= nil then
         enabled = b_on ~= false
@@ -228,12 +230,20 @@ function BookSettings.resolveXrayMarking(doc_settings, features)
     else
         tap = features.xray_marking_tap ~= false
     end
+    local ahead
+    if b_ahead ~= nil then
+        ahead = b_ahead ~= false
+    else
+        ahead = features.xray_show_ahead_entities ~= false
+    end
     return {
         enabled = enabled,
         density = b_dens or features.xray_marking_density or "10",
         families = b_fam or features.xray_marking_families or "all",
         tap = tap,
-        has_override = b_on ~= nil or b_dens ~= nil or b_fam ~= nil or b_tap ~= nil,
+        ahead = ahead,
+        has_override = b_on ~= nil or b_dens ~= nil or b_fam ~= nil
+            or b_tap ~= nil or b_ahead ~= nil,
     }
 end
 
@@ -674,6 +684,7 @@ BookSettings.SIDECAR_KEYS = {
     BookSettings.KEY_XRAY_MARKING_DENSITY,
     BookSettings.KEY_XRAY_MARKING_FAMILIES,
     BookSettings.KEY_XRAY_MARKING_TAP,
+    BookSettings.KEY_XRAY_AHEAD,
     -- (KEY_XRAY_COVERAGE_ASKED is deliberately NOT here: a stamp, not an
     -- override — it must not count as "customized" nor block on reset;
     -- registered as its own storage-registry entry like the last-opened stamp)
@@ -1524,20 +1535,88 @@ end
 -- PERSISTENT defaults; the chip's tap sets the session override. Book: Follow
 -- global / modes (KEY_HIGHLIGHT_CONTEXT). Global: features.highlight_context_mode.
 -- @param opts table: { plugin, ui, document_path, on_close, target_override }
+-- P5 (granularity round 2, maintainer): the spoiler clamp's user-facing pieces,
+-- shared by BOTH context pickers. Note = the title line while protection is on
+-- (says exactly what the configured limit does; nil when the limit is "off").
+local function spoilerContextNote(features)
+    local lim = features.spoiler_context_limit or "paragraph"
+    if lim == "off" then return nil end
+    if lim == "selection" then
+        return _("Spoiler protection is on: context is taken only from before the selection.")
+    elseif lim == "sentence" then
+        return _("Spoiler protection is on: context after the selection stops at the end of its sentence.")
+    end
+    return _("Spoiler protection is on: context after the selection stops at the end of its paragraph.")
+end
+local function spoilerContextLimitLabel(features)
+    local lim = features.spoiler_context_limit or "paragraph"
+    if lim == "off" then return _("No limit") end
+    if lim == "selection" then return _("Nothing after") end
+    if lim == "sentence" then return _("To sentence end") end
+    return _("To paragraph end")
+end
+
+-- The two GLOBAL context dials both pickers carry as bottom rows: direction
+-- (both sides / before only) and the spoiler clamp granularity (tap-cycles
+-- selection → sentence → paragraph → off). show_fn = the calling picker, so
+-- a tap re-shows it with fresh labels on the same tab.
+local function contextGlobalRows(ctx, show_fn)
+    local function reopen()
+        show_fn({
+            plugin = ctx.plugin, ui = ctx.ui, document_path = ctx.document_path,
+            on_close = ctx.on_close,
+            target_override = ctx.is_book_target and "book" or "global",
+        })
+    end
+    local function writeFeature(k, v)
+        if ctx.plugin and ctx.plugin.settings then
+            local f = ctx.plugin.settings:readSetting("features") or {}
+            f[k] = v
+            ctx.plugin.settings:saveSetting("features", f)
+            ctx.plugin.settings:flush()
+            if ctx.plugin.updateConfigFromSettings then ctx.plugin:updateConfigFromSettings() end
+        end
+    end
+    local before_only = ctx.features.highlight_context_direction == "before"
+    return {
+        {{
+            text = T(_("Direction: %1 (global)"),
+                before_only and _("Before only") or _("Both sides")),
+            callback = function()
+                writeFeature("highlight_context_direction",
+                    (not before_only) and "before" or nil)
+                ctx.closeDialog()
+                reopen()
+            end,
+        }},
+        {{
+            text = T(_("Under spoiler protection: %1 (global)"),
+                spoilerContextLimitLabel(ctx.features)),
+            callback = function()
+                local cur = ctx.features.spoiler_context_limit or "paragraph"
+                local next_v = ({ selection = "sentence", sentence = "paragraph",
+                    paragraph = "off", off = "selection" })[cur] or "paragraph"
+                writeFeature("spoiler_context_limit", next_v)
+                ctx.closeDialog()
+                reopen()
+            end,
+        }},
+    }
+end
+
 function BookSettings.showHighlightContext(opts)
     local options = {}
     for _idx, m in ipairs({ "none", "sentence", "paragraph", "characters" }) do
         table.insert(options, { value = m, label = BookSettings.contextModeLabel(m) })
     end
     BookSettings.showLayeredPicker({
-        -- P5: the spoiler clamp is invisible mechanics — say it where the mode
-        -- is picked (label, never gray: the stored pick stays editable).
+        -- P5: the spoiler clamp is invisible mechanics — say what it does where
+        -- the mode is picked (label, never gray: the stored pick stays editable).
         title = function(ctx)
             local title = _("Context Around Highlights")
-            if BookSettings.resolveSpoilerFree(ctx.doc_settings, ctx.features) then
-                title = title .. "\n"
-                    .. _("Spoiler protection is on: context is taken only from before the selection.")
-            end
+            local note = BookSettings.resolveSpoilerFree(ctx.doc_settings, ctx.features)
+                and spoilerContextNote(ctx.features) or nil
+            if note then title = title .. "\n" .. note end
             return title
         end,
         key = BookSettings.KEY_HIGHLIGHT_CONTEXT,
@@ -1545,33 +1624,8 @@ function BookSettings.showHighlightContext(opts)
         global = function(f) return f.highlight_context_mode or "none" end,
         value_label = BookSettings.contextModeLabel,
         options = options,
-        -- Direction is a GLOBAL dial (P5): tap-cycle row, both tabs.
         bottom_rows = function(ctx)
-            local before_only = ctx.features.highlight_context_direction == "before"
-            return {{{
-                text = T(_("Direction: %1 (global)"),
-                    before_only and _("Before only") or _("Both sides")),
-                callback = function()
-                    local plugin = ctx.plugin
-                    if plugin and plugin.settings then
-                        local f = plugin.settings:readSetting("features") or {}
-                        if before_only then
-                            f.highlight_context_direction = nil
-                        else
-                            f.highlight_context_direction = "before"
-                        end
-                        plugin.settings:saveSetting("features", f)
-                        plugin.settings:flush()
-                        if plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
-                    end
-                    ctx.closeDialog()
-                    BookSettings.showHighlightContext({
-                        plugin = ctx.plugin, ui = ctx.ui, document_path = ctx.document_path,
-                        on_close = ctx.on_close,
-                        target_override = ctx.is_book_target and "book" or "global",
-                    })
-                end,
-            }}}
+            return contextGlobalRows(ctx, BookSettings.showHighlightContext)
         end,
     }, opts)
 end
@@ -1590,14 +1644,17 @@ function BookSettings.showDictionaryContext(opts)
         table.insert(options, { value = m, label = BookSettings.contextModeLabel(m) })
     end
     BookSettings.showLayeredPicker({
-        -- P5: the spoiler clamp covers the dictionary channel too — same note.
+        -- P5: the spoiler clamp covers the dictionary channel too — same note
+        -- and the same two global dials.
         title = function(ctx)
             local title = _("Context Around Dictionary Lookups")
-            if BookSettings.resolveSpoilerFree(ctx.doc_settings, ctx.features) then
-                title = title .. "\n"
-                    .. _("Spoiler protection is on: context is taken only from before the selection.")
-            end
+            local note = BookSettings.resolveSpoilerFree(ctx.doc_settings, ctx.features)
+                and spoilerContextNote(ctx.features) or nil
+            if note then title = title .. "\n" .. note end
             return title
+        end,
+        bottom_rows = function(ctx)
+            return contextGlobalRows(ctx, BookSettings.showDictionaryContext)
         end,
         key = BookSettings.KEY_DICTIONARY_CONTEXT,
         field = "dictionary_context_mode",
@@ -1627,9 +1684,10 @@ end
 
 --- Scope-aware X-Ray marking pickers (For this book / Global) — consolidation
 -- P2 flagship (2026-08-16): the Marking & lookup popup's tap-cycles became
--- these canonical pickers. One wrapper serves the four marking keys via
--- opts.kind: "enabled" | "density" | "families" | "tap". Defaults mirror
--- resolveXrayMarking (marking ON, tap ON, density "10", families "all").
+-- these canonical pickers. One wrapper serves the five marking-family keys via
+-- opts.kind: "enabled" | "density" | "families" | "tap" | "ahead". Defaults
+-- mirror resolveXrayMarking (marking ON, tap ON, density "10", families "all",
+-- ahead ON).
 -- @param opts table: { plugin, ui, document_path, on_close, target_override, kind }
 function BookSettings.showXrayMarkingPicker(opts)
     opts = opts or {}
@@ -1676,6 +1734,20 @@ function BookSettings.showXrayMarkingPicker(opts)
             key = BookSettings.KEY_XRAY_MARKING_TAP,
             field = "xray_marking_tap",
             global = function(f) return f.xray_marking_tap ~= false end,
+            value_label = function(v) return v and _("On") or _("Off") end,
+            options = on_off,
+            on_commit = commit,
+        }
+    elseif opts.kind == "ahead" then
+        -- Upcoming Entities (device round 3: same pattern as the other marking
+        -- keys, not a global-only tap-cycle) — the ahead-checkpoint peek in
+        -- marking, lookup and cards. The intercept/card sites read the resolver
+        -- per call; commit re-syncs the marks index.
+        spec = {
+            title = _("Upcoming Entities"),
+            key = BookSettings.KEY_XRAY_AHEAD,
+            field = "xray_show_ahead_entities",
+            global = function(f) return f.xray_show_ahead_entities ~= false end,
             value_label = function(v) return v and _("On") or _("Off") end,
             options = on_off,
             on_commit = commit,
@@ -1866,6 +1938,7 @@ function BookSettings.show(opts)
         BookSettings.KEY_XRAY_PROMOTION, BookSettings.KEY_XRAY_SPACING,
         BookSettings.KEY_XRAY_MARKING, BookSettings.KEY_XRAY_MARKING_DENSITY,
         BookSettings.KEY_XRAY_MARKING_FAMILIES, BookSettings.KEY_XRAY_MARKING_TAP,
+        BookSettings.KEY_XRAY_AHEAD,
     }), BookSettings.showXrayConfig))
     addButton(subScreenRow(_("Chat behavior"), groupCount({
         BookSettings.KEY_TOOLS, BookSettings.KEY_WEB_SEARCH,
@@ -2311,6 +2384,12 @@ function BookSettings.showXrayConfig(opts)
     table.insert(buttons, {{ text = T(_("Tap marked words: %1"),
             boolLabel(b_tap, features.xray_marking_tap ~= false)),
         callback = function() markingPicker("tap") end }})
+    -- Round 3 (maintainer: "why are they not the same pattern"): Upcoming
+    -- Entities rides the canonical two-layer picker like its marking siblings
+    local b_ahead = doc_settings:readSetting(BookSettings.KEY_XRAY_AHEAD)
+    table.insert(buttons, {{ text = T(_("Upcoming entities: %1"),
+            boolLabel(b_ahead, features.xray_show_ahead_entities ~= false)),
+        callback = function() markingPicker("ahead") end }})
 
     table.insert(buttons, {{ text = _("Close"), id = "close", callback = function()
         closeDialog()

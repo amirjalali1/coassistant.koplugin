@@ -1204,7 +1204,18 @@ function BookToolRunner.gatherForAction(params)
     BookToolRunner._cancelled = false
     BookToolRunner._skip_gather = false
     local provider = config.provider or config.default_provider
-    local reading_scope = resolveReadingScope(config, params.ui)
+    -- Explicit scope pick (round 4, maintainer: scope means SCOPE regardless of
+    -- source): the unified popup's smart-retrieval dispatch stashes the committed
+    -- scope — "full" = whole document (the Run consent already covered unread
+    -- reach under protection), "current" = up to the reading position. Consumed
+    -- ONCE here so it can never leak into a later session's tool scope; direct
+    -- entries set nothing and keep the posture-resolved clamp.
+    local scope_override = features._tool_reading_scope
+    features._tool_reading_scope = nil
+    if scope_override ~= "full" and scope_override ~= "current" then
+        scope_override = nil
+    end
+    local reading_scope = scope_override or resolveReadingScope(config, params.ui)
     local tools = BookTools:new(params.ui, buildToolSettings(features, reading_scope))
     local budget = budgetFor(features)
     local messages = { { role = "user", content = params.question or "" } }

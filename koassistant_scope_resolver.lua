@@ -202,12 +202,25 @@ function ScopeResolver.trimContext(prev, next_text, highlighted_text, mode, opts
     opts = opts or {}
     prev = prev or ""
     next_text = next_text or ""
-    -- Consolidation P5 (2026-08-16): after-side suppression — the global
-    -- "before only" direction pick, and forced by the callers when spoiler
-    -- protection is on (the after window can reach up to MAX_CONTEXT_CHARS/2
-    -- past the selection, i.e. into unread text). Dropping next_text up front
-    -- covers every mode, including the sentence→characters starve fallback.
-    if opts.before_only then next_text = "" end
+    -- Consolidation P5 (2026-08-16, granularity round 2 per maintainer):
+    -- after-side limiting — opts.after_limit "none" | "sentence" | "paragraph"
+    -- (nil = unlimited). Callers pass it for the global "before only" direction
+    -- pick ("none") and for the spoiler clamp (the configured granularity —
+    -- the after window can reach up to MAX_CONTEXT_CHARS/2 past the selection
+    -- into unread text, but the sentence/paragraph the selection sits in is on
+    -- the visible page). Truncating next_text up front covers every mode,
+    -- including the sentence→characters starve fallback.
+    if opts.after_limit == "none" then
+        next_text = ""
+    elseif opts.after_limit == "sentence" and next_text ~= "" then
+        -- Keep only to the end of the sentence the selection sits in
+        local e = next_text:find("[%.!%?]%s") or next_text:find("[%.!%?]$")
+        if e then next_text = next_text:sub(1, e) end
+    elseif opts.after_limit == "paragraph" and next_text ~= "" then
+        -- Keep only the remainder of the selection's own paragraph
+        local e = next_text:find("\n")
+        if e then next_text = next_text:sub(1, e - 1) end
+    end
     if prev == "" and next_text == "" then return "" end
 
     local max_per_side = math.floor(ScopeResolver.MAX_CONTEXT_CHARS / 2)
@@ -241,9 +254,24 @@ function ScopeResolver.trimContext(prev, next_text, highlighted_text, mode, opts
 
     else  -- "sentence" mode (default)
         local function findSentenceStart(text)
-            -- Search backwards for sentence end (.!?) followed by space
-            local last_end = text:match(".*[%.!%?]%s+()") or 1
-            return text:sub(last_end)
+            -- Granularity round 3 (device 2026-08-16): one FULL sentence before
+            -- the selection's own. The old walk took only the text after the
+            -- LAST terminator — the start of the selection's own sentence — so
+            -- a selection that began its sentence got an EMPTY before side
+            -- (device: before blank while the after clause rode along). Collect
+            -- sentence-start positions (after each terminator+space run); the
+            -- last is the selection's own sentence, the one before it is the
+            -- previous full sentence.
+            local starts = {}
+            local pos = 1
+            while true do
+                local s, e = text:find("[%.!%?]%s+", pos)
+                if not s then break end
+                starts[#starts + 1] = e + 1
+                pos = e + 1
+            end
+            local from = starts[#starts - 1] or 1
+            return text:sub(from)
         end
         local function findSentenceEnd(text)
             -- Search forwards for sentence end (.!?)

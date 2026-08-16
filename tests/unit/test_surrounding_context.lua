@@ -143,8 +143,25 @@ TestRunner:test("sentence mode extracts the surrounding sentence with marker", f
         "the dog", "sentence")
     TestRunner:assertContains(result, ">>>the dog<<<", "marker present")
     TestRunner:assertContains(result, "The quick brown fox", "sentence before included")
+    TestRunner:assertContains(result, "Other sentence.", "previous full sentence included (round 3)")
     TestRunner:assertContains(result, "and lands.", "sentence after included")
     TestRunner:assertNotContains(result, "Next sentence here", "beyond sentence end excluded")
+end)
+
+TestRunner:test("sentence mode: selection at sentence start still gets a before side", function()
+    -- Device 2026-08-16: a selection that BEGAN its sentence got an empty
+    -- before side — the old walk only completed the selection's own sentence,
+    -- and there was nothing of it before the selection. One full sentence
+    -- back is what "sentence context" means; exactly one, not two.
+    local prev = "An earlier point was made. The previous sentence sits right here. "
+    local nxt = ", just as the after clause continues. Next sentence beyond."
+    local result = ScopeResolver.trimContext(prev, nxt,
+        "The hypothesis must fit the data", "sentence")
+    TestRunner:assertContains(result, "previous sentence sits right here.",
+        "previous full sentence included")
+    TestRunner:assertNotContains(result, "earlier point", "only one sentence back")
+    TestRunner:assertContains(result, "after clause continues.", "own-sentence tail kept")
+    TestRunner:assertNotContains(result, "Next sentence beyond", "next sentence excluded")
 end)
 
 TestRunner:test("characters mode respects char_count and ellipsizes truncation", function()
@@ -188,19 +205,37 @@ TestRunner:test("mode none / empty window return empty string", function()
     TestRunner:assertEqual(ScopeResolver.trimContext(nil, nil, "w", "sentence"), "", "nil window")
 end)
 
-TestRunner:test("before_only drops the after side in every mode (P5 spoiler clamp)", function()
+TestRunner:test("after_limit 'none' drops the after side in every mode (P5 spoiler clamp)", function()
     local prev = "Other sentence. The quick brown fox jumps over"
     local nxt = " and lands. Next sentence here."
     for _idx, mode in ipairs({ "sentence", "characters", "paragraph" }) do
         local result = ScopeResolver.trimContext(prev, nxt, "the dog", mode,
-            { before_only = true, char_count = 50, paragraphs = 1 })
+            { after_limit = "none", char_count = 50, paragraphs = 1 })
         TestRunner:assertContains(result, ">>>the dog<<<", mode .. ": marker present")
         TestRunner:assertNotContains(result, "and lands", mode .. ": after side dropped")
     end
-    -- Before-only with an EMPTY before side yields nothing at all
+    -- Suppressed after + empty before yields nothing at all
     TestRunner:assertEqual(
-        ScopeResolver.trimContext("", " after text only.", "w", "sentence", { before_only = true }),
+        ScopeResolver.trimContext("", " after text only.", "w", "sentence", { after_limit = "none" }),
         "", "empty before + suppressed after = empty")
+end)
+
+TestRunner:test("after_limit 'sentence' keeps only the selection's own sentence tail", function()
+    local prev = "Earlier sentence. The fox jumps over"
+    local nxt = " and lands safely. Then the story continues here."
+    local result = ScopeResolver.trimContext(prev, nxt, "the dog", "characters",
+        { after_limit = "sentence", char_count = 200 })
+    TestRunner:assertContains(result, "and lands safely.", "sentence tail kept")
+    TestRunner:assertNotContains(result, "story continues", "next sentence excluded")
+end)
+
+TestRunner:test("after_limit 'paragraph' keeps only the selection's own paragraph tail", function()
+    local prev = "Para start, the fox jumps over"
+    local nxt = " and lands. More of the same paragraph.\nNext paragraph starts here."
+    local result = ScopeResolver.trimContext(prev, nxt, "the dog", "characters",
+        { after_limit = "paragraph", char_count = 300 })
+    TestRunner:assertContains(result, "More of the same paragraph.", "paragraph tail kept")
+    TestRunner:assertNotContains(result, "Next paragraph starts", "next paragraph excluded")
 end)
 
 TestRunner:test("hard cap: no mode can exceed MAX_CONTEXT_CHARS by much", function()
