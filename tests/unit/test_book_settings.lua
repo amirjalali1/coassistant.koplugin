@@ -834,7 +834,7 @@ TestRunner:test("KEY_WEB_SEARCH and KEY_DOMAIN/KEY_RESEARCH are in SIDECAR_KEYS"
         "koassistant_book_background missing from SIDECAR_KEYS (book_background_plan.md)")
     TestRunner:assertEqual(found[BookSettings.KEY_XRAY_SPACING] == true, true,
         "koassistant_book_xray_spacing missing from SIDECAR_KEYS (spacing slice)")
-    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 31, "31 per-book keys expected (incl. 4 privacy overrides + xray promotion hold + checkpoint spacing + 5 marking overrides incl. upcoming-entities)")
+    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 33, "33 per-book keys expected (incl. 4 privacy overrides + xray promotion hold + checkpoint spacing + 7 marking & lookup overrides incl. upcoming-entities, intercept, card)")
 end)
 
 TestRunner:suite("resolveXrayMarking (2026-08-15: popup edits the book layer)")
@@ -871,6 +871,30 @@ TestRunner:test("nil doc_settings = global-only resolution", function()
     TestRunner:assertEqual(m.density, "25", "globals only")
     TestRunner:assertEqual(m.has_override, false, "no ds, no override")
 end)
+TestRunner:test("intercept + card (round 5): defaults, book layer beats the global pair", function()
+    local m = BookSettings.resolveXrayMarking(makeDocSettings({}), {})
+    TestRunner:assertEqual(m.intercept, true, "intercept default ON")
+    TestRunner:assertEqual(m.card, "footnote", "card default footnote")
+    m = BookSettings.resolveXrayMarking(makeDocSettings({}),
+        { xray_selection_intercept = false, xray_card_landing = false })
+    TestRunner:assertEqual(m.intercept, false, "global intercept off honored")
+    TestRunner:assertEqual(m.card, "full", "global landing-off maps to full")
+    m = BookSettings.resolveXrayMarking(makeDocSettings({}),
+        { xray_card_style = "popup" })
+    TestRunner:assertEqual(m.card, "popup", "global style popup maps through")
+    m = BookSettings.resolveXrayMarking(makeDocSettings({
+        [BookSettings.KEY_XRAY_INTERCEPT] = false,
+        [BookSettings.KEY_XRAY_CARD] = "popup",
+    }), { xray_card_landing = false })
+    TestRunner:assertEqual(m.intercept, false, "book intercept-off beats default-on global")
+    TestRunner:assertEqual(m.card, "popup", "book card beats the global pair")
+    TestRunner:assertEqual(m.has_override, true, "override flagged")
+    m = BookSettings.resolveXrayMarking(makeDocSettings({
+        [BookSettings.KEY_XRAY_CARD] = "bogus",
+    }), {})
+    TestRunner:assertEqual(m.card, "footnote", "junk book card value falls to the global chain")
+end)
+
 TestRunner:test("ahead (Upcoming Entities): default ON, tri-state book layer beats global", function()
     local m = BookSettings.resolveXrayMarking(makeDocSettings({}), {})
     TestRunner:assertEqual(m.ahead, true, "ahead default ON")

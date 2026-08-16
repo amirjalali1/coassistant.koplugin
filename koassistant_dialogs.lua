@@ -295,7 +295,9 @@ end
 -- it). "off" = no clamp, the deliberate escape hatch. Returns nil (unlimited)
 -- | "none" | "sentence" | "paragraph".
 local function contextAfterLimit(features, spoiler_on)
-    if features.highlight_context_direction == "before" then return "none" end
+    -- Session direction (round 5): the Ctx chip's per-request pick wins
+    local dir = features._session_ctx_direction or features.highlight_context_direction
+    if dir == "before" then return "none" end
     if not spoiler_on then return nil end
     local lim = features.spoiler_context_limit or "paragraph"
     if lim == "off" then return nil end
@@ -4105,8 +4107,12 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 message_data.surrounding_context = config.features._forced_surrounding_context
             end
         elseif sc_mode and not xray_prefix then
-            local sc_chars = prompt.context_chars or config.features.highlight_context_chars or 100
-            local sc_paragraphs = config.features.highlight_context_paragraphs or 1
+            -- Session amounts (round 5): per-request Ctx-chip picks beat the
+            -- globals; an action's own context_chars pin still wins.
+            local sc_chars = prompt.context_chars or config.features._session_ctx_chars
+                or config.features.highlight_context_chars or 100
+            local sc_paragraphs = config.features._session_ctx_paragraphs
+                or config.features.highlight_context_paragraphs or 1
             local sc_text
             if sc_window and sc_window.text == highlightedText then
                 sc_text = ScopeResolver.trimContext(sc_window.prev, sc_window.next, highlightedText,
@@ -6517,6 +6523,12 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
         if not configuration.features._session_keep_scope then
             configuration.features._session_scope = nil
             configuration.features._session_highlight_context = nil
+            -- Per-request context dials (round 5, maintainer): direction and
+            -- amount overrides picked from the Ctx chip's tap popup — same
+            -- config-resident session lifecycle as the mode above.
+            configuration.features._session_ctx_direction = nil
+            configuration.features._session_ctx_chars = nil
+            configuration.features._session_ctx_paragraphs = nil
             -- Quick-controls chip state (controls_parity_plan.md §2/§9): same
             -- config-resident lifecycle as the scope pick — survives a refresh
             -- via the marker, cleared on a fresh open — then SEEDED from the
@@ -8412,15 +8424,55 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             UIManager:close(dialog)
                             refreshInputDialog()
                         end
+                        -- Per-request dials (round 5, maintainer ask): direction
+                        -- and amount for THIS chat, below the mode rows. Cleared
+                        -- with the other session state on a fresh dialog open.
+                        local rows = {
+                            {{ text = mark("none") .. _("Off"), callback = function() setMode("none") end }},
+                            {{ text = mark("sentence") .. _("Sentence"), callback = function() setMode("sentence") end }},
+                            {{ text = mark("paragraph") .. _("Paragraph"), callback = function() setMode("paragraph") end }},
+                            {{ text = mark("characters") .. _("Characters"), callback = function() setMode("characters") end }},
+                        }
+                        local function dialRow(text, change_fn)
+                            return {{ text = text, callback = function()
+                                change_fn()
+                                UIManager:close(dialog)
+                                pickMode()
+                            end }}
+                        end
+                        local cur_dir = feats._session_ctx_direction
+                            or (feats.highlight_context_direction == "before" and "before" or "both")
+                        table.insert(rows, dialRow(
+                            T(_("Direction: %1 (this chat)"),
+                                cur_dir == "before" and _("Before only") or _("Both sides")),
+                            function()
+                                feats._session_ctx_direction =
+                                    (cur_dir == "before") and "both" or "before"
+                            end))
+                        if mode == "paragraph" then
+                            local cur_n = feats._session_ctx_paragraphs
+                                or tonumber(feats.highlight_context_paragraphs) or 1
+                            table.insert(rows, dialRow(
+                                cur_n == 1 and _("Amount: 1 paragraph each side (this chat)")
+                                    or T(_("Amount: %1 paragraphs each side (this chat)"), cur_n),
+                                function()
+                                    feats._session_ctx_paragraphs = cur_n >= 5 and 1 or cur_n + 1
+                                end))
+                        elseif mode == "characters" then
+                            local cur_n = feats._session_ctx_chars
+                                or tonumber(feats.highlight_context_chars) or 100
+                            table.insert(rows, dialRow(
+                                T(_("Amount: %1 characters each side (this chat)"), cur_n),
+                                function()
+                                    feats._session_ctx_chars =
+                                        ({ [100] = 250, [250] = 500, [500] = 1000, [1000] = 100 })[cur_n] or 100
+                                end))
+                        end
+                        table.insert(rows, {{ text = _("Close"),
+                            callback = function() UIManager:close(dialog) end }})
                         dialog = ButtonDialog:new{
                             title = _("Context around the selection (for this chat)"),
-                            buttons = {
-                                {{ text = mark("none") .. _("Off"), callback = function() setMode("none") end }},
-                                {{ text = mark("sentence") .. _("Sentence"), callback = function() setMode("sentence") end }},
-                                {{ text = mark("paragraph") .. _("Paragraph"), callback = function() setMode("paragraph") end }},
-                                {{ text = mark("characters") .. _("Characters"), callback = function() setMode("characters") end }},
-                                {{ text = _("Close"), callback = function() UIManager:close(dialog) end }},
-                            },
+                            buttons = rows,
                         }
                         UIManager:show(dialog)
                     end
@@ -8802,7 +8854,8 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 -- INLINED (contextAfterLimit's logic): a file-local
                                 -- reference here would add an upvalue at the 60 cap.
                                 local sc_after
-                                if configuration.features.highlight_context_direction == "before" then
+                                if (configuration.features._session_ctx_direction
+                                        or configuration.features.highlight_context_direction) == "before" then
                                     sc_after = "none"
                                 else
                                     local sess_sp = configuration.features._spoiler_free_active
@@ -8823,8 +8876,10 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 local sc_text = require("koassistant_scope_resolver").trimContext(
                                     sc_window.prev, sc_window.next,
                                     highlighted_text, sc_mode, {
-                                        char_count = configuration.features.highlight_context_chars or 100,
-                                        paragraphs = configuration.features.highlight_context_paragraphs or 1,
+                                        char_count = configuration.features._session_ctx_chars
+                                            or configuration.features.highlight_context_chars or 100,
+                                        paragraphs = configuration.features._session_ctx_paragraphs
+                                            or configuration.features.highlight_context_paragraphs or 1,
                                         after_limit = sc_after,
                                     })
                                 if sc_text ~= "" then

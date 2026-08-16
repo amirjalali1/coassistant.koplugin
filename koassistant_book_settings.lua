@@ -191,18 +191,25 @@ BookSettings.KEY_XRAY_SPACING = "koassistant_book_xray_spacing"
 -- X-Ray marking overrides (2026-08-15 device round, maintainer: "changing
 -- density, visual stuff, from the X-Ray popup should be book settings"): the
 -- popup's Marking quick settings write THESE (nil = follow global); the
--- Settings menu rows stay the global defaults. Lookup-side settings
--- (selection intercept, card style) stay global on purpose.
+-- Settings menu rows stay the global defaults.
 BookSettings.KEY_XRAY_MARKING = "koassistant_book_xray_marking"                    -- true | false | nil
 BookSettings.KEY_XRAY_MARKING_DENSITY = "koassistant_book_xray_marking_density"    -- "all"|"first"|"10"|"25"|"once" | nil
 BookSettings.KEY_XRAY_MARKING_FAMILIES = "koassistant_book_xray_marking_families"  -- "all"|"people"|"people_places" | nil
 BookSettings.KEY_XRAY_MARKING_TAP = "koassistant_book_xray_marking_tap"            -- true | false | nil
 BookSettings.KEY_XRAY_AHEAD = "koassistant_book_xray_ahead"                        -- true | false | nil (Upcoming Entities peek)
+-- Round 5 (2026-08-16, maintainer: "yes per book"): the two lookup-side
+-- settings join the per-book pattern after all. The card key folds the global
+-- landing+style PAIR into one three-way value.
+BookSettings.KEY_XRAY_INTERCEPT = "koassistant_book_xray_intercept"                -- true | false | nil (matching selections open entries)
+BookSettings.KEY_XRAY_CARD = "koassistant_book_xray_card"                          -- "footnote"|"popup"|"full" | nil (exact hits open)
 
---- Effective X-Ray marking config for a book: book override > global > default.
---- Pure. Read pattern must match the schema defaults (marking ON, tap ON,
---- density "10", families "all", ahead ON).
---- @return table { enabled, density, families, tap, ahead, has_override }
+--- Effective X-Ray marking & lookup config for a book: book override > global
+--- > default. Pure. Read pattern must match the schema defaults (marking ON,
+--- tap ON, density "10", families "all", ahead ON, intercept ON, card
+--- "footnote"). `card` folds the global xray_card_landing/_style PAIR into one
+--- three-way value ("footnote" | "popup" | "full").
+--- @return table { enabled, density, families, tap, ahead, intercept, card,
+---   has_override }
 function BookSettings.resolveXrayMarking(doc_settings, features)
     features = features or {}
     -- No and/or chain here: it would fold an explicit book-level FALSE into
@@ -218,6 +225,8 @@ function BookSettings.resolveXrayMarking(doc_settings, features)
     local b_fam = rd(BookSettings.KEY_XRAY_MARKING_FAMILIES)
     local b_tap = rd(BookSettings.KEY_XRAY_MARKING_TAP)
     local b_ahead = rd(BookSettings.KEY_XRAY_AHEAD)
+    local b_int = rd(BookSettings.KEY_XRAY_INTERCEPT)
+    local b_card = rd(BookSettings.KEY_XRAY_CARD)
     local enabled
     if b_on ~= nil then
         enabled = b_on ~= false
@@ -236,14 +245,32 @@ function BookSettings.resolveXrayMarking(doc_settings, features)
     else
         ahead = features.xray_show_ahead_entities ~= false
     end
+    local intercept
+    if b_int ~= nil then
+        intercept = b_int ~= false
+    else
+        intercept = features.xray_selection_intercept ~= false
+    end
+    local card
+    if b_card == "footnote" or b_card == "popup" or b_card == "full" then
+        card = b_card
+    elseif features.xray_card_landing == false then
+        card = "full"
+    elseif features.xray_card_style == "popup" then
+        card = "popup"
+    else
+        card = "footnote"
+    end
     return {
         enabled = enabled,
         density = b_dens or features.xray_marking_density or "10",
         families = b_fam or features.xray_marking_families or "all",
         tap = tap,
         ahead = ahead,
+        intercept = intercept,
+        card = card,
         has_override = b_on ~= nil or b_dens ~= nil or b_fam ~= nil
-            or b_tap ~= nil or b_ahead ~= nil,
+            or b_tap ~= nil or b_ahead ~= nil or b_int ~= nil or b_card ~= nil,
     }
 end
 
@@ -685,6 +712,8 @@ BookSettings.SIDECAR_KEYS = {
     BookSettings.KEY_XRAY_MARKING_FAMILIES,
     BookSettings.KEY_XRAY_MARKING_TAP,
     BookSettings.KEY_XRAY_AHEAD,
+    BookSettings.KEY_XRAY_INTERCEPT,
+    BookSettings.KEY_XRAY_CARD,
     -- (KEY_XRAY_COVERAGE_ASKED is deliberately NOT here: a stamp, not an
     -- override — it must not count as "customized" nor block on reset;
     -- registered as its own storage-registry entry like the last-opened stamp)
@@ -1556,11 +1585,15 @@ local function spoilerContextLimitLabel(features)
     return _("To paragraph end")
 end
 
--- The two GLOBAL context dials both pickers carry as bottom rows: direction
--- (both sides / before only) and the spoiler clamp granularity (tap-cycles
--- selection → sentence → paragraph → off). show_fn = the calling picker, so
--- a tap re-shows it with fresh labels on the same tab.
-local function contextGlobalRows(ctx, show_fn)
+-- The GLOBAL context dials both pickers carry as bottom rows: direction
+-- (both sides / before only), the spoiler clamp granularity (tap-cycles
+-- selection → sentence → paragraph → off), and — round 5, maintainer ask —
+-- the AMOUNT for the effective mode (paragraph count or character count;
+-- sentence mode has no number: it is one sentence each side by definition).
+-- show_fn = the calling picker, so a tap re-shows it with fresh labels on the
+-- same tab. amount_spec = { mode, chars_key, para_key } — para_key nil hides
+-- the paragraph amount (the dictionary channel's paragraph window is fixed).
+local function contextGlobalRows(ctx, show_fn, amount_spec)
     local function reopen()
         show_fn({
             plugin = ctx.plugin, ui = ctx.ui, document_path = ctx.document_path,
@@ -1578,7 +1611,7 @@ local function contextGlobalRows(ctx, show_fn)
         end
     end
     local before_only = ctx.features.highlight_context_direction == "before"
-    return {
+    local rows = {
         {{
             text = T(_("Direction: %1 (global)"),
                 before_only and _("Before only") or _("Both sides")),
@@ -1602,6 +1635,30 @@ local function contextGlobalRows(ctx, show_fn)
             end,
         }},
     }
+    if amount_spec and amount_spec.mode == "paragraph" and amount_spec.para_key then
+        local cur = tonumber(ctx.features[amount_spec.para_key]) or 1
+        table.insert(rows, {{
+            text = cur == 1 and _("Amount: 1 paragraph each side (global)")
+                or T(_("Amount: %1 paragraphs each side (global)"), cur),
+            callback = function()
+                writeFeature(amount_spec.para_key, cur >= 5 and 1 or cur + 1)
+                ctx.closeDialog()
+                reopen()
+            end,
+        }})
+    elseif amount_spec and amount_spec.mode == "characters" and amount_spec.chars_key then
+        local cur = tonumber(ctx.features[amount_spec.chars_key]) or 100
+        table.insert(rows, {{
+            text = T(_("Amount: %1 characters each side (global)"), cur),
+            callback = function()
+                local next_n = ({ [100] = 250, [250] = 500, [500] = 1000, [1000] = 100 })[cur] or 100
+                writeFeature(amount_spec.chars_key, next_n)
+                ctx.closeDialog()
+                reopen()
+            end,
+        }})
+    end
+    return rows
 end
 
 function BookSettings.showHighlightContext(opts)
@@ -1625,7 +1682,11 @@ function BookSettings.showHighlightContext(opts)
         value_label = BookSettings.contextModeLabel,
         options = options,
         bottom_rows = function(ctx)
-            return contextGlobalRows(ctx, BookSettings.showHighlightContext)
+            return contextGlobalRows(ctx, BookSettings.showHighlightContext, {
+                mode = BookSettings.resolveHighlightContext(ctx.doc_settings, ctx.features),
+                chars_key = "highlight_context_chars",
+                para_key = "highlight_context_paragraphs",
+            })
         end,
     }, opts)
 end
@@ -1654,7 +1715,11 @@ function BookSettings.showDictionaryContext(opts)
             return title
         end,
         bottom_rows = function(ctx)
-            return contextGlobalRows(ctx, BookSettings.showDictionaryContext)
+            return contextGlobalRows(ctx, BookSettings.showDictionaryContext, {
+                mode = BookSettings.resolveDictionaryContext(ctx.doc_settings, ctx.features),
+                chars_key = "dictionary_context_chars",
+                -- no para_key: the dictionary paragraph window is fixed at 1
+            })
         end,
         key = BookSettings.KEY_DICTIONARY_CONTEXT,
         field = "dictionary_context_mode",
@@ -1682,12 +1747,18 @@ function BookSettings.xrayMarkingFamiliesLabel(v)
     return tostring(v)
 end
 
---- Scope-aware X-Ray marking pickers (For this book / Global) — consolidation
--- P2 flagship (2026-08-16): the Marking & lookup popup's tap-cycles became
--- these canonical pickers. One wrapper serves the five marking-family keys via
--- opts.kind: "enabled" | "density" | "families" | "tap" | "ahead". Defaults
--- mirror resolveXrayMarking (marking ON, tap ON, density "10", families "all",
--- ahead ON).
+function BookSettings.xrayCardModeLabel(v)
+    if v == "popup" then return _("Floating popup")
+    elseif v == "full" then return _("Full entry") end
+    return _("Footnote panel")
+end
+
+--- Scope-aware X-Ray marking & lookup pickers (For this book / Global) —
+-- consolidation P2 flagship (2026-08-16): the Marking & lookup popup's
+-- tap-cycles became these canonical pickers. One wrapper serves the seven
+-- keys via opts.kind: "enabled" | "density" | "families" | "tap" | "ahead" |
+-- "intercept" | "card". Defaults mirror resolveXrayMarking (marking ON, tap
+-- ON, density "10", families "all", ahead ON, intercept ON, card "footnote").
 -- @param opts table: { plugin, ui, document_path, on_close, target_override, kind }
 function BookSettings.showXrayMarkingPicker(opts)
     opts = opts or {}
@@ -1751,6 +1822,48 @@ function BookSettings.showXrayMarkingPicker(opts)
             value_label = function(v) return v and _("On") or _("Off") end,
             options = on_off,
             on_commit = commit,
+        }
+    elseif opts.kind == "intercept" then
+        -- Matching selections open entries (round 5, per book): the gate is
+        -- resolved per call at both intercept sites; commit re-gates the
+        -- wrapper installs for the open book.
+        spec = {
+            title = _("Matching Selections Open Entries"),
+            key = BookSettings.KEY_XRAY_INTERCEPT,
+            field = "xray_selection_intercept",
+            global = function(f) return f.xray_selection_intercept ~= false end,
+            value_label = function(v) return v and _("On") or _("Off") end,
+            options = on_off,
+            on_commit = function(plugin)
+                if plugin and plugin.syncDictionaryBypass then plugin:syncDictionaryBypass() end
+                if plugin and plugin.syncHighlightBypass then plugin:syncHighlightBypass() end
+            end,
+        }
+    elseif opts.kind == "card" then
+        -- Exact hits open (round 5, per book): one three-way value; the global
+        -- side is the landing+style PAIR, written together.
+        spec = {
+            title = _("Exact Hits Open"),
+            key = BookSettings.KEY_XRAY_CARD,
+            global = function(f)
+                if f.xray_card_landing == false then return "full" end
+                if f.xray_card_style == "popup" then return "popup" end
+                return "footnote"
+            end,
+            set_global = function(f, v)
+                if v == "full" then
+                    f.xray_card_landing = false
+                else
+                    f.xray_card_landing = true
+                    f.xray_card_style = v
+                end
+            end,
+            value_label = BookSettings.xrayCardModeLabel,
+            options = {
+                { value = "footnote", label = _("Footnote panel") },
+                { value = "popup", label = _("Floating popup") },
+                { value = "full", label = _("Full entry") },
+            },
         }
     else -- "enabled"
         spec = {
@@ -1938,7 +2051,8 @@ function BookSettings.show(opts)
         BookSettings.KEY_XRAY_PROMOTION, BookSettings.KEY_XRAY_SPACING,
         BookSettings.KEY_XRAY_MARKING, BookSettings.KEY_XRAY_MARKING_DENSITY,
         BookSettings.KEY_XRAY_MARKING_FAMILIES, BookSettings.KEY_XRAY_MARKING_TAP,
-        BookSettings.KEY_XRAY_AHEAD,
+        BookSettings.KEY_XRAY_AHEAD, BookSettings.KEY_XRAY_INTERCEPT,
+        BookSettings.KEY_XRAY_CARD,
     }), BookSettings.showXrayConfig))
     addButton(subScreenRow(_("Chat behavior"), groupCount({
         BookSettings.KEY_TOOLS, BookSettings.KEY_WEB_SEARCH,
@@ -2390,6 +2504,19 @@ function BookSettings.showXrayConfig(opts)
     table.insert(buttons, {{ text = T(_("Upcoming entities: %1"),
             boolLabel(b_ahead, features.xray_show_ahead_entities ~= false)),
         callback = function() markingPicker("ahead") end }})
+    -- Round 5 (maintainer: "yes per book"): the two lookup-side settings too
+    local b_int = doc_settings:readSetting(BookSettings.KEY_XRAY_INTERCEPT)
+    table.insert(buttons, {{ text = T(_("Matching selections open entries: %1"),
+            boolLabel(b_int, features.xray_selection_intercept ~= false)),
+        callback = function() markingPicker("intercept") end }})
+    local b_card = doc_settings:readSetting(BookSettings.KEY_XRAY_CARD)
+    local g_card = BookSettings.xrayCardModeLabel(
+        features.xray_card_landing == false and "full"
+        or features.xray_card_style == "popup" and "popup" or "footnote")
+    table.insert(buttons, {{ text = T(_("Exact hits open: %1"),
+            b_card and BookSettings.xrayCardModeLabel(b_card)
+                or T(_("Follow global (%1)"), g_card)),
+        callback = function() markingPicker("card") end }})
 
     table.insert(buttons, {{ text = _("Close"), id = "close", callback = function()
         closeDialog()

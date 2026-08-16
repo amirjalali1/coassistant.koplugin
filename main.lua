@@ -366,6 +366,9 @@ function AskGPT:init()
     self:registerToMainMenu()
     -- Sync highlight bypass (needs ui.highlight to be available)
     self:syncHighlightBypass()
+    -- Round 5 (per-book intercept): the dict wrapper's install gate consults
+    -- the OPEN book's override, so re-evaluate per book open (idempotent)
+    self:syncDictionaryBypass()
     -- Ambient X-Ray marks (slice 2): install the paint module + first scan
     self:syncXrayMarks()
     -- Backup: ensure new-API dict buttons are registered (idempotent;
@@ -18143,7 +18146,17 @@ function AskGPT:syncDictionaryBypass()
   -- its X-Ray entry, everything else falls through to the configured
   -- behavior (bypass action or native dictionary). Independent of the
   -- bypass setting, so the wrapper installs for either.
+  -- Round 5 (per-book intercept): the actual gate resolves PER CALL inside
+  -- the wrapper (book > global); this install condition only asks whether the
+  -- intercept COULD apply — global on, or the open book overriding on while
+  -- the global is off. Re-evaluated per book open (onReaderReady resync). A
+  -- lookup-book override with global off and another book open is out of
+  -- reach by design (no wrapper installed).
   local intercept_on = features.xray_selection_intercept ~= false
+  if not intercept_on and self.ui and self.ui.doc_settings then
+    intercept_on = self.ui.doc_settings:readSetting(
+      require("koassistant_book_settings").KEY_XRAY_INTERCEPT) == true
+  end
 
   -- Check if we have access to the reader's dictionary module
   if not self.ui or not self.ui.dictionary then
@@ -18165,15 +18178,17 @@ function AskGPT:syncDictionaryBypass()
       -- X-Ray intercept: exact entity hit → its X-Ray entry, ahead of any
       -- bypass action. Reads the lookup-book flag WITHOUT consuming (the
       -- fall-through paths hand it to the normal chain); consumes only when
-      -- actually intercepting.
-      if intercept_on then
+      -- actually intercepting. Round 5: the gate resolves per call
+      -- (book > global) — install-time capture would strand book overrides.
+      do
         local ActionCache = require("koassistant_action_cache")
         local i_file = dict_self._koassistant_lookup_book
           or (self_ref.ui and self_ref.ui.document and self_ref.ui.document.file)
         -- Memoized route index (slice 2): a stat per tap instead of the old
         -- full cache parse per tap — the #63 one-parse-per-tap cost is gone
-        if i_file and ActionCache.matchAnyXrayExact(i_file, word,
-            { include_ahead = self_ref:_xrayAheadEnabled(i_file) }) then
+        if i_file and self_ref:_xrayInterceptEnabled(i_file)
+            and ActionCache.matchAnyXrayExact(i_file, word,
+              { include_ahead = self_ref:_xrayAheadEnabled(i_file) }) then
           logger.info("KOAssistant: X-Ray intercept - word matches entity, opening X-Ray")
           local lookup_book = dict_self._koassistant_lookup_book
           dict_self._koassistant_non_reader_lookup = nil
@@ -18507,7 +18522,8 @@ function AskGPT:syncHighlightBypass()
       if clear then return end
       local features = self_ref.settings:readSetting("features") or {}
       if not (features.highlight_bypass_enabled
-          or features.xray_selection_intercept ~= false) then
+          or self_ref:_xrayInterceptEnabled(self_ref.ui
+            and self_ref.ui.document and self_ref.ui.document.file)) then
         return
       end
       if G_reader_settings:readSetting("default_highlight_action", "ask") ~= "ask" then
@@ -18540,9 +18556,9 @@ function AskGPT:syncHighlightBypass()
     -- X-Ray intercept (#63 rounds 9-10, opt-out): a selection that IS an
     -- entity's name/alias opens its X-Ray entry ahead of any highlight flow
     -- (bypass action or menu); anything else falls through untouched.
-    -- Word-count-independent (maintainer ruling).
-    if features.xray_selection_intercept ~= false
-        and hl_self.selected_text and hl_self.selected_text.text then
+    -- Word-count-independent (maintainer ruling). Round 5: the gate resolves
+    -- per call (book > global), after the cheap handle-shape checks.
+    if hl_self.selected_text and hl_self.selected_text.text then
       -- Collapse whitespace runs (selections can span lines), trim edge
       -- ASCII punctuation; entity handles are short — skip the parse cost
       -- for long selections outright
@@ -18554,8 +18570,9 @@ function AskGPT:syncHighlightBypass()
         local i_file = self_ref.ui and self_ref.ui.document and self_ref.ui.document.file
         -- Memoized route index (slice 2): a stat per release instead of the
         -- old full cache parse
-        if i_file and ActionCache.matchAnyXrayExact(i_file, sel,
-            { include_ahead = self_ref:_xrayAheadEnabled(i_file) }) then
+        if i_file and self_ref:_xrayInterceptEnabled(i_file)
+            and ActionCache.matchAnyXrayExact(i_file, sel,
+              { include_ahead = self_ref:_xrayAheadEnabled(i_file) }) then
           logger.info("KOAssistant: X-Ray intercept - selection matches entity, opening X-Ray")
           -- Selection geometry anchors the floating-popup card style —
           -- captured as fresh copies BEFORE clear() releases the selection
@@ -18657,6 +18674,23 @@ function AskGPT:_xrayAheadEnabled(file)
   return require("koassistant_book_settings").resolveXrayMarking(ds, features).ahead
 end
 
+--- Effective selection-intercept toggle for a book (round 5, per book):
+--- book override > global, default ON. Both intercept sites read this per
+--- call; the install-time gates only decide whether the wrappers exist.
+function AskGPT:_xrayInterceptEnabled(file)
+  local features = self.settings:readSetting("features") or {}
+  local ds = file and require("koassistant_doc_settings").resolve(file, self.ui) or nil
+  return require("koassistant_book_settings").resolveXrayMarking(ds, features).intercept
+end
+
+--- Effective exact-hit landing for a book (round 5, per book):
+--- "footnote" | "popup" | "full" — book override > the global landing+style pair.
+function AskGPT:_xrayCardMode(file)
+  local features = self.settings:readSetting("features") or {}
+  local ds = file and require("koassistant_doc_settings").resolve(file, self.ui) or nil
+  return require("koassistant_book_settings").resolveXrayMarking(ds, features).card
+end
+
 function AskGPT:openXrayCard(query, opts)
   local features = self.settings:readSetting("features") or {}
   local file = (opts and opts.document_path)
@@ -18703,7 +18737,9 @@ function AskGPT:openXrayCard(query, opts)
       reveal()
     end
   end
-  if features.xray_card_landing == false then
+  -- Round 5: landing + style resolve per book (book three-way > global pair)
+  local card_mode = self:_xrayCardMode(file)
+  if card_mode == "full" then
     -- Full-entry landing (round 16): an AHEAD-ONLY entity still needs the
     -- reveal flow — the direct lookup searches the position tier and would
     -- dead-end on "no results" for a hit the gate just confirmed
@@ -18712,7 +18748,7 @@ function AskGPT:openXrayCard(query, opts)
   XrayCard.show(hit, {
     -- Presentation (round 15): footnote panel (default) or floating popup,
     -- anchored at the tapped word when the landing carried geometry
-    style = features.xray_card_style,
+    style = card_mode,
     ui = self.ui,
     sboxes = opts and opts.sboxes or nil,
     on_full = openFull,
@@ -18858,6 +18894,22 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
     T(_("Upcoming entities: %1 (%2)"),
       marking.ahead and _("On") or _("Off"),
       scopeTag(BookSettings.KEY_XRAY_AHEAD)), "ahead"))
+  -- The long-press layer (independent of marking): a held selection that
+  -- exactly matches an entity opens it, everything else falls through.
+  -- Round 5 (maintainer: "yes per book"): canonical two-layer picker like
+  -- the marking rows; the gate resolves per call at both intercept sites.
+  table.insert(buttons, pickerRow(
+    T(_("Matching selections open entries: %1 (%2)"),
+      marking.intercept and _("On") or _("Off"),
+      scopeTag(BookSettings.KEY_XRAY_INTERCEPT)), "intercept"))
+  -- Point-4: the shared landing for every exact hit (mark taps AND matching
+  -- selections — hence outside the marking-gated group). Round 5: per book;
+  -- one three-way value (footnote panel / floating popup / full entry) over
+  -- the global landing+style pair.
+  table.insert(buttons, pickerRow(
+    T(_("Exact hits open: %1 (%2)"),
+      BookSettings.xrayCardModeLabel(marking.card),
+      scopeTag(BookSettings.KEY_XRAY_CARD)), "card"))
   if ds and marking.has_override then
     table.insert(buttons, row(
       _("Use global marking settings for this book"),
@@ -18867,42 +18919,17 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
         ds:delSetting(BookSettings.KEY_XRAY_MARKING_FAMILIES)
         ds:delSetting(BookSettings.KEY_XRAY_MARKING_TAP)
         ds:delSetting(BookSettings.KEY_XRAY_AHEAD)
+        ds:delSetting(BookSettings.KEY_XRAY_INTERCEPT)
+        ds:delSetting(BookSettings.KEY_XRAY_CARD)
         if ds.flush then ds:flush() end
+      end,
+      function()
+        -- The cleared intercept/card overrides re-gate the wrappers too
+        self_ref:syncXrayMarks()
+        self_ref:syncDictionaryBypass()
+        self_ref:syncHighlightBypass()
       end))
   end
-  -- The long-press layer (independent of marking): a held selection that
-  -- exactly matches an entity opens it, everything else falls through.
-  -- Global on purpose (lookup behavior, not per-book visuals) — the
-  -- "(global)" tag matches the marking rows' source tags (P2 one-grammar).
-  table.insert(buttons, row(
-    T(_("Matching selections open entries: %1 (global)"),
-      features.xray_selection_intercept ~= false and _("On") or _("Off")),
-    function() features.xray_selection_intercept = features.xray_selection_intercept == false end,
-    function() self_ref:syncDictionaryBypass() end))
-  -- Point-4: the shared landing for every exact hit (mark taps AND matching
-  -- selections — hence outside the marking-gated group). Cycles the card
-  -- presentation with the landing: footnote panel → floating popup → full
-  -- entry (writes both xray_card_landing and xray_card_style)
-  local card_mode_label
-  if features.xray_card_landing == false then
-    card_mode_label = _("Full entry")
-  elseif features.xray_card_style == "popup" then
-    card_mode_label = _("Floating popup")
-  else
-    card_mode_label = _("Footnote panel")
-  end
-  table.insert(buttons, row(
-    T(_("Exact hits open: %1 (global)"), card_mode_label),
-    function()
-      if features.xray_card_landing == false then
-        features.xray_card_landing = true
-        features.xray_card_style = "footnote"
-      elseif features.xray_card_style ~= "popup" then
-        features.xray_card_style = "popup"
-      else
-        features.xray_card_landing = false
-      end
-    end))
   if opts and opts.back then
     table.insert(buttons, {{ text = _("Back"), callback = function()
       UIManager:close(dialog)
