@@ -16342,37 +16342,30 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
   local behavior_display = behavior_info and behavior_info.display_name or behavior_id
 
   -- Get domain display name (with source indicator)
-  -- Show effective domain: book domain takes priority over global
-  -- "_none" sentinel = explicit no-domain override for this book
-  local book_domain_id = self.ui and self.ui.document and self.ui.doc_settings
-      and self.ui.doc_settings:readSetting(require("koassistant_book_settings").KEY_DOMAIN) or nil
+  -- Effective domain via the shared resolver (book > global, "_none" = explicit
+  -- no-domain override for this book — nil id with layer "book")
+  local qs_ds = self.ui and self.ui.document and self.ui.doc_settings or nil
+  local eff_domain_id, domain_layer =
+      require("koassistant_book_settings").resolveDomain(qs_ds, features)
   local domain_display = _("None")
-  if book_domain_id == "_none" then
+  if domain_layer == "book" and not eff_domain_id then
     domain_display = _("None") .. _(" (book)")
-  elseif book_domain_id or features.selected_domain then
-    local effective_domain_id = book_domain_id or features.selected_domain
+  elseif eff_domain_id then
     local custom_domains = features.custom_domains or {}
-    local domain = DomainLoader.getDomainById(effective_domain_id, custom_domains)
+    local domain = DomainLoader.getDomainById(eff_domain_id, custom_domains)
     if domain then
       -- Bare name on the chip — provenance suffixes stay in picker lists only
-      domain_display = domain.name or domain.display_name or effective_domain_id
-      if book_domain_id then
+      domain_display = domain.name or domain.display_name or eff_domain_id
+      if domain_layer == "book" then
         domain_display = domain_display .. _(" (book)")
       end
     end
   end
   -- Research indicator (maintainer 2026-08-12, same rule as the input dialog's
-  -- Domain chip): book override > global; emoji mode swaps the chip's 🏛️ for 🔬,
-  -- text mode appends "(research)" (this row has the width the toolbar chip lacks).
-  -- Tri-state read kept explicit: an `and…or nil` chain would fold a book-level
-  -- FALSE (explicit off) into nil and let the global leak through.
-  local book_research
-  if self.ui and self.ui.document and self.ui.doc_settings then
-    book_research = self.ui.doc_settings:readSetting(
-        require("koassistant_book_settings").KEY_RESEARCH)
-  end
-  local research_on = book_research == true
-      or (book_research == nil and features.research_mode == true)
+  -- Domain chip): book override > global via the shared resolver; emoji mode
+  -- swaps the chip's 🏛️ for 🔬, text mode appends "(research)" (this row has
+  -- the width the toolbar chip lacks).
+  local research_on = require("koassistant_book_settings").resolveResearch(qs_ds, features)
 
   -- Get primary language display (use native script)
   local primary_lang_id = self:getEffectivePrimaryLanguage()

@@ -81,9 +81,7 @@ function BookSettings.resolveSpoilerPosture(doc_settings, features, opts)
     if layer == "request" and opts.session ~= nil then
         return { protected = opts.session == true, reason = "session", layer = layer }
     end
-    local research = doc_settings and doc_settings:readSetting(BookSettings.KEY_RESEARCH)
-    if research == nil then research = (features and features.research_mode) == true end
-    if research == true then
+    if BookSettings.resolveResearch(doc_settings, features) then
         return { protected = false, reason = "research", layer = layer }
     end
     local summary = doc_settings and doc_settings:readSetting("summary")
@@ -126,6 +124,35 @@ function BookSettings.resolveXrayPosture(doc_settings, features)
     local p = BookSettings.resolveSpoilerPosture(doc_settings, features, { layer = "mechanical" })
     local reason = p.reason == "default" and "global" or p.reason
     return p.protected and "track" or "full", reason
+end
+
+--- Effective domain for a book: book override > global selected_domain; the
+-- "_none" sentinel is an explicit no-domain override for the book. Pure. The
+-- ACTION layer (prompt.domain pins) stays at the call sites that have an
+-- action. (Consolidation round P1 — this fold used to be re-derived inline at
+-- every consumer.)
+-- @param doc_settings table|nil
+-- @param features table|nil the features table holding selected_domain
+-- @return string|nil effective domain id
+-- @return string|nil layer "book" | "global" | nil — nil = no domain anywhere;
+--   "book" with a nil id = the explicit no-domain override
+function BookSettings.resolveDomain(doc_settings, features)
+    local book = doc_settings and doc_settings:readSetting(BookSettings.KEY_DOMAIN) or nil
+    if book == "_none" then return nil, "book" end
+    if book ~= nil then return book, "book" end
+    local global = features and features.selected_domain or nil
+    if global ~= nil then return global, "global" end
+    return nil, nil
+end
+
+--- Effective research mode for a book: book override > per-request DOI
+-- auto-detection (opts.doi — only callers holding a request know it; chips,
+-- pickers and the spoiler posture deliberately omit it) > global. Pure boolean.
+function BookSettings.resolveResearch(doc_settings, features, opts)
+    local book = doc_settings and doc_settings:readSetting(BookSettings.KEY_RESEARCH)
+    if book ~= nil then return book == true end
+    if opts and opts.doi then return true end
+    return (features and features.research_mode) == true
 end
 
 -- Per-book AI Book Tools posture ("off" | "manual" | "auto" | nil = follow global).
@@ -1112,7 +1139,33 @@ function BookSettings.showXrayAutoPicker(opts)
     UIManager:show(picker)
 end
 
-function BookSettings.showToolsPosture(opts)
+--- Canonical two-layer picker engine (book_global_consolidation_plan.md P1,
+-- 2026-08-16). ONE implementation of the For-this-book ↔ Global picker shape
+-- every book-overridable setting shares (the showWebSearch shape): target
+-- toggle header row with dot marks, book tab led by the explicit
+-- "Follow global (<current value>)" reset row, then one radio row per value —
+-- binaries and value ladders alike. The showX entry points below are thin
+-- spec wrappers; a NEW two-layer picker adds a spec, never a clone.
+-- spec fields:
+--   title        string, or fn(ctx) -> string (dynamic note lines, e.g. spoiler)
+--   key          sidecar key (book layer; picking nil = follow global)
+--   options      { { value=..., label=... }, ... } radio rows, in order
+--   global       fn(features) -> current global value (the check pattern lives
+--                there so it always matches the schema default)
+--   field        features key for the plain global write, OR:
+--   set_global   fn(features_tbl, val) custom global write (mutate only;
+--                the engine saves + flushes)
+--   read_book    optional fn(doc_settings) -> value (legacy normalization)
+--   value_label  optional fn(value) -> short label for the Follow-global row
+--                (default: the matching option's label)
+--   top_rows     optional fn(ctx) -> button rows ABOVE the target toggle
+--   bottom_rows  optional fn(ctx) -> button rows between values and Close
+--   on_commit    optional fn(plugin) extra hook after any write
+-- ctx handed to title/top_rows/bottom_rows: { doc_settings, features,
+-- is_book_target, plugin, ui, document_path, on_close, closeDialog }.
+-- opts (every wrapper's public contract, unchanged):
+-- { plugin, ui, document_path, on_close, target_override }
+function BookSettings.showLayeredPicker(spec, opts)
     opts = opts or {}
     local plugin = opts.plugin
     local ui = opts.ui
@@ -1121,13 +1174,17 @@ function BookSettings.showToolsPosture(opts)
 
     local doc_settings = resolveDocSettings(ui, document_path)
     local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
-    -- Legacy per-book strings ("auto"/"manual"/"off") read as their binary
-    -- equivalent; new writes store true/false/nil only
-    local book_val = toolsValueOn(
-        doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOLS))
-    local global_on = BookSettings.resolveBookTools(nil, features)
-    local book_effort = doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOL_EFFORT) or nil
-    local global_effort = features.tool_lookup_effort or "standard"
+    -- Explicit if-chain: read_book may legitimately return false (an and/or
+    -- fold here would drop explicit-off overrides)
+    local book_val = nil
+    if doc_settings then
+        if spec.read_book then
+            book_val = spec.read_book(doc_settings)
+        else
+            book_val = doc_settings:readSetting(spec.key)
+        end
+    end
+    local global_val = spec.global(features)
 
     -- Default to "book" only when the book already has an override, else "global".
     local target = opts.target_override
@@ -1142,279 +1199,7 @@ function BookSettings.showToolsPosture(opts)
     local function commit()
         closeDialog()
         if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
-        if on_close then on_close() end
-    end
-    local function pickBook(val)
-        doc_settings:saveSetting(BookSettings.KEY_TOOLS, val)
-        doc_settings:flush()
-        commit()
-    end
-    local function pickGlobal(val)
-        local f = plugin.settings:readSetting("features") or {}
-        f.enable_book_tools = val
-        f.tools_posture = nil
-        plugin.settings:saveSetting("features", f)
-        plugin.settings:flush()
-        commit()
-    end
-    local function setTarget(new_target)
-        closeDialog()
-        BookSettings.showToolsPosture({
-            plugin = plugin, ui = ui, document_path = document_path,
-            on_close = on_close, target_override = new_target,
-        })
-    end
-    local function dot(active) return active and "● " or "○ " end
-
-    local buttons = {}
-    -- Target toggle row: [For this book] [Global] — only when a book is in scope
-    if doc_settings then
-        table.insert(buttons, {
-            {
-                text = dot(is_book_target) .. _("For this book"),
-                callback = function()
-                    if not is_book_target then setTarget("book") end
-                end,
-            },
-            {
-                text = dot(not is_book_target) .. _("Global"),
-                callback = function()
-                    if is_book_target then setTarget("global") end
-                end,
-            },
-        })
-    end
-
-    if is_book_target then
-        table.insert(buttons, {{
-            text = dot(book_val == nil) .. T(_("Follow global (%1)"), global_on and _("On") or _("Off")),
-            callback = function() pickBook(nil) end,
-        }})
-        table.insert(buttons, {{
-            text = dot(book_val == true) .. _("On (Tools chip starts ON)"),
-            callback = function() pickBook(true) end,
-        }})
-        table.insert(buttons, {{
-            text = dot(book_val == false) .. _("Off (Tools chip starts OFF)"),
-            callback = function() pickBook(false) end,
-        }})
-    else
-        table.insert(buttons, {{
-            text = dot(global_on) .. _("On (Tools chip starts ON)"),
-            callback = function() pickGlobal(true) end,
-        }})
-        table.insert(buttons, {{
-            text = dot(not global_on) .. _("Off (Tools chip starts OFF)"),
-            callback = function() pickGlobal(false) end,
-        }})
-    end
-    -- Lookup effort row → effort sub-picker (inherits the current book/global target).
-    local eff_label = is_book_target
-        and (book_effort and BookSettings.toolEffortLabel(book_effort)
-             or T(_("Follow global (%1)"), BookSettings.toolEffortLabel(global_effort)))
-        or BookSettings.toolEffortLabel(global_effort)
-    table.insert(buttons, {{
-        text = T(_("Lookup effort: %1"), eff_label),
-        callback = function()
-            closeDialog()
-            BookSettings.showEffortPicker({
-                plugin = plugin, ui = ui, document_path = document_path,
-                on_close = on_close, kind = "tool",
-                target_override = is_book_target and "book" or "global",
-            })
-        end,
-    }})
-    table.insert(buttons, {{
-        text = _("Close"), id = "close",
-        callback = function()
-            closeDialog()
-            if on_close then on_close() end
-        end,
-    }})
-
-    dialog = ButtonDialog:new{ title = _("AI Book Tools"), buttons = buttons,
-        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
-    UIManager:show(dialog)
-end
-
---- Quick web-search picker with a For-this-book ↔ Global target toggle — mirrors the
--- AI Book Tools picker. Shared entry point for the Quick Settings chip; the Book
--- Settings screen has its own per-book-only row. Book target: Follow global / On / Off
--- (KEY_WEB_SEARCH sidecar key). Global target: On / Off (features.enable_web_search).
--- @param opts table: { plugin, ui, document_path, on_close, target_override }
-function BookSettings.showWebSearch(opts)
-    opts = opts or {}
-    local plugin = opts.plugin
-    local ui = opts.ui
-    local on_close = opts.on_close
-    local document_path = opts.document_path
-
-    local doc_settings = resolveDocSettings(ui, document_path)
-    local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
-    local book_val = doc_settings and doc_settings:readSetting(BookSettings.KEY_WEB_SEARCH)
-    local global_on = features.enable_web_search == true
-    local book_depth = doc_settings and doc_settings:readSetting(BookSettings.KEY_WEB_EFFORT) or nil
-    local global_depth = features.web_search_effort or "standard"
-
-    -- Default to "book" only when the book already has an override, else "global".
-    local target = opts.target_override
-        or (doc_settings and book_val ~= nil and "book")
-        or "global"
-    local is_book_target = doc_settings ~= nil and target == "book"
-
-    local dialog
-    local function closeDialog()
-        if dialog then UIManager:close(dialog); dialog = nil end
-    end
-    local function commit()
-        closeDialog()
-        if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
-        if on_close then on_close() end
-    end
-    local function pickBook(val)
-        doc_settings:saveSetting(BookSettings.KEY_WEB_SEARCH, val)
-        doc_settings:flush()
-        commit()
-    end
-    local function pickGlobal(val)
-        local f = plugin.settings:readSetting("features") or {}
-        f.enable_web_search = val
-        plugin.settings:saveSetting("features", f)
-        plugin.settings:flush()
-        commit()
-    end
-    local function setTarget(new_target)
-        closeDialog()
-        BookSettings.showWebSearch({
-            plugin = plugin, ui = ui, document_path = document_path,
-            on_close = on_close, target_override = new_target,
-        })
-    end
-    local function dot(active) return active and "● " or "○ " end
-
-    local buttons = {}
-    -- Target toggle row: [For this book] [Global] — only when a book is in scope
-    if doc_settings then
-        table.insert(buttons, {
-            {
-                text = dot(is_book_target) .. _("For this book"),
-                callback = function()
-                    if not is_book_target then setTarget("book") end
-                end,
-            },
-            {
-                text = dot(not is_book_target) .. _("Global"),
-                callback = function()
-                    if is_book_target then setTarget("global") end
-                end,
-            },
-        })
-    end
-
-    if is_book_target then
-        table.insert(buttons, {{
-            text = dot(book_val == nil) .. T(_("Follow global (%1)"), global_on and _("On") or _("Off")),
-            callback = function() pickBook(nil) end,
-        }})
-        table.insert(buttons, {{
-            text = dot(book_val == true) .. _("On"),
-            callback = function() pickBook(true) end,
-        }})
-        table.insert(buttons, {{
-            text = dot(book_val == false) .. _("Off"),
-            callback = function() pickBook(false) end,
-        }})
-    else
-        table.insert(buttons, {{
-            text = dot(global_on) .. _("On"),
-            callback = function() pickGlobal(true) end,
-        }})
-        table.insert(buttons, {{
-            text = dot(not global_on) .. _("Off"),
-            callback = function() pickGlobal(false) end,
-        }})
-    end
-    -- Search depth row → effort sub-picker (inherits the current book/global target).
-    local depth_label = is_book_target
-        and (book_depth and BookSettings.webEffortLabel(book_depth)
-             or T(_("Follow global (%1)"), BookSettings.webEffortLabel(global_depth)))
-        or BookSettings.webEffortLabel(global_depth)
-    table.insert(buttons, {{
-        text = T(_("Search depth: %1"), depth_label),
-        callback = function()
-            closeDialog()
-            BookSettings.showEffortPicker({
-                plugin = plugin, ui = ui, document_path = document_path,
-                on_close = on_close, kind = "web",
-                target_override = is_book_target and "book" or "global",
-            })
-        end,
-    }})
-    table.insert(buttons, {{
-        text = _("Close"), id = "close",
-        callback = function()
-            closeDialog()
-            if on_close then on_close() end
-        end,
-    }})
-
-    dialog = ButtonDialog:new{ title = _("Web Search"), buttons = buttons,
-        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
-    UIManager:show(dialog)
-end
-
---- Per-book effort sub-picker (Tools lookup effort / Web search depth) with the same
--- For-this-book ↔ Global target toggle as showWebSearch. Reached from the effort row on
--- the Tools/Web chip holds; one function serves both via opts.kind.
--- @param opts table: { plugin, ui, document_path, on_close, target_override, kind="tool"|"web" }
-function BookSettings.showEffortPicker(opts)
-    opts = opts or {}
-    local plugin = opts.plugin
-    local ui = opts.ui
-    local on_close = opts.on_close
-    local document_path = opts.document_path
-    local kind = opts.kind == "web" and "web" or "tool"
-
-    local spec
-    if kind == "web" then
-        spec = {
-            key = BookSettings.KEY_WEB_EFFORT, field = "web_search_effort",
-            title = _("Web Search Depth"), label = BookSettings.webEffortLabel,
-            options = {
-                { value = "light", label = _("Light (fewest searches)") },
-                { value = "standard", label = _("Standard") },
-                { value = "thorough", label = _("Thorough (most searches)") },
-            },
-        }
-    else
-        spec = {
-            key = BookSettings.KEY_TOOL_EFFORT, field = "tool_lookup_effort",
-            title = _("Book Tools Lookup Effort"), label = BookSettings.toolEffortLabel,
-            options = {
-                { value = "quick", label = _("Quick (up to 4 lookups)") },
-                { value = "standard", label = _("Standard (up to 8 lookups)") },
-                { value = "thorough", label = _("Thorough (up to 16 lookups)") },
-            },
-        }
-    end
-
-    local doc_settings = resolveDocSettings(ui, document_path)
-    local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
-    local book_val = doc_settings and doc_settings:readSetting(spec.key) or nil
-    local global_val = features[spec.field] or "standard"
-
-    local target = opts.target_override
-        or (doc_settings and book_val ~= nil and "book")
-        or "global"
-    local is_book_target = doc_settings ~= nil and target == "book"
-
-    local dialog
-    local function closeDialog()
-        if dialog then UIManager:close(dialog); dialog = nil end
-    end
-    local function commit()
-        closeDialog()
-        if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
+        if spec.on_commit then spec.on_commit(plugin) end
         if on_close then on_close() end
     end
     local function pickBook(val)
@@ -1424,245 +1209,42 @@ function BookSettings.showEffortPicker(opts)
     end
     local function pickGlobal(val)
         local f = plugin.settings:readSetting("features") or {}
-        f[spec.field] = val
-        plugin.settings:saveSetting("features", f)
-        plugin.settings:flush()
-        commit()
-    end
-    local function setTarget(new_target)
-        closeDialog()
-        BookSettings.showEffortPicker({
-            plugin = plugin, ui = ui, document_path = document_path,
-            on_close = on_close, target_override = new_target, kind = kind,
-        })
-    end
-    local function dot(active) return active and "● " or "○ " end
-
-    local buttons = {}
-    if doc_settings then
-        table.insert(buttons, {
-            {
-                text = dot(is_book_target) .. _("For this book"),
-                callback = function() if not is_book_target then setTarget("book") end end,
-            },
-            {
-                text = dot(not is_book_target) .. _("Global"),
-                callback = function() if is_book_target then setTarget("global") end end,
-            },
-        })
-    end
-    if is_book_target then
-        table.insert(buttons, {{
-            text = dot(book_val == nil) .. T(_("Follow global (%1)"), spec.label(global_val)),
-            callback = function() pickBook(nil) end,
-        }})
-        for _idx, o in ipairs(spec.options) do
-            table.insert(buttons, {{
-                text = dot(book_val == o.value) .. o.label,
-                callback = function() pickBook(o.value) end,
-            }})
+        if spec.set_global then
+            spec.set_global(f, val)
+        else
+            f[spec.field] = val
         end
-    else
+        plugin.settings:saveSetting("features", f)
+        plugin.settings:flush()
+        commit()
+    end
+    local function setTarget(new_target)
+        closeDialog()
+        local reopen = {}
+        for k, v in pairs(opts) do reopen[k] = v end
+        reopen.target_override = new_target
+        BookSettings.showLayeredPicker(spec, reopen)
+    end
+    local function dot(active) return active and "● " or "○ " end
+    local function valueLabel(v)
+        if spec.value_label then return spec.value_label(v) end
         for _idx, o in ipairs(spec.options) do
-            table.insert(buttons, {{
-                text = dot(global_val == o.value) .. o.label,
-                callback = function() pickGlobal(o.value) end,
-            }})
+            if o.value == v then return o.label end
         end
+        return tostring(v)
     end
-    table.insert(buttons, {{
-        text = _("Close"), id = "close",
-        callback = function()
-            closeDialog()
-            if on_close then on_close() end
-        end,
-    }})
 
-    dialog = ButtonDialog:new{ title = spec.title, buttons = buttons,
-        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
-    UIManager:show(dialog)
-end
-
---- Quick Answer DEFAULT picker with a For-this-book ↔ Global target toggle
--- (same shape as showWebSearch). Governs the ⚡ chip's starting state on fresh
--- chat dialogs only — open chats and the session chip are untouched.
--- Book target: Follow global / On / Off (KEY_QUICK_ANSWER). Global target:
--- On / Off (features.quick_answer_default).
--- @param opts table: { plugin, ui, document_path, on_close, target_override }
-function BookSettings.showQuickAnswerDefault(opts)
-    opts = opts or {}
-    local plugin = opts.plugin
-    local ui = opts.ui
-    local on_close = opts.on_close
-    local document_path = opts.document_path
-
-    local doc_settings = resolveDocSettings(ui, document_path)
-    local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
-    local book_val = doc_settings and doc_settings:readSetting(BookSettings.KEY_QUICK_ANSWER)
-    local global_on = features.quick_answer_default == true
-
-    local target = opts.target_override
-        or (doc_settings and book_val ~= nil and "book")
-        or "global"
-    local is_book_target = doc_settings ~= nil and target == "book"
-
-    local dialog
-    local function closeDialog()
-        if dialog then UIManager:close(dialog); dialog = nil end
-    end
-    local function commit()
-        closeDialog()
-        if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
-        if on_close then on_close() end
-    end
-    local function pickBook(val)
-        doc_settings:saveSetting(BookSettings.KEY_QUICK_ANSWER, val)
-        doc_settings:flush()
-        commit()
-    end
-    local function pickGlobal(val)
-        local f = plugin.settings:readSetting("features") or {}
-        f.quick_answer_default = val
-        plugin.settings:saveSetting("features", f)
-        plugin.settings:flush()
-        commit()
-    end
-    local function setTarget(new_target)
-        closeDialog()
-        BookSettings.showQuickAnswerDefault({
-            plugin = plugin, ui = ui, document_path = document_path,
-            on_close = on_close, target_override = new_target,
-            preset_settings = opts.preset_settings,
-        })
-    end
-    local function dot(active) return active and "● " or "○ " end
+    local ctx = {
+        doc_settings = doc_settings, features = features,
+        is_book_target = is_book_target, plugin = plugin, ui = ui,
+        document_path = document_path, on_close = on_close,
+        closeDialog = closeDialog,
+    }
 
     local buttons = {}
-    -- ⚡ chip / reply-window hold (2026-08-11): the preset editor rides on top of
-    -- the default picker — one popup, Web/Tools-chip shape.
-    if opts.preset_settings then
-        table.insert(buttons, {{
-            text = _("Preset settings…"),
-            callback = function()
-                closeDialog()
-                -- Hand the picker's on_close down the chain so the editor's
-                -- Close/dismiss still returns to the launching surface (the
-                -- QS panel got lost here otherwise)
-                opts.preset_settings(on_close)
-            end,
-        }})
+    if spec.top_rows then
+        for _idx, row in ipairs(spec.top_rows(ctx)) do table.insert(buttons, row) end
     end
-    if doc_settings then
-        table.insert(buttons, {
-            {
-                text = dot(is_book_target) .. _("For this book"),
-                callback = function()
-                    if not is_book_target then setTarget("book") end
-                end,
-            },
-            {
-                text = dot(not is_book_target) .. _("Global"),
-                callback = function()
-                    if is_book_target then setTarget("global") end
-                end,
-            },
-        })
-    end
-
-    if is_book_target then
-        table.insert(buttons, {{
-            text = dot(book_val == nil) .. T(_("Follow global (%1)"), global_on and _("On") or _("Off")),
-            callback = function() pickBook(nil) end,
-        }})
-        table.insert(buttons, {{
-            text = dot(book_val == true) .. _("On"),
-            callback = function() pickBook(true) end,
-        }})
-        table.insert(buttons, {{
-            text = dot(book_val == false) .. _("Off"),
-            callback = function() pickBook(false) end,
-        }})
-    else
-        table.insert(buttons, {{
-            text = dot(global_on) .. _("On"),
-            callback = function() pickGlobal(true) end,
-        }})
-        table.insert(buttons, {{
-            text = dot(not global_on) .. _("Off"),
-            callback = function() pickGlobal(false) end,
-        }})
-    end
-    table.insert(buttons, {{
-        text = _("Close"), id = "close",
-        callback = function()
-            closeDialog()
-            if on_close then on_close() end
-        end,
-    }})
-
-    dialog = ButtonDialog:new{ title = _("Quick Answer Default"), buttons = buttons,
-        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
-    UIManager:show(dialog)
-end
-
---- Quick spoiler-free picker with a For-this-book ↔ Global target toggle — the hold
--- target of the input dialog's Spoiler chip (same shape as showWebSearch). Book target:
--- Follow global / On / Off (KEY_SPOILER_FREE). Global target: On / Off
--- (features.spoiler_free_chat).
--- @param opts table: { plugin, ui, document_path, on_close, target_override }
-function BookSettings.showSpoilerFree(opts)
-    opts = opts or {}
-    local plugin = opts.plugin
-    local ui = opts.ui
-    local on_close = opts.on_close
-    local document_path = opts.document_path
-
-    local doc_settings = resolveDocSettings(ui, document_path)
-    local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
-    local book_val = doc_settings and doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE)
-    local global_on = features.spoiler_free_chat ~= false
-
-    -- Default to "book" only when the book already has an override, else "global".
-    local target = opts.target_override
-        or (doc_settings and book_val ~= nil and "book")
-        or "global"
-    local is_book_target = doc_settings ~= nil and target == "book"
-
-    local dialog
-    local function closeDialog()
-        if dialog then UIManager:close(dialog); dialog = nil end
-    end
-    local function commit()
-        closeDialog()
-        if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
-        -- 50(f): spoiler posture may have flipped — let X-Ray promotion
-        -- re-evaluate now instead of waiting for a page turn (safe no-op when
-        -- nothing applies; rung-completion granularity while a chain runs)
-        if plugin and plugin._scheduleXrayLadderPromotion then plugin:_scheduleXrayLadderPromotion() end
-        if on_close then on_close() end
-    end
-    local function pickBook(val)
-        doc_settings:saveSetting(BookSettings.KEY_SPOILER_FREE, val)
-        doc_settings:flush()
-        commit()
-    end
-    local function pickGlobal(val)
-        local f = plugin.settings:readSetting("features") or {}
-        f.spoiler_free_chat = val
-        plugin.settings:saveSetting("features", f)
-        plugin.settings:flush()
-        commit()
-    end
-    local function setTarget(new_target)
-        closeDialog()
-        BookSettings.showSpoilerFree({
-            plugin = plugin, ui = ui, document_path = document_path,
-            on_close = on_close, target_override = new_target,
-        })
-    end
-    local function dot(active) return active and "● " or "○ " end
-
-    local buttons = {}
     -- Target toggle row: [For this book] [Global] — only when a book is in scope
     if doc_settings then
         table.insert(buttons, {
@@ -1683,26 +1265,27 @@ function BookSettings.showSpoilerFree(opts)
 
     if is_book_target then
         table.insert(buttons, {{
-            text = dot(book_val == nil) .. T(_("Follow global (%1)"), global_on and _("On") or _("Off")),
+            text = dot(book_val == nil) .. T(_("Follow global (%1)"), valueLabel(global_val)),
             callback = function() pickBook(nil) end,
         }})
-        table.insert(buttons, {{
-            text = dot(book_val == true) .. _("On"),
-            callback = function() pickBook(true) end,
-        }})
-        table.insert(buttons, {{
-            text = dot(book_val == false) .. _("Off"),
-            callback = function() pickBook(false) end,
-        }})
+        for _idx, o in ipairs(spec.options) do
+            local val = o.value
+            table.insert(buttons, {{
+                text = dot(book_val == val) .. o.label,
+                callback = function() pickBook(val) end,
+            }})
+        end
     else
-        table.insert(buttons, {{
-            text = dot(global_on) .. _("On"),
-            callback = function() pickGlobal(true) end,
-        }})
-        table.insert(buttons, {{
-            text = dot(not global_on) .. _("Off"),
-            callback = function() pickGlobal(false) end,
-        }})
+        for _idx, o in ipairs(spec.options) do
+            local val = o.value
+            table.insert(buttons, {{
+                text = dot(global_val == val) .. o.label,
+                callback = function() pickGlobal(val) end,
+            }})
+        end
+    end
+    if spec.bottom_rows then
+        for _idx, row in ipairs(spec.bottom_rows(ctx)) do table.insert(buttons, row) end
     end
     table.insert(buttons, {{
         text = _("Close"), id = "close",
@@ -1712,125 +1295,241 @@ function BookSettings.showSpoilerFree(opts)
         end,
     }})
 
-    -- §5 research labelling, never graying: research mode (and, since
-    -- 2026-08-11, the Finished status) disables protection outright — say so
-    -- while still showing the stored state the rows edit.
-    local title = _("Spoiler Protection")
-    local research = doc_settings and doc_settings:readSetting(BookSettings.KEY_RESEARCH)
-    if research == nil then research = features.research_mode == true end
-    local summary = doc_settings and doc_settings:readSetting("summary")
-    if research == true then
-        title = title .. "\n" .. _("Research mode is on: protection is disabled while it stays on.")
-    elseif summary and summary.status == "complete" then
-        title = title .. "\n" .. _("This book is marked finished: protection is off while it stays finished.")
-    end
+    local title = spec.title
+    if type(title) == "function" then title = title(ctx) end
     dialog = ButtonDialog:new{ title = title, buttons = buttons,
         tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
     UIManager:show(dialog)
 end
 
---- Scope-aware highlight-context mode picker (For this book / Global) — the Ctx chip's
--- hold target (flexible_scope_plan.md phase 3 finishing round, 2026-07-17). Sets the
--- PERSISTENT defaults; the chip's tap sets the session override. Same two-target
--- pattern as showWebSearch/showToolsPosture/showSpoilerFree.
+--- Label grammar for rows/tiles that DISPLAY a two-layer value (the P4 sweep
+-- consumer): "<Setting>: <value> (book|global)". The layer tag mirrors
+-- override PRESENCE (Q3: same-as-global picks are real pins); a row following
+-- global still names the value — bare "(global)" with no value is the C1
+-- defect this round retires.
+function BookSettings.layeredLabel(setting_label, value_label, layer)
+    if layer == "book" then
+        return T(_("%1: %2 (book)"), setting_label, value_label)
+    elseif layer == "global" then
+        return T(_("%1: %2 (global)"), setting_label, value_label)
+    end
+    return T(_("%1: %2"), setting_label, value_label)
+end
+
+--- Quick AI-Book-Tools picker (For this book ↔ Global) — the Tools chip's hold
+-- target and the QS tile hold. Book: Follow global / On / Off (KEY_TOOLS).
+-- Global: On / Off (features.enable_book_tools; legacy tools_posture cleared).
+-- @param opts table: { plugin, ui, document_path, on_close, target_override }
+function BookSettings.showToolsPosture(opts)
+    BookSettings.showLayeredPicker({
+        title = _("AI Book Tools"),
+        key = BookSettings.KEY_TOOLS,
+        -- Legacy per-book strings ("auto"/"manual"/"off") read as their binary
+        -- equivalent; new writes store true/false/nil only
+        read_book = function(ds) return toolsValueOn(ds:readSetting(BookSettings.KEY_TOOLS)) end,
+        global = function(f) return BookSettings.resolveBookTools(nil, f) end,
+        set_global = function(f, val)
+            f.enable_book_tools = val
+            f.tools_posture = nil
+        end,
+        options = {
+            { value = true, label = _("On (Tools chip starts ON)") },
+            { value = false, label = _("Off (Tools chip starts OFF)") },
+        },
+        value_label = function(v) return v and _("On") or _("Off") end,
+        bottom_rows = function(ctx)
+            -- Lookup effort row → effort sub-picker (inherits the current
+            -- book/global target).
+            local book_effort = ctx.doc_settings
+                and ctx.doc_settings:readSetting(BookSettings.KEY_TOOL_EFFORT) or nil
+            local global_effort = ctx.features.tool_lookup_effort or "standard"
+            local eff_label = ctx.is_book_target
+                and (book_effort and BookSettings.toolEffortLabel(book_effort)
+                     or T(_("Follow global (%1)"), BookSettings.toolEffortLabel(global_effort)))
+                or BookSettings.toolEffortLabel(global_effort)
+            return {{{
+                text = T(_("Lookup effort: %1"), eff_label),
+                callback = function()
+                    ctx.closeDialog()
+                    BookSettings.showEffortPicker({
+                        plugin = ctx.plugin, ui = ctx.ui, document_path = ctx.document_path,
+                        on_close = ctx.on_close, kind = "tool",
+                        target_override = ctx.is_book_target and "book" or "global",
+                    })
+                end,
+            }}}
+        end,
+    }, opts)
+end
+
+--- Quick web-search picker (For this book ↔ Global) — the QS chip and the Web
+-- chip's hold target. Book: Follow global / On / Off (KEY_WEB_SEARCH sidecar
+-- key). Global: On / Off (features.enable_web_search).
+-- @param opts table: { plugin, ui, document_path, on_close, target_override }
+function BookSettings.showWebSearch(opts)
+    BookSettings.showLayeredPicker({
+        title = _("Web Search"),
+        key = BookSettings.KEY_WEB_SEARCH,
+        field = "enable_web_search",
+        global = function(f) return f.enable_web_search == true end,
+        options = {
+            { value = true, label = _("On") },
+            { value = false, label = _("Off") },
+        },
+        bottom_rows = function(ctx)
+            -- Search depth row → effort sub-picker (inherits the current
+            -- book/global target).
+            local book_depth = ctx.doc_settings
+                and ctx.doc_settings:readSetting(BookSettings.KEY_WEB_EFFORT) or nil
+            local global_depth = ctx.features.web_search_effort or "standard"
+            local depth_label = ctx.is_book_target
+                and (book_depth and BookSettings.webEffortLabel(book_depth)
+                     or T(_("Follow global (%1)"), BookSettings.webEffortLabel(global_depth)))
+                or BookSettings.webEffortLabel(global_depth)
+            return {{{
+                text = T(_("Search depth: %1"), depth_label),
+                callback = function()
+                    ctx.closeDialog()
+                    BookSettings.showEffortPicker({
+                        plugin = ctx.plugin, ui = ctx.ui, document_path = ctx.document_path,
+                        on_close = ctx.on_close, kind = "web",
+                        target_override = ctx.is_book_target and "book" or "global",
+                    })
+                end,
+            }}}
+        end,
+    }, opts)
+end
+
+--- Per-book effort sub-picker (Tools lookup effort / Web search depth) reached
+-- from the effort rows above; one wrapper serves both via opts.kind. The
+-- engine's target re-shows keep kind through the shared spec.
+-- @param opts table: { plugin, ui, document_path, on_close, target_override, kind="tool"|"web" }
+function BookSettings.showEffortPicker(opts)
+    opts = opts or {}
+    local spec
+    if opts.kind == "web" then
+        spec = {
+            title = _("Web Search Depth"),
+            key = BookSettings.KEY_WEB_EFFORT,
+            field = "web_search_effort",
+            global = function(f) return f.web_search_effort or "standard" end,
+            value_label = BookSettings.webEffortLabel,
+            options = {
+                { value = "light", label = _("Light (fewest searches)") },
+                { value = "standard", label = _("Standard") },
+                { value = "thorough", label = _("Thorough (most searches)") },
+            },
+        }
+    else
+        spec = {
+            title = _("Book Tools Lookup Effort"),
+            key = BookSettings.KEY_TOOL_EFFORT,
+            field = "tool_lookup_effort",
+            global = function(f) return f.tool_lookup_effort or "standard" end,
+            value_label = BookSettings.toolEffortLabel,
+            options = {
+                { value = "quick", label = _("Quick (up to 4 lookups)") },
+                { value = "standard", label = _("Standard (up to 8 lookups)") },
+                { value = "thorough", label = _("Thorough (up to 16 lookups)") },
+            },
+        }
+    end
+    BookSettings.showLayeredPicker(spec, opts)
+end
+
+--- Quick Answer DEFAULT picker (For this book ↔ Global) — governs the ⚡ chip's
+-- starting state on fresh chat dialogs only; open chats and the session chip
+-- are untouched. Book: Follow global / On / Off (KEY_QUICK_ANSWER). Global:
+-- On / Off (features.quick_answer_default). opts.preset_settings (fn(on_close))
+-- adds the "Preset settings…" top row (⚡ hold surfaces).
+-- @param opts table: { plugin, ui, document_path, on_close, target_override, preset_settings }
+function BookSettings.showQuickAnswerDefault(opts)
+    opts = opts or {}
+    local preset_settings = opts.preset_settings
+    BookSettings.showLayeredPicker({
+        title = _("Quick Answer Default"),
+        key = BookSettings.KEY_QUICK_ANSWER,
+        field = "quick_answer_default",
+        global = function(f) return f.quick_answer_default == true end,
+        options = {
+            { value = true, label = _("On") },
+            { value = false, label = _("Off") },
+        },
+        top_rows = function(ctx)
+            if not preset_settings then return {} end
+            -- ⚡ chip / reply-window hold (2026-08-11): the preset editor rides
+            -- on top of the default picker — one popup, Web/Tools-chip shape.
+            return {{{
+                text = _("Preset settings…"),
+                callback = function()
+                    ctx.closeDialog()
+                    -- Hand the picker's on_close down the chain so the editor's
+                    -- Close/dismiss still returns to the launching surface (the
+                    -- QS panel got lost here otherwise)
+                    preset_settings(ctx.on_close)
+                end,
+            }}}
+        end,
+    }, opts)
+end
+
+--- Quick spoiler-protection picker (For this book ↔ Global) — the Spoiler
+-- chip's hold target and the QS tile hold. Book: Follow global / On / Off
+-- (KEY_SPOILER_FREE). Global: On / Off (features.spoiler_free_chat, default ON).
+-- @param opts table: { plugin, ui, document_path, on_close, target_override }
+function BookSettings.showSpoilerFree(opts)
+    BookSettings.showLayeredPicker({
+        -- §5 research labelling, never graying: research mode (and, since
+        -- 2026-08-11, the Finished status) disables protection outright — say
+        -- so while still showing the stored state the rows edit.
+        title = function(ctx)
+            local title = _("Spoiler Protection")
+            local summary = ctx.doc_settings and ctx.doc_settings:readSetting("summary")
+            if BookSettings.resolveResearch(ctx.doc_settings, ctx.features) then
+                title = title .. "\n" .. _("Research mode is on: protection is disabled while it stays on.")
+            elseif summary and summary.status == "complete" then
+                title = title .. "\n" .. _("This book is marked finished: protection is off while it stays finished.")
+            end
+            return title
+        end,
+        key = BookSettings.KEY_SPOILER_FREE,
+        field = "spoiler_free_chat",
+        global = function(f) return f.spoiler_free_chat ~= false end,
+        options = {
+            { value = true, label = _("On") },
+            { value = false, label = _("Off") },
+        },
+        on_commit = function(plugin)
+            -- 50(f): spoiler posture may have flipped — let X-Ray promotion
+            -- re-evaluate now instead of waiting for a page turn (safe no-op
+            -- when nothing applies; rung-completion granularity while a chain
+            -- runs)
+            if plugin and plugin._scheduleXrayLadderPromotion then
+                plugin:_scheduleXrayLadderPromotion()
+            end
+        end,
+    }, opts)
+end
+
+--- Scope-aware highlight-context mode picker (For this book / Global) — the Ctx
+-- chip's hold target (flexible_scope_plan.md phase 3 finishing round). Sets the
+-- PERSISTENT defaults; the chip's tap sets the session override. Book: Follow
+-- global / modes (KEY_HIGHLIGHT_CONTEXT). Global: features.highlight_context_mode.
 -- @param opts table: { plugin, ui, document_path, on_close, target_override }
 function BookSettings.showHighlightContext(opts)
-    opts = opts or {}
-    local plugin = opts.plugin
-    local ui = opts.ui
-    local on_close = opts.on_close
-    local document_path = opts.document_path
-
-    local doc_settings = resolveDocSettings(ui, document_path)
-    local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
-    local book_val = doc_settings and doc_settings:readSetting(BookSettings.KEY_HIGHLIGHT_CONTEXT)
-    local global_mode = features.highlight_context_mode or "none"
-
-    local target = opts.target_override
-        or (doc_settings and book_val ~= nil and "book")
-        or "global"
-    local is_book_target = doc_settings ~= nil and target == "book"
-
-    local dialog
-    local function closeDialog()
-        if dialog then UIManager:close(dialog); dialog = nil end
+    local options = {}
+    for _idx, m in ipairs({ "none", "sentence", "paragraph", "characters" }) do
+        table.insert(options, { value = m, label = BookSettings.contextModeLabel(m) })
     end
-    local function commit()
-        closeDialog()
-        if plugin and plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
-        if on_close then on_close() end
-    end
-    local function pickBook(val)
-        doc_settings:saveSetting(BookSettings.KEY_HIGHLIGHT_CONTEXT, val)
-        doc_settings:flush()
-        commit()
-    end
-    local function pickGlobal(val)
-        local f = plugin.settings:readSetting("features") or {}
-        f.highlight_context_mode = val
-        plugin.settings:saveSetting("features", f)
-        plugin.settings:flush()
-        commit()
-    end
-    local function setTarget(new_target)
-        closeDialog()
-        BookSettings.showHighlightContext({
-            plugin = plugin, ui = ui, document_path = document_path,
-            on_close = on_close, target_override = new_target,
-        })
-    end
-    local function dot(active) return active and "● " or "○ " end
-
-    local MODES = { "none", "sentence", "paragraph", "characters" }
-    local buttons = {}
-    if doc_settings then
-        table.insert(buttons, {
-            {
-                text = dot(is_book_target) .. _("For this book"),
-                callback = function()
-                    if not is_book_target then setTarget("book") end
-                end,
-            },
-            {
-                text = dot(not is_book_target) .. _("Global"),
-                callback = function()
-                    if is_book_target then setTarget("global") end
-                end,
-            },
-        })
-    end
-
-    if is_book_target then
-        table.insert(buttons, {{
-            text = dot(book_val == nil)
-                .. T(_("Follow global (%1)"), BookSettings.contextModeLabel(global_mode)),
-            callback = function() pickBook(nil) end,
-        }})
-        for _i, m in ipairs(MODES) do
-            table.insert(buttons, {{
-                text = dot(book_val == m) .. BookSettings.contextModeLabel(m),
-                callback = function() pickBook(m) end,
-            }})
-        end
-    else
-        for _i, m in ipairs(MODES) do
-            table.insert(buttons, {{
-                text = dot(global_mode == m) .. BookSettings.contextModeLabel(m),
-                callback = function() pickGlobal(m) end,
-            }})
-        end
-    end
-    table.insert(buttons, {{
-        text = _("Close"), id = "close",
-        callback = function()
-            closeDialog()
-            if on_close then on_close() end
-        end,
-    }})
-
-    dialog = ButtonDialog:new{ title = _("Context Around Highlights"), buttons = buttons,
-        tap_close_callback = function() dialog = nil; if on_close then on_close() end end }
-    UIManager:show(dialog)
+    BookSettings.showLayeredPicker({
+        title = _("Context Around Highlights"),
+        key = BookSettings.KEY_HIGHLIGHT_CONTEXT,
+        field = "highlight_context_mode",
+        global = function(f) return f.highlight_context_mode or "none" end,
+        value_label = BookSettings.contextModeLabel,
+        options = options,
+    }, opts)
 end
 
 --- Per-book "Book Settings" — a dedicated per-book configuration screen. Every row is

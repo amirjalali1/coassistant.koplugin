@@ -4137,20 +4137,10 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     elseif action_research == false then
         research_mode_active = false
     else
-        local book_research = getBookResearchMode(per_book_ds)
-        if book_research == true then
-            research_mode_active = true
-        elseif book_research == false then
-            research_mode_active = false
-        else
-            local has_doi = config.features and config.features.book_metadata
-                and config.features.book_metadata.doi
-            if has_doi then
-                research_mode_active = true
-            else
-                research_mode_active = config.features and config.features.research_mode == true
-            end
-        end
+        local has_doi = config.features and config.features.book_metadata
+            and config.features.book_metadata.doi
+        research_mode_active = require("koassistant_book_settings").resolveResearch(
+            per_book_ds, config.features, { doi = has_doi })
     end
 
     -- Research mode active: swap to academic prompt track (if available)
@@ -4608,14 +4598,8 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         if prompt and prompt.domain then
             domain_id = prompt.domain
         else
-            local book_domain = getBookDomain(per_book_ds)
-            if book_domain == "_none" then
-                domain_id = nil  -- explicit none, skip global
-            elseif book_domain then
-                domain_id = book_domain
-            else
-                domain_id = config.features and config.features.selected_domain
-            end
+            domain_id = require("koassistant_book_settings").resolveDomain(
+                per_book_ds, config.features)
         end
     end
     if domain_id then
@@ -8877,22 +8861,10 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
 
                     -- Resolve research mode for freeform chat (no action override)
                     -- Priority: per-book setting > DOI auto-detection > global setting
-                    local freeform_research = false
-                    local book_research_setting = getBookResearchMode(doc_settings)
-                    if book_research_setting == true then
-                        freeform_research = true
-                    elseif book_research_setting == false then
-                        freeform_research = false
-                    else
-                        local has_doi = configuration.features and configuration.features.book_metadata
-                            and configuration.features.book_metadata.doi
-                        if has_doi then
-                            freeform_research = true
-                        else
-                            freeform_research = configuration.features
-                                and configuration.features.research_mode == true
-                        end
-                    end
+                    local freeform_research = require("koassistant_book_settings").resolveResearch(
+                        doc_settings, configuration.features,
+                        { doi = configuration.features and configuration.features.book_metadata
+                            and configuration.features.book_metadata.doi })
                     configuration.features = configuration.features or {}
                     configuration.features._research_mode_active = freeform_research or nil
                     -- Persist x-ray flag for the chat session so reply paths can skip book tools
@@ -11382,20 +11354,9 @@ local function launchArtifactChat(user_question, artifact_content, artifact_type
     local artifact_ds = document_path and SafeDocSettings.resolve(document_path, ui) or nil
     if document_path then
         ai_book_metadata = require("koassistant_book_settings").applyMetadataOverride(book_metadata, artifact_ds)
-        local book_research_setting = getBookResearchMode(artifact_ds)
-        if book_research_setting == true then
-            artifact_research = true
-        elseif book_research_setting == false then
-            artifact_research = false
-        else
-            local has_doi = book_metadata and book_metadata.doi
-            if has_doi then
-                artifact_research = true
-            else
-                artifact_research = configuration.features
-                    and configuration.features.research_mode == true
-            end
-        end
+        artifact_research = require("koassistant_book_settings").resolveResearch(
+            artifact_ds, configuration.features,
+            { doi = book_metadata and book_metadata.doi })
     end
     configuration.features = configuration.features or {}
     configuration.features._research_mode_active = artifact_research or nil
@@ -11433,11 +11394,8 @@ local function launchArtifactChat(user_question, artifact_content, artifact_type
     local domain_context = nil
     local artifact_domain_id = nil
     do
-        local book_domain = getBookDomain(artifact_ds)
-        if book_domain ~= "_none" then
-            artifact_domain_id = book_domain
-                or (configuration.features and configuration.features.selected_domain)
-        end
+        artifact_domain_id = require("koassistant_book_settings").resolveDomain(
+            artifact_ds, configuration.features)
         if artifact_domain_id then
             local DomainLoader = require("domain_loader")
             local custom_domains = configuration.features

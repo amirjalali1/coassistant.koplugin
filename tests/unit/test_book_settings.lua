@@ -1274,6 +1274,58 @@ TestRunner:test("explicit global vs nothing-set stay distinct (the §4.3 flip se
     TestRunner:assertEqual(p.reason, "default")
 end)
 
+TestRunner:suite("resolveDomain / resolveResearch (consolidation round P1)")
+
+TestRunner:test("resolveDomain: book override wins, layer book", function()
+    local ds = makeDocSettings({ [BookSettings.KEY_DOMAIN] = "history" })
+    local id, layer = BookSettings.resolveDomain(ds, { selected_domain = "science" })
+    TestRunner:assertEqual(id, "history")
+    TestRunner:assertEqual(layer, "book")
+end)
+
+TestRunner:test("resolveDomain: _none sentinel blocks global, layer book", function()
+    local ds = makeDocSettings({ [BookSettings.KEY_DOMAIN] = "_none" })
+    local id, layer = BookSettings.resolveDomain(ds, { selected_domain = "science" })
+    TestRunner:assertNil(id, "_none = explicit no-domain")
+    TestRunner:assertEqual(layer, "book", "the override is still book-sourced")
+end)
+
+TestRunner:test("resolveDomain: global fallthrough, layer global", function()
+    local id, layer = BookSettings.resolveDomain(makeDocSettings({}), { selected_domain = "science" })
+    TestRunner:assertEqual(id, "science")
+    TestRunner:assertEqual(layer, "global")
+end)
+
+TestRunner:test("resolveDomain: nothing set / nil inputs → nil, nil", function()
+    local id, layer = BookSettings.resolveDomain(nil, nil)
+    TestRunner:assertNil(id); TestRunner:assertNil(layer)
+    id, layer = BookSettings.resolveDomain(makeDocSettings({}), {})
+    TestRunner:assertNil(id); TestRunner:assertNil(layer)
+end)
+
+TestRunner:test("resolveResearch: explicit book false beats DOI and global", function()
+    local ds = makeDocSettings({ [BookSettings.KEY_RESEARCH] = false })
+    TestRunner:assertEqual(
+        BookSettings.resolveResearch(ds, { research_mode = true }, { doi = "10.1000/x" }),
+        false, "book-level off pins the chain")
+end)
+
+TestRunner:test("resolveResearch: book true wins without DOI or global", function()
+    local ds = makeDocSettings({ [BookSettings.KEY_RESEARCH] = true })
+    TestRunner:assertEqual(BookSettings.resolveResearch(ds, {}), true)
+end)
+
+TestRunner:test("resolveResearch: DOI layer sits between book and global", function()
+    TestRunner:assertEqual(
+        BookSettings.resolveResearch(makeDocSettings({}), {}, { doi = "10.1000/x" }),
+        true, "DOI turns research on when the book says nothing")
+    TestRunner:assertEqual(
+        BookSettings.resolveResearch(makeDocSettings({}), { research_mode = true }),
+        true, "global fallthrough without DOI")
+    TestRunner:assertEqual(
+        BookSettings.resolveResearch(nil, nil), false, "nothing set = off")
+end)
+
 print("")
 print(string.rep("-", 50))
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))
