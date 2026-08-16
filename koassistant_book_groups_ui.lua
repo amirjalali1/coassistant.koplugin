@@ -610,6 +610,60 @@ function GroupsUI.showManager(opts)
               description = _("You can leave this empty: the group takes the name of the first book you add.") })
         end,
     }}
+    -- P5 (maintainer gripe, Q5): folder → group in one flow — pick the folder,
+    -- name the group (folder name prefilled), every book in it joins on create.
+    -- Snapshot like "Add all books in a folder…" (the group does not follow the
+    -- folder afterwards); curation is what the group screen's rows are for.
+    rows[#rows + 1] = {{
+        text = _("New group from folder…"),
+        callback = function()
+            UIManager:close(dialog)
+            local PathChooser = require("ui/widget/pathchooser")
+            local Device = require("device")
+            local DataStorage = require("datastorage")
+            local picked = false
+            UIManager:show(PathChooser:new{
+                title = _("Select Folder"),
+                path = G_reader_settings:readSetting("home_dir")
+                    or Device.home_dir or DataStorage:getDataDir(),
+                select_directory = true,
+                select_file = false,
+                onConfirm = function(folder)
+                    picked = true
+                    local BookPicker = require("koassistant_book_picker")
+                    local paths, err = BookPicker.listFolderBooks(folder)
+                    if not paths or #paths == 0 then
+                        UIManager:show(require("ui/widget/infomessage"):new{
+                            text = err or T(_("No books found in:\n%1"), folder),
+                            timeout = 3,
+                        })
+                        GroupsUI.showManager(opts)
+                        return
+                    end
+                    promptName(_("New group"), folder:match("([^/]+)/?$") or "",
+                        function(name)
+                            createWithKind(name, function(group)
+                                local added = 0
+                                for _idx, p in ipairs(paths) do
+                                    if groups().addBook(group.id, p) then added = added + 1 end
+                                end
+                                UIManager:show(require("ui/widget/notification"):new{
+                                    text = T(_("Added %1 book(s), in filename order."), added),
+                                })
+                                GroupsUI.showGroup(group.id, {
+                                    plugin = opts.plugin, ui = opts.ui,
+                                    on_close = function() GroupsUI.showManager(opts) end,
+                                })
+                            end)
+                        end, function() GroupsUI.showManager(opts) end,
+                        { description = T(_("%1 book(s) from the folder will be added, in filename order."), #paths) })
+                end,
+                close_callback = function()
+                    if not picked then GroupsUI.showManager(opts) end
+                end,
+            })
+        end,
+    }}
     -- Main-menu parity with Book Settings (kenken round 5): seed a group from
     -- the OPEN book right here — title prefilled, book added on create
     local open_file = opts.ui and opts.ui.document and opts.ui.document.file

@@ -187,14 +187,20 @@ local function ensureIndex(plugin, pageno)
     -- live artifact joins the index, so entities that first appear past the
     -- installed coverage get marked (and card-identified) when the reader
     -- meets them. Full entries stay position-gated in the card router.
+    -- P5: the Upcoming Entities setting stands the peek down (default on);
+    -- with it off the key drops its "|ahead:" part, so a flip rebuilds the
+    -- index on the next sync/scan by itself.
     st.ahead = nil
-    local live_p = st.live and (st.live.full_document and 1.0
-      or tonumber(st.live.progress_decimal)) or 0
-    for _idx, rg in ipairs(ActionCache.getXrayLadder(st.file)) do
-      local p = rg.full_document and 1.0 or tonumber(rg.progress_decimal) or 0
-      if rg.result and not rg.intro and p > live_p + 0.005 then
-        if not st.ahead or p > st.ahead.p then
-          st.ahead = { result = rg.result, p = p, stamp = tostring(rg.timestamp) }
+    local marks_feats = plugin.settings and plugin.settings:readSetting("features") or {}
+    if marks_feats.xray_show_ahead_entities ~= false then
+      local live_p = st.live and (st.live.full_document and 1.0
+        or tonumber(st.live.progress_decimal)) or 0
+      for _idx, rg in ipairs(ActionCache.getXrayLadder(st.file)) do
+        local p = rg.full_document and 1.0 or tonumber(rg.progress_decimal) or 0
+        if rg.result and not rg.intro and p > live_p + 0.005 then
+          if not st.ahead or p > st.ahead.p then
+            st.ahead = { result = rg.result, p = p, stamp = tostring(rg.timestamp) }
+          end
         end
       end
     end

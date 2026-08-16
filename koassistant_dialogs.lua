@@ -274,7 +274,7 @@ end
 -- @param char_count: chars per side for "characters" mode (default 100)
 -- @param paragraph_count: paragraphs per side for "paragraph" mode (default 1)
 -- @return string: marked context or "" when unavailable
-local function extractSurroundingContext(ui, highlighted_text, mode, char_count, paragraph_count)
+local function extractSurroundingContext(ui, highlighted_text, mode, char_count, paragraph_count, before_only)
     mode = mode or "sentence"
     if mode == "none" then
         return ""
@@ -284,7 +284,7 @@ local function extractSurroundingContext(ui, highlighted_text, mode, char_count,
         return ""
     end
     return ScopeResolver.trimContext(window.prev, window.next, highlighted_text, mode,
-        { char_count = char_count, paragraphs = paragraph_count })
+        { char_count = char_count, paragraphs = paragraph_count, before_only = before_only })
 end
 
 -- Build unified request config for ALL providers (v0.5.2+)
@@ -4012,12 +4012,32 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         local dc_prompt_text = (prompt and prompt.prompt) or ""
         local has_dict_channel = dc_prompt_text:find("{context_section}", 1, true) ~= nil
             or dc_prompt_text:find("{context}", 1, true) ~= nil
+        -- P5 (2026-08-16): after-side suppression for context windows — the
+        -- global "before only" direction pick, and FORCED while spoiler
+        -- protection resolves on for this request (the after window can reach
+        -- ~1000 chars past the selection into unread text). Covers the
+        -- dictionary AND highlight context channels; viewer/popup selections
+        -- (non_document_selection) skip the spoiler half — their "after" text
+        -- is chat text, not unread book.
+        local ctx_before_only = config.features.highlight_context_direction == "before"
+        if not ctx_before_only and not non_document_selection then
+            -- Session Spoiler chip first (set just-in-time for dialog-launched
+            -- requests; read without consuming — buildUnifiedRequestConfig owns
+            -- consumption), else the book/global posture.
+            local sess_sp = config.features._spoiler_free_active
+            if sess_sp ~= nil then
+                ctx_before_only = sess_sp and true or false
+            else
+                ctx_before_only = BookSettings.resolveSpoilerFree(per_book_ds, config.features) or false
+            end
+        end
         if has_dict_channel and not non_document_selection
                 and (not message_data.context or message_data.context == "") then
             -- Resolved per-book > global mode; "none" extracts nothing
             local context_chars = config.features.dictionary_context_chars or 100
             message_data.context = extractSurroundingContext(ui,
-                highlightedText, message_data.dictionary_context_mode, context_chars)
+                highlightedText, message_data.dictionary_context_mode, context_chars,
+                nil, ctx_before_only)
             -- Input-dialog launches: the live selection died when the dialog opened
             -- (main.lua onClose), so the extraction above finds nothing — fall back
             -- to the pre-extracted raw window (audit #37 starve; also what makes
@@ -4030,7 +4050,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 if w and w.text == highlightedText then
                     message_data.context = ScopeResolver.trimContext(w.prev, w.next,
                         highlightedText, message_data.dictionary_context_mode,
-                        { char_count = context_chars })
+                        { char_count = context_chars, before_only = ctx_before_only })
                 end
             end
         end
@@ -4073,12 +4093,14 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             local sc_text
             if sc_window and sc_window.text == highlightedText then
                 sc_text = ScopeResolver.trimContext(sc_window.prev, sc_window.next, highlightedText,
-                    sc_mode, { char_count = sc_chars, paragraphs = sc_paragraphs })
+                    sc_mode, { char_count = sc_chars, paragraphs = sc_paragraphs,
+                        before_only = ctx_before_only })
             elseif not non_document_selection then
                 -- Surfaces that didn't pre-extract: try the live selection (may be gone).
                 -- Skipped for non-document selections: the live selection is the open
                 -- book's, unrelated to the viewer/popup text (B3).
-                sc_text = extractSurroundingContext(ui, highlightedText, sc_mode, sc_chars, sc_paragraphs)
+                sc_text = extractSurroundingContext(ui, highlightedText, sc_mode, sc_chars,
+                    sc_paragraphs, ctx_before_only)
             end
             if sc_text and sc_text ~= "" then
                 message_data.surrounding_context = sc_text
@@ -7015,11 +7037,27 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
         local function runActionWithSource(popup_state, is_hl)
             configuration.features = configuration.features or {}
             configuration.features._source_mode = popup_state.source
-            if is_hl and popup_state.scope == "section" and popup_state.section_entry then
+            if is_hl and popup_state.section_entry
+                    and (popup_state.scope == "section" or popup_state.scope == "range") then
                 configuration.features._highlight_section_scope = {
                     start_page = popup_state.section_entry.start_page,
                     end_page = popup_state.section_entry.end_page,
                 }
+            elseif is_hl and (popup_state.scope == "read_so_far"
+                    or popup_state.scope == "from_section") then
+                -- Consolidation P5: bounded so-far scopes for highlight actions —
+                -- page 1 (or the picked section's start) up to the current page,
+                -- riding the same extraction bound as the section scope above.
+                local cur_page = ui_instance and ui_instance.view and ui_instance.view.state
+                    and ui_instance.view.state.page or nil
+                if cur_page then
+                    configuration.features._highlight_section_scope = {
+                        start_page = popup_state.scope == "from_section"
+                            and popup_state.section_entry
+                            and popup_state.section_entry.start_page or 1,
+                        end_page = cur_page,
+                    }
+                end
             end
             if popup_state.source == "smart_retrieval" then
                 runSmartRetrieval(action, action_id, highlighted_text, ui_instance,
@@ -8731,11 +8769,28 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 or require("koassistant_book_settings")
                                 .resolveHighlightContext(doc_settings, configuration.features)
                             if sc_mode ~= "none" then
+                                -- P5 after-side suppression: global direction pick, or
+                                -- spoiler protection (session chip first — set just-in-time
+                                -- at Send — else book/global). Existing captures only
+                                -- (60-upvalue cap).
+                                local sc_before_only =
+                                    configuration.features.highlight_context_direction == "before"
+                                if not sc_before_only then
+                                    local sess_sp = configuration.features._spoiler_free_active
+                                    if sess_sp ~= nil then
+                                        sc_before_only = sess_sp and true or false
+                                    else
+                                        sc_before_only = require("koassistant_book_settings")
+                                            .resolveSpoilerFree(doc_settings, configuration.features)
+                                            or false
+                                    end
+                                end
                                 local sc_text = require("koassistant_scope_resolver").trimContext(
                                     sc_window.prev, sc_window.next,
                                     highlighted_text, sc_mode, {
                                         char_count = configuration.features.highlight_context_chars or 100,
                                         paragraphs = configuration.features.highlight_context_paragraphs or 1,
+                                        before_only = sc_before_only,
                                     })
                                 if sc_text ~= "" then
                                     table.insert(parts, require("prompts.templates").SURROUNDING_CONTEXT_LABEL)

@@ -7915,14 +7915,18 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
     local ContextExtractor = require("koassistant_context_extractor")
     reading_progress = ContextExtractor:new(self.ui):getReadingProgress()
   end
-  -- Gate: whole-doc action + open book + book context (not highlight) + meaningfully mid-read
+  -- Gate: whole-doc action + open book + meaningfully mid-read
   -- (needs a DISPLAYED percent of at least 1 — `decimal > 0` let page 1 of a long book offer
   -- "Up to current position (0%)" and extract an empty cover-page span, device 2026-08-12;
   -- near 100% it collapses to "Full document"). Visible whether or not text
   -- extraction is on: with it, read-so-far uses the extracted text (hard spoiler boundary); without
   -- it, it falls back to AI knowledge bounded by the spoiler instruction (soft boundary, like recap).
   -- requires_book_text actions still need extraction (they're blocked otherwise).
-  local read_so_far_available = is_whole_doc and not opts.for_highlight
+  -- Highlight actions included since consolidation P5 (2026-08-16, maintainer yes):
+  -- the old `not opts.for_highlight` exclusion was deliberate but the extraction
+  -- bound works identically, and it also unlocks the spoiler pre-select below +
+  -- the From-section/section rows for in-context actions.
+  local read_so_far_available = is_whole_doc
       and self.ui and self.ui.document
       and (text_extraction_enabled or not requires_book_text)
       and reading_progress and reading_progress.percent >= 1 and reading_progress.decimal < 0.98
@@ -7945,7 +7949,10 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
         or prompt_text:find("{incremental_book_text_section}", 1, true))
       and true or false
   local chapter = { presets = {} }
-  if (is_whole_doc or is_to_position) and not opts.for_highlight
+  -- Highlight actions included since consolidation P5 (with the read-so-far
+  -- lift): From-section/range picks ride the same _highlight_section_scope
+  -- page-range transient as their existing "Pick section" scope.
+  if (is_whole_doc or is_to_position)
       and self.ui and self.ui.document
       and (text_extraction_enabled or not requires_book_text) then
     chapter.current_page = (self.ui.view and self.ui.view.state and self.ui.view.state.page) or 1
@@ -8583,12 +8590,14 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
                 self_ref:_executeSectionAction(action, action_id, state.section_entry, state.section_label, {
                   source_mode = state.source == "section_summary" and "summary" or state.source,
                 })
-              elseif state.scope == "read_so_far" then
+              elseif state.scope == "read_so_far" and not opts.for_highlight then
                 -- Synthetic section scope: page 1 → current page. Reuses the section path (same as
                 -- the auto chapter quiz); label/cache key carry the % so positions don't clobber.
                 -- source_mode follows the user's pick: "full_text" extracts the read text (hard
                 -- boundary); "ai_knowledge" sends no text and relies on the framing line's spoiler
                 -- instruction (soft boundary, like recap).
+                -- (Highlight actions fall through to on_execute: their bound rides
+                -- _highlight_section_scope, not the section-artifact path.)
                 local current_page = (self_ref.ui.view and self_ref.ui.view.state
                     and self_ref.ui.view.state.page) or 1
                 local rsf_label = T(_("Up to %1"), reading_progress.formatted)
@@ -8605,7 +8614,8 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
                   { source_mode = state.source,
                     section_so_far = { section = chapter.info.title,
                         position = reading_progress.formatted } })
-              elseif state.scope == "from_section" and state.section_entry then
+              elseif state.scope == "from_section" and state.section_entry
+                  and not opts.for_highlight then
                 -- Explicit-start "so far": picked section's start → current position. Same
                 -- framing/label treatment as the quiz chapter preset, but the start is the
                 -- user's own TOC pick — chapter resolution is not involved.
@@ -8617,7 +8627,8 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
                   { source_mode = state.source,
                     section_so_far = { section = state.section_label,
                         position = reading_progress.formatted } })
-              elseif state.scope == "range" and state.section_entry then
+              elseif state.scope == "range" and state.section_entry
+                  and not opts.for_highlight then
                 -- Custom range (phase 4): rides the plain section path — the composite
                 -- "start – end" label is the section name for framing and cache.
                 self_ref:_executeSectionAction(action, action_id,
@@ -10526,8 +10537,8 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
         or decimal > (pos_anchor or 0) + 0.01
       if force_rebuild or pos_is_update then
         cov_rows[#cov_rows + 1] = { { text = force_rebuild
-            and T(_("Up to where I am (%1), from scratch"), progress.formatted)
-            or T(_("Up to where I am (%1)"), progress.formatted),
+            and T(_("Up to my current position (%1), from scratch"), progress.formatted)
+            or T(_("Up to my current position (%1)"), progress.formatted),
           provider = "position",
           checked = cr.coverage == "position" } }
       end
@@ -10752,8 +10763,8 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
       -- INDIVIDUAL-requests-stay-small fact, plainly (the total text read is
       -- the same; only each request shrinks).
       hint = (mode == "extend" and not pick_rebuild)
-        and _("Continues from your current coverage in background steps. The same text is read in total, but each step reads only a bounded slice, so every individual request stays small even on long books, and each step yields a spoiler-safe version. You can keep reading, cancel anytime, and resume later.")
-        or _("Covers the range in background steps. The same text is read in total, but each step reads only a bounded slice, so every individual request stays small even on long books, and each step yields a spoiler-safe version up to its position. A usable X-Ray installs after the first step; you can keep reading, cancel anytime, and resume later.")
+        and _("Continues from your current coverage in background steps. Each step reads only a bounded slice of text, though steps grow somewhat as the X-Ray they build on grows, and each yields a spoiler-safe version. You can keep reading, cancel anytime, and resume later.")
+        or _("Covers the range in background steps. Each step reads only a bounded slice of text, though steps grow somewhat as the X-Ray they build on grows, and each yields a spoiler-safe version up to its position. A usable X-Ray installs after the first step; you can keep reading, cancel anytime, and resume later.")
     elseif cr.delivery == "one_bg" then
       hint = _("The same single request, run in the background: you can keep reading, and a notification arrives when the X-Ray is ready. The book must stay open.")
       if cr.coverage ~= "whole" then
@@ -18150,7 +18161,9 @@ function AskGPT:syncDictionaryBypass()
           or (self_ref.ui and self_ref.ui.document and self_ref.ui.document.file)
         -- Memoized route index (slice 2): a stat per tap instead of the old
         -- full cache parse per tap — the #63 one-parse-per-tap cost is gone
-        if i_file and ActionCache.matchAnyXrayExact(i_file, word) then
+        local i_feats = self_ref.settings:readSetting("features") or {}
+        if i_file and ActionCache.matchAnyXrayExact(i_file, word,
+            { include_ahead = i_feats.xray_show_ahead_entities ~= false }) then
           logger.info("KOAssistant: X-Ray intercept - word matches entity, opening X-Ray")
           local lookup_book = dict_self._koassistant_lookup_book
           dict_self._koassistant_non_reader_lookup = nil
@@ -18531,7 +18544,9 @@ function AskGPT:syncHighlightBypass()
         local i_file = self_ref.ui and self_ref.ui.document and self_ref.ui.document.file
         -- Memoized route index (slice 2): a stat per release instead of the
         -- old full cache parse
-        if i_file and ActionCache.matchAnyXrayExact(i_file, sel) then
+        local i_feats = self_ref.settings:readSetting("features") or {}
+        if i_file and ActionCache.matchAnyXrayExact(i_file, sel,
+            { include_ahead = i_feats.xray_show_ahead_entities ~= false }) then
           logger.info("KOAssistant: X-Ray intercept - selection matches entity, opening X-Ray")
           -- Selection geometry anchors the floating-popup card style —
           -- captured as fresh copies BEFORE clear() releases the selection
@@ -18628,7 +18643,8 @@ function AskGPT:openXrayCard(query, opts)
   local file = (opts and opts.document_path)
     or (self.ui and self.ui.document and self.ui.document.file)
   local XrayCard = require("koassistant_xray_card")
-  local ok, hit = pcall(XrayCard.resolve, file, query)
+  local ok, hit = pcall(XrayCard.resolve, file, query,
+    { include_ahead = features.xray_show_ahead_entities ~= false })
   if not ok or not hit then
     -- The exact gate said yes but the resolver disagreed (disk moved,
     -- parse hiccup): the old path handles it — incl. its no-result flows

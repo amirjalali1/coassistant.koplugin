@@ -285,12 +285,15 @@ function XrayRows.deleteChoice(file)
     local n_arch = ActionCache.getXrayCheckpointCount(file)
     local n_prep = ActionCache.getXrayLadderCount(file)
     if n_arch > 0 then
-        local title = T(_("Delete this X-Ray? Its %1 archived versions can be kept — they stay reachable under \"Archived X-Ray Versions\" in View Artifacts."), n_arch)
+        -- P5 (maintainer 2026-08-16): delete-keeping-versions IS archiving, so
+        -- name it that. The entry row stays "Delete X-Ray" (it is still the
+        -- delete entry); the choice inside offers Archive vs full delete.
+        local title = T(_("Archive or delete this X-Ray? Archiving removes the live X-Ray but keeps its %1 saved versions reachable under \"Archived X-Ray Versions\" in View Artifacts."), n_arch)
         if n_prep > 0 then
             title = title .. "\n" .. T(_("Its %1 prepared checkpoints are deleted either way."), n_prep)
         end
         return { two_way = true, title = title, n_arch = n_arch, n_prep = n_prep,
-            keep_text = T(_("Delete X-Ray, keep %1 versions"), n_arch),
+            keep_text = T(_("Archive X-Ray (keep %1 versions)"), n_arch),
             drop_text = T(_("Delete X-Ray and %1 versions"), n_arch) }
     end
     if n_prep > 0 then

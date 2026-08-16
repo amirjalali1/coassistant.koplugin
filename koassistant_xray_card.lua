@@ -91,7 +91,7 @@ end
 --- @param query string the tapped/selected text
 --- @return table|nil hit { name, item, category_key, category_label,
 ---   source = "live"|"section"|"ahead", ahead_progress, query }
-function XrayCard.resolve(file, query)
+function XrayCard.resolve(file, query, opts)
     if not file or type(query) ~= "string" or query == "" then return nil end
     local ActionCache = require("koassistant_action_cache")
     local XrayParser = require("koassistant_xray_parser")
@@ -134,6 +134,8 @@ function XrayCard.resolve(file, query)
         end
     end
     -- The identification peek: the newest built rung past the live coverage
+    -- (P5: stood down when the Upcoming Entities setting is off)
+    if opts and opts.include_ahead == false then return nil end
     local best
     for _idx, rg in ipairs(ActionCache.getXrayLadder(file)) do
         local p = rg.full_document and 1.0 or tonumber(rg.progress_decimal) or 0

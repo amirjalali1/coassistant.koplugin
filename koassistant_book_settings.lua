@@ -1530,12 +1530,49 @@ function BookSettings.showHighlightContext(opts)
         table.insert(options, { value = m, label = BookSettings.contextModeLabel(m) })
     end
     BookSettings.showLayeredPicker({
-        title = _("Context Around Highlights"),
+        -- P5: the spoiler clamp is invisible mechanics — say it where the mode
+        -- is picked (label, never gray: the stored pick stays editable).
+        title = function(ctx)
+            local title = _("Context Around Highlights")
+            if BookSettings.resolveSpoilerFree(ctx.doc_settings, ctx.features) then
+                title = title .. "\n"
+                    .. _("Spoiler protection is on: context is taken only from before the selection.")
+            end
+            return title
+        end,
         key = BookSettings.KEY_HIGHLIGHT_CONTEXT,
         field = "highlight_context_mode",
         global = function(f) return f.highlight_context_mode or "none" end,
         value_label = BookSettings.contextModeLabel,
         options = options,
+        -- Direction is a GLOBAL dial (P5): tap-cycle row, both tabs.
+        bottom_rows = function(ctx)
+            local before_only = ctx.features.highlight_context_direction == "before"
+            return {{{
+                text = T(_("Direction: %1 (global)"),
+                    before_only and _("Before only") or _("Both sides")),
+                callback = function()
+                    local plugin = ctx.plugin
+                    if plugin and plugin.settings then
+                        local f = plugin.settings:readSetting("features") or {}
+                        if before_only then
+                            f.highlight_context_direction = nil
+                        else
+                            f.highlight_context_direction = "before"
+                        end
+                        plugin.settings:saveSetting("features", f)
+                        plugin.settings:flush()
+                        if plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
+                    end
+                    ctx.closeDialog()
+                    BookSettings.showHighlightContext({
+                        plugin = ctx.plugin, ui = ctx.ui, document_path = ctx.document_path,
+                        on_close = ctx.on_close,
+                        target_override = ctx.is_book_target and "book" or "global",
+                    })
+                end,
+            }}}
+        end,
     }, opts)
 end
 
@@ -1553,7 +1590,15 @@ function BookSettings.showDictionaryContext(opts)
         table.insert(options, { value = m, label = BookSettings.contextModeLabel(m) })
     end
     BookSettings.showLayeredPicker({
-        title = _("Context Around Dictionary Lookups"),
+        -- P5: the spoiler clamp covers the dictionary channel too — same note.
+        title = function(ctx)
+            local title = _("Context Around Dictionary Lookups")
+            if BookSettings.resolveSpoilerFree(ctx.doc_settings, ctx.features) then
+                title = title .. "\n"
+                    .. _("Spoiler protection is on: context is taken only from before the selection.")
+            end
+            return title
+        end,
         key = BookSettings.KEY_DICTIONARY_CONTEXT,
         field = "dictionary_context_mode",
         global = function(f) return f.dictionary_context_mode or "sentence" end,
@@ -2154,8 +2199,10 @@ function BookSettings.showXrayConfig(opts)
     -- this book open (TOC).
     local goal = tonumber(doc_settings:readSetting(BookSettings.KEY_XRAY_GOAL))
     if goal and (goal <= 0.01 or goal >= 0.995) then goal = nil end
-    table.insert(buttons, {{ text = T(_("Coverage goal: %1"),
-            goal and T(_("to %1%"), math.floor(goal * 100 + 0.5)) or _("Whole book")),
+    -- "Build up to" (P5 rename, maintainer found "Coverage goal" opaque): the
+    -- row is the bound on automatic building, so say exactly that.
+    table.insert(buttons, {{ text = T(_("Build up to: %1"),
+            goal and T(_("%1%"), math.floor(goal * 100 + 0.5)) or _("Whole book")),
         callback = function()
             closeDialog()
             local picker
@@ -2196,8 +2243,8 @@ function BookSettings.showXrayConfig(opts)
             end
             rows[#rows + 1] = {{ text = _("Cancel"), id = "close",
                 callback = function() UIManager:close(picker); BookSettings.showXrayConfig(opts) end }}
-            local title = _("X-Ray coverage goal (this book)") .. "\n"
-                .. _("How far automatic building goes: checkpoints stop at the goal until you raise it. Target picks in the create/extend form set it too.")
+            local title = _("Build the X-Ray up to (this book)") .. "\n"
+                .. _("The limit for automatic building: checkpoints stop here until you raise it. It exists so a section target picked in the create/extend form keeps bounding automatic building afterwards. Whole book = no limit.")
             if not open_here then
                 title = title .. "\n" .. _("Open the book to pick a section target.")
             end

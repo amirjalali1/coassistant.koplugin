@@ -2368,10 +2368,13 @@ local exact_route_index = nil -- { path, key, set }
 --- @param document_path string
 --- @param query string
 --- @return boolean
-function ActionCache.matchAnyXrayExact(document_path, query)
+function ActionCache.matchAnyXrayExact(document_path, query, opts)
     if not document_path or type(query) ~= "string" or query == "" then
         return false
     end
+    -- P5: opts.include_ahead == false stands the ahead peek down (the
+    -- Upcoming Entities setting; default on — callers read it per call)
+    local include_ahead = not (opts and opts.include_ahead == false)
     local path = ActionCache.getPath(document_path)
     if not path then return false end
     local attr = lfs.attributes(path)
@@ -2384,11 +2387,16 @@ function ActionCache.matchAnyXrayExact(document_path, query)
     end
     -- Point-4: the newest built checkpoint ahead of the live artifact joins
     -- the route (the card's identification peek must FIRE for ahead-only
-    -- entities) — its file joins the stamp so a fresh rung re-indexes
-    local ladder_path = ActionCache.getXrayLadderPath(document_path)
-    local lattr = ladder_path and lfs.attributes(ladder_path)
-    if lattr then
-        key = key .. "|" .. tostring(lattr.modification) .. "|" .. tostring(lattr.size)
+    -- entities) — its file joins the stamp so a fresh rung re-indexes. The
+    -- flag state joins the key either way, so a settings flip invalidates.
+    if include_ahead then
+        local ladder_path = ActionCache.getXrayLadderPath(document_path)
+        local lattr = ladder_path and lfs.attributes(ladder_path)
+        if lattr then
+            key = key .. "|" .. tostring(lattr.modification) .. "|" .. tostring(lattr.size)
+        end
+    else
+        key = key .. "|noahead"
     end
     if not (exact_route_index and exact_route_index.path == path
             and exact_route_index.key == key) then
@@ -2415,10 +2423,12 @@ function ActionCache.matchAnyXrayExact(document_path, query)
             end
         end
         local ahead
-        for _idx, rg in ipairs(ActionCache.getXrayLadder(document_path)) do
-            local p = rg.full_document and 1.0 or tonumber(rg.progress_decimal) or 0
-            if rg.result and not rg.intro and p > live_p + 0.005 then
-                if not ahead or p > ahead.p then ahead = { result = rg.result, p = p } end
+        if include_ahead then
+            for _idx, rg in ipairs(ActionCache.getXrayLadder(document_path)) do
+                local p = rg.full_document and 1.0 or tonumber(rg.progress_decimal) or 0
+                if rg.result and not rg.intro and p > live_p + 0.005 then
+                    if not ahead or p > ahead.p then ahead = { result = rg.result, p = p } end
+                end
             end
         end
         if ahead then

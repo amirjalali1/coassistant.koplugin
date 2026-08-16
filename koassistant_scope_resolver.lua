@@ -202,6 +202,12 @@ function ScopeResolver.trimContext(prev, next_text, highlighted_text, mode, opts
     opts = opts or {}
     prev = prev or ""
     next_text = next_text or ""
+    -- Consolidation P5 (2026-08-16): after-side suppression — the global
+    -- "before only" direction pick, and forced by the callers when spoiler
+    -- protection is on (the after window can reach up to MAX_CONTEXT_CHARS/2
+    -- past the selection, i.e. into unread text). Dropping next_text up front
+    -- covers every mode, including the sentence→characters starve fallback.
+    if opts.before_only then next_text = "" end
     if prev == "" and next_text == "" then return "" end
 
     local max_per_side = math.floor(ScopeResolver.MAX_CONTEXT_CHARS / 2)

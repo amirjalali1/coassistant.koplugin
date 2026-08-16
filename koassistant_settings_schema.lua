@@ -1009,6 +1009,22 @@ local SettingsSchema = {
                             end,
                         },
                         {
+                            id = "xray_show_ahead_entities",
+                            type = "toggle",
+                            text = _("Upcoming Entities"),
+                            path = "features.xray_show_ahead_entities",
+                            default = true,
+                            help_text = _("Let marking, matching selections and entity cards recognize entities that first appear past your installed X-Ray coverage, using the checkpoint already built ahead of you. Identification only: such names get short-dash marks and a brief card, and the full entry stays behind a spoiler confirmation. Off = the plugin only knows entities up to your installed coverage."),
+                            on_change = function(new_value, plugin)
+                                if plugin.syncXrayMarks then
+                                    local UIManager = require("ui/uimanager")
+                                    UIManager:nextTick(function()
+                                        plugin:syncXrayMarks()
+                                    end)
+                                end
+                            end,
+                        },
+                        {
                             id = "xray_card_landing",
                             type = "toggle",
                             text = _("Entity Card First"),
@@ -1667,6 +1683,18 @@ local SettingsSchema = {
                         { value = "characters", label = _("Characters") },
                     },
                     help_text = _("Automatically send the text around a highlight with highlight questions and actions, so the AI sees the passage in context. Capped at 2000 characters. Dictionary lookups and actions with their own scope selection are unaffected. Can be overridden per book in Book Settings."),
+                },
+                {
+                    id = "highlight_context_direction",
+                    type = "dropdown",
+                    text = _("Context Direction"),
+                    path = "features.highlight_context_direction",
+                    default = "both",
+                    options = {
+                        { value = "both", label = _("Both sides") },
+                        { value = "before", label = _("Before the selection only") },
+                    },
+                    help_text = _("Which side of the selection surrounding context is taken from. While spoiler protection is on for a book, the after side is always left out regardless of this setting (it can reach into text you have not read yet). Also applies to dictionary context."),
                 },
                 {
                     id = "highlight_context_paragraphs",

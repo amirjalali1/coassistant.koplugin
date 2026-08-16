@@ -188,6 +188,21 @@ TestRunner:test("mode none / empty window return empty string", function()
     TestRunner:assertEqual(ScopeResolver.trimContext(nil, nil, "w", "sentence"), "", "nil window")
 end)
 
+TestRunner:test("before_only drops the after side in every mode (P5 spoiler clamp)", function()
+    local prev = "Other sentence. The quick brown fox jumps over"
+    local nxt = " and lands. Next sentence here."
+    for _idx, mode in ipairs({ "sentence", "characters", "paragraph" }) do
+        local result = ScopeResolver.trimContext(prev, nxt, "the dog", mode,
+            { before_only = true, char_count = 50, paragraphs = 1 })
+        TestRunner:assertContains(result, ">>>the dog<<<", mode .. ": marker present")
+        TestRunner:assertNotContains(result, "and lands", mode .. ": after side dropped")
+    end
+    -- Before-only with an EMPTY before side yields nothing at all
+    TestRunner:assertEqual(
+        ScopeResolver.trimContext("", " after text only.", "w", "sentence", { before_only = true }),
+        "", "empty before + suppressed after = empty")
+end)
+
 TestRunner:test("hard cap: no mode can exceed MAX_CONTEXT_CHARS by much", function()
     local huge = string.rep("y", 5000)
     local result = ScopeResolver.trimContext(huge, huge, "W", "characters", { char_count = 5000 })
