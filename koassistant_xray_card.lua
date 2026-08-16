@@ -76,14 +76,16 @@ local function kindLabel(hit)
     return label
 end
 
---- The "⚠ (from the checkpoint built to N%)" transparency line, or nil.
---- Leading ⚠ + EARLY placement on every surface (2026-08-16 filing 2f,
---- maintainer-marked important): the reader must see the spoiler risk before
---- the description, not under it. U+26A0 renders in both card paths (MuPDF
---- HTML and TextBoxWidget — the truncation notices proved it).
+--- The ahead-entity warning line, or nil. ONE line on every surface (both
+--- card styles + the full-detail viewer): leading ⚠ + EARLY placement
+--- (2026-08-16 filing 2f, maintainer-marked important) + spoiler-first
+--- wording (round 7, maintainer: "capture the spoiler alert better" — the
+--- old "(from the checkpoint built to N%)" read as neutral provenance).
+--- U+26A0 renders in both card paths (MuPDF HTML and TextBoxWidget — the
+--- truncation notices proved it); code-prepended so the msgid stays clean.
 local function aheadLine(hit)
     if hit.source == "ahead" and hit.ahead_progress then
-        return "\u{26A0} " .. T(_("(from the checkpoint built to %1%)"),
+        return "\u{26A0} " .. T(_("From a future checkpoint (built to %1%), may contain spoilers"),
             math.floor(hit.ahead_progress * 100 + 0.5))
     end
 end
@@ -292,11 +294,9 @@ function XrayCard.showFullDetail(hit)
     local TextViewer = require("ui/widget/textviewer")
     local XrayParser = require("koassistant_xray_parser")
     local parts = {}
-    if hit.source == "ahead" and hit.ahead_progress then
-        parts[#parts + 1] = "\u{26A0} "
-            .. T(_("From the checkpoint built to %1%, ahead of your reading position."),
-                math.floor(hit.ahead_progress * 100 + 0.5))
-    end
+    -- Same warning line as the cards (round 7: one wording everywhere)
+    local ahead = aheadLine(hit)
+    if ahead then parts[#parts + 1] = ahead end
     local ok_fmt, body = pcall(XrayParser.formatItemDetail, hit.item, hit.category_key)
     if ok_fmt and type(body) == "string" and body:match("%S") then
         parts[#parts + 1] = (body:gsub("%s+$", ""))

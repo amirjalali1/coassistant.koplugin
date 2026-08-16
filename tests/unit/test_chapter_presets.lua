@@ -149,6 +149,29 @@ TestRunner:test("presets range matches _chapterContentRange semantics (next same
     TestRunner:assertEqual(out.chapter.end_page, 140, "chapter end = next chapter start − 1")
 end)
 
+TestRunner:suite("include_first_page (round 7: the Scope chip's rule)")
+
+TestRunner:test("chapter start: strict rule hides so-far, chip rule shows it", function()
+    local p = { chapter = { start_page = 100, end_page = 140 }, current_page = 100 }
+    TestRunner:assertNil(ScopeResolver.chapterPresets(p).chapter_so_far,
+        "quiz keeps the strict rule")
+    p.include_first_page = true
+    local sf = ScopeResolver.chapterPresets(p).chapter_so_far
+    TestRunner:assertEqual(sf and sf.start_page, 100, "chip rule: shows on the first page")
+    TestRunner:assertEqual(sf and sf.end_page, 100, "span = the page being read")
+end)
+
+TestRunner:test("chip rule still hides so-far at the chapter end and before the chapter", function()
+    TestRunner:assertNil(ScopeResolver.chapterPresets({
+        chapter = { start_page = 100, end_page = 140 }, current_page = 140,
+        include_first_page = true,
+    }).chapter_so_far, "at the end it equals the full chapter")
+    TestRunner:assertNil(ScopeResolver.chapterPresets({
+        chapter = { start_page = 100, end_page = 140 }, current_page = 99,
+        include_first_page = true,
+    }).chapter_so_far, "before the chapter start")
+end)
+
 print(string.format("\n  chapter presets: %d passed, %d failed", TestRunner.passed, TestRunner.failed))
 
 return TestRunner.failed == 0

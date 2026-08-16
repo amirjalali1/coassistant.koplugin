@@ -137,7 +137,17 @@ function ScopeResolver.chapterPresets(p)
     local out = {}
     -- "Current chapter so far": strictly mid-chapter — at the chapter start nothing has
     -- been read yet, and at/after the chapter end it equals the full chapter.
-    if cur > ch.start_page and cur < ch.end_page then
+    -- include_first_page (round 7, the Scope chip's rule): the row also shows ON the
+    -- chapter's first page — the page being read is extractable text, and readers often
+    -- sit exactly there after a chapter break ("there is no current chapter to current
+    -- position" on device). The quiz presets keep the strict rule.
+    local past_start
+    if p.include_first_page then
+        past_start = cur >= ch.start_page
+    else
+        past_start = cur > ch.start_page
+    end
+    if past_start and cur < ch.end_page then
         out.chapter_so_far = { start_page = ch.start_page, end_page = cur }
     end
     -- "Current chapter": spoiler posture clamps any scope's end to the current position

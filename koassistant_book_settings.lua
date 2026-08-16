@@ -1586,10 +1586,6 @@ local function spoilerContextNote(features)
     end
     return _("Spoiler protection is on: context after the selection stops at the end of its paragraph.")
 end
--- Exported for the Ctx chip's tap popup title (round 6: the session picker
--- names the active clamp too; the limit itself is edited in the hold picker)
-BookSettings.spoilerContextNote = spoilerContextNote
-
 -- Global feature write + live push, shared by the pickers' global dial rows
 local function writeGlobalFeature(plugin, k, v)
     if plugin and plugin.settings then
@@ -1600,12 +1596,19 @@ local function writeGlobalFeature(plugin, k, v)
         if plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
     end
 end
-local function spoilerContextLimitLabel(features)
-    local lim = features.spoiler_context_limit or "paragraph"
+
+--- Short label for a spoiler-clamp VALUE — exported for the Ctx chip's tap
+-- popup, where the clamp is a per-request dial (round 7; replaced the
+-- round-6 title-note export there).
+function BookSettings.spoilerLimitLabel(lim)
+    lim = lim or "paragraph"
     if lim == "off" then return _("No limit") end
     if lim == "selection" then return _("Nothing after") end
     if lim == "sentence" then return _("To sentence end") end
     return _("To paragraph end")
+end
+local function spoilerContextLimitLabel(features)
+    return BookSettings.spoilerLimitLabel(features.spoiler_context_limit)
 end
 
 -- The GLOBAL context dials both pickers carry as bottom rows: direction

@@ -295,11 +295,12 @@ end
 -- it). "off" = no clamp, the deliberate escape hatch. Returns nil (unlimited)
 -- | "none" | "sentence" | "paragraph".
 local function contextAfterLimit(features, spoiler_on)
-    -- Session direction (round 5): the Ctx chip's per-request pick wins
+    -- Session dials (rounds 5+7): the Ctx chip's per-request picks win
     local dir = features._session_ctx_direction or features.highlight_context_direction
     if dir == "before" then return "none" end
     if not spoiler_on then return nil end
-    local lim = features.spoiler_context_limit or "paragraph"
+    local lim = features._session_ctx_spoiler_limit
+        or features.spoiler_context_limit or "paragraph"
     if lim == "off" then return nil end
     if lim == "selection" then return "none" end
     if lim == "sentence" then return "sentence" end
@@ -6529,6 +6530,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             configuration.features._session_ctx_direction = nil
             configuration.features._session_ctx_chars = nil
             configuration.features._session_ctx_paragraphs = nil
+            configuration.features._session_ctx_spoiler_limit = nil
             configuration.features._session_ctx_label_stale = nil
             -- Quick-controls chip state (controls_parity_plan.md §2/§9): same
             -- config-resident lifecycle as the scope pick — survives a refresh
@@ -8388,6 +8390,9 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 chapter = ch_info,
                                 current_page = cur_page,
                                 spoiler_free = session_spoiler_free,
+                                -- Round 7: the to-position row also shows on the
+                                -- chapter's first page (quiz keeps the strict rule)
+                                include_first_page = true,
                             })
                             if presets.chapter then
                                 table.insert(rows, {{
@@ -8532,6 +8537,25 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 reshow()
                             end,
                         }})
+                        -- Per-request spoiler clamp (round 7, maintainer: "is
+                        -- there a principled reason why we cant have the
+                        -- spoiler one on the tap?" — there isn't): shown while
+                        -- the session is protected, cycles like the hold
+                        -- picker's global row but only for this chat.
+                        if session_spoiler_free then
+                            local cur_lim = feats._session_ctx_spoiler_limit
+                                or feats.spoiler_context_limit or "paragraph"
+                            table.insert(rows, {{
+                                text = T(_("Under spoiler protection: %1 (this chat)"),
+                                    BookSettings.spoilerLimitLabel(cur_lim)),
+                                callback = function()
+                                    feats._session_ctx_spoiler_limit =
+                                        ({ selection = "sentence", sentence = "paragraph",
+                                           paragraph = "off", off = "selection" })[cur_lim] or "paragraph"
+                                    reshow()
+                                end,
+                            }})
+                        end
                         local function closeAndRefresh()
                             if feats._session_ctx_label_stale then
                                 feats._session_ctx_label_stale = nil
@@ -8543,17 +8567,8 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 UIManager:close(dialog)
                                 closeAndRefresh()
                             end }})
-                        local title = _("Context around the selection (for this chat)")
-                        -- Protection-active note (round 6 "no spoiler override"):
-                        -- the clamp is invisible mechanics — name it where the
-                        -- session mode is picked; the limit itself is edited in
-                        -- the hold picker's global row.
-                        if session_spoiler_free and BookSettings.spoilerContextNote then
-                            local note = BookSettings.spoilerContextNote(feats)
-                            if note then title = title .. "\n" .. note end
-                        end
                         dialog = ButtonDialog:new{
-                            title = title,
+                            title = _("Context around the selection (for this chat)"),
                             buttons = rows,
                             tap_close_callback = closeAndRefresh,
                         }
@@ -8950,7 +8965,8 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                             .resolveSpoilerFree(doc_settings, configuration.features)
                                     end
                                     if sp_on then
-                                        local lim = configuration.features.spoiler_context_limit or "paragraph"
+                                        local lim = configuration.features._session_ctx_spoiler_limit
+                                            or configuration.features.spoiler_context_limit or "paragraph"
                                         if lim == "selection" then sc_after = "none"
                                         elseif lim == "sentence" then sc_after = "sentence"
                                         elseif lim ~= "off" then sc_after = "paragraph" end
