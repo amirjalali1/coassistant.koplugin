@@ -146,6 +146,220 @@ local function createWithKind(name, after)
     end)
 end
 
+-- P5 item 7 (Q5 gripe): series metadata → group. Detection reads the CHEAP
+-- local chain only (sidecar doc_props, coverbrowser cache, custom metadata —
+-- KOReader's own BookInfo:getDocProps with no_open_document); the scan behind
+-- it passes allow_open so never-opened books get a metadata-only document
+-- open, because the primary use case is a freshly copied series folder with
+-- no sidecars at all. Local metadata compare throughout, no AI involved.
+local function readSeriesProps(path, ui, allow_open)
+    if not (path and ui and ui.bookinfo) then return nil end
+    local ok, props = pcall(ui.bookinfo.getDocProps, ui.bookinfo, path, nil, not allow_open)
+    if not ok or type(props) ~= "table" then return nil end
+    if type(props.series) ~= "string" or props.series == "" then return nil end
+    return { series = props.series, idx = tonumber(props.series_index) }
+end
+
+-- The scan: match candidates by normalized series tag, offer the adds, then
+-- sort the WHOLE group by series index. The full sort is safe by construction:
+-- this flow only ever runs on the group the suggest just created, so no
+-- hand-tuned order exists to destroy. The InfoMessage paints before the work
+-- starts (scheduleIn) — metadata-only opens cost real time on e-ink.
+local function runSeriesScan(group_id, seed_path, sp, candidates, source_label, opts)
+    local BookGroups = groups()
+    local InfoMessage = require("ui/widget/infomessage")
+    local want = BookGroups.normalizeSeries(sp.series)
+    local info = InfoMessage:new{
+        text = T(_("Checking %1 book(s)…"), #candidates),
+    }
+    UIManager:show(info)
+    local function done() GroupsUI.showGroup(group_id, opts) end
+    UIManager:scheduleIn(0.1, function()
+        local group = BookGroups.byId(group_id)
+        local matches = {}
+        for _idx, p in ipairs(candidates) do
+            if not (group and BookGroups.positionOf(group, p)) then
+                local cp = readSeriesProps(p, opts.ui, true)
+                if cp and BookGroups.normalizeSeries(cp.series) == want then
+                    matches[#matches + 1] = { path = p, idx = cp.idx }
+                end
+            end
+        end
+        UIManager:close(info)
+        if #matches == 0 then
+            UIManager:show(InfoMessage:new{
+                text = T(_("No other books tagged with the series \"%1\" were found in %2."),
+                    sp.series, source_label),
+                timeout = 4,
+            })
+            done()
+            return
+        end
+        local ButtonDialog = require("ui/widget/buttondialog")
+        local ask
+        ask = ButtonDialog:new{
+            title = T(_("Found %1 book(s) tagged with the series \"%2\"."),
+                #matches, sp.series),
+            buttons = {
+                {{ text = T(_("Add all (%1)"), #matches), callback = function()
+                    UIManager:close(ask)
+                    local added = 0
+                    for _idx, m in ipairs(matches) do
+                        if BookGroups.addBook(group_id, m.path) then added = added + 1 end
+                    end
+                    local idx_map = { [seed_path] = sp.idx }
+                    for _idx, m in ipairs(matches) do idx_map[m.path] = m.idx end
+                    local g = BookGroups.byId(group_id)
+                    if g then
+                        local entries = {}
+                        for _idx, p in ipairs(g.books) do
+                            entries[#entries + 1] = { path = p, idx = idx_map[p] }
+                        end
+                        local sorted = BookGroups.orderBySeriesIndex(entries)
+                        for i, e in ipairs(sorted) do
+                            BookGroups.moveBookTo(group_id, e.path, i)
+                        end
+                    end
+                    UIManager:show(require("ui/widget/notification"):new{
+                        text = T(_("Added %1 book(s)."), added),
+                    })
+                    done()
+                end }},
+                {{ text = _("Cancel"), callback = function()
+                    UIManager:close(ask)
+                    done()
+                end }},
+            },
+        }
+        UIManager:show(ask)
+    end)
+end
+
+-- Source pick for the series scan (the veto's shape: "find matching series
+-- in…" over folders or collections). Collections row only when any exist.
+local function offerSeriesScan(group_id, seed_path, sp, opts)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local dialog
+    local function done() GroupsUI.showGroup(group_id, opts) end
+    local rows = {}
+    rows[#rows + 1] = {{
+        text = _("Look in a folder…"),
+        callback = function()
+            UIManager:close(dialog)
+            local PathChooser = require("ui/widget/pathchooser")
+            local Device = require("device")
+            local DataStorage = require("datastorage")
+            local picked = false
+            UIManager:show(PathChooser:new{
+                title = _("Select Folder"),
+                path = G_reader_settings:readSetting("home_dir")
+                    or Device.home_dir or DataStorage:getDataDir(),
+                select_directory = true,
+                select_file = false,
+                onConfirm = function(folder)
+                    picked = true
+                    local BookPicker = require("koassistant_book_picker")
+                    local paths, err = BookPicker.listFolderBooks(folder)
+                    if not paths or #paths == 0 then
+                        UIManager:show(require("ui/widget/infomessage"):new{
+                            text = err or T(_("No books found in:\n%1"), folder),
+                            timeout = 3,
+                        })
+                        done()
+                        return
+                    end
+                    runSeriesScan(group_id, seed_path, sp, paths,
+                        folder:match("([^/]+)/?$") or folder, opts)
+                end,
+                close_callback = function()
+                    if not picked then done() end
+                end,
+            })
+        end,
+    }}
+    local coll_ok, ReadCollection = pcall(require, "readcollection")
+    local coll_names = {}
+    if coll_ok and type(ReadCollection.coll) == "table" then
+        for name in pairs(ReadCollection.coll) do coll_names[#coll_names + 1] = name end
+        table.sort(coll_names)
+    end
+    if #coll_names > 0 then
+        rows[#rows + 1] = {{
+            text = _("Look in a collection…"),
+            callback = function()
+                UIManager:close(dialog)
+                local coll_dialog
+                local coll_rows = {}
+                for _idx, name in ipairs(coll_names) do
+                    local captured = name
+                    local label = captured == ReadCollection.default_collection_name
+                        and _("Favorites") or captured
+                    local n = 0
+                    for _f in pairs(ReadCollection.coll[captured] or {}) do n = n + 1 end
+                    coll_rows[#coll_rows + 1] = {{
+                        text = label .. " (" .. n .. ")",
+                        align = "left",
+                        callback = function()
+                            UIManager:close(coll_dialog)
+                            local paths = {}
+                            for f in pairs(ReadCollection.coll[captured] or {}) do
+                                paths[#paths + 1] = f
+                            end
+                            runSeriesScan(group_id, seed_path, sp, paths, label, opts)
+                        end,
+                    }}
+                end
+                coll_rows[#coll_rows + 1] = {{ text = _("Cancel"), callback = function()
+                    UIManager:close(coll_dialog)
+                    done()
+                end }}
+                coll_dialog = ButtonDialog:new{
+                    title = _("Which collection?"),
+                    buttons = coll_rows,
+                }
+                UIManager:show(coll_dialog)
+            end,
+        }}
+    end
+    rows[#rows + 1] = {{ text = _("Not now"), callback = function()
+        UIManager:close(dialog)
+        done()
+    end }}
+    dialog = ButtonDialog:new{
+        title = T(_("Group \"%1\" created with this book.\nFind the rest of the series?\nBooks whose metadata carries the same series tag can be added automatically."),
+            sp.series),
+        buttons = rows,
+        tap_close_callback = done,
+    }
+    UIManager:show(dialog)
+end
+
+-- The suggest row (nil when there is nothing to suggest): the book's own
+-- metadata names a series → one tap creates the group after it. The KIND step
+-- is skipped on purpose — a series tag already answered what promptKind would
+-- ask (create() defaults to series). Suppressed once any group carries the
+-- series' name: the join rows cover that case, a second suggest would only
+-- breed duplicates. opts = what showGroup gets ({ plugin, ui, on_close });
+-- host_close closes the dialog the row sits in.
+local function seriesSuggestRow(path, host_close, opts)
+    local sp = readSeriesProps(path, opts.ui, false)
+    if not sp then return nil end
+    local BookGroups = groups()
+    local want = BookGroups.normalizeSeries(sp.series)
+    for _idx, g in ipairs(BookGroups.all()) do
+        if BookGroups.normalizeSeries(g.name) == want then return nil end
+    end
+    return {
+        text = T(_("New group from series \"%1\"…"), sp.series),
+        callback = function()
+            host_close()
+            local group = BookGroups.create(sp.series)
+            BookGroups.addBook(group.id, path)
+            offerSeriesScan(group.id, path, sp, opts)
+        end,
+    }
+end
+
 -- Fold target picker (A3 fan-in surfacing): a project group's fold needs ONE
 -- receiving book — the member picked here launches the cross-book picker,
 -- whose "Fold in the other books…" row is the fan-in.
@@ -683,6 +897,13 @@ function GroupsUI.showManager(opts)
                 end, function() GroupsUI.showManager(opts) end)
             end,
         }}
+        -- P5 item 7: the open book's series tag, one tap to a group named
+        -- after it (then the find-the-rest scan)
+        local series_row = seriesSuggestRow(open_file,
+            function() UIManager:close(dialog) end,
+            { plugin = opts.plugin, ui = opts.ui,
+              on_close = function() GroupsUI.showManager(opts) end })
+        if series_row then rows[#rows + 1] = { series_row } end
     end
     rows[#rows + 1] = {{
         text = _("Close"),
@@ -761,6 +982,11 @@ function GroupsUI.showBookRow(path, opts)
             end, function() GroupsUI.showBookRow(path, opts) end)
         end,
     }}
+    -- P5 item 7: series suggest for THIS book (Book Settings / Book Hub entry)
+    local series_row = seriesSuggestRow(path,
+        function() UIManager:close(dialog) end,
+        { plugin = opts.plugin, ui = opts.ui, on_close = reopen })
+    if series_row then rows[#rows + 1] = { series_row } end
     rows[#rows + 1] = {{
         text = _("Back"),
         callback = function()

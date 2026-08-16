@@ -406,6 +406,41 @@ function BookGroups.booksInfoFor(group, ui)
     return out
 end
 
+--- Series-tag normalization for matching (P5 item 7): series lines in book
+--- metadata vary in case and whitespace between files of one series, so the
+--- compare folds both. ASCII case fold only (:lower()) — a non-ASCII series
+--- name degrades to an exact-bytes compare, which is still correct when the
+--- tag was written by the same tool across the set (the normal case).
+--- @param s any
+--- @return string|nil Normalized tag, nil for empty/non-string
+function BookGroups.normalizeSeries(s)
+    if type(s) ~= "string" then return nil end
+    s = s:gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s+", " ")
+    if s == "" then return nil end
+    return s:lower()
+end
+
+--- Sort { path=, idx= } entries into series order: numeric series_index
+--- first (ascending, decimals kept — ".5" side-volumes are real), entries
+--- without an index after them in natural filename order (the picker's
+--- pathOrderLess, so "vol 2" stays before "vol 10"). Pure; returns a new
+--- array, input untouched.
+--- @param entries table Array of { path = string, idx = number|string|nil }
+--- @return table Sorted copy
+function BookGroups.orderBySeriesIndex(entries)
+    local out = {}
+    for i, e in ipairs(entries or {}) do out[i] = e end
+    local less = require("koassistant_book_picker").pathOrderLess
+    table.sort(out, function(a, b)
+        local ia, ib = tonumber(a.idx), tonumber(b.idx)
+        if ia and ib and ia ~= ib then return ia < ib end
+        if ia and not ib then return true end
+        if ib and not ia then return false end
+        return less(a.path, b.path)
+    end)
+    return out
+end
+
 --- Order merge-picker candidates by group relation to the current book
 --- (item 46 "earlier feeds later"): predecessors first, NEAREST predecessor
 --- on top (book N-1, then N-2, …), then later group-mates in group order,

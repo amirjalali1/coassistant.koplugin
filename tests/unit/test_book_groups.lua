@@ -26,6 +26,16 @@ end
 setupPaths()
 require("mock_koreader")
 
+-- UI-only modules koassistant_book_picker requires at load time
+-- (orderBySeriesIndex borrows its pathOrderLess comparator); the helpers
+-- under test are pure and never touch them. Same stubs as test_book_picker.
+package.loaded["ui/widget/buttondialog"] = package.loaded["ui/widget/buttondialog"] or {}
+package.loaded["ui/widget/infomessage"] = package.loaded["ui/widget/infomessage"] or {}
+package.loaded["ui/widget/menu"] = package.loaded["ui/widget/menu"] or {}
+package.loaded["docsettings"] = package.loaded["docsettings"] or {
+    open = function() return { readSetting = function() end, close = function() end } end,
+}
+
 package.loaded["koassistant_book_groups"] = nil
 local BookGroups = require("koassistant_book_groups")
 
@@ -326,6 +336,32 @@ TestRunner:test("orderCandidates: unordered mates lead, with no position and no 
     TestRunner:assertEqual(sorted[1].group_direction, nil,
         "no direction: this is what keeps the series chain and the LATER warning away")
     TestRunner:assertEqual(sorted[2].group_direction, nil, "neither side has one")
+end)
+
+print("")
+print("  [series helpers (P5 item 7)]")
+
+TestRunner:test("normalizeSeries: case + whitespace fold, nil for empty/non-string", function()
+    TestRunner:assertEqual(BookGroups.normalizeSeries("  Example Saga  "), "example saga", "trim + lower")
+    TestRunner:assertEqual(BookGroups.normalizeSeries("Example\t  Saga"), "example saga", "inner whitespace collapsed")
+    TestRunner:assertEqual(BookGroups.normalizeSeries(""), nil, "empty is nil")
+    TestRunner:assertEqual(BookGroups.normalizeSeries("   "), nil, "blank is nil")
+    TestRunner:assertEqual(BookGroups.normalizeSeries(42), nil, "non-string is nil")
+end)
+
+TestRunner:test("orderBySeriesIndex: numeric index first, index-less tail in natural filename order", function()
+    local sorted = BookGroups.orderBySeriesIndex({
+        { path = "/b/vol 10.epub" },
+        { path = "/b/second.epub", idx = 2 },
+        { path = "/b/vol 2.epub" },
+        { path = "/b/first.epub", idx = "1" },
+        { path = "/b/interlude.epub", idx = 1.5 },
+    })
+    TestRunner:assertEqual(sorted[1].path, "/b/first.epub", "string index tonumber'd, 1 first")
+    TestRunner:assertEqual(sorted[2].path, "/b/interlude.epub", "decimal side-volume in place")
+    TestRunner:assertEqual(sorted[3].path, "/b/second.epub", "index 2 after 1.5")
+    TestRunner:assertEqual(sorted[4].path, "/b/vol 2.epub", "index-less tail starts")
+    TestRunner:assertEqual(sorted[5].path, "/b/vol 10.epub", "natural order: 2 before 10")
 end)
 
 local ok = TestRunner:summary()
