@@ -76,10 +76,14 @@ local function kindLabel(hit)
     return label
 end
 
---- The "(from the checkpoint built to N%)" transparency line, or nil.
+--- The "⚠ (from the checkpoint built to N%)" transparency line, or nil.
+--- Leading ⚠ + EARLY placement on every surface (2026-08-16 filing 2f,
+--- maintainer-marked important): the reader must see the spoiler risk before
+--- the description, not under it. U+26A0 renders in both card paths (MuPDF
+--- HTML and TextBoxWidget — the truncation notices proved it).
 local function aheadLine(hit)
     if hit.source == "ahead" and hit.ahead_progress then
-        return T(_("(from the checkpoint built to %1%)"),
+        return "\u{26A0} " .. T(_("(from the checkpoint built to %1%)"),
             math.floor(hit.ahead_progress * 100 + 0.5))
     end
 end
@@ -161,10 +165,11 @@ local function showPopupCard(hit, opts)
     local kind = kindLabel(hit)
     if kind ~= "" then head = head .. " · " .. kind end
     local parts = { head }
-    local ident = XrayCard.firstSentence(itemText(hit.item))
-    if ident ~= "" then parts[#parts + 1] = ident end
+    -- Ahead warning ABOVE the description (2f: early placement)
     local ahead = aheadLine(hit)
     if ahead then parts[#parts + 1] = ahead end
+    local ident = XrayCard.firstSentence(itemText(hit.item))
+    if ident ~= "" then parts[#parts + 1] = ident end
     local text = table.concat(parts, "\n\n")
     local rtl = nil
     if can_md then
@@ -198,13 +203,14 @@ local function showFootnoteCard(hit, opts)
     local kind = kindLabel(hit)
     local html = "<div><b>" .. esc(hit.name or "") .. "</b>"
         .. (kind ~= "" and (" · " .. esc(kind)) or "") .. "</div>"
-    local ident = XrayCard.firstSentence(itemText(hit.item))
-    if ident ~= "" then
-        html = html .. '<div class="koa-line">' .. esc(ident) .. "</div>"
-    end
+    -- Ahead warning ABOVE the description (2f: early placement)
     local ahead = aheadLine(hit)
     if ahead then
         html = html .. '<div class="koa-meta">' .. esc(ahead) .. "</div>"
+    end
+    local ident = XrayCard.firstSentence(itemText(hit.item))
+    if ident ~= "" then
+        html = html .. '<div class="koa-line">' .. esc(ident) .. "</div>"
     end
     -- Affordance: stock footnote panels do nothing on an inside tap, ours
     -- opens the full entry — say so, muted
@@ -287,8 +293,9 @@ function XrayCard.showFullDetail(hit)
     local XrayParser = require("koassistant_xray_parser")
     local parts = {}
     if hit.source == "ahead" and hit.ahead_progress then
-        parts[#parts + 1] = T(_("From the checkpoint built to %1% — ahead of your reading position."),
-            math.floor(hit.ahead_progress * 100 + 0.5))
+        parts[#parts + 1] = "\u{26A0} "
+            .. T(_("From the checkpoint built to %1%, ahead of your reading position."),
+                math.floor(hit.ahead_progress * 100 + 0.5))
     end
     local ok_fmt, body = pcall(XrayParser.formatItemDetail, hit.item, hit.category_key)
     if ok_fmt and type(body) == "string" and body:match("%S") then

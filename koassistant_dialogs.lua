@@ -6529,6 +6529,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             configuration.features._session_ctx_direction = nil
             configuration.features._session_ctx_chars = nil
             configuration.features._session_ctx_paragraphs = nil
+            configuration.features._session_ctx_label_stale = nil
             -- Quick-controls chip state (controls_parity_plan.md §2/§9): same
             -- config-resident lifecycle as the scope pick — survives a refresh
             -- via the marker, cleared on a fresh open — then SEEDED from the
@@ -8261,7 +8262,12 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             refreshInputDialog()
                         end
                         local cur_kind = (feats._session_scope and feats._session_scope.kind) or "none"
-                        local function mark(kind) return (kind == cur_kind) and "● " or "○ " end
+                        -- Chapter preset rows share the section/from_section kinds;
+                        -- `preset` disambiguates the marks (round 6)
+                        local cur_preset = feats._session_scope and feats._session_scope.preset or nil
+                        local function mark(kind, preset)
+                            return (kind == cur_kind and preset == cur_preset) and "● " or "○ "
+                        end
                         -- Untitled TOC entries: mirror the picker's own "Page N" display fallback
                         local function pickerEntryLabel(entry)
                             local lbl = entry.title or ""
@@ -8369,6 +8375,49 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 end,
                             }})
                         end
+                        -- Current-chapter quick picks (round 6, maintainer): the chapter
+                        -- containing the position, whole or up to the position — no TOC
+                        -- navigation. Same chapter resolution as the quiz presets
+                        -- (_currentChapterInfo), same show/hide product rules
+                        -- (chapterPresets: so-far only mid-chapter; whole hidden under
+                        -- protection mid-chapter where it would equal so-far).
+                        if toc_available then
+                            local ch_info = plugin and plugin._currentChapterInfo
+                                and plugin:_currentChapterInfo() or nil
+                            local presets = require("koassistant_scope_resolver").chapterPresets({
+                                chapter = ch_info,
+                                current_page = cur_page,
+                                spoiler_free = session_spoiler_free,
+                            })
+                            if presets.chapter then
+                                table.insert(rows, {{
+                                    text = mark("section", "chapter") .. _("Current chapter"),
+                                    callback = function()
+                                        if not consent then explainConsent() return end
+                                        setPick({
+                                            kind = "section", preset = "chapter",
+                                            start_page = presets.chapter.start_page,
+                                            end_page = presets.chapter.end_page,
+                                            title = ch_info.title,
+                                        })
+                                    end,
+                                }})
+                            end
+                            if presets.chapter_so_far then
+                                table.insert(rows, {{
+                                    text = mark("from_section", "chapter_so_far")
+                                        .. _("Current chapter (to current position)"),
+                                    callback = function()
+                                        if not consent then explainConsent() return end
+                                        setPick({
+                                            kind = "from_section", preset = "chapter_so_far",
+                                            start_page = presets.chapter_so_far.start_page,
+                                            title = ch_info.title,
+                                        })
+                                    end,
+                                }})
+                            end
+                        end
                         if toc_available then
                             if cur_page > 1 then
                                 table.insert(rows, {{
@@ -8418,61 +8467,95 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                     local function pickMode()
                         local ButtonDialog = require("ui/widget/buttondialog")
                         local dialog
-                        local function mark(m) return (m == mode) and "● " or "○ " end
+                        -- Re-resolved per (re)show: mode picks and dial taps
+                        -- RE-SHOW this popup instead of closing it, so the
+                        -- number appears the moment its mode is picked
+                        -- (device round 6 — the separate Amount row was
+                        -- invisible until the popup was reopened).
+                        local cur_mode = feats._session_highlight_context
+                            or BookSettings.resolveHighlightContext(doc_settings, feats)
+                        local function reshow()
+                            UIManager:close(dialog)
+                            pickMode()
+                        end
                         local function setMode(m)
                             feats._session_highlight_context = m
-                            UIManager:close(dialog)
-                            refreshInputDialog()
+                            -- Chip label shows the mode — refresh once at close
+                            feats._session_ctx_label_stale = true
+                            reshow()
                         end
-                        -- Per-request dials (round 5, maintainer ask): direction
-                        -- and amount for THIS chat, below the mode rows. Cleared
-                        -- with the other session state on a fresh dialog open.
+                        -- The picked numbered mode carries its count as a
+                        -- companion button (maintainer design): tap cycles.
+                        local function modeRow(m, row_label)
+                            local row = { {
+                                text = ((m == cur_mode) and "● " or "○ ") .. row_label,
+                                callback = function() setMode(m) end,
+                            } }
+                            if m == cur_mode and m == "paragraph" then
+                                local cur_n = tonumber(feats._session_ctx_paragraphs)
+                                    or tonumber(feats.highlight_context_paragraphs) or 1
+                                row[#row + 1] = {
+                                    text = tostring(cur_n),
+                                    callback = function()
+                                        feats._session_ctx_paragraphs = cur_n >= 5 and 1 or cur_n + 1
+                                        reshow()
+                                    end,
+                                }
+                            elseif m == cur_mode and m == "characters" then
+                                local cur_n = tonumber(feats._session_ctx_chars)
+                                    or tonumber(feats.highlight_context_chars) or 100
+                                row[#row + 1] = {
+                                    text = tostring(cur_n),
+                                    callback = function()
+                                        feats._session_ctx_chars =
+                                            ({ [100] = 250, [250] = 500, [500] = 1000, [1000] = 100 })[cur_n] or 100
+                                        reshow()
+                                    end,
+                                }
+                            end
+                            return row
+                        end
                         local rows = {
-                            {{ text = mark("none") .. _("Off"), callback = function() setMode("none") end }},
-                            {{ text = mark("sentence") .. _("Sentence"), callback = function() setMode("sentence") end }},
-                            {{ text = mark("paragraph") .. _("Paragraph"), callback = function() setMode("paragraph") end }},
-                            {{ text = mark("characters") .. _("Characters"), callback = function() setMode("characters") end }},
+                            modeRow("none", _("Off")),
+                            modeRow("sentence", _("Sentence")),
+                            modeRow("paragraph", _("Paragraph")),
+                            modeRow("characters", _("Characters")),
                         }
-                        local function dialRow(text, change_fn)
-                            return {{ text = text, callback = function()
-                                change_fn()
-                                UIManager:close(dialog)
-                                pickMode()
-                            end }}
-                        end
                         local cur_dir = feats._session_ctx_direction
                             or (feats.highlight_context_direction == "before" and "before" or "both")
-                        table.insert(rows, dialRow(
-                            T(_("Direction: %1 (this chat)"),
+                        table.insert(rows, {{
+                            text = T(_("Direction: %1 (this chat)"),
                                 cur_dir == "before" and _("Before only") or _("Both sides")),
-                            function()
+                            callback = function()
                                 feats._session_ctx_direction =
                                     (cur_dir == "before") and "both" or "before"
-                            end))
-                        if mode == "paragraph" then
-                            local cur_n = feats._session_ctx_paragraphs
-                                or tonumber(feats.highlight_context_paragraphs) or 1
-                            table.insert(rows, dialRow(
-                                cur_n == 1 and _("Amount: 1 paragraph each side (this chat)")
-                                    or T(_("Amount: %1 paragraphs each side (this chat)"), cur_n),
-                                function()
-                                    feats._session_ctx_paragraphs = cur_n >= 5 and 1 or cur_n + 1
-                                end))
-                        elseif mode == "characters" then
-                            local cur_n = feats._session_ctx_chars
-                                or tonumber(feats.highlight_context_chars) or 100
-                            table.insert(rows, dialRow(
-                                T(_("Amount: %1 characters each side (this chat)"), cur_n),
-                                function()
-                                    feats._session_ctx_chars =
-                                        ({ [100] = 250, [250] = 500, [500] = 1000, [1000] = 100 })[cur_n] or 100
-                                end))
+                                reshow()
+                            end,
+                        }})
+                        local function closeAndRefresh()
+                            if feats._session_ctx_label_stale then
+                                feats._session_ctx_label_stale = nil
+                                refreshInputDialog()
+                            end
                         end
                         table.insert(rows, {{ text = _("Close"),
-                            callback = function() UIManager:close(dialog) end }})
+                            callback = function()
+                                UIManager:close(dialog)
+                                closeAndRefresh()
+                            end }})
+                        local title = _("Context around the selection (for this chat)")
+                        -- Protection-active note (round 6 "no spoiler override"):
+                        -- the clamp is invisible mechanics — name it where the
+                        -- session mode is picked; the limit itself is edited in
+                        -- the hold picker's global row.
+                        if session_spoiler_free and BookSettings.spoilerContextNote then
+                            local note = BookSettings.spoilerContextNote(feats)
+                            if note then title = title .. "\n" .. note end
+                        end
                         dialog = ButtonDialog:new{
-                            title = _("Context around the selection (for this chat)"),
+                            title = title,
                             buttons = rows,
+                            tap_close_callback = closeAndRefresh,
                         }
                         UIManager:show(dialog)
                     end

@@ -1207,6 +1207,8 @@ end
 --                (default: the matching option's label)
 --   top_rows     optional fn(ctx) -> button rows ABOVE the target toggle
 --   bottom_rows  optional fn(ctx) -> button rows between values and Close
+--   option_extra optional fn(ctx, value, selected) -> button|nil appended to
+--                that option's row (inline dials, e.g. the context amount)
 --   on_commit    optional fn(plugin) extra hook after any write
 -- ctx handed to title/top_rows/bottom_rows: { doc_settings, features,
 -- is_book_target, plugin, ui, document_path, on_close, closeDialog }.
@@ -1310,25 +1312,32 @@ function BookSettings.showLayeredPicker(spec, opts)
         })
     end
 
+    -- Optional per-option companion button (spec.option_extra(ctx, value,
+    -- selected) -> button|nil), appended to that option's row — the inline
+    -- amount dial's seat (round 6, maintainer design: the number sits next to
+    -- the picked mode, not on its own row)
+    local function optionRow(o, selected, pick_fn)
+        local row = { {
+            text = dot(selected) .. o.label,
+            callback = function() pick_fn(o.value) end,
+        } }
+        if spec.option_extra then
+            local extra = spec.option_extra(ctx, o.value, selected)
+            if extra then row[#row + 1] = extra end
+        end
+        return row
+    end
     if is_book_target then
         table.insert(buttons, {{
             text = dot(book_val == nil) .. T(_("Follow global (%1)"), valueLabel(global_val)),
             callback = function() pickBook(nil) end,
         }})
         for _idx, o in ipairs(spec.options) do
-            local val = o.value
-            table.insert(buttons, {{
-                text = dot(book_val == val) .. o.label,
-                callback = function() pickBook(val) end,
-            }})
+            table.insert(buttons, optionRow(o, book_val == o.value, pickBook))
         end
     else
         for _idx, o in ipairs(spec.options) do
-            local val = o.value
-            table.insert(buttons, {{
-                text = dot(global_val == val) .. o.label,
-                callback = function() pickGlobal(val) end,
-            }})
+            table.insert(buttons, optionRow(o, global_val == o.value, pickGlobal))
         end
     end
     if spec.bottom_rows then
@@ -1577,6 +1586,20 @@ local function spoilerContextNote(features)
     end
     return _("Spoiler protection is on: context after the selection stops at the end of its paragraph.")
 end
+-- Exported for the Ctx chip's tap popup title (round 6: the session picker
+-- names the active clamp too; the limit itself is edited in the hold picker)
+BookSettings.spoilerContextNote = spoilerContextNote
+
+-- Global feature write + live push, shared by the pickers' global dial rows
+local function writeGlobalFeature(plugin, k, v)
+    if plugin and plugin.settings then
+        local f = plugin.settings:readSetting("features") or {}
+        f[k] = v
+        plugin.settings:saveSetting("features", f)
+        plugin.settings:flush()
+        if plugin.updateConfigFromSettings then plugin:updateConfigFromSettings() end
+    end
+end
 local function spoilerContextLimitLabel(features)
     local lim = features.spoiler_context_limit or "paragraph"
     if lim == "off" then return _("No limit") end
@@ -1586,14 +1609,13 @@ local function spoilerContextLimitLabel(features)
 end
 
 -- The GLOBAL context dials both pickers carry as bottom rows: direction
--- (both sides / before only), the spoiler clamp granularity (tap-cycles
--- selection → sentence → paragraph → off), and — round 5, maintainer ask —
--- the AMOUNT for the effective mode (paragraph count or character count;
--- sentence mode has no number: it is one sentence each side by definition).
--- show_fn = the calling picker, so a tap re-shows it with fresh labels on the
--- same tab. amount_spec = { mode, chars_key, para_key } — para_key nil hides
--- the paragraph amount (the dictionary channel's paragraph window is fixed).
-local function contextGlobalRows(ctx, show_fn, amount_spec)
+-- (both sides / before only) and the spoiler clamp granularity (tap-cycles
+-- selection → sentence → paragraph → off). The AMOUNT moved off its own row
+-- in round 6 — it rides the picked mode row as an inline companion button
+-- (spec.option_extra; the highlight picker only, maintainer: the dictionary
+-- picker stays as it is). show_fn = the calling picker, so a tap re-shows it
+-- with fresh labels on the same tab.
+local function contextGlobalRows(ctx, show_fn)
     local function reopen()
         show_fn({
             plugin = ctx.plugin, ui = ctx.ui, document_path = ctx.document_path,
@@ -1601,22 +1623,13 @@ local function contextGlobalRows(ctx, show_fn, amount_spec)
             target_override = ctx.is_book_target and "book" or "global",
         })
     end
-    local function writeFeature(k, v)
-        if ctx.plugin and ctx.plugin.settings then
-            local f = ctx.plugin.settings:readSetting("features") or {}
-            f[k] = v
-            ctx.plugin.settings:saveSetting("features", f)
-            ctx.plugin.settings:flush()
-            if ctx.plugin.updateConfigFromSettings then ctx.plugin:updateConfigFromSettings() end
-        end
-    end
     local before_only = ctx.features.highlight_context_direction == "before"
-    local rows = {
+    return {
         {{
             text = T(_("Direction: %1 (global)"),
                 before_only and _("Before only") or _("Both sides")),
             callback = function()
-                writeFeature("highlight_context_direction",
+                writeGlobalFeature(ctx.plugin, "highlight_context_direction",
                     (not before_only) and "before" or nil)
                 ctx.closeDialog()
                 reopen()
@@ -1629,36 +1642,46 @@ local function contextGlobalRows(ctx, show_fn, amount_spec)
                 local cur = ctx.features.spoiler_context_limit or "paragraph"
                 local next_v = ({ selection = "sentence", sentence = "paragraph",
                     paragraph = "off", off = "selection" })[cur] or "paragraph"
-                writeFeature("spoiler_context_limit", next_v)
+                writeGlobalFeature(ctx.plugin, "spoiler_context_limit", next_v)
                 ctx.closeDialog()
                 reopen()
             end,
         }},
     }
-    if amount_spec and amount_spec.mode == "paragraph" and amount_spec.para_key then
-        local cur = tonumber(ctx.features[amount_spec.para_key]) or 1
-        table.insert(rows, {{
-            text = cur == 1 and _("Amount: 1 paragraph each side (global)")
-                or T(_("Amount: %1 paragraphs each side (global)"), cur),
-            callback = function()
-                writeFeature(amount_spec.para_key, cur >= 5 and 1 or cur + 1)
-                ctx.closeDialog()
-                reopen()
-            end,
-        }})
-    elseif amount_spec and amount_spec.mode == "characters" and amount_spec.chars_key then
-        local cur = tonumber(ctx.features[amount_spec.chars_key]) or 100
-        table.insert(rows, {{
-            text = T(_("Amount: %1 characters each side (global)"), cur),
-            callback = function()
-                local next_n = ({ [100] = 250, [250] = 500, [500] = 1000, [1000] = 100 })[cur] or 100
-                writeFeature(amount_spec.chars_key, next_n)
-                ctx.closeDialog()
-                reopen()
-            end,
-        }})
+end
+
+-- The inline amount companion for a context-mode picker row (round 6): the
+-- number next to the picked mode, tap cycles. GLOBAL amounts — the only
+-- amount keys that exist; the per-request override lives on the Ctx chip's
+-- tap popup. paragraph 1→5, characters 100/250/500/1000.
+local function contextAmountExtra(ctx, show_fn, value, selected)
+    if not selected then return nil end
+    local key, next_map, cur
+    if value == "paragraph" then
+        key = "highlight_context_paragraphs"
+        cur = tonumber(ctx.features[key]) or 1
+    elseif value == "characters" then
+        key = "highlight_context_chars"
+        cur = tonumber(ctx.features[key]) or 100
+        next_map = { [100] = 250, [250] = 500, [500] = 1000, [1000] = 100 }
+    else
+        return nil
     end
-    return rows
+    return {
+        text = tostring(cur),
+        callback = function()
+            local next_v
+            if next_map then next_v = next_map[cur] or 100
+            else next_v = cur >= 5 and 1 or cur + 1 end
+            writeGlobalFeature(ctx.plugin, key, next_v)
+            ctx.closeDialog()
+            show_fn({
+                plugin = ctx.plugin, ui = ctx.ui, document_path = ctx.document_path,
+                on_close = ctx.on_close,
+                target_override = ctx.is_book_target and "book" or "global",
+            })
+        end,
+    }
 end
 
 function BookSettings.showHighlightContext(opts)
@@ -1681,12 +1704,11 @@ function BookSettings.showHighlightContext(opts)
         global = function(f) return f.highlight_context_mode or "none" end,
         value_label = BookSettings.contextModeLabel,
         options = options,
+        option_extra = function(ctx, value, selected)
+            return contextAmountExtra(ctx, BookSettings.showHighlightContext, value, selected)
+        end,
         bottom_rows = function(ctx)
-            return contextGlobalRows(ctx, BookSettings.showHighlightContext, {
-                mode = BookSettings.resolveHighlightContext(ctx.doc_settings, ctx.features),
-                chars_key = "highlight_context_chars",
-                para_key = "highlight_context_paragraphs",
-            })
+            return contextGlobalRows(ctx, BookSettings.showHighlightContext)
         end,
     }, opts)
 end
@@ -1714,12 +1736,10 @@ function BookSettings.showDictionaryContext(opts)
             if note then title = title .. "\n" .. note end
             return title
         end,
+        -- No option_extra: the dictionary picker keeps its shape (round 6,
+        -- maintainer: "this we dont want to mess with")
         bottom_rows = function(ctx)
-            return contextGlobalRows(ctx, BookSettings.showDictionaryContext, {
-                mode = BookSettings.resolveDictionaryContext(ctx.doc_settings, ctx.features),
-                chars_key = "dictionary_context_chars",
-                -- no para_key: the dictionary paragraph window is fixed at 1
-            })
+            return contextGlobalRows(ctx, BookSettings.showDictionaryContext)
         end,
         key = BookSettings.KEY_DICTIONARY_CONTEXT,
         field = "dictionary_context_mode",
