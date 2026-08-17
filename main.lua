@@ -10922,6 +10922,36 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
       table.insert(vgroup, sp_table)
     end
 
+    -- Categories (presets v0.21): only on picks that START a lineage — a
+    -- plain extend continues the artifact's own category stamp and offers no
+    -- pick (categories cannot be added incrementally). Sticky per-book write
+    -- via the shared picker; the row label re-reads it on return.
+    if force_rebuild or mode ~= "extend" or pickIsRebuild() then
+      local cat_value = self.ui.doc_settings
+        and self.ui.doc_settings:readSetting(BookSettings.KEY_XRAY_CATEGORIES)
+      local ButtonTableC = require("ui/widget/buttontable")
+      local cat_table = ButtonTableC:new{
+        width = content_width,
+        buttons = {{
+          {
+            text = T(_("Change X-Ray categories (%1)…"),
+              BookSettings.xrayCategoriesLabel(cat_value)),
+            callback = function()
+              UIManager:close(current_dialog)
+              BookSettings.showXrayCategoriesPicker({
+                ui = self_ref.ui,
+                on_close = function() buildAndShow() end,
+              })
+            end,
+          },
+        }},
+        zero_sep = true,
+        show_parent = self_ref,
+      }
+      table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
+      table.insert(vgroup, cat_table)
+    end
+
     -- Gray hint under the Build group — every pick explains itself up front
     -- (round 22, §25(f); previously only the follow pick had one)
     local hint

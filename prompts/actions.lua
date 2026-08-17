@@ -722,6 +722,193 @@ local function build_xray_prompt(template, replacements)
     return result
 end
 
+-- ============================================================
+-- X-Ray category groups (presets session, v0.21)
+-- ============================================================
+-- Type-agnostic groups over the fiction/nonfiction schemas: the category pick
+-- happens BEFORE the model decides fiction vs nonfiction, so the picker speaks
+-- in groups and each type maps them to its own JSON keys. The schema and
+-- guidance blocks below are per-group FRAGMENTS; the full assembly (every
+-- group, canonical order) is byte-identical to the pre-split prompt, so the
+-- default path is unchanged. Academic (DOI) and section prompts always use the
+-- full set in v0.21. Selection storage: csv of group ids in canonical order
+-- ("people,events"); nil = full.
+local XRAY_CATEGORY_ORDER = { "people", "places", "ideas", "terms", "events" }
+local XRAY_CATEGORY_KEYS = {
+    -- ids → JSON keys per type (ideas spans two nonfiction categories)
+    fiction = {
+        people = { "characters" }, places = { "locations" },
+        ideas = { "themes" }, terms = { "lexicon" }, events = { "timeline" },
+    },
+    nonfiction = {
+        people = { "key_figures" }, places = { "locations" },
+        ideas = { "core_concepts", "arguments" }, terms = { "terminology" },
+        events = { "argument_development" },
+    },
+}
+
+local FICTION_SCHEMA_FRAGMENTS = {
+    people = [==["characters": [
+    {
+      "name": "Full Name",
+      "aliases": ["Nickname", "Title", "Shortened Name"],
+      "role": "Protagonist / Supporting / Antagonist",
+      "description": "Who they are, their journey, pivotal moments, and key developments.",
+      "connections": ["Other Character (relationship)"]
+    }
+  ]]==],
+    places = [==["locations": [
+    {
+      "name": "Place Name",
+      "description": "What it is, its atmosphere, and what the reader encounters there.",
+      "significance": "Key events here and why this place matters to the narrative.",
+      "references": ["Character or item name"]
+    }
+  ]]==],
+    ideas = [==["themes": [
+    {
+      "name": "Theme Name",
+      "description": "How this theme manifests through characters, conflicts, and events.",
+      "references": ["Character or item name"]
+    }
+  ]]==],
+    terms = [==["lexicon": [
+    {
+      "term": "Term",
+      "definition": "Meaning and relevance to the story."
+    }
+  ]]==],
+    events = [==["timeline": [
+    {
+      "event": "What happened",
+      "chapter": "Chapter/Section reference",
+      "significance": "Why it mattered and what it changed",
+      "characters": ["Names involved"]
+    }
+  ]]==],
+}
+
+local FICTION_GUIDANCE_FRAGMENTS = {
+    people = "- **Characters**: The heart of the X-Ray. Include named characters, groups, and entities the reader encounters, not just protagonists. For major characters (protagonist, antagonist, key supporting), write 2-3 sentences covering personality, their arc through the story, pivotal moments or turning points, and their current situation. For minor characters, 1-2 sentences suffice. Always include aliases and connections with relationship type.",
+    places = "- **Locations**: For significant locations, convey atmosphere and what unfolds there. Minor locations need only a brief note. Include references to characters or items associated with each location.",
+    ideas = "- **Themes**: Include themes, motifs, and recurring ideas, not just the central ones. For major themes, trace how they develop through specific characters, conflicts, and events. For minor motifs or recurring ideas, a brief note suffices. Include references to characters or items that embody each theme.",
+    terms = "- **Lexicon**: In-world terms, cultural references, or specialized vocabulary. Keep definitions concise — this is reference material.",
+    events = "- **Timeline**: Chronological — include significant events, not just major plot points. Cover character moments, revelations, turning points, and developments across each chapter. Each event should have a chapter reference and involved characters.",
+}
+
+local NONFICTION_SCHEMA_FRAGMENTS = {
+    people = [==["key_figures": [
+    {
+      "name": "Person Name",
+      "aliases": ["Alternate Name", "Shortened Name"],
+      "role": "Their role or significance.",
+      "description": "Who they are, their key contributions or ideas, how the author engages with them, and their importance to the argument.",
+      "connections": ["Related Person (relationship)"]
+    }
+  ]]==],
+    places = [==["locations": [
+    {
+      "name": "Place Name",
+      "description": "What it is, its historical or conceptual significance in the text.",
+      "significance": "Key events, arguments, or developments associated with this place.",
+      "references": ["Key figure or concept name"]
+    }
+  ]]==],
+    ideas = [==["core_concepts": [
+    {
+      "name": "Concept",
+      "description": "What it means and how the author introduces it.",
+      "significance": "How the author develops it through evidence, examples, or argument, and why it matters to the thesis.",
+      "references": ["Key figure or concept name"]
+    }
+  ],
+  "arguments": [
+    {
+      "name": "Claim",
+      "description": "The argument being made and its stakes.",
+      "evidence": "Key evidence, reasoning, and any counter-arguments addressed.",
+      "references": ["Key figure or concept name"]
+    }
+  ]]==],
+    terms = [==["terminology": [
+    {
+      "term": "Term",
+      "definition": "Definition and how it's used in context."
+    }
+  ]]==],
+    events = [==["argument_development": [
+    {
+      "event": "Key point or development",
+      "chapter": "Chapter/Section",
+      "significance": "How it advances the overall argument or shifts the discussion",
+      "references": ["Key figure or concept name"]
+    }
+  ]]==],
+}
+
+local NONFICTION_GUIDANCE_FRAGMENTS = {
+    people = "- **Key Figures**: Include people, groups, institutions, and historical actors discussed or referenced, not just central figures. For central figures (the author's main interlocutors, key researchers, historical actors), write 2-3 sentences covering who they are, what ideas or work they contribute, how the author engages with them (agrees, critiques, builds on), and their significance to the argument. For briefly mentioned figures, 1-2 sentences. Always include aliases (alternate names, shortened forms, titles the text uses to refer to them) and connections where figures relate to each other.",
+    places = "- **Locations**: Cities, regions, institutions, and historically significant places discussed in the text. For each, note what it is, its significance to the subject matter, and what events or arguments are connected to it. Include references to key figures or concepts associated with each place.",
+    ideas = "- **Core Concepts**: Include concepts, theories, frameworks, and ideas the author introduces, develops, or critiques. For central concepts, explain what they mean and how the author develops them through evidence, examples, or reasoning. For peripheral concepts, a brief definition suffices. Include references to key figures or other items that develop each concept.\n- **Arguments**: Include claims, propositions, and arguments the author advances or engages with, not just the central thesis. For major arguments, capture the claim, evidence or reasoning, and counter-arguments addressed. For minor or supporting arguments, a brief statement suffices. Include references to key figures or concepts involved.",
+    terms = "- **Terminology**: Specialized vocabulary, jargon, or terms the author defines. Keep concise — this is reference material.",
+    events = "- **Argument Development**: Track the intellectual progression across the work. Include developments, turning points, and shifts in each chapter or section — not just the main thesis but subsidiary arguments and case studies. Each entry should show how it advances or complicates the discussion. Include references to key figures or concepts involved.",
+}
+
+--- Normalize a category selection to its canonical csv form.
+--- nil when the value is absent, malformed, empty, or names every group
+--- (full needs no marker — nil IS full everywhere in this feature).
+--- @param value any Stored selection (csv string of group ids)
+--- @return string|nil canonical csv ("people,events") or nil = full
+local function normalizeXrayCategories(value)
+    if type(value) ~= "string" or value == "" then return nil end
+    local set = {}
+    for id in value:gmatch("[^,%s]+") do set[id] = true end
+    local out, n = {}, 0
+    for _idx, id in ipairs(XRAY_CATEGORY_ORDER) do
+        if set[id] then
+            out[#out + 1] = id
+            n = n + 1
+        end
+    end
+    if n == 0 or n == #XRAY_CATEGORY_ORDER then return nil end
+    return table.concat(out, ",")
+end
+
+--- Assemble the four schema/guidance replacement strings for a selection.
+--- @param selection string|nil canonical csv (nil = full)
+local function assembleXraySchemaParts(selection)
+    local set
+    if selection then
+        set = {}
+        for id in selection:gmatch("[^,]+") do set[id] = true end
+    end
+    local fs, fg, ns, ng = {}, {}, {}, {}
+    for _idx, id in ipairs(XRAY_CATEGORY_ORDER) do
+        if not set or set[id] then
+            fs[#fs + 1] = FICTION_SCHEMA_FRAGMENTS[id]
+            fg[#fg + 1] = FICTION_GUIDANCE_FRAGMENTS[id]
+            ns[#ns + 1] = NONFICTION_SCHEMA_FRAGMENTS[id]
+            ng[#ng + 1] = NONFICTION_GUIDANCE_FRAGMENTS[id]
+        end
+    end
+    return {
+        __FICTION_SCHEMA__ = table.concat(fs, ",\n  ") .. ",",
+        __FICTION_GUIDANCE__ = table.concat(fg, "\n"),
+        __NONFICTION_SCHEMA__ = table.concat(ns, ",\n  ") .. ",",
+        __NONFICTION_GUIDANCE__ = table.concat(ng, "\n"),
+    }
+end
+
+--- build_xray_prompt with the schema parts for a category selection folded in.
+--- @param template string
+--- @param replacements table Scope replacement set (partial/complete/section)
+--- @param selection string|nil canonical csv (nil = full)
+local function assemble_xray_prompt(template, replacements, selection)
+    local merged = assembleXraySchemaParts(selection)
+    for k, v in pairs(replacements) do merged[k] = v end
+    return build_xray_prompt(template, merged)
+end
+
 local XRAY_PROMPT_TEMPLATE = [[Create a structured reader's companion for "{title}"{author_clause}.{doi_clause}
 
 __SCOPE_LINE__
@@ -737,53 +924,12 @@ First, determine if this is FICTION or NON-FICTION. Then output ONLY a valid JSO
 FOR FICTION, use this JSON schema:
 {
   "type": "fiction",
-  "characters": [
-    {
-      "name": "Full Name",
-      "aliases": ["Nickname", "Title", "Shortened Name"],
-      "role": "Protagonist / Supporting / Antagonist",
-      "description": "Who they are, their journey, pivotal moments, and key developments.",
-      "connections": ["Other Character (relationship)"]
-    }
-  ],
-  "locations": [
-    {
-      "name": "Place Name",
-      "description": "What it is, its atmosphere, and what the reader encounters there.",
-      "significance": "Key events here and why this place matters to the narrative.",
-      "references": ["Character or item name"]
-    }
-  ],
-  "themes": [
-    {
-      "name": "Theme Name",
-      "description": "How this theme manifests through characters, conflicts, and events.",
-      "references": ["Character or item name"]
-    }
-  ],
-  "lexicon": [
-    {
-      "term": "Term",
-      "definition": "Meaning and relevance to the story."
-    }
-  ],
-  "timeline": [
-    {
-      "event": "What happened",
-      "chapter": "Chapter/Section reference",
-      "significance": "Why it mattered and what it changed",
-      "characters": ["Names involved"]
-    }
-  ],
+  __FICTION_SCHEMA__
   __FICTION_STATUS__
 }
 
 Guidance for fiction:
-- **Characters**: The heart of the X-Ray. Include named characters, groups, and entities the reader encounters, not just protagonists. For major characters (protagonist, antagonist, key supporting), write 2-3 sentences covering personality, their arc through the story, pivotal moments or turning points, and their current situation. For minor characters, 1-2 sentences suffice. Always include aliases and connections with relationship type.
-- **Locations**: For significant locations, convey atmosphere and what unfolds there. Minor locations need only a brief note. Include references to characters or items associated with each location.
-- **Themes**: Include themes, motifs, and recurring ideas, not just the central ones. For major themes, trace how they develop through specific characters, conflicts, and events. For minor motifs or recurring ideas, a brief note suffices. Include references to characters or items that embody each theme.
-- **Lexicon**: In-world terms, cultural references, or specialized vocabulary. Keep definitions concise — this is reference material.
-- **Timeline**: Chronological — include significant events, not just major plot points. Cover character moments, revelations, turning points, and developments across each chapter. Each event should have a chapter reference and involved characters.
+__FICTION_GUIDANCE__
 - __FICTION_STATUS_GUIDANCE__
 - **Output size**: This is a reference companion, not a retelling. Prioritize depth over breadth. Give detailed entries for significant items and brief entries for minor ones. Include all items the reader encounters, but keep minor entries concise to stay within output limits.
 
@@ -792,63 +938,12 @@ Guidance for fiction:
 FOR NON-FICTION, use this JSON schema:
 {
   "type": "nonfiction",
-  "key_figures": [
-    {
-      "name": "Person Name",
-      "aliases": ["Alternate Name", "Shortened Name"],
-      "role": "Their role or significance.",
-      "description": "Who they are, their key contributions or ideas, how the author engages with them, and their importance to the argument.",
-      "connections": ["Related Person (relationship)"]
-    }
-  ],
-  "locations": [
-    {
-      "name": "Place Name",
-      "description": "What it is, its historical or conceptual significance in the text.",
-      "significance": "Key events, arguments, or developments associated with this place.",
-      "references": ["Key figure or concept name"]
-    }
-  ],
-  "core_concepts": [
-    {
-      "name": "Concept",
-      "description": "What it means and how the author introduces it.",
-      "significance": "How the author develops it through evidence, examples, or argument, and why it matters to the thesis.",
-      "references": ["Key figure or concept name"]
-    }
-  ],
-  "arguments": [
-    {
-      "name": "Claim",
-      "description": "The argument being made and its stakes.",
-      "evidence": "Key evidence, reasoning, and any counter-arguments addressed.",
-      "references": ["Key figure or concept name"]
-    }
-  ],
-  "terminology": [
-    {
-      "term": "Term",
-      "definition": "Definition and how it's used in context."
-    }
-  ],
-  "argument_development": [
-    {
-      "event": "Key point or development",
-      "chapter": "Chapter/Section",
-      "significance": "How it advances the overall argument or shifts the discussion",
-      "references": ["Key figure or concept name"]
-    }
-  ],
+  __NONFICTION_SCHEMA__
   __NONFICTION_STATUS__
 }
 
 Guidance for non-fiction:
-- **Key Figures**: Include people, groups, institutions, and historical actors discussed or referenced, not just central figures. For central figures (the author's main interlocutors, key researchers, historical actors), write 2-3 sentences covering who they are, what ideas or work they contribute, how the author engages with them (agrees, critiques, builds on), and their significance to the argument. For briefly mentioned figures, 1-2 sentences. Always include aliases (alternate names, shortened forms, titles the text uses to refer to them) and connections where figures relate to each other.
-- **Locations**: Cities, regions, institutions, and historically significant places discussed in the text. For each, note what it is, its significance to the subject matter, and what events or arguments are connected to it. Include references to key figures or concepts associated with each place.
-- **Core Concepts**: Include concepts, theories, frameworks, and ideas the author introduces, develops, or critiques. For central concepts, explain what they mean and how the author develops them through evidence, examples, or reasoning. For peripheral concepts, a brief definition suffices. Include references to key figures or other items that develop each concept.
-- **Arguments**: Include claims, propositions, and arguments the author advances or engages with, not just the central thesis. For major arguments, capture the claim, evidence or reasoning, and counter-arguments addressed. For minor or supporting arguments, a brief statement suffices. Include references to key figures or concepts involved.
-- **Terminology**: Specialized vocabulary, jargon, or terms the author defines. Keep concise — this is reference material.
-- **Argument Development**: Track the intellectual progression across the work. Include developments, turning points, and shifts in each chapter or section — not just the main thesis but subsidiary arguments and case studies. Each entry should show how it advances or complicates the discussion. Include references to key figures or concepts involved.
+__NONFICTION_GUIDANCE__
 - __NONFICTION_STATUS_GUIDANCE__
 - **Output size**: This is a reference companion, not a retelling. Prioritize depth over breadth. Give detailed entries for significant items and brief entries for minor ones. Include all items discussed in the text, but keep minor entries concise to stay within output limits.
 
@@ -1062,7 +1157,56 @@ function Actions.buildSectionXrayPrompt(scope_label, page_summary, academic)
     replacements.__SCOPE_LINE__ = string.format(
         'Analyzing section "%s" (%s) of the %s.', scope_label, page_summary,
         academic and "paper" or "document")
-    return build_xray_prompt(template, replacements)
+    -- Sections always use the full category set (v0.21); the schema markers
+    -- are absent from the academic template, so the assembly no-ops there
+    return assemble_xray_prompt(template, replacements, nil)
+end
+
+--- Canonical group order for the category picker (presets v0.21).
+Actions.XRAY_CATEGORY_ORDER = XRAY_CATEGORY_ORDER
+
+--- Normalize a stored category selection (see local normalizeXrayCategories).
+Actions.normalizeXrayCategories = normalizeXrayCategories
+
+--- Build a category-filtered X-Ray create prompt.
+--- @param selection string canonical csv from normalizeXrayCategories
+--- @param which string "partial" (to reading position) | "complete" (whole document)
+--- @return string prompt
+function Actions.buildXrayCategoryPrompt(selection, which)
+    local replacements = which == "complete"
+        and XRAY_COMPLETE_REPLACEMENTS or XRAY_PARTIAL_REPLACEMENTS
+    return assemble_xray_prompt(XRAY_PROMPT_TEMPLATE, replacements, selection)
+end
+
+--- JSON keys a selection maps to for an artifact type (update-clause helper).
+--- @param selection string canonical csv
+--- @param artifact_type string|nil "fiction" | "nonfiction" (nil/other → union of both)
+--- @return table keys Array of JSON key names, canonical order
+function Actions.xrayCategoryKeysFor(selection, artifact_type)
+    local normalized = normalizeXrayCategories(selection)
+    if not normalized then return {} end
+    local set = {}
+    for id in normalized:gmatch("[^,]+") do set[id] = true end
+    local maps
+    if artifact_type == "fiction" or artifact_type == "nonfiction" then
+        maps = { XRAY_CATEGORY_KEYS[artifact_type] }
+    else
+        maps = { XRAY_CATEGORY_KEYS.fiction, XRAY_CATEGORY_KEYS.nonfiction }
+    end
+    local keys, seen = {}, {}
+    for _idx, id in ipairs(XRAY_CATEGORY_ORDER) do
+        if set[id] then
+            for _m, map in ipairs(maps) do
+                for _k, key in ipairs(map[id] or {}) do
+                    if not seen[key] then
+                        seen[key] = true
+                        keys[#keys + 1] = key
+                    end
+                end
+            end
+        end
+    end
+    return keys
 end
 
 -- Built-in actions for book context (single book from file browser)
@@ -1186,8 +1330,8 @@ Do not use emojis. {hallucination_nudge}]],
         use_book_text = true,
         use_highlights = true,
         use_reading_progress = true,
-        prompt = build_xray_prompt(XRAY_PROMPT_TEMPLATE, XRAY_PARTIAL_REPLACEMENTS),
-        complete_prompt = build_xray_prompt(XRAY_PROMPT_TEMPLATE, XRAY_COMPLETE_REPLACEMENTS),
+        prompt = assemble_xray_prompt(XRAY_PROMPT_TEMPLATE, XRAY_PARTIAL_REPLACEMENTS, nil),
+        complete_prompt = assemble_xray_prompt(XRAY_PROMPT_TEMPLATE, XRAY_COMPLETE_REPLACEMENTS, nil),
         -- Academic track (DOI-triggered): research-specific categories
         doi_prompt = build_xray_prompt(ACADEMIC_XRAY_PROMPT_TEMPLATE, ACADEMIC_PARTIAL_REPLACEMENTS),
         doi_complete_prompt = build_xray_prompt(ACADEMIC_XRAY_PROMPT_TEMPLATE, ACADEMIC_COMPLETE_REPLACEMENTS),

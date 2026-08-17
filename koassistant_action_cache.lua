@@ -357,6 +357,9 @@ local function saveCache(document_path, cache)
             if entry.merged_from_books then
                 file:write(string.format("        merged_from_books = %q,\n", entry.merged_from_books))
             end
+            if entry.xray_categories then
+                file:write(string.format("        xray_categories = %q,\n", entry.xray_categories))
+            end
             writeMergedFrom(file, entry.merged_from, "        ")
             -- Quiz state (answers, correct, revealed) — nested table serialization
             if entry.quiz_state and type(entry.quiz_state) == "table" then
@@ -509,6 +512,10 @@ function ActionCache.set(document_path, action_id, result, progress_decimal, met
         -- ({ file, title, at, source_ts }) — tells "folded" from "folded, but
         -- that book's X-Ray has changed since". XrayMerge owns its shape.
         merged_from = metadata and metadata.merged_from,
+        -- Category selection this artifact was built with (presets v0.21):
+        -- csv of group ids; nil = full. The LINEAGE truth — updates and rung
+        -- builds follow this stamp, never the sidecar preference.
+        xray_categories = metadata and metadata.xray_categories,
     }
 
     return saveCache(document_path, cache)
@@ -1454,7 +1461,7 @@ local CHECKPOINT_COPY_FIELDS = {
     "model", "full_document", "flow_visible_pages", "source_mode",
     "chapter_label", "intro",
     "coverage_spans", "producer", "base_timestamp", "merged_from_books",
-    "merged_from",
+    "merged_from", "xray_categories",
 }
 
 local function buildCheckpointEntry(source)
@@ -1527,6 +1534,9 @@ local function writeCheckpointRing(path, ring)
         end
         if cp.merged_from_books then
             file:write(string.format("        merged_from_books = %q,\n", cp.merged_from_books))
+        end
+        if cp.xray_categories then
+            file:write(string.format("        xray_categories = %q,\n", cp.xray_categories))
         end
         writeMergedFrom(file, cp.merged_from, "        ")
         local result_text = cp.result or ""
@@ -1733,6 +1743,7 @@ function ActionCache.restoreXrayCheckpoint(document_path, index, limit)
         base_timestamp = entry.base_timestamp,
         merged_from_books = entry.merged_from_books,
         merged_from = entry.merged_from,
+        xray_categories = entry.xray_categories,
     }
     local ok_doc = ActionCache.setXrayCache(document_path, entry.result, entry.progress_decimal or 0, meta)
     local ok_action = ActionCache.set(document_path, "xray", entry.result, entry.progress_decimal or 0, meta)
@@ -2033,6 +2044,9 @@ function ActionCache.promoteXrayLadderRung(document_path, rung, limit, opts)
         base_timestamp = rung.base_timestamp,
         merged_from_books = rung.merged_from_books,
         merged_from = rung.merged_from,
+        -- The rung's OWN category stamp (nil = built full) — never the live
+        -- entry's: the field describes the artifact it rides with
+        xray_categories = rung.xray_categories,
     }
     local ok_doc = ActionCache.setXrayCache(document_path, install_result, rung.progress_decimal or 0, meta)
     local ok_action = ActionCache.set(document_path, "xray", install_result, rung.progress_decimal or 0, meta)

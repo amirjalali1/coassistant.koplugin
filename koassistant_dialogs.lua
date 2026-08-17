@@ -4266,6 +4266,45 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         prompt.prompt = original_prompt.complete_prompt
     end
 
+    -- X-Ray category selection (presets v0.21): the per-book sidecar pick
+    -- narrows which categories a NEW X-Ray tracks — the create prompt is
+    -- assembled with only the selected schema blocks. Research/DOI and section
+    -- builds stay full; UPDATE requests follow the cache STAMP instead (the
+    -- update branch below overwrites prompt.prompt anyway and appends its own
+    -- clause). Covers attended creates, background/auto establishment and
+    -- rebuild-chain fresh rungs alike — they all pass through here.
+    if prompt and prompt.id == "xray" and prompt.cache_as_xray
+        and not (research_mode_active and prompt.doi_prompt)
+        and not (config.features and (config.features._section_scope
+            or config.features._section_xray)) then
+        local xr_file = (ui and ui.document and ui.document.file)
+            or (config.features and config.features.book_metadata
+                and config.features.book_metadata.file)
+        local xr_sel
+        if xr_file then
+            local ok_ds, xr_ds = pcall(function()
+                return require("koassistant_doc_settings").resolve(xr_file, ui)
+            end)
+            if ok_ds and xr_ds then
+                xr_sel = PromptsActions.normalizeXrayCategories(xr_ds:readSetting(
+                    require("koassistant_book_settings").KEY_XRAY_CATEGORIES))
+            end
+        end
+        if xr_sel then
+            if not prompt._is_copy then
+                local original_prompt = prompt
+                prompt = {}
+                for k, v in pairs(original_prompt) do prompt[k] = v end
+                prompt._is_copy = true
+            end
+            prompt.prompt = PromptsActions.buildXrayCategoryPrompt(xr_sel,
+                (config.features and config.features._full_document_xray)
+                    and "complete" or "partial")
+            message_data._xray_categories_applied = xr_sel
+            logger.info("KOAssistant: X-Ray create narrowed to categories:", xr_sel)
+        end
+    end
+
     -- Source mode: skip expensive text extraction when user chose summary or AI knowledge
     -- Also propagate _source_mode to message_data for {document_context_section} resolution
     -- Capture and clear transient flags to prevent leaking across invocations
@@ -4871,6 +4910,30 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     end
                 end
 
+                -- Category-filtered lineage (presets v0.21): the update prompt's
+                -- generic "add new characters/timeline entries" lines could
+                -- reintroduce categories the create dropped — the STAMP rides
+                -- as an explicit restriction clause (the cached JSON's key set
+                -- already self-enforces most of it). On UPDATES the stamp is
+                -- the lineage truth in BOTH directions: it must also OVERWRITE
+                -- a sidecar selection the create-side block staged (a filtered
+                -- preference over a full lineage must not mis-stamp the save).
+                if prompt.id == "xray" then
+                    if cached_entry.xray_categories then
+                        local cat_keys = PromptsActions.xrayCategoryKeysFor(
+                            cached_entry.xray_categories,
+                            message_data._parsed_old_xray and message_data._parsed_old_xray.type)
+                        if #cat_keys > 0 then
+                            prompt.prompt = prompt.prompt
+                                .. "\n\nThis X-Ray deliberately tracks ONLY these entry categories: "
+                                .. table.concat(cat_keys, ", ")
+                                .. ". Do not add entries in any other category or introduce new category keys. The always-required status object is unaffected."
+                        end
+                    end
+                    message_data._xray_categories_applied =
+                        PromptsActions.normalizeXrayCategories(cached_entry.xray_categories)
+                end
+
                 -- Get incremental book text (from cached to current position)
                 -- If text extraction is disabled, getBookTextRange returns empty — AI updates from training knowledge
                 local extraction_success, ContextExtractor = pcall(require, "koassistant_context_extractor")
@@ -5440,6 +5503,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                         coverage_spans = xray_spans,
                         producer = xray_producer,
                         base_timestamp = xray_base_ts,
+                        xray_categories = message_data._xray_categories_applied,
                     })
                     logger.info("KOAssistant: ladder rung", rung_ok and "saved" or "SAVE FAILED",
                         "at", progress)
@@ -5470,6 +5534,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                         base_timestamp = xray_base_ts,
                         timestamp = xray_fold_ts,
                         unavailable_data_text = unavailable_text,
+                        xray_categories = message_data._xray_categories_applied,
                     }
                     -- Archive the pre-overwrite snapshot (ring of 5; incremental updates
                     -- AND redos/regenerations, manual AND background — xray_ecosystem_plan.md

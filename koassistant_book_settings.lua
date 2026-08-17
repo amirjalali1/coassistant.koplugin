@@ -202,6 +202,12 @@ BookSettings.KEY_XRAY_AHEAD = "koassistant_book_xray_ahead"                     
 -- landing+style PAIR into one three-way value.
 BookSettings.KEY_XRAY_INTERCEPT = "koassistant_book_xray_intercept"                -- true | false | nil (matching selections open entries)
 BookSettings.KEY_XRAY_CARD = "koassistant_book_xray_card"                          -- "footnote"|"popup"|"full" | nil (exact hits open)
+-- Presets session (v0.21): categories a NEW X-Ray tracks — csv of group ids
+-- ("people,events"; canonical order people,places,ideas,terms,events), nil =
+-- full. The preference for future creates/rebuilds only: an existing lineage
+-- follows its cache STAMP (xray_categories on the entry), never this key —
+-- categories cannot be added incrementally (the text is only read once).
+BookSettings.KEY_XRAY_CATEGORIES = "koassistant_book_xray_categories"
 
 --- Effective X-Ray marking & lookup config for a book: book override > global
 --- > default. Pure. Read pattern must match the schema defaults (marking ON,
@@ -714,6 +720,7 @@ BookSettings.SIDECAR_KEYS = {
     BookSettings.KEY_XRAY_AHEAD,
     BookSettings.KEY_XRAY_INTERCEPT,
     BookSettings.KEY_XRAY_CARD,
+    BookSettings.KEY_XRAY_CATEGORIES,
     -- (KEY_XRAY_COVERAGE_ASKED is deliberately NOT here: a stamp, not an
     -- override — it must not count as "customized" nor block on reset;
     -- registered as its own storage-registry entry like the last-opened stamp)
@@ -1776,6 +1783,130 @@ function BookSettings.xrayCardModeLabel(v)
     return _("Footnote panel")
 end
 
+-- Category groups for the X-Ray category picker (presets v0.21). Ids and
+-- per-type key mapping live in prompts/actions.lua (XRAY_CATEGORY_ORDER);
+-- the user-facing labels live here with the picker.
+local XRAY_CATEGORY_LABELS = {
+    people = _("People & characters"),
+    places = _("Places"),
+    ideas = _("Themes & ideas"),
+    terms = _("Terms & vocabulary"),
+    events = _("Timeline & development"),
+}
+
+--- Short label for a stored category selection (row/button text).
+--- @param value string|nil raw stored value (normalized internally)
+--- @return string "Full" / "Character tracking" / "N of 5"
+function BookSettings.xrayCategoriesLabel(value)
+    local Actions = require("prompts.actions")
+    local sel = Actions.normalizeXrayCategories(value)
+    if not sel then return _("Full") end
+    if sel == "people" then return _("Character tracking") end
+    local n = 0
+    for _id in sel:gmatch("[^,]+") do n = n + 1 end
+    return T(_("%1 of %2"), n, #Actions.XRAY_CATEGORY_ORDER)
+end
+
+--- Category picker for NEW X-Rays (presets v0.21): two preset rows (Full /
+--- Character tracking) over per-group checkboxes; any manual mix is "custom"
+--- implicitly. Writes KEY_XRAY_CATEGORIES on the spot (sticky, per-book) —
+--- callers get on_close to refresh their surface. At least one group must
+--- stay checked (an X-Ray with zero entity categories is rejected by the
+--- create gate). Self-rebuilding dialog (marking-popup precedent).
+--- @param opts table { ui, document_path, on_close }
+function BookSettings.showXrayCategoriesPicker(opts)
+    opts = opts or {}
+    local doc_settings = resolveDocSettings(opts.ui, opts.document_path)
+    if not doc_settings then
+        if opts.on_close then opts.on_close() end
+        return
+    end
+    local Actions = require("prompts.actions")
+    local sel = Actions.normalizeXrayCategories(
+        doc_settings:readSetting(BookSettings.KEY_XRAY_CATEGORIES))
+    local set = {}
+    if sel then
+        for id in sel:gmatch("[^,]+") do set[id] = true end
+    else
+        for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = true end
+    end
+
+    local dialog
+    local function save()
+        local ids = {}
+        for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do
+            if set[id] then ids[#ids + 1] = id end
+        end
+        local value = Actions.normalizeXrayCategories(table.concat(ids, ","))
+        if value then
+            doc_settings:saveSetting(BookSettings.KEY_XRAY_CATEGORIES, value)
+        else
+            doc_settings:delSetting(BookSettings.KEY_XRAY_CATEGORIES)
+        end
+        doc_settings:flush()
+    end
+    local function reshow()
+        if dialog then UIManager:close(dialog); dialog = nil end
+        BookSettings.showXrayCategoriesPicker(opts)
+    end
+    local function closeAll()
+        if dialog then UIManager:close(dialog); dialog = nil end
+        if opts.on_close then opts.on_close() end
+    end
+    local function countChecked()
+        local n = 0
+        for _id, on in pairs(set) do if on then n = n + 1 end end
+        return n
+    end
+    local all_on = countChecked() == #Actions.XRAY_CATEGORY_ORDER
+    local function dot(active) return active and "● " or "○ " end
+    -- Toggle idiom shared with the quick-preset pickers (dialogs): ✓ / ○
+    local function mark(active) return active and "✓ " or "○ " end
+
+    local buttons = {
+        {{ text = dot(all_on) .. _("Full (all categories)"),
+            callback = function()
+                for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = true end
+                save()
+                reshow()
+            end }},
+        {{ text = dot(not all_on and set.people and countChecked() == 1)
+                .. _("Character tracking (people only)"),
+            callback = function()
+                for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = nil end
+                set.people = true
+                save()
+                reshow()
+            end }},
+    }
+    for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do
+        buttons[#buttons + 1] = {{ text = mark(set[id]) .. XRAY_CATEGORY_LABELS[id],
+            callback = function()
+                if set[id] and countChecked() == 1 then
+                    UIManager:show(require("ui/widget/notification"):new{
+                        text = _("At least one category must stay selected."),
+                    })
+                    return
+                end
+                set[id] = not set[id] or nil
+                save()
+                reshow()
+            end }}
+    end
+    buttons[#buttons + 1] = {{ text = _("Done"), id = "close", callback = closeAll }}
+
+    dialog = ButtonDialog:new{
+        title = _("Categories for new X-Rays (this book)") .. "\n"
+            .. _("Applies when an X-Ray is created or rebuilt. An existing X-Ray keeps the categories it was built with; adding one later needs a rebuild, since the text is only read once. Fewer categories mean cheaper, faster builds."),
+        buttons = buttons,
+        tap_close_callback = function()
+            dialog = nil
+            if opts.on_close then opts.on_close() end
+        end,
+    }
+    UIManager:show(dialog)
+end
+
 --- Scope-aware X-Ray marking & lookup pickers (For this book / Global) —
 -- consolidation P2 flagship (2026-08-16): the Marking & lookup popup's
 -- tap-cycles became these canonical pickers. One wrapper serves the seven
@@ -2075,7 +2206,7 @@ function BookSettings.show(opts)
         BookSettings.KEY_XRAY_MARKING, BookSettings.KEY_XRAY_MARKING_DENSITY,
         BookSettings.KEY_XRAY_MARKING_FAMILIES, BookSettings.KEY_XRAY_MARKING_TAP,
         BookSettings.KEY_XRAY_AHEAD, BookSettings.KEY_XRAY_INTERCEPT,
-        BookSettings.KEY_XRAY_CARD,
+        BookSettings.KEY_XRAY_CARD, BookSettings.KEY_XRAY_CATEGORIES,
     }), BookSettings.showXrayConfig))
     addButton(subScreenRow(_("Chat behavior"), groupCount({
         BookSettings.KEY_TOOLS, BookSettings.KEY_WEB_SEARCH,
@@ -2461,6 +2592,23 @@ function BookSettings.showXrayConfig(opts)
             picker = ButtonDialog:new{ title = title, buttons = rows,
                 tap_close_callback = function() BookSettings.showXrayConfig(opts) end }
             UIManager:show(picker)
+        end }})
+
+    -- Categories for NEW X-Rays (presets v0.21): the sticky per-book pick the
+    -- create/rebuild paths read. First-class here so closed books can set it
+    -- before their first build (the creation chooser's button needs the form).
+    table.insert(buttons, {{ text = T(_("New X-Ray categories: %1"),
+            BookSettings.xrayCategoriesLabel(
+                doc_settings:readSetting(BookSettings.KEY_XRAY_CATEGORIES))),
+        callback = function()
+            closeDialog()
+            BookSettings.showXrayCategoriesPicker({
+                ui = ui, document_path = opts.document_path,
+                on_close = function()
+                    syncConfig()
+                    BookSettings.showXrayConfig(opts)
+                end,
+            })
         end }})
 
     -- Checkpoint spacing (spacing slice): the sticky per-book override, edited

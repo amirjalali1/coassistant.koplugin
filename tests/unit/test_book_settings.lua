@@ -834,7 +834,7 @@ TestRunner:test("KEY_WEB_SEARCH and KEY_DOMAIN/KEY_RESEARCH are in SIDECAR_KEYS"
         "koassistant_book_background missing from SIDECAR_KEYS (book_background_plan.md)")
     TestRunner:assertEqual(found[BookSettings.KEY_XRAY_SPACING] == true, true,
         "koassistant_book_xray_spacing missing from SIDECAR_KEYS (spacing slice)")
-    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 33, "33 per-book keys expected (incl. 4 privacy overrides + xray promotion hold + checkpoint spacing + 7 marking & lookup overrides incl. upcoming-entities, intercept, card)")
+    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 34, "34 per-book keys expected (incl. 4 privacy overrides + xray promotion hold + checkpoint spacing + 7 marking & lookup overrides incl. upcoming-entities, intercept, card + xray categories)")
 end)
 
 TestRunner:suite("resolveXrayMarking (2026-08-15: popup edits the book layer)")

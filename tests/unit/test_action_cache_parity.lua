@@ -107,6 +107,8 @@ local FULL_METADATA = {
     base_timestamp = 1753600123,
     -- Cross-book merge provenance (item 43)
     merged_from_books = "First Book; Second Book",
+    -- Category stamp (presets v0.21): lineage's built categories, csv of group ids
+    xray_categories = "people,events",
     -- Groups round (D): the dated fold ledger behind that display string.
     -- Second record is the transitive/legacy shape — title only.
     merged_from = {

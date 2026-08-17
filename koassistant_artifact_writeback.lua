@@ -49,6 +49,9 @@ local BASE_CONTINUITY_FIELDS = {
     -- both inherit or a rebuild would look like it had never been folded into)
     "merged_from_books",
     "merged_from",
+    -- Category stamp (presets v0.21): a dedup/browser-edit/merge commit rewrites
+    -- the same lineage — the stamp must survive it
+    "xray_categories",
 }
 
 --- Reconcile permission/provenance metadata for a write that merges new
