@@ -870,6 +870,20 @@ class APITranslator:
             if attempt < self.MAX_RETRIES - 1:
                 log(f"  Incomplete batch ({len(results)}/{len(batch)} parsed), retrying")
                 time.sleep(self.RETRY_DELAY)
+        if 0 < len(results) < len(batch):
+            # Distinguish the two incomplete shapes. An HONEST skip leaves a
+            # GAP in the numbering (1..50 minus 7): numbering is trusted,
+            # partials are safe to apply. A reply that just STOPS SHORT
+            # (contiguous 1..k, missing tail) is the signature of shifted
+            # numbering (model dropped a source but kept counting) or a
+            # truncated reply -- alignment can't be trusted, so drop the
+            # whole batch: strings stay empty and a re-run refills them.
+            present = [num in results for num, _text in batch]
+            first_missing = present.index(False)
+            if not any(present[first_missing:]):
+                log(f"  WARNING: dropping batch -- reply stopped at "
+                    f"{first_missing}/{len(batch)}, alignment not trustworthy")
+                return {}
         if len(results) < len(batch):
             log(f"  WARNING: batch incomplete after {self.MAX_RETRIES} attempts: "
                 f"{len(results)}/{len(batch)} strings applied")
