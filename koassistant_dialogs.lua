@@ -1361,7 +1361,11 @@ showQuickPresetBehavior = function(opts)
     local function row(label, is_current, cb)
         return {{ text = (is_current and "● " or "○ ") .. label, callback = cb }}
     end
-    local pinned = qb ~= "keep" and qb ~= "none" and qb ~= "mini_of_current"
+    -- Terse gets a direct row (maintainer 2026-08-17): the intended pick, one
+    -- tap instead of the behavior list. Stored value is the same "terse" id the
+    -- picker would set, so the two stay in agreement — and it is excluded from
+    -- the pinned state below so only its own row dots for it.
+    local pinned = qb ~= "keep" and qb ~= "none" and qb ~= "mini_of_current" and qb ~= "terse"
     dialog = ButtonDialog:new{
         title = _("Quick Answer preset · behavior"),
         tap_close_callback = function() if opts.on_close then opts.on_close() end end,
@@ -1370,6 +1374,7 @@ showQuickPresetBehavior = function(opts)
             row(_("Mini version of current style"), qb == "mini_of_current", function()
                 setMode("mini_of_current")
             end),
+            row(_("Terse"), qb == "terse", function() setMode("terse") end),
             row(pinned
                     and T(_("Behavior: %1 (change…)"), quickPresetBehaviorLabel(f))
                     or _("A specific behavior…"),
