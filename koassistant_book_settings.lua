@@ -1897,7 +1897,7 @@ function BookSettings.showXrayCategoriesPicker(opts)
 
     dialog = ButtonDialog:new{
         title = _("Categories for new X-Rays (this book)") .. "\n"
-            .. _("Applies when an X-Ray is created or rebuilt. An existing X-Ray keeps the categories it was built with; adding one later needs a rebuild, since the text is only read once. Fewer categories mean cheaper, faster builds."),
+            .. _("Applies when an X-Ray is created or rebuilt. An existing X-Ray keeps the categories it was built with; adding one later needs a rebuild, since the text is only read once. Fewer categories mean cheaper, faster builds. Academic X-Rays (research mode) use their own structure and ignore this selection."),
         buttons = buttons,
         tap_close_callback = function()
             dialog = nil
