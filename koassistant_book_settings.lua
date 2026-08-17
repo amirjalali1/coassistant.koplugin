@@ -1853,8 +1853,14 @@ function BookSettings.showXrayCategoriesPicker(opts)
             return
         end
     end
-    local raw = is_global and features.xray_default_categories
-        or doc_settings:readSetting(BookSettings.KEY_XRAY_CATEGORIES)
+    -- Explicit branch, never `is_global and X or Y`: with no global set,
+    -- X is nil and the fold would index the never-resolved doc_settings.
+    local raw
+    if is_global then
+        raw = features.xray_default_categories
+    else
+        raw = doc_settings:readSetting(BookSettings.KEY_XRAY_CATEGORIES)
+    end
     local stored = raw ~= "full" and Actions.normalizeXrayCategories(raw) or nil
     -- Working checkbox set seeds from the EFFECTIVE selection (book mode
     -- follows the global while unset) so a toggle starts from what a build
