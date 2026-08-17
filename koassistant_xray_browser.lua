@@ -2607,12 +2607,14 @@ function XrayBrowser:showEntityHistory(item, category_key, reveal)
         names[#names + 1] = item.aliases
     end
 
+    -- Current lineage only: ladder rungs + the installed artifact. Ring
+    -- archives are superseded lineages / pre-op snapshots (device round
+    -- 2026-08-17: an old archived COMPLETE build sorted past the reader's
+    -- gate and the footer advertised it as a "later version") — they stay
+    -- reachable via All versions, never in this walk.
     local versions = {}
     for _idx, rung in ipairs(ActionCache.getXrayLadder(file)) do
         versions[#versions + 1] = { src = rung, kind = "checkpoint" }
-    end
-    for _idx, cp in ipairs(ActionCache.getXrayCheckpoints(file)) do
-        versions[#versions + 1] = { src = cp, kind = "archived" }
     end
     local live = ActionCache.getXrayCache(file)
     if live and live.result then
@@ -2638,7 +2640,7 @@ function XrayBrowser:showEntityHistory(item, category_key, reveal)
                 end
                 rows[#rows + 1] = {
                     cov = cov,
-                    ts = tonumber(src.timestamp) or tonumber(src.archived_at) or 0,
+                    ts = tonumber(src.timestamp) or 0,
                     kind = v.kind,
                     complete = (src.full_document or cov >= 0.995) and true or nil,
                     description = tostring(found.description or ""),
@@ -2732,10 +2734,7 @@ function XrayBrowser:showEntityHistory(item, category_key, reveal)
     local parts = {}
     for _idx, b in ipairs(blocks) do
         local head
-        if b.kind == "archived" then
-            head = b.complete and _("Archived version (complete)")
-                or T(_("Archived version (to %1)"), pct(b.from_cov))
-        elseif b.complete then
+        if b.complete then
             head = _("Complete")
         elseif b.to_cov > b.from_cov then
             head = T(_("To %1, unchanged through %2"), pct(b.from_cov), pct(b.to_cov))
@@ -2816,12 +2815,12 @@ function XrayBrowser:_showEntityManagePopup(item, category_key, title, source, n
     local entry_name = XrayParser.getItemName(item, category_key)
     local named = type(entry_name) == "string" and entry_name ~= ""
     -- History through checkpoints (maintainer request 2026-08-17): mechanical
-    -- per-entity walk across stored versions; only offered when versions
-    -- beyond the live artifact exist (O(1) header counts)
+    -- per-entity walk across the current lineage (ladder rungs + installed);
+    -- only offered when rungs exist (O(1) header count) — ring archives are
+    -- out of the walk, so a ring-only book has no history to show
     if not self.scope and named and self.metadata.book_file then
         local ActionCache = require("koassistant_action_cache")
-        local vcount = (ActionCache.getXrayLadderCount(self.metadata.book_file) or 0)
-            + (ActionCache.getXrayCheckpointCount(self.metadata.book_file) or 0)
+        local vcount = ActionCache.getXrayLadderCount(self.metadata.book_file) or 0
         if vcount > 0 then
             table.insert(buttons, {{
                 text = _("History through checkpoints…"),
