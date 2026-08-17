@@ -481,6 +481,14 @@ local ModelLists = {
     },
 
     _tiers = {
+        -- META ROUTERS (openrouter, requesty) have NO curated placements
+        -- (maintainer ruling 2026-08-17): a router's tier ladder would hop
+        -- SUB-VENDORS (anthropic pick silently running an openai slug on a
+        -- "fast" hint) — surprising and wrong. Tier hints on a router keep
+        -- the current model (resolveTierModel nil-miss). Users who want
+        -- router tiers set them via the Model tiers GUI / custom_models.lua
+        -- (override layer resolves before curated). The mechanical
+        -- family-sticky sub-ladder idea is queued v0.22 (Gate B).
         -- Most capable, premium-priced models. STRICTLY OPT-IN: nothing
         -- auto-selects this tier — the Quick preset "fastest" walk stops at
         -- flagship, and getModelForTier() fallback only descends (a frontier
@@ -489,8 +497,6 @@ local ModelLists = {
         frontier = {
             anthropic = "claude-fable-5",
             gemini = "gemini-3.1-pro-preview",       -- paid-only deep reasoning
-            openrouter = "anthropic/claude-fable-5",
-            requesty = "anthropic/claude-fable-5",
         },
 
         -- Provider's most capable general-purpose model
@@ -505,8 +511,6 @@ local ModelLists = {
             xai = "grok-4.6",
             cohere = "command-a-plus-05-2026",
             ollama = "llama4",
-            openrouter = "anthropic/claude-opus-5",  -- mirrors the direct-Anthropic re-tier (opus-5 flagship, sonnet-5 standard)
-            requesty = "anthropic/claude-opus-5",
             together = "deepseek-ai/DeepSeek-V4-Pro",
             fireworks = "accounts/fireworks/models/deepseek-v4-pro",
             sambanova = "gpt-oss-120b",              -- Maverick deprecated 2026-06-09
@@ -529,8 +533,6 @@ local ModelLists = {
             xai = "grok-4.20-0309-non-reasoning",
             cohere = "command-a-plus-05-2026",
             ollama = "llama3.3",
-            openrouter = "google/gemini-3.7-flash", -- mirrors the direct-gemini standard pick (catalog-verified 2026-08-15)
-            requesty = "google/gemini-2.5-flash",   -- newer gemini rides vertex/ ids on Requesty; this is the verified google/ slug (2026-07-28)
             together = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             fireworks = "accounts/fireworks/models/gpt-oss-120b", -- llama-v3p3 deprecated 2026-05-14, vendor target gpt-oss-120b
             sambanova = "Meta-Llama-3.3-70B-Instruct",
@@ -553,8 +555,6 @@ local ModelLists = {
             xai = "grok-4.20-0309-non-reasoning",
             cohere = "command-r7b-12-2024",
             ollama = "llama3.2:3b",
-            openrouter = "openai/gpt-5.6-luna",     -- was 3.6-flash: duplicated standard AND reasoning-mandatory via the router; luna mirrors the direct-openai fast pick, reasoning off by default
-            requesty = "openai/gpt-4o-mini",        -- was 2.5-flash (duplicated standard); gpt-4o-mini is the verified fast/low-cost pick and never reasons
             together = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             fireworks = "accounts/fireworks/models/gpt-oss-120b", -- llama-v3p3 deprecated 2026-05-14
             sambanova = "Meta-Llama-3.3-70B-Instruct",
@@ -577,8 +577,6 @@ local ModelLists = {
             xai = "grok-4.20-0309-non-reasoning",
             cohere = "command-r7b-12-2024",
             ollama = "tinyllama",
-            openrouter = "openai/gpt-5.4-mini",     -- mini-class, reasoning off by default (NOT gpt-oss-20b: open-weight oss models reason at medium effort by default — wrong surprise for ultrafast)
-            requesty = "openai/gpt-4o-mini",
             together = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             fireworks = "accounts/fireworks/models/gpt-oss-20b", -- smaller/faster sibling (in the array since the 2026-08-15 catalog refresh)
             sambanova = "Meta-Llama-3.3-70B-Instruct",

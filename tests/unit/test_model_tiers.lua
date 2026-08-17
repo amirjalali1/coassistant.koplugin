@@ -99,21 +99,33 @@ end
 -- key; REVISION 2) have NO tier placements by design: tier features no-op for
 -- them until the keys pipeline promotes them. Their ids, when someone does add
 -- a placement, are still validated by the array-membership loop above.
+-- META ROUTERS are exempt the other way (maintainer ruling 2026-08-17): a
+-- router's curated ladder would hop sub-vendors on a tier hint, so openrouter
+-- (curated) and requesty (community) carry NO curated placements — asserted
+-- absent below; users add router tiers via the GUI/custom_models override layer.
+local META_ROUTERS = { openrouter = true, requesty = true }
 for _idx, tier_name in ipairs({ "flagship", "standard", "fast", "ultrafast" }) do
     for _pidx, provider in ipairs(ModelLists.getAllProviders()) do
-        if not ModelLists.isCommunity(provider) then
+        if not ModelLists.isCommunity(provider) and not META_ROUTERS[provider] then
             TestRunner.assert(ModelLists._tiers[tier_name][provider] ~= nil,
                 string.format("curated provider %s missing from tier %s", provider, tier_name))
         end
+    end
+end
+for router in pairs(META_ROUTERS) do
+    for tier_name, tier_map in pairs(ModelLists._tiers) do
+        TestRunner.assert(tier_map[router] == nil,
+            string.format("meta router %s must have no curated %s placement (2026-08-17 ruling)",
+                router, tier_name))
     end
 end
 
 -- The relabeling is honest but must not LOSE placements that already exist:
 -- pre-2026-08 community members keep their curated tier rows until promotion.
 -- (fireworks + cohere promoted OUT 2026-08-15: keyed, catalog-validated,
--- probed — they now assert NOT-community while keeping their tier rows.)
-for _idx, legacy in ipairs({ "groq", "together", "sambanova",
-                             "requesty", "doubao" }) do
+-- probed — they now assert NOT-community while keeping their tier rows.
+-- requesty left this list 2026-08-17: meta router, placements removed.)
+for _idx, legacy in ipairs({ "groq", "together", "sambanova", "doubao" }) do
     TestRunner.assert(ModelLists.isCommunity(legacy),
         legacy .. " is in the community set (never maintainer-tested)")
     TestRunner.assert(ModelLists._tiers.standard[legacy] ~= nil,
