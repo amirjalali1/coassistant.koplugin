@@ -12361,6 +12361,8 @@ function AskGPT:_showXrayLadderRungOptions(rung, opts)
             timeout = 2,
           })
           self_ref:_reopenLiveXrayAfterInstall(file, opts)
+          -- §14: every install into live runs the pair-check (stamped once per pair)
+          UIManager:scheduleIn(1, function() self_ref:maybeOfferDedupAsk(file) end)
         else
           UIManager:show(InfoMessage:new{ text = _("Install failed. This checkpoint is no longer on disk."), timeout = 3 })
         end
@@ -14045,6 +14047,14 @@ function AskGPT:_fireXrayLadderPromotion(opts)
               math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5))),
       })
     end
+    -- Filing 08-17 §14 decided trigger: the dedup pair-check runs when rung
+    -- content becomes LIVE, never before install (an uninstalled rung's
+    -- identity assert stays invisible, which is also spoiler-correct by
+    -- construction). Fresh-pairs filter + one-ask-per-pair stamps keep it
+    -- quiet; the posture revert above deliberately skips it (corrective,
+    -- that content was live before).
+    local self_ref = self
+    UIManager:scheduleIn(1, function() self_ref:maybeOfferDedupAsk(file) end)
   end
   self:_refreshXrayAutoState()
   return ok
@@ -14140,6 +14150,8 @@ function AskGPT:_switchToCompleteXrayRung(opts)
             text = _("Switched to the complete X-Ray. The checkpoints are kept; they can be safely deleted under \"All versions\", or kept for the free \"Switch back to your position\" option."),
             timeout = 6,
           })
+          -- §14: every install into live runs the pair-check (stamped once per pair)
+          UIManager:scheduleIn(1, function() self_ref:maybeOfferDedupAsk(file) end)
         end,
       }},
       {{
@@ -14211,6 +14223,11 @@ function AskGPT:_switchBackToPositionRung(opts)
         or T(_("Switched back: X-Ray now at %1%"),
           math.floor((tonumber(rung.progress_decimal) or 0) * 100 + 0.5)),
     })
+    -- §14: every install into live runs the pair-check; usually a no-op here
+    -- (earlier content, pairs already stamped) but a ladder sweep can seed
+    -- fresh pairs into a rung after its content was last live
+    local self_ref = self
+    UIManager:scheduleIn(1, function() self_ref:maybeOfferDedupAsk(file) end)
   else
     UIManager:show(InfoMessage:new{ text = _("Switch failed. The checkpoint could not be installed."), timeout = 3 })
   end
@@ -15019,6 +15036,8 @@ function AskGPT:_fireXrayLadderRung()
               self_ref:_setXrayPromotionHold(file, false)
             end
             logger.info("KOAssistant: one-shot X-Ray installed at", tostring(gp))
+            -- §14: every install into live runs the pair-check (stamped once per pair)
+            UIManager:scheduleIn(1, function() self_ref:maybeOfferDedupAsk(file) end)
           end
         end
         if not cur.silent or features.xray_auto_notify == true then

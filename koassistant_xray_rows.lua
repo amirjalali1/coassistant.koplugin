@@ -184,13 +184,8 @@ function XrayRows.versionRows(ctx)
                 pre()
                 if plugin:_fireXrayLadderPromotion({ manual = true }) then
                     if retire then retire() end
-                    -- Attended install: the freshly installed artifact may
-                    -- carry new duplicate suggestions (round 18)
-                    if plugin.maybeOfferDedupAsk then
-                        UIManager:scheduleIn(1, function()
-                            plugin:maybeOfferDedupAsk(file)
-                        end)
-                    end
+                    -- Dedup ask fires inside the promotion itself now (filing
+                    -- 08-17 §14: every install into live runs the pair-check)
                 else
                     -- Disk moved between drawing the row and tapping it
                     UIManager:show(require("ui/widget/infomessage"):new{

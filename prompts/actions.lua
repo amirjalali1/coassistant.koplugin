@@ -1361,6 +1361,8 @@ If the previous analysis is in plain text rather than JSON, produce a fresh COMP
 
 Guidelines:
 - FIRST review the existing entries against the new content: any entry whose situation, status, or standing has CHANGED (a revised claim, a superseded method, a challenged finding, a figure whose role shifted) MUST be re-emitted with a revised description. A description states where things stand NOW, not where they stood when first added.
+- If the new content reveals that two EXISTING entries are the same concept, method, or figure, re-emit BOTH entries in this response: each includes the other's name in its "aliases", and both descriptions state the identification. Never leave one side contradicting the other.
+- The FIRST sentence of every re-emitted description must state what the entry is now; a superseded claim or revealed identification must never sit behind an opening sentence written for an earlier state.
 - Add new concepts, foundations, methods, findings, referenced works, terms, or figures from the new content
 - Add new findings with their supporting evidence
 - Track methodology details as they emerge
@@ -1410,6 +1412,8 @@ If the previous analysis is in plain text rather than JSON, produce a fresh COMP
 
 Guidelines:
 - FIRST review the existing entries against the new content: any entity whose situation, status, or standing has CHANGED (death, injury, betrayal, departure, a revealed identity, changed allegiance, a turning point in their arc) MUST be re-emitted with a revised description. A description states where they stand NOW, not where they stood when first introduced.
+- If the new content reveals that two EXISTING entries are the same person or thing, re-emit BOTH entries in this response: each includes the other's name in its "aliases", and both descriptions state the revealed identity. Never leave one side of a reveal contradicting the other.
+- The FIRST sentence of every re-emitted description must state who or what they are now; a reveal or status change must never sit behind an opening sentence written for an earlier point in the story.
 - Add new characters, locations, themes, concepts, or key figures that appeared in the new content
 - Add aliases and connections for new characters/key figures
 - Add new timeline/argument_development entries for events in the new content
