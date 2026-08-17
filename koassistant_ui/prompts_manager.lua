@@ -6519,10 +6519,21 @@ end
 local INPUT_CONTEXT_TITLES = {
     general = _("General Input Actions"),
     book = _("Book Input Actions"),
-    book_filebrowser = _("File Browser Input Actions"),
+    -- "Closed Book" over "File Browser" (round 4 2026-08-17): names the
+    -- SITUATION (book not open) rather than the surface, and stops colliding
+    -- with the File Browser Items manager (the long-press menu)
+    book_filebrowser = _("Closed Book Input Actions"),
     highlight = _("Highlight Input Actions"),
     xray_chat = _("X-Ray Chat Actions"),
+    library = _("Library Input Actions"),
 }
+
+-- Display order for the context chooser. Keep in sync with action_service's
+-- INPUT_CONTEXTS (+ the special-cased general): the library context has now
+-- been forgotten TWICE by hand-listed context enumerations (see the
+-- forEachInputContext comment there) — when adding a context, this list and
+-- the titles table above are the only two spots here.
+local INPUT_CONTEXT_ORDER = { "book", "book_filebrowser", "highlight", "xray_chat", "library", "general" }
 
 -- Context chooser for the manager carousel (A9 follow-up 2026-08-17): the
 -- input managers need a context argument, so the carousel row lands here
@@ -6544,7 +6555,7 @@ function PromptsManager:showInputActionsChooser(opts)
         self._anchored_menu = nil
     end
     local rows = {}
-    for _idx, ctx_name in ipairs({ "book", "book_filebrowser", "highlight", "xray_chat", "general" }) do
+    for _idx, ctx_name in ipairs(INPUT_CONTEXT_ORDER) do
         if ctx_name == current_ctx then
             table.insert(rows, {{
                 text = "● " .. INPUT_CONTEXT_TITLES[ctx_name],

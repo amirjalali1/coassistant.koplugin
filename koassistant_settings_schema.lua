@@ -2260,7 +2260,7 @@ local SettingsSchema = {
                     type = "action",
                     text = _("Input Dialog Actions"),
                     callback = "showInputActionsChooser",
-                    help_text = _("Choose which actions appear in each input dialog (book, file browser, highlight, X-Ray chat, general)."),
+                    help_text = _("Choose which actions appear in each input dialog (open book, closed book, highlight, X-Ray chat, library, general). Toolbar chips are configured from the input dialog's gear menu (Toolbar Buttons)."),
                     separator = true,
                 },
                 -- File browser
@@ -2443,17 +2443,9 @@ local SettingsSchema = {
                     end,
                     separator = true,
                 },
-                -- Input dialog (managers stay contextual — pointer only)
-                {
-                    id = "input_dialog_header",
-                    type = "header",
-                    text = _("Input dialog"),
-                },
-                {
-                    id = "input_dialog_pointer",
-                    type = "info",
-                    text = _("Action rows and toolbar chips are configured from the input dialog's gear menu."),
-                },
+                -- (The old tail "Input dialog" header + gear-pointer info row is
+                -- gone since round 4 2026-08-17: superseded by the Input dialogs
+                -- section above — its id also collided with that section's header.)
             },
         },
 
