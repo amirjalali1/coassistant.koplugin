@@ -5622,7 +5622,7 @@ function PromptsManager:_managerNavButtons(from)
         { group = 1, field = "prompts_menu", label = _("Manage Actions"), show = function() self_ref:showPromptsMenu() end },
         { group = 2, field = "highlight_menu_manager", label = _("Highlight Menu"), show = function() self_ref:showHighlightMenuManager() end },
         { group = 2, field = "dictionary_popup_menu", label = _("Dictionary Popup"), show = function() self_ref:showDictionaryPopupManager() end },
-        { group = 2, field = "input_actions_menu", label = _("Input Dialog Actions"), show = function() self_ref:showInputActionsChooser() end },
+        { group = 2, field = "input_actions_menu", label = _("Input Dialog Actions"), chooser = true },
         { group = 3, field = "quick_actions_menu", label = _("QA Panel Actions"), show = function() self_ref:showQuickActionsManager() end },
         { group = 3, field = "qa_utilities_menu", label = _("QA Panel Utilities"), show = function() self_ref:showQaUtilitiesManager() end },
         { group = 3, field = "qs_items_menu", label = _("QS Panel Items"), show = function() self_ref:showQsItemsManager() end },
@@ -5635,25 +5635,27 @@ function PromptsManager:_managerNavButtons(from)
             table.insert(buttons, {})
         end
         last_group = dest.group
-        if dest.field == from then
-            if from == "input_actions_menu" then
-                -- Stays selectable even as the you-are-here row (maintainer
-                -- 2026-08-17 round 2): this row is a FAMILY of five context
-                -- managers, so a dead dot would force a detour through some
-                -- other manager just to switch input contexts. It reopens
-                -- the context chooser as a submenu anchored at the same
-                -- hamburger, with the current context dotted inside.
-                table.insert(buttons, {
-                    { text = "● " .. dest.label .. " →", align = "left", callback = function()
-                        self_ref:showInputActionsChooser({ from_manager = true })
-                    end },
-                })
-            else
-                table.insert(buttons, {
-                    { text = "● " .. dest.label, align = "left", enabled = false,
-                      callback = function() end },
-                })
-            end
+        if dest.chooser then
+            -- Input Dialog Actions is a five-context FAMILY, not one manager
+            -- (rounds 2+3 2026-08-17): from EVERY carousel — its own managers'
+            -- included — the row opens the context chooser as a submenu
+            -- anchored at the current manager's hamburger, and navigation
+            -- happens only once a context is picked (tap-outside leaves the
+            -- host manager open; the old path closed the host first and left
+            -- a centered chooser floating over nothing). Inside an input
+            -- manager the row keeps the you-are-here dot but stays selectable.
+            local chooser_text = (dest.field == from)
+                and ("● " .. dest.label .. " →") or (dest.label .. " →")
+            table.insert(buttons, {
+                { text = chooser_text, align = "left", callback = function()
+                    self_ref:showInputActionsChooser({ anchor_field = from })
+                end },
+            })
+        elseif dest.field == from then
+            table.insert(buttons, {
+                { text = "● " .. dest.label, align = "left", enabled = false,
+                  callback = function() end },
+            })
         else
             table.insert(buttons, self:_makeNavButton(dest.label .. " →", from, dest.show))
         end
@@ -6525,16 +6527,19 @@ local INPUT_CONTEXT_TITLES = {
 -- Context chooser for the manager carousel (A9 follow-up 2026-08-17): the
 -- input managers need a context argument, so the carousel row lands here
 -- first. The gear inside each input dialog still jumps straight to its own
--- context's manager. With opts.from_manager (round 2: called from INSIDE an
--- input manager's own carousel dot row) it behaves as a submenu: anchored at
--- that manager's hamburger, current context dotted, and a pick swaps the
--- manager in place via _navigateToManager.
+-- context's manager. With opts.anchor_field (rounds 2+3: EVERY carousel
+-- caller passes its own manager field) it behaves as a submenu of that
+-- manager: anchored at its hamburger, host left open until a pick, current
+-- context dotted when the host IS an input manager, and the pick swaps
+-- managers via _navigateToManager. Without opts (the Settings action row)
+-- it shows centered — there is no manager to anchor to there.
 function PromptsManager:showInputActionsChooser(opts)
     opts = opts or {}
     local self_ref = self
-    local from_manager = opts.from_manager and self.input_actions_menu or nil
-    local current_ctx = from_manager and self._input_actions_ctx or nil
-    if from_manager and self._anchored_menu then
+    local anchor_field = opts.anchor_field
+    local host_menu = anchor_field and self[anchor_field] or nil
+    local current_ctx = anchor_field == "input_actions_menu" and self._input_actions_ctx or nil
+    if self._anchored_menu then
         UIManager:close(self._anchored_menu)
         self._anchored_menu = nil
     end
@@ -6553,8 +6558,8 @@ function PromptsManager:showInputActionsChooser(opts)
                 callback = function()
                     UIManager:close(self_ref._input_ctx_chooser)
                     self_ref._input_ctx_chooser = nil
-                    if from_manager then
-                        self_ref:_navigateToManager("input_actions_menu", function()
+                    if anchor_field then
+                        self_ref:_navigateToManager(anchor_field, function()
                             self_ref:showInputActionsManager(ctx_name)
                         end)
                     else
@@ -6568,10 +6573,10 @@ function PromptsManager:showInputActionsChooser(opts)
         title = _("Input dialog actions for..."),
         buttons = rows,
     }
-    if from_manager then
+    if host_menu and host_menu.title_bar and host_menu.title_bar.left_button then
         dialog_spec.shrink_unneeded_width = true
         dialog_spec.anchor = function()
-            return from_manager.title_bar.left_button.image.dimen, true
+            return host_menu.title_bar.left_button.image.dimen, true
         end
     end
     self._input_ctx_chooser = ButtonDialog:new(dialog_spec)
