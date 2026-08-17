@@ -9761,8 +9761,10 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
 
     -- Build View Artifacts button (shows cached artifacts + pinned)
     -- Always "View Artifacts" text, always shows popup selector with metadata
+    -- Toggleable via Menus & Buttons ▸ Input dialogs (A9 round 2 2026-08-17)
     local artifact_button = nil
-    if not is_general_context and plugin and not hide_artifacts then
+    if not is_general_context and plugin and not hide_artifacts
+        and settings_features.show_artifacts_in_input ~= false then
         local artifact_file = document_path
         if artifact_file then
             local ActionCache = require("koassistant_action_cache")
@@ -9881,6 +9883,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
     -- volume's artifacts), the same idiom the artifact viewers' "→ Group" uses.
     local group_button = nil
     if not is_general_context and plugin and document_path
+        and settings_features.show_group_in_input ~= false
         and plugin._inBookGroup and plugin:_inBookGroup(document_path) then
         group_button = {
             text = Constants.getEmojiText("\u{1F5C2}\u{FE0F}", _("Group"), enable_emoji),

@@ -18121,6 +18121,11 @@ function AskGPT:showFileBrowserActionsManager()
   prompts_manager:showFileBrowserActionsManager()
 end
 
+function AskGPT:showInputActionsChooser()
+  local prompts_manager = PromptsManager:new(self)
+  prompts_manager:showInputActionsChooser()
+end
+
 -- Show PathChooser for custom export path
 function AskGPT:showExportPathPicker(revert_on_cancel)
   local PathChooser = require("ui/widget/pathchooser")

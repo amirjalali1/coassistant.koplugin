@@ -5636,10 +5636,24 @@ function PromptsManager:_managerNavButtons(from)
         end
         last_group = dest.group
         if dest.field == from then
-            table.insert(buttons, {
-                { text = "● " .. dest.label, align = "left", enabled = false,
-                  callback = function() end },
-            })
+            if from == "input_actions_menu" then
+                -- Stays selectable even as the you-are-here row (maintainer
+                -- 2026-08-17 round 2): this row is a FAMILY of five context
+                -- managers, so a dead dot would force a detour through some
+                -- other manager just to switch input contexts. It reopens
+                -- the context chooser as a submenu anchored at the same
+                -- hamburger, with the current context dotted inside.
+                table.insert(buttons, {
+                    { text = "● " .. dest.label .. " →", align = "left", callback = function()
+                        self_ref:showInputActionsChooser({ from_manager = true })
+                    end },
+                })
+            else
+                table.insert(buttons, {
+                    { text = "● " .. dest.label, align = "left", enabled = false,
+                      callback = function() end },
+                })
+            end
         else
             table.insert(buttons, self:_makeNavButton(dest.label .. " →", from, dest.show))
         end
@@ -6511,25 +6525,56 @@ local INPUT_CONTEXT_TITLES = {
 -- Context chooser for the manager carousel (A9 follow-up 2026-08-17): the
 -- input managers need a context argument, so the carousel row lands here
 -- first. The gear inside each input dialog still jumps straight to its own
--- context's manager.
-function PromptsManager:showInputActionsChooser()
+-- context's manager. With opts.from_manager (round 2: called from INSIDE an
+-- input manager's own carousel dot row) it behaves as a submenu: anchored at
+-- that manager's hamburger, current context dotted, and a pick swaps the
+-- manager in place via _navigateToManager.
+function PromptsManager:showInputActionsChooser(opts)
+    opts = opts or {}
     local self_ref = self
+    local from_manager = opts.from_manager and self.input_actions_menu or nil
+    local current_ctx = from_manager and self._input_actions_ctx or nil
+    if from_manager and self._anchored_menu then
+        UIManager:close(self._anchored_menu)
+        self._anchored_menu = nil
+    end
     local rows = {}
     for _idx, ctx_name in ipairs({ "book", "book_filebrowser", "highlight", "xray_chat", "general" }) do
-        table.insert(rows, {{
-            text = INPUT_CONTEXT_TITLES[ctx_name],
-            align = "left",
-            callback = function()
-                UIManager:close(self_ref._input_ctx_chooser)
-                self_ref._input_ctx_chooser = nil
-                self_ref:showInputActionsManager(ctx_name)
-            end,
-        }})
+        if ctx_name == current_ctx then
+            table.insert(rows, {{
+                text = "● " .. INPUT_CONTEXT_TITLES[ctx_name],
+                align = "left", enabled = false,
+                callback = function() end,
+            }})
+        else
+            table.insert(rows, {{
+                text = INPUT_CONTEXT_TITLES[ctx_name],
+                align = "left",
+                callback = function()
+                    UIManager:close(self_ref._input_ctx_chooser)
+                    self_ref._input_ctx_chooser = nil
+                    if from_manager then
+                        self_ref:_navigateToManager("input_actions_menu", function()
+                            self_ref:showInputActionsManager(ctx_name)
+                        end)
+                    else
+                        self_ref:showInputActionsManager(ctx_name)
+                    end
+                end,
+            }})
+        end
     end
-    self._input_ctx_chooser = ButtonDialog:new{
+    local dialog_spec = {
         title = _("Input dialog actions for..."),
         buttons = rows,
     }
+    if from_manager then
+        dialog_spec.shrink_unneeded_width = true
+        dialog_spec.anchor = function()
+            return from_manager.title_bar.left_button.image.dimen, true
+        end
+    end
+    self._input_ctx_chooser = ButtonDialog:new(dialog_spec)
     UIManager:show(self._input_ctx_chooser)
 end
 
@@ -6607,6 +6652,9 @@ function PromptsManager:showInputActionsManager(ctx_name, on_close_callback)
     end
 
     local is_general = ctx_name == "general"
+    -- Which context this manager instance is showing — the carousel's
+    -- submenu chooser reads it to dot the current row (round 2 2026-08-17)
+    self._input_actions_ctx = ctx_name
     local menu_items, input_count = self:_buildInputActionsItems(ctx_name)
     local self_ref = self
     local title = INPUT_CONTEXT_TITLES[ctx_name] or _("Input Actions")

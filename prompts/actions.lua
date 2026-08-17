@@ -268,8 +268,8 @@ Actions.highlight = {
         builtin = true,
     },
     -- Quick Explain (A9 sitting 2026-08-17): the fast sibling of Explain.
-    -- Registerable-only by decision: no default placements anywhere -- users
-    -- add it via the managers (highlight menu, input actions, minimal popup).
+    -- (The original registerable-only decision was reversed same day — see
+    -- the in_highlight_menu comment below.)
     quick_explain = {
         id = "quick_explain",
         enable_web_search = false,
@@ -635,6 +635,38 @@ Write in an encyclopedic tone: factual, neutral, well-organized. Prioritize accu
 {conciseness_nudge} {hallucination_nudge}]],
         api_params = {
             temperature = 0.3,  -- Low temp for factual accuracy
+        },
+        builtin = true,
+    },
+    -- Grammar (simple revival, A9 round 2 2026-08-17): the maintainer retired
+    -- the constituency-parse version same day ("not good"; archived under
+    -- docs/archive pending the fuller word-list redesign) and asked for a
+    -- basic breakdown instead. Deliberately NO default placements — users add
+    -- it via the managers.
+    grammar = {
+        id = "grammar",
+        enable_web_search = false,
+        text = _("Grammar"),
+        description = _("Explains the grammar of the selected text in plain terms: sentence structure, word roles, and anything notable."),
+        context = "highlight",
+        behavior_variant = "dictionary_detailed",
+        prompt = [[Break down the grammar of:
+
+"{highlighted_text}"
+
+If the text is not in your response language, start with a one-line translation.
+
+Then give a brief, plain breakdown:
+- Overall structure: main and subordinate clauses and how they connect. One or two lines.
+- One bullet per significant word or phrase: part of speech and role in the sentence (subject, object, modifier, etc.). Group words into natural phrases; skip words with no grammatical interest.
+- Note anything irregular or tricky: unusual word order, elision, agreement, idiom.
+
+Use plain language first, adding the technical term in parentheses when it helps. For languages with their own grammatical tradition, also give the native term in its native script. Short bullets, no headers, no commentary beyond the grammar. {conciseness_nudge} {hallucination_nudge}]],
+        include_book_context = false,
+        reasoning_config = "off",
+        skip_domain = true,
+        api_params = {
+            temperature = 0.3,
         },
         builtin = true,
     },

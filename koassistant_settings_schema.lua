@@ -2231,6 +2231,38 @@ local SettingsSchema = {
                     help_text = _("Configure which actions appear in the dictionary popup"),
                     separator = true,
                 },
+                -- Input dialogs (A9 round 2 2026-08-17: the utility buttons
+                -- were the only input-dialog rows without a settings surface —
+                -- action rows have the managers, chips have Toolbar Buttons)
+                {
+                    id = "input_dialog_header",
+                    type = "header",
+                    text = _("Input dialogs"),
+                },
+                {
+                    id = "show_artifacts_in_input",
+                    type = "toggle",
+                    text = _("Show View Artifacts button"),
+                    path = "features.show_artifacts_in_input",
+                    default = true,
+                    help_text = _("Show the 'View Artifacts' button in book and highlight input dialogs. It only appears for books that have artifacts. Takes effect the next time the dialog opens."),
+                },
+                {
+                    id = "show_group_in_input",
+                    type = "toggle",
+                    text = _("Show Group button"),
+                    path = "features.show_group_in_input",
+                    default = true,
+                    help_text = _("Show the 'Group' button in input dialogs for books that belong to a group. Takes effect the next time the dialog opens."),
+                },
+                {
+                    id = "input_dialog_actions",
+                    type = "action",
+                    text = _("Input Dialog Actions"),
+                    callback = "showInputActionsChooser",
+                    help_text = _("Choose which actions appear in each input dialog (book, file browser, highlight, X-Ray chat, general)."),
+                    separator = true,
+                },
                 -- File browser
                 {
                     id = "file_browser_header",
