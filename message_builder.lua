@@ -667,7 +667,10 @@ function MessageBuilder.build(params)
                 if show_book_line or data.request_prefix then
                     table.insert(parts, "")  -- Add spacing if book info or prefix was shown
                 end
-                table.insert(parts, "Selected text:")
+                -- selection_label: X-Ray chat labels the entry body for what it
+                -- is ("From the X-Ray entry:", recon 2e) — everyone else keeps
+                -- the generic label
+                table.insert(parts, data.selection_label or "Selected text:")
                 table.insert(parts, '"' .. data.highlighted_text .. '"')
             end
             table.insert(parts, "")

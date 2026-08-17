@@ -3953,6 +3953,10 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             or BookSettings.resolveDictionaryContext(per_book_ds, config.features),
         -- X-Ray context prefix (injected before action prompt in message builder)
         request_prefix = xray_prefix,
+        -- Recon 2e (2026-08-16): the entry body is not book prose — label it.
+        -- Only the X-Ray chat prefix flows through request_prefix, so the gate
+        -- is exact. Model-facing string, untranslated like the prefix.
+        selection_label = xray_prefix and "From the X-Ray entry:" or nil,
         -- Background auto-update marker (read by the abort/guard/pre-send checks)
         _background_request = background_request or nil,
         -- Auto-create marker (§5 decision 1): permits the fresh path in the §4 abort
@@ -8500,20 +8504,13 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                     end
                 if feats.is_book_context then
                     -- Book facet: pick a text range to attach to the sent message.
+                    -- Label is a COUNT like the Attach chip (maintainer 2026-08-17):
+                    -- the chip is too small for content names — tap shows the detail.
                     local label
-                    -- Emoji SWAPS the word "Scope" (🎯), state suffix stays — same
-                    -- pattern as the web/tools chips.
                     if not pick then
                         label = enable_emoji and ("\u{1F3AF} " .. _("OFF")) or _("Scope")
-                    elseif pick.kind == "page" then
-                        label = enable_emoji and ("\u{1F3AF} " .. _("page")) or _("Scope: page")
-                    elseif pick.kind == "to_position" then
-                        label = enable_emoji and ("\u{1F3AF} " .. _("so far")) or _("Scope: so far")
                     else
-                        local short, truncated = require("koassistant_scope_resolver")
-                            .utf8First(pick.title or _("section"), 10)
-                        short = short .. (truncated and "…" or "")
-                        label = enable_emoji and ("\u{1F3AF} " .. short) or T(_("Scope: %1"), short)
+                        label = enable_emoji and "\u{1F3AF} 1" or _("Scope (1)")
                     end
                     return { text = label, callback = pickScope, hold_callback = pickScope }
                 elseif highlighted_text then
@@ -8521,22 +8518,25 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                     -- mode (the deferred surrounding_context_plan.md step-3 control).
                     -- Applies to freeform Send AND dialog-launched nil-flag actions;
                     -- explicit per-action modes still win in effectiveSurroundingContextMode.
+                    -- Label is a COUNT (maintainer 2026-08-17): the number reflects
+                    -- what actually rides — ambient/default context counts, an
+                    -- "Also send" book scope counts — OFF only when nothing does.
+                    -- Tap shows the detail (the popup names mode and scope).
                     local mode = feats._session_highlight_context
                         or BookSettings.resolveHighlightContext(doc_settings, feats)
-                    local label
-                    if mode == "sentence" then
-                        label = enable_emoji and ("\u{1F3AF} " .. _("sentence")) or _("Ctx: sentence")
-                    elseif mode == "paragraph" then
-                        label = enable_emoji and ("\u{1F3AF} " .. _("paragraph")) or _("Ctx: paragraph")
-                    elseif mode == "characters" then
-                        label = enable_emoji and ("\u{1F3AF} " .. _("characters")) or _("Ctx: characters")
-                    else
-                        label = enable_emoji and ("\u{1F3AF} " .. _("OFF")) or _("Ctx off")
+                    local count = 0
+                    if mode == "sentence" or mode == "paragraph" or mode == "characters" then
+                        count = count + 1
                     end
                     if feats._session_scope then
-                        -- An "Also send" book scope is attached (rides beside the
-                        -- selection at Send) — mark the chip
-                        label = label .. "+"
+                        count = count + 1
+                    end
+                    local label
+                    if count == 0 then
+                        label = enable_emoji and ("\u{1F3AF} " .. _("OFF")) or _("Ctx off")
+                    else
+                        label = enable_emoji and ("\u{1F3AF} " .. tostring(count))
+                            or T(_("Ctx (%1)"), count)
                     end
                     local function pickMode()
                         local ButtonDialog = require("ui/widget/buttondialog")

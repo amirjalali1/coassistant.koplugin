@@ -391,6 +391,23 @@ local function applyCarryPageBreak(html_body, carry_anchor, carry_occurrence)
     logger.info("KOAssistant: carry page break — skipped, nothing above the spot")
     return html_body
   end
+  -- Marker-less text (artifact views): the composed prefix is viewer-only
+  -- indicator lines ("*[... was used]*", "*Response generated without: ...*")
+  -- rendered as emphasis-only paragraphs — 46-73 chars, so they beat the
+  -- 40-char guard and the break put an indicator line alone on page 1
+  -- (recon 2b, 2026-08-16). When everything above the anchor's block is
+  -- emphasis-only, nothing the reader was keeping their place in sits above
+  -- the spot — skip the break.
+  if not mpos then
+    local residue = html_body:sub(1, best - 1)
+      :gsub("<em>.-</em>", ""):gsub("<i>.-</i>", "")
+      :gsub("<[^>]*>", ""):gsub("\226\128\143", "")
+      :gsub("\226\129[\167\169]", ""):gsub("%s+", "")
+    if ulen(residue) < 40 then
+      logger.info("KOAssistant: carry page break — skipped, only notice lines above the spot")
+      return html_body
+    end
+  end
   -- Spot at the newest reply's very start: the marker break already tops it
   -- (marker/mpos computed at the top for the scoped anchor search). Bidi
   -- marks (RLM/RLI/PDI) count as nothing — this runs POST-bidi since
@@ -1076,7 +1093,12 @@ end
 
 -- CSS for markdown rendering (function to support dynamic text-align)
 local function getViewerCSS(text_align)
-    text_align = text_align or "justify"
+    text_align = text_align or "auto"
+    -- "auto" (recon 2g default, 2026-08-17): no text-align rule — paragraphs
+    -- align to their writing direction via the bidi pass's dir attributes,
+    -- left for LTR and right for RTL
+    local align_rule = text_align ~= "auto"
+        and ("    text-align: " .. text_align .. ";\n") or ""
     return string.format([[
 @page {
     margin: 0;
@@ -1086,8 +1108,7 @@ local function getViewerCSS(text_align)
 body {
     margin: 0;
     line-height: 1.3;
-    text-align: %s;
-    padding: 0;
+%s    padding: 0;
 }
 
 blockquote {
@@ -1169,7 +1190,7 @@ hr {
     border-top: 1px solid #999;
     margin: 0.8em 0;
 }
-]], text_align)
+]], align_rule)
 end
 
 local ChatGPTViewer = InputContainer:extend {
@@ -1179,17 +1200,17 @@ local ChatGPTViewer = InputContainer:extend {
   height = nil,
   buttons_table = nil,
   -- See TextBoxWidget for details about these options
-  -- We default to justified and auto_para_direction to adapt
-  -- to any kind of text we are given (book descriptions,
-  -- bookmarks' text, translation results...).
-  -- When used to display more technical text (HTML, CSS,
-  -- application logs...), it's best to reset them to false.
+  -- Default alignment is "auto" (recon 2g, 2026-08-17): start-aligned per
+  -- writing direction — left for LTR, right for RTL — in both render paths.
+  -- `justified` is DERIVED from text_align at init ("justify" only); the
+  -- non-strict "left" alignment below is BiDi-logical start, so RTL
+  -- paragraphs right-align on the TextBoxWidget path by construction.
   alignment = "left",
-  justified = true,
+  justified = false,
   render_markdown = true, -- Convert markdown to HTML for display
   strip_markdown_in_text_mode = true, -- Strip markdown syntax in plain text mode
   markdown_font_size = 20, -- Font size for markdown rendering
-  text_align = "justify", -- Text alignment for markdown: "justify" or "left"
+  text_align = "auto", -- "auto" (per direction) | "left" | "justify" | "right"
   lang = nil,
   para_direction_rtl = nil,
   auto_para_direction = true,
@@ -1614,11 +1635,10 @@ function ChatGPTViewer:init()
         callback = function()
           self:toggleHighlightVisibility()
         end,
+        -- Long-press: global quote-display defaults (recon 2g; the MD/TXT
+        -- hold precedent — tap stays per-chat)
         hold_callback = function()
-          UIManager:show(Notification:new{
-            text = _("Toggle highlighted text display in chat"),
-            timeout = 2,
-          })
+          self:showQuoteQuickSettings()
         end,
       },
       {
@@ -1695,6 +1715,10 @@ function ChatGPTViewer:init()
   if self.configuration.features and self.configuration.features.text_align then
     self.text_align = self.configuration.features.text_align
   end
+  -- Alignment drives the plain-text path too (recon 2g): "justify" keeps the
+  -- justified TextBoxWidget, everything else start-aligns (non-strict "left"
+  -- is BiDi-logical, so RTL paragraphs right-align)
+  self.justified = self.text_align == "justify"
   if self.configuration.features and self.configuration.features.show_debug_in_chat ~= nil then
     self.show_debug_in_chat = self.configuration.features.show_debug_in_chat
   end
@@ -6000,7 +6024,8 @@ end
 local function getAlignmentDisplayName(align)
   if align == "justify" then return _("Justified")
   elseif align == "right" then return _("Right (RTL)")
-  else return _("Left")
+  elseif align == "left" then return _("Left")
+  else return _("Auto (by text direction)")
   end
 end
 
@@ -6134,14 +6159,17 @@ end
 -- Shared by the gear (showViewerSettings) and the MD/TXT quick menu so both behave
 -- identically; each caller reopens its own dialog afterward.
 function ChatGPTViewer:cycleAlignment()
-  local order = {"left", "justify", "right"}
-  local current = self.text_align or "justify"
+  local order = {"auto", "left", "justify", "right"}
+  local current = self.text_align or "auto"
   local idx = 1
   for i, v in ipairs(order) do
     if v == current then idx = i; break end
   end
   local next_align = order[(idx % #order) + 1]
   self.text_align = next_align
+  -- Keep the plain-text path in step (recon 2g): a later MD/TXT toggle
+  -- rebuilds with this value
+  self.justified = next_align == "justify"
   self:persistFeatureSetting("text_align", next_align)
   self:refreshMarkdownDisplay()
   UIManager:show(Notification:new{
@@ -6182,6 +6210,69 @@ function ChatGPTViewer:_anchorToButton(button_id)
     local btn = self.button_table:getButtonById(button_id)
     return btn and btn.dimen, true
   end
+end
+
+-- Quote-visibility quick settings (recon 2g, 2026-08-17): the Show/Hide Quote
+-- TAP stays per-chat; HOLD exposes the global defaults that seed new viewers
+-- (the MD/TXT button's tap-per-chat / hold-global precedent). Writes the
+-- settings truth, never this viewer's toggled state.
+function ChatGPTViewer:showQuoteQuickSettings()
+  local function readGlobals()
+    local f
+    if self._plugin and self._plugin.settings then
+      f = self._plugin.settings:readSetting("features") or {}
+    else
+      f = self.configuration and self.configuration.features or {}
+    end
+    return f.hide_highlighted_text == true, f.hide_long_highlights ~= false
+  end
+  local function setGlobal(key, v)
+    if self.settings_callback then
+      self.settings_callback("features." .. key, v)
+    elseif self._plugin and self._plugin.settings then
+      local f = self._plugin.settings:readSetting("features") or {}
+      f[key] = v
+      self._plugin.settings:saveSetting("features", f)
+      self._plugin.settings:flush()
+      if self._plugin.updateConfigFromSettings then
+        self._plugin:updateConfigFromSettings()
+      end
+    end
+  end
+  local hide_default, hide_long = readGlobals()
+  local dialog
+  dialog = ButtonDialog:new{
+    shrink_unneeded_width = true,
+    anchor = self:_anchorToButton("toggle_highlight"),
+    title = _("Quote display (new chats)"),
+    buttons = {
+      {{
+        text = _("Hide quotes by default") .. ": " .. (hide_default and _("On") or _("Off")),
+        callback = function()
+          setGlobal("hide_highlighted_text", not hide_default)
+          UIManager:close(dialog)
+          self:showQuoteQuickSettings()
+        end,
+      }},
+      {{
+        -- Only consulted while the default above is Off (schema depends_on)
+        text = _("Auto-hide long quotes") .. ": " .. (hide_long and _("On") or _("Off")),
+        enabled = not hide_default,
+        callback = function()
+          setGlobal("hide_long_highlights", not hide_long)
+          UIManager:close(dialog)
+          self:showQuoteQuickSettings()
+        end,
+      }},
+      {{
+        text = _("Close"),
+        callback = function()
+          UIManager:close(dialog)
+        end,
+      }},
+    },
+  }
+  UIManager:show(dialog)
 end
 
 -- Quick display settings, opened by long-pressing the MD/TXT toggle (slice (e) note
@@ -6326,12 +6417,13 @@ end
 -- Reset viewer settings to defaults
 function ChatGPTViewer:resetViewerSettings()
   self.markdown_font_size = 20
-  self.text_align = "justify"
+  self.text_align = "auto"
+  self.justified = false
 
   -- Save to configuration and persist (via _plugin fallback too, so Reset sticks on
   -- artifact/X-Ray viewers that carry no settings_callback — #94)
   self:persistFeatureSetting("markdown_font_size", 20)
-  self:persistFeatureSetting("text_align", "justify")
+  self:persistFeatureSetting("text_align", "auto")
 
   -- Refresh display
   self:refreshMarkdownDisplay()

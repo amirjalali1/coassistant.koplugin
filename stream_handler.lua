@@ -963,6 +963,11 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
         local line = vsl and tb.virtual_line_num and vsl[tb.virtual_line_num]
         local charlist = tb and tb.charlist
         if not (line and line.offset and charlist and line.offset <= #charlist) then return nil end
+        -- Reader never left the top (autoscroll off, or paused at line 1):
+        -- there is no position to keep — the completion viewer opens at the
+        -- top anyway, and a carried first-words anchor just breaks the page
+        -- under any viewer-only prefix (recon 2b, 2026-08-16)
+        if tb.virtual_line_num == 1 then return nil end
         -- offsets are CHAR indices into charlist (page padding sits at the end,
         -- so a real top line always points into content). The snippet starts at
         -- the EXACT top visible line: the completion viewer splits the holding

@@ -19470,11 +19470,16 @@ end
 
 function AskGPT:showAbout()
   local UpdateChecker = require("koassistant_update_checker")
+  local version = UpdateChecker.getCurrentVersion() or _("Unknown")
   UIManager:show(InfoMessage:new{
-    text = _("KOAssistant Plugin\nVersion: ") ..
-          (UpdateChecker.getCurrentVersion() or "Unknown") ..
-          "\nProvides AI assistant capabilities via various API providers." ..
-          "\n\nGesture Support:\nAssign gestures in Settings → Gesture Manager",
+    text = T(_([[KOAssistant %1
+
+An AI companion for KOReader. Chat about your books, highlights and library, translate and look things up, and build book artifacts (X-Ray, summaries, quizzes, recaps) with per-book settings, spoiler protection, and your choice of AI provider.
+
+Project page, guides and updates:
+github.com/zeeyado/koassistant.koplugin
+
+Gestures: assign KOAssistant actions in Settings → Taps and gestures → Gesture manager.]]), version),
   })
 end
 

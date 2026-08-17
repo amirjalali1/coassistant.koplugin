@@ -409,6 +409,46 @@ TestRunner:test("refresh: removes entry when chats gone", function()
     TestRunner:assertNil(g_reader_store[CHAT_KEY]["/books/a.epub"], "entry should be removed")
 end)
 
+-- Starred tally in the index (Fix S, 2026-08-17): the browser's Starred row
+-- reads index.starred instead of re-parsing every sidecar.
+local function chatsTableStarred(ids, starred_ids)
+    local chats = chatsTable(ids)
+    for _idx, id in ipairs(starred_ids) do
+        chats[id].starred = true
+        chats[id].messages = { { role = "user", content = "q" } }
+    end
+    return chats
+end
+
+TestRunner:test("index entry carries the starred tally", function()
+    ChatHistoryManager:updateChatIndex("/books/a.epub", "save", nil,
+        chatsTableStarred({ "c1", "c2" }, { "c2" }))
+    local entry = g_reader_store[CHAT_KEY]["/books/a.epub"]
+    TestRunner:assertEqual(entry.starred, 1, "one starred chat with messages tallies")
+    TestRunner:assertEqual(entry.count, 2, "count unaffected by starring")
+end)
+
+TestRunner:test("refresh: starred change writes despite equal count and ids", function()
+    ChatHistoryManager:updateChatIndex("/books/a.epub", "save", nil,
+        chatsTableStarred({ "c1", "c2" }, {}))
+    ChatHistoryManager:updateChatIndex("/books/a.epub", "refresh", nil,
+        chatsTableStarred({ "c1", "c2" }, { "c1" }))
+    local entry = g_reader_store[CHAT_KEY]["/books/a.epub"]
+    TestRunner:assertEqual(entry.starred, 1, "star toggle must be picked up by refresh")
+end)
+
+TestRunner:test("refresh: heals a legacy entry missing the starred field", function()
+    -- Pre-Fix-S entry shape: no `starred`
+    g_reader_store[CHAT_KEY] = g_reader_store[CHAT_KEY] or {}
+    g_reader_store[CHAT_KEY]["/books/legacy.epub"] = {
+        count = 1, last_modified = 500, chat_ids = { "c1" },
+    }
+    ChatHistoryManager:updateChatIndex("/books/legacy.epub", "refresh", nil, chatsTable({ "c1" }))
+    local entry = g_reader_store[CHAT_KEY]["/books/legacy.epub"]
+    TestRunner:assertEqual(entry.starred, 0, "refresh must stamp starred on legacy entries")
+    TestRunner:assertEqual(entry.last_modified, 500, "heal keeps last_modified")
+end)
+
 TestRunner:test("refresh: no entry + no chats = no write", function()
     ChatHistoryManager:updateChatIndex("/books/a.epub", "refresh", nil, {})
     TestRunner:assertEqual(chatSaves(), 0, "nothing to do, nothing to write")

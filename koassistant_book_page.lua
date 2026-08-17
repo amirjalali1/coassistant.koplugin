@@ -194,9 +194,12 @@ local function buildItems(ctx)
 
     -- Book Chat/Action (established terminology + 💬, the QA panel's pair) —
     -- the book-context input dialog with its actions; same launcher the
-    -- file-browser long-press uses, handles both modes
+    -- file-browser long-press uses, handles both modes. Closed books get a
+    -- suffix (recon 2g): the chat then runs on sidecar data only.
     items[#items + 1] = {
-        text = Constants.getEmojiText("💬", _("Book Chat/Action"), ctx.enable_emoji),
+        text = Constants.getEmojiText("💬",
+            ctx.is_open_book and _("Book Chat/Action") or _("Book Chat/Action (book not open)"),
+            ctx.enable_emoji),
         callback = function()
             plugin:showKOAssistantDialogForFile(file, ctx.title, ctx.author)
         end,

@@ -2299,7 +2299,10 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         table.insert(row, {
             text = _("Chat about this"),
             callback = function()
-                self_ref:chatAboutItem(detail_text)
+                self_ref:chatAboutItem(detail_text, {
+                    name = XrayParser.getItemName(item, category_key),
+                    category = (nav_context and nav_context.category_label) or category_key,
+                })
             end,
         })
     end
@@ -3282,7 +3285,7 @@ end
 
 --- Launch a highlight-context book chat with the given text
 --- @param detail_text string The X-Ray detail text to discuss
-function XrayBrowser:chatAboutItem(detail_text)
+function XrayBrowser:chatAboutItem(detail_text, entity)
     local Dialogs = require("koassistant_dialogs")  -- Lazy to avoid circular dep
     -- Refresh config from settings so provider/model changes since browser opened take effect
     if self.metadata.plugin and self.metadata.plugin.updateConfigFromSettings then
@@ -3316,14 +3319,32 @@ function XrayBrowser:chatAboutItem(detail_text)
         config.features._exclude_action_flags = {"use_book_text", "use_annotations"}
     end
 
-    -- Pass X-Ray source framing as context prefix (injected before action prompt, not into text)
+    -- Pass X-Ray source framing as context prefix (injected before action prompt,
+    -- not into text). Recon 2e (2026-08-16): name what the model is looking at —
+    -- the old generic "analysis of the work" line never said this is an X-Ray
+    -- ENTRY for a named entity, so replies treated the entry text as book prose.
+    -- Model-facing string, deliberately untranslated (like its predecessor).
+    local subject
+    if entity and entity.name then
+        subject = string.format('the X-Ray entry for "%s" (%s)',
+            entity.name, entity.category or "entry")
+    else
+        subject = "an entry from the X-Ray"
+    end
+    local book_name = self.metadata.title
+        and (' of "' .. self.metadata.title .. '"') or " of this book"
     local framing
     if self.scope then
-        framing = "(Note: The following is from a Section X-Ray analysis of \"" .. (self.scope.label or "") .. "\" (" .. (self.scope.page_summary or "") .. "), not the referenced work itself.)"
+        framing = "(Note: The following is " .. subject .. " from a Section X-Ray" .. book_name
+            .. ' covering "' .. (self.scope.label or "") .. '" (' .. (self.scope.page_summary or "")
+            .. "). It is AI-generated analysis, not text from the book itself.)"
     elseif not self.metadata.full_document and self.metadata.progress then
-        framing = "(Note: The following is from an analysis of the work, not the referenced work itself. The analysis was done at " .. self.metadata.progress .. " progress.)"
+        framing = "(Note: The following is " .. subject .. " from an AI-generated X-Ray" .. book_name
+            .. ", built at " .. self.metadata.progress .. " reading progress."
+            .. " It is analysis, not text from the book itself.)"
     else
-        framing = "(Note: The following is from an analysis of the work, not the referenced work itself.)"
+        framing = "(Note: The following is " .. subject .. " from an AI-generated X-Ray" .. book_name
+            .. ". It is analysis, not text from the book itself.)"
     end
     config.features._xray_context_prefix = framing
 

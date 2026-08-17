@@ -524,8 +524,19 @@ function ChatHistoryDialog:showChatHistoryBrowser(ui, current_document_path, cha
     local menu_items = {}
     local self_ref = self  -- Capture self for callbacks
 
-    -- Add virtual "Starred" folder at top if any starred chats exist
-    local starred_count = chat_history_manager:getStarredChatCount()
+    -- Add virtual "Starred" folder at top if any starred chats exist.
+    -- Fix S (2026-08-17): v2 documents carry `starred` (index-driven for books,
+    -- single store parse for General/Library) — summing them replaces the old
+    -- every-sidecar re-parse. v1 keeps the legacy scan.
+    local starred_count
+    if chat_history_manager:useDocSettingsStorage() then
+        starred_count = 0
+        for _idx, d in ipairs(documents) do
+            starred_count = starred_count + (d.starred or 0)
+        end
+    else
+        starred_count = chat_history_manager:getStarredChatCount()
+    end
     if starred_count > 0 then
         local enable_emoji_starred = config and config.features and config.features.enable_emoji_icons == true
         table.insert(menu_items, {
@@ -547,13 +558,19 @@ function ChatHistoryDialog:showChatHistoryBrowser(ui, current_document_path, cha
     for doc_idx, doc in ipairs(documents) do
         logger.info("Chat history: Document - title: " .. (doc.title or "nil") .. ", author: " .. (doc.author or "nil"))
 
-        local chats = chat_history_manager:getChatsUnified(ui, doc.path)
-        local chat_count = #chats
-
-        local latest_timestamp = 0
-        for chat_idx, chat in ipairs(chats) do
-            if chat.timestamp and chat.timestamp > latest_timestamp then
-                latest_timestamp = chat.timestamp
+        -- Fix S (2026-08-17): count and timestamp come from the documents
+        -- array (index-backed) — no per-row sidecar/store parse. v1 documents
+        -- don't carry counts, so they keep the old read.
+        local chat_count = doc.count
+        local latest_timestamp = doc.last_modified or 0
+        if not chat_count then
+            local chats = chat_history_manager:getChatsUnified(ui, doc.path)
+            chat_count = #chats
+            latest_timestamp = 0
+            for chat_idx, chat in ipairs(chats) do
+                if chat.timestamp and chat.timestamp > latest_timestamp then
+                    latest_timestamp = chat.timestamp
+                end
             end
         end
 

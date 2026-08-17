@@ -1813,13 +1813,21 @@ function ChatHistoryManager:getStarredChatCount()
         end
 
         local index = self:getChatIndex()
-        for doc_path, _info in pairs(index) do
+        for doc_path, info in pairs(index) do
             if doc_path ~= "__GENERAL_CHATS__" and lfs.attributes(doc_path, "mode") then
-                local doc_settings = SafeDocSettings.resolve(doc_path)
-                local chats_table = doc_settings:readSetting("koassistant_chats", {})
-                for _chat_id, chat in pairs(chats_table) do
-                    if chat and chat.starred and chat.messages and #chat.messages > 0 then
-                        count = count + 1
+                if type(info.starred) == "number" then
+                    -- Fix S (2026-08-17): the index carries the starred tally —
+                    -- no sidecar parse
+                    count = count + info.starred
+                else
+                    -- Legacy entry not yet healed (getAllDocumentsUnified heals
+                    -- on browse) — one-time sidecar read
+                    local doc_settings = SafeDocSettings.resolve(doc_path)
+                    local chats_table = doc_settings:readSetting("koassistant_chats", {})
+                    for _chat_id, chat in pairs(chats_table) do
+                        if chat and chat.starred and chat.messages and #chat.messages > 0 then
+                            count = count + 1
+                        end
                     end
                 end
             end
@@ -2124,6 +2132,12 @@ function ChatHistoryManager:updateChatInDocSettings(ui, chat_id, updates, docume
         logger.warn("updateChatInDocSettings: " .. (err or "Write failed"))
         return false
     end
+
+    -- Keep the index's starred tally live (Fix S, 2026-08-17): star/unstar and
+    -- other patches write through here without touching any save-path index
+    -- update. "refresh" preserves last_modified and no-ops when nothing
+    -- indexed changed.
+    self:updateChatIndex(actual_doc_path, "refresh", nil, chats)
 
     logger.info("Updated chat in metadata.lua: " .. chat_id)
     return true
@@ -2472,10 +2486,18 @@ function ChatHistoryManager:updateChatIndex(document_path, operation, chat_id, c
     local count = 0
     local chat_ids = {}
     local max_timestamp = 0
+    local starred = 0
 
     for id, chat in pairs(chats_table) do
         count = count + 1
         table.insert(chat_ids, id)
+
+        -- Starred tally rides the same pass (Fix S, 2026-08-17): the browser's
+        -- Starred row reads it from the index instead of re-parsing sidecars.
+        -- Predicate matches getStarredChatCount's.
+        if chat.starred and chat.messages and #chat.messages > 0 then
+            starred = starred + 1
+        end
 
         -- Track the most recent chat timestamp
         if chat.timestamp and chat.timestamp > max_timestamp then
@@ -2507,7 +2529,10 @@ function ChatHistoryManager:updateChatIndex(document_path, operation, chat_id, c
         -- "refresh" only — save must always bump last_modified.
         if operation == "refresh" then
             local prev = index[document_path]
-            if prev and prev.count == count and sameChatIdSet(prev.chat_ids, chat_ids) then
+            -- prev.starred nil (legacy entry) fails the equality even against 0,
+            -- so the first refresh after the Fix S upgrade heals the field
+            if prev and prev.count == count and prev.starred == starred
+                and sameChatIdSet(prev.chat_ids, chat_ids) then
                 index_operation_pending = false
                 return
             end
@@ -2518,6 +2543,7 @@ function ChatHistoryManager:updateChatIndex(document_path, operation, chat_id, c
             count = count,
             last_modified = timestamp,
             chat_ids = chat_ids,
+            starred = starred,
         }
 
         logger.dbg("Chat index update: operation=" .. operation .. ", timestamp=" ..
@@ -2829,6 +2855,22 @@ function ChatHistoryManager:getAllDocumentsUnified(ui)
             return max_ts
         end
 
+        -- Starred tally (same predicate as the index/getStarredChatCount);
+        -- pairs() so it serves both the array stores and keyed sidecar tables
+        local function countStarred(chats)
+            local n = 0
+            for _idx, chat in pairs(chats) do
+                if chat and chat.starred and chat.messages and #chat.messages > 0 then
+                    n = n + 1
+                end
+            end
+            return n
+        end
+
+        -- Fix S (2026-08-17): document entries carry count/starred so the
+        -- browser renders its rows and the Starred folder without re-reading
+        -- any store or sidecar (they used to be parsed 3x per open).
+
         -- Add general chats as a pseudo-document
         local general_chats = self:getGeneralChats()
         if #general_chats > 0 then
@@ -2837,6 +2879,8 @@ function ChatHistoryManager:getAllDocumentsUnified(ui)
                 title = _("General AI Chats"),
                 author = nil,
                 last_modified = getMaxTimestamp(general_chats),
+                count = #general_chats,
+                starred = countStarred(general_chats),
             })
         end
 
@@ -2848,11 +2892,14 @@ function ChatHistoryManager:getAllDocumentsUnified(ui)
                 title = _("Library Chats"),
                 author = nil,
                 last_modified = getMaxTimestamp(library_chats),
+                count = #library_chats,
+                starred = countStarred(library_chats),
             })
         end
 
         -- Add documents from chat index
         local index = self:getChatIndex()
+        local healed = false
         for doc_path, info in pairs(index) do
             if doc_path ~= "__GENERAL_CHATS__" then
                 -- Filter out documents that no longer exist at this path
@@ -2867,14 +2914,30 @@ function ChatHistoryManager:getAllDocumentsUnified(ui)
                     local title = doc_props and doc_props.title or doc_path:match("([^/]+)$")
                     local author = doc_props and doc_props.authors or nil
 
+                    -- Legacy index entries lack `starred` — heal it for FREE
+                    -- from this already-parsed DocSettings instance (the
+                    -- doc_props read above paid the full metadata.lua parse)
+                    local starred = info.starred
+                    if type(starred) ~= "number" then
+                        local chats_table = doc_settings:readSetting("koassistant_chats", {})
+                        starred = countStarred(chats_table)
+                        self:updateChatIndex(doc_path, "refresh", nil, chats_table, { no_flush = true })
+                        healed = true
+                    end
+
                     table.insert(documents, {
                         path = doc_path,
                         title = title,
                         author = author,
                         last_modified = info.last_modified or 0,
+                        count = info.count or 0,
+                        starred = starred,
                     })
                 end
             end
+        end
+        if healed then
+            G_reader_settings:flush()
         end
 
         -- Sort: General/Library chats first, then by last_modified descending
