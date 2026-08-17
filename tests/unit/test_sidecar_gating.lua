@@ -1714,12 +1714,129 @@ end
 -- Run all tests
 -- =============================================================================
 
+-- =============================================================================
+-- Per-book override integration (release-blocking six-pack [5]): the tri-state
+-- sidecar overrides exercised THROUGH extractForAction — DENY beats trusted
+-- providers, ALLOW satisfies only the GLOBAL gate, and the resolver's
+-- annotations-implies-highlights reaches the extractor through the real chain.
+-- =============================================================================
+
+local function runPerBookOverrideTests()
+    print("\n=== Testing Per-Book Overrides THROUGH extractForAction ===")
+
+    setupSidecarData({
+        annotations = {
+            { text = "Test highlight from chapter 1" },
+            { text = "Annotated passage", note = "My note about this" },
+        },
+        percent_finished = 0.65,
+    })
+    mock_notebook_content = "My notebook notes about this book."
+
+    -- Stub the override resolver on ONE instance (same seam style as the
+    -- getHighlights stubs in test_state_management.lua)
+    local function withOverrides(extractor, overrides)
+        extractor.getBookPrivacyOverrides = function() return overrides end
+        return extractor
+    end
+
+    print("\n--- DENY beats trusted providers ---")
+
+    TestRunner:test("book deny: highlights empty despite trusted provider", function()
+        local extractor = withOverrides(createSidecarExtractor({
+            enable_highlights_sharing = true,
+            provider = "local_ollama",
+            trusted_providers = { "local_ollama" },
+        }), { highlights = false, annotations = false })
+        local data = extractor:extractForAction({ use_highlights = true, prompt = "{highlights}" })
+        TestRunner:assertEquals(data.highlights, "", "per-book deny wins over trust AND globals")
+    end)
+
+    TestRunner:test("book deny: annotations empty despite trusted provider (no degrade)", function()
+        local extractor = withOverrides(createSidecarExtractor({
+            enable_annotations_sharing = true,
+            provider = "local_ollama",
+            trusted_providers = { "local_ollama" },
+        }), { highlights = false, annotations = false })
+        local data = extractor:extractForAction({ use_annotations = true, prompt = "{annotations}" })
+        TestRunner:assertEquals(data.annotations, "", "deny-annotations with deny-highlights leaves nothing")
+    end)
+
+    TestRunner:test("book deny: notebook empty despite trusted provider", function()
+        local extractor = withOverrides(createSidecarExtractor({
+            enable_notebook_sharing = true,
+            provider = "local_ollama",
+            trusted_providers = { "local_ollama" },
+        }), { notebook = false })
+        local data = extractor:extractForAction({ use_notebook = true, prompt = "{notebook}" })
+        TestRunner:assertEquals(data.notebook_content, "", "per-book notebook deny wins over trust")
+    end)
+
+    TestRunner:test("book deny: book_text blocked despite trusted provider", function()
+        local extractor = withOverrides(createOpenBookExtractor({
+            enable_book_text_extraction = true,
+            provider = "local_ollama",
+            trusted_providers = { "local_ollama" },
+        }), { book_text = false })
+        TestRunner:assertEquals(extractor:isBookTextExtractionEnabled(), false,
+            "the one text-extraction gate every consumer must use resolves DENY under trust")
+        local data = extractor:extractForAction({ use_book_text = true, prompt = "{book_text}" })
+        TestRunner:assertEquals(data.book_text or "", "", "denied book text extracts nothing")
+    end)
+
+    print("\n--- ALLOW satisfies the GLOBAL gate only ---")
+
+    TestRunner:test("book allow: highlights flow with global sharing off", function()
+        local extractor = withOverrides(createSidecarExtractor({
+            enable_highlights_sharing = false,
+            enable_annotations_sharing = false,
+        }), { highlights = true })
+        local data = extractor:extractForAction({ use_highlights = true, prompt = "{highlights}" })
+        TestRunner:assertContains(data.highlights, "Test highlight",
+            "book-level allow opens the global gate")
+    end)
+
+    TestRunner:test("book allow: the per-action flag still gates (double-gating holds)", function()
+        local extractor = withOverrides(createSidecarExtractor({
+            enable_highlights_sharing = false,
+            enable_annotations_sharing = false,
+        }), { highlights = true })
+        local data = extractor:extractForAction({ use_highlights = false, prompt = "{highlights}" })
+        TestRunner:assertEquals(data.highlights, "",
+            "allow satisfies the GLOBAL gate only; an action that does not ask gets nothing")
+    end)
+
+    print("\n--- Implication through the REAL resolver chain ---")
+
+    TestRunner:test("sidecar allow-annotations implies highlights end to end", function()
+        -- NO stub here: the real getBookPrivacyOverrides -> SafeDocSettings ->
+        -- this file's docsettings mock -> BookSettings.effectivePrivacyOverrides,
+        -- which is where the implication is produced.
+        setupSidecarData({
+            annotations = {
+                { text = "Test highlight from chapter 1" },
+            },
+            koassistant_book_annotations_sharing = true,
+        })
+        local extractor = createSidecarExtractor({
+            enable_highlights_sharing = false,
+            enable_annotations_sharing = false,
+        })
+        local data = extractor:extractForAction({ use_highlights = true, prompt = "{highlights}" })
+        TestRunner:assertContains(data.highlights, "Test highlight",
+            "allow-annotations implies allow-highlights at the extractor")
+    end)
+
+    resetMocks()
+end
+
 local function runAll()
     print("\n=== Testing Sidecar Data Access and Privacy Gating ===")
 
     runSidecarAccessTests()
     runSidecarReaderTests()
     runSidecarGatingTests()
+    runPerBookOverrideTests()
     runSidecarUnavailableDataTests()
     runFlagClassificationTests()
     runSidecarLiveFlagTests()

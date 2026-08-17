@@ -56,6 +56,30 @@ package.loaded["ffi/util"] = {
             return tostring(args[tonumber(i)] or "")
         end))
     end,
+    -- Working implementations matching the real ffi/util contracts, so tests
+    -- can drive real file-moving code (update_checker preserve/restore):
+    -- copyFile returns an error string on failure, nothing on success;
+    -- execute returns the exit status number (0 = success).
+    copyFile = function(from, to)
+        local fin, ferr = io.open(from, "rb")
+        if not fin then return ferr or ("cannot open " .. tostring(from)) end
+        local data = fin:read("*a")
+        fin:close()
+        local fout, terr = io.open(to, "wb")
+        if not fout then return terr or ("cannot write " .. tostring(to)) end
+        fout:write(data or "")
+        fout:close()
+    end,
+    execute = function(...)
+        local parts = {}
+        for i = 1, select("#", ...) do
+            parts[#parts + 1] = '"' .. tostring((select(i, ...))) .. '"'
+        end
+        local ok, _how, code = os.execute(table.concat(parts, " "))
+        if type(ok) == "number" then return ok end -- Lua 5.1 semantics
+        if ok then return 0 end
+        return code or 1
+    end,
 }
 
 -- Mock network libraries if not available (unit tests don't need real network)
@@ -196,6 +220,96 @@ do
         ModelOverrides._setUserForTests(false)
         ModelOverrides._setDerivedForTests(false)
     end
+end
+
+-- ============================================================================
+-- Widget-zoo stubs (test-suite audit 2026-08-17): the 22 modules that block
+-- requiring koassistant_dialogs.lua under these mocks. Load-time only — the
+-- dialogs file stores the classes and instantiates lazily, so trivial
+-- class-shaped tables suffice; tests never render widgets.
+-- ============================================================================
+local function uiClassStub(name)
+    local C = { _mock_widget = name }
+    function C:new(o)
+        o = o or {}
+        setmetatable(o, { __index = self })
+        return o
+    end
+    function C:extend(o)
+        o = o or {}
+        setmetatable(o, { __index = self })
+        return o
+    end
+    return C
+end
+
+for _idx, name in ipairs({
+    "ui/widget/buttontable", "ui/widget/checkbutton", "ui/widget/infomessage",
+    "ui/widget/notification", "ui/widget/scrolltextwidget", "ui/widget/scrollhtmlwidget",
+    "ui/widget/spinwidget", "ui/widget/titlebar", "ui/widget/verticalgroup",
+    "ui/widget/container/centercontainer", "ui/widget/container/framecontainer",
+    "ui/widget/container/inputcontainer", "ui/widget/container/movablecontainer",
+    "ui/widget/container/widgetcontainer",
+    "ui/geometry", "ui/gesturerange",
+}) do
+    if not package.loaded[name] then
+        package.loaded[name] = uiClassStub(name)
+    end
+end
+
+-- BiDi helpers: every BD.fn(x) passes the text through unchanged
+if not package.loaded["ui/bidi"] then
+    package.loaded["ui/bidi"] = setmetatable({}, {
+        __index = function() return function(x) return x end end,
+    })
+end
+
+-- Blitbuffer: constants and constructors alike resolve to an inert value
+if not package.loaded["ffi/blitbuffer"] then
+    local inert = setmetatable({}, { __call = function() return 0 end })
+    package.loaded["ffi/blitbuffer"] = setmetatable({}, {
+        __index = function() return inert end,
+    })
+end
+
+if not package.loaded["ffi/sha2"] then
+    package.loaded["ffi/sha2"] = setmetatable({}, {
+        __index = function() return function() return "mockhash" end end,
+    })
+end
+
+-- Frontend util: permissive — any util.fn(...) is a callable no-op
+if not package.loaded["util"] then
+    package.loaded["util"] = setmetatable({}, {
+        __index = function() return function() return nil end end,
+    })
+end
+
+-- LuaSettings: functional in-memory store (dialogs reads settings through it)
+if not package.loaded["luasettings"] then
+    package.loaded["luasettings"] = {
+        open = function(_, _path)
+            local store = {}
+            local inst
+            inst = {
+                data = store,
+                readSetting = function(_, k) return store[k] end,
+                saveSetting = function(_, k, v) store[k] = v; return inst end,
+                delSetting = function(_, k) store[k] = nil; return inst end,
+                has = function(_, k) return store[k] ~= nil end,
+                flush = function() end,
+                close = function() end,
+            }
+            return inst
+        end,
+    }
+end
+
+-- luamd markdown renderer (apps/filemanager/lib/md)
+if not package.loaded["apps/filemanager/lib/md"] then
+    package.loaded["apps/filemanager/lib/md"] = {
+        render = function() return nil, "mock markdown unavailable" end,
+    }
 end
 
 -- Verification message

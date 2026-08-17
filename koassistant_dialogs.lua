@@ -437,6 +437,30 @@ end
 -- fallback IS 4096 a pinned 4096 is not "< fallback", so the net never fired
 -- precisely where the budget was tightest.
 local REASONING_HEADROOM_FLOOR = 16384
+-- The ⚡ Quick preset's facet-off rule, ONE implementation (six-pack [1] —
+-- this was hand-duplicated at ~12 dispatch/label/toast sites and the copies
+-- could drift silently). Returns true when the preset forces `facet`
+-- ("web" | "tools") OFF. `quick_on` is passed by the site because two signals
+-- exist: the bake reads the dispatch consumable _quick_answer_active, chip
+-- labels and the reply window read the session state. Pin-beats-preset: a
+-- facet TOUCHED while Quick is on keeps its own value. Web exempts an action
+-- that explicitly forces web on (matrix §10); tools carry NO action exemption
+-- here because the bake separately forces tools off for every predefined
+-- action — that asymmetry is deliberate and pinned by the unit test.
+local function quickPresetForces(facet, quick_on, features, action)
+    if not quick_on or not features then return false end
+    if facet == "web" then
+        if action and action.enable_web_search == true then return false end
+        return features.quick_preset_web_off ~= false
+            and not features._session_web_touched
+    end
+    if facet == "tools" then
+        return features.quick_preset_tools_off ~= false
+            and not features._session_tools_touched
+    end
+    return false
+end
+
 local function ensureReasoningHeadroom(api_params, provider, decision)
     if not (api_params and api_params.max_tokens and decision) then return end
     local might_reason = decision.mode == "on"
@@ -575,8 +599,7 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
             config.provider_settings[config.provider] = ps
         end
     end
-    if quick_answer and features.quick_preset_tools_off ~= false
-        and not features._session_tools_touched then
+    if quickPresetForces("tools", quick_answer, features) then
         -- Preset "no slow features": book tools off for this chat (explicit false —
         -- rides the viewer config into replies, same mechanics as the G6 clear).
         -- Pin-beats-preset (A9 sitting 2026-08-17, option (b)): a chip TOUCHED
@@ -749,9 +772,7 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
     -- wins — matrix §10), or the chip was touched while Quick was on (the pin,
     -- A9 sitting 2026-08-17 option (b) — the manual chip value baked at line
     -- ~635 stays authoritative).
-    if quick_answer and features.quick_preset_web_off ~= false
-        and not features._session_web_touched
-        and not (action and action.enable_web_search == true) then
+    if quickPresetForces("web", quick_answer, features, action) then
         config.enable_web_search = false
     end
     -- Effective boolean for the system-prompt nudge (mirrors the handlers' read:
@@ -1600,10 +1621,10 @@ local function applyQuickReplyOverrides(config, plugin)
     -- (A9 (b) verify round 2026-08-17): a facet PINNED in the input dialog
     -- rides in as a touch mark on the chat's config copy — the preset stands
     -- down and the stashed baseline (the pinned value) survives replies.
-    if qa and f.quick_preset_web_off ~= false and not f._session_web_touched then
+    if quickPresetForces("web", qa, f) then
         config.enable_web_search = false
     end
-    if qa and f.quick_preset_tools_off ~= false and not f._session_tools_touched then
+    if quickPresetForces("tools", qa, f) then
         f._tools_active = false
     end
 
@@ -7038,8 +7059,8 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
         -- ON; a touched chip shows its own value (the pin), which dispatch honors.
         local eff = session_web_search
         local qf = configuration.features
-        if qf._session_quick_answer and qf.quick_preset_web_off ~= false
-            and not qf._session_web_touched then
+        if require("koassistant_dialogs")
+                .quickPresetForces("web", qf._session_quick_answer, qf) then
             eff = false
         end
         if enable_emoji then
@@ -8125,9 +8146,9 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             -- A9 (b) verify round: hide an ACCEPTING action's follows-default
             -- (🌐) when the ⚡ preset would strip web from its send — the chip
             -- label describes the freeform posture, the button badge the action
-            quick_web_strip = configuration.features._session_quick_answer == true
-                and configuration.features.quick_preset_web_off ~= false
-                and not configuration.features._session_web_touched,
+            quick_web_strip = require("koassistant_dialogs").quickPresetForces("web",
+                configuration.features._session_quick_answer == true,
+                configuration.features),
             tools_allowed = session_book_tools == true
                 and (BookToolRunner.smartRetrievalAllowed(configuration, ui_instance)) == true,
         }
@@ -8190,8 +8211,8 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         -- the touch is the pin — this chat's chip beats the preset.
                         local qf = configuration.features
                         local eff = session_web_search
-                        if qf._session_quick_answer and qf.quick_preset_web_off ~= false
-                            and not qf._session_web_touched then
+                        if require("koassistant_dialogs")
+                                .quickPresetForces("web", qf._session_quick_answer, qf) then
                             eff = false
                         end
                         session_web_search = not eff
@@ -8303,8 +8324,8 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 local tools_eff = session_book_tools
                 do
                     local qf = configuration.features
-                    if qf._session_quick_answer and qf.quick_preset_tools_off ~= false
-                        and not qf._session_tools_touched then
+                    if require("koassistant_dialogs")
+                            .quickPresetForces("tools", qf._session_quick_answer, qf) then
                         tools_eff = false
                     end
                 end
@@ -8316,8 +8337,8 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         -- Pin-beats-preset (b): flip the EFFECTIVE state, touch = pin
                         local qf = configuration.features
                         local eff = session_book_tools
-                        if qf._session_quick_answer and qf.quick_preset_tools_off ~= false
-                            and not qf._session_tools_touched then
+                        if require("koassistant_dialogs")
+                                .quickPresetForces("tools", qf._session_quick_answer, qf) then
                             eff = false
                         end
                         session_book_tools = not eff
@@ -8391,11 +8412,12 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 msg = _("Quick answer: book tools off for this chat")
                             end
                         else
-                            local web_back = qf.quick_preset_web_off ~= false
-                                and not qf._session_web_touched
+                            -- Quick just turned OFF: was the preset holding the
+                            -- facet? (quick_on=true names that prior state)
+                            local QPF = require("koassistant_dialogs").quickPresetForces
+                            local web_back = QPF("web", true, qf)
                                 and session_web_search == true and supports_web
-                            local tools_back = qf.quick_preset_tools_off ~= false
-                                and not qf._session_tools_touched
+                            local tools_back = QPF("tools", true, qf)
                                 and session_book_tools == true and tools_present
                             if web_back and tools_back then
                                 msg = _("Quick answer off: web search and book tools back on")
@@ -12192,6 +12214,7 @@ return {
     showQuickPresetNudge = showQuickPresetNudge,
     quickPresetNudgeLabel = quickPresetNudgeLabel,
     applyQuickReplyOverrides = applyQuickReplyOverrides,
+    quickPresetForces = quickPresetForces,
     showAttachMenu = showAttachMenu,
     attachChipLabel = attachChipLabel,
     -- Exported for the main-settings action row (AskGPT:showQuickPresetModelMode)

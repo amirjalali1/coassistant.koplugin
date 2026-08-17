@@ -3296,11 +3296,11 @@ function ChatGPTViewer:askAnotherQuestion()
     local web_state
     if self.session_web_search_override ~= nil then
       web_state = self.session_web_search_override
-    elseif quick_on and cfg_features.quick_preset_web_off ~= false
-      and not cfg_features._session_web_touched then
+    elseif require("koassistant_dialogs")
+        .quickPresetForces("web", quick_on, cfg_features) then
       web_state = false  -- ⚡ preset forces web off at dispatch (unless the
-      -- facet was PINNED in the input dialog — A9 (b) touch mark, in sync
-      -- with applyQuickReplyOverrides)
+      -- facet was PINNED in the input dialog — A9 (b) touch mark; ONE rule
+      -- shared with the dispatch sites via quickPresetForces)
     else
       -- Baseline: the pre-quick value (stash if a reply already dispatched),
       -- else the config's own web flag, else the global feature default.
@@ -3382,10 +3382,11 @@ function ChatGPTViewer:askAnotherQuestion()
         local tools_effective
         if self.session_tools_override ~= nil then
           tools_effective = self.session_tools_override
-        elseif quick_on and cfg_features.quick_preset_tools_off ~= false
-          and not cfg_features._session_tools_touched then
+        elseif require("koassistant_dialogs")
+            .quickPresetForces("tools", quick_on, cfg_features) then
           tools_effective = false  -- ⚡ preset forces tools off at dispatch
-          -- (unless pinned in the input dialog — A9 (b) touch mark)
+          -- (unless pinned in the input dialog — A9 (b) touch mark; ONE rule
+          -- shared with the dispatch sites via quickPresetForces)
         else
           -- Baseline: pre-quick stash if a reply dispatched, else the baked
           -- per-chat flag; failing both, the effective default (resumed

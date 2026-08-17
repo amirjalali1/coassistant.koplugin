@@ -880,13 +880,22 @@ local IS_MACOS = ffi.os == "OSX"
 local USER_FILES = Registry.updateFiles()
 local USER_DIRS = Registry.updateDirs()
 
--- Platform-specific binary paths (lazy — Device not yet loaded at file scope)
+-- Platform-specific binary paths (lazy — Device not yet loaded at file scope).
+-- Resolves without loadUI so preserve/restore stay callable under the test
+-- mocks (loadUI drags the whole widget zoo); production behavior unchanged,
+-- the update flow still runs loadUI before reaching here.
 local mv_bin, cp_bin
 local function getBinPaths()
     if mv_bin then return end
-    loadUI()
-    mv_bin = Device:isAndroid() and "/system/bin/mv" or "/bin/mv"
-    cp_bin = Device:isAndroid() and "/system/bin/cp" or "/bin/cp"
+    local is_android = false
+    if Device then
+        is_android = Device:isAndroid()
+    else
+        local ok, D = pcall(require, "device")
+        if ok and D and D.isAndroid then is_android = D:isAndroid() or false end
+    end
+    mv_bin = is_android and "/system/bin/mv" or "/bin/mv"
+    cp_bin = is_android and "/system/bin/cp" or "/bin/cp"
 end
 
 --- Wrap a file descriptor for ltn12 sink
@@ -1503,6 +1512,7 @@ end
 --- @param preserve_dir string Temporary directory to hold user files
 --- @return boolean success, string|nil error_msg
 local function preserveUserFiles(src_dir, preserve_dir)
+    getBinPaths()  -- self-contained: direct calls (tests) skip the update flow's init
     lfs.mkdir(preserve_dir)
     if lfs.attributes(preserve_dir, "mode") ~= "directory" then
         return false, "Failed to create preserve directory"
@@ -1537,6 +1547,7 @@ end
 --- @param target_dir string New plugin directory
 --- @return boolean success, string|nil error_msg
 local function restoreUserFiles(preserve_dir, target_dir)
+    getBinPaths()  -- self-contained: direct calls (tests) skip the update flow's init
     if lfs.attributes(preserve_dir, "mode") ~= "directory" then
         return false, "Preserve directory not found"
     end
@@ -1992,5 +2003,11 @@ function UpdateChecker.checkForUpdatesInBackground()
     -- Check for updates silently in the background
     UpdateChecker.checkForUpdates(true)
 end
+
+-- Test seams (release-blocking six-pack [4], 2026-08-17): the registry-driven
+-- preserve/restore pair, previously untestable file-locals — the old test
+-- exercised a hand-copied re-implementation instead of this shipping code.
+UpdateChecker._preserveUserFiles = preserveUserFiles
+UpdateChecker._restoreUserFiles = restoreUserFiles
 
 return UpdateChecker

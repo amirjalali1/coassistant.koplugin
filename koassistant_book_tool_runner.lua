@@ -364,6 +364,7 @@ local function liveSpoilerLine(cfg, ui)
     return (Templates.SPOILER_FREE_NUDGE:gsub("{reading_progress}",
         function() return progress end))
 end
+BookToolRunner._liveSpoilerLine = liveSpoilerLine  -- exposed for unit tests (its siblings already are)
 
 -- Pure decoration half, exposed for unit tests: append `line` as its OWN user
 -- message at the END of a COPIED array — the originals are MessageHistory's live

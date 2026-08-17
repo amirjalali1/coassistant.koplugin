@@ -1235,4 +1235,51 @@ TestRunner:test("in_prompt skips the first request only (never both), replies de
     TestRunner:assertEqual(out[4].content, LINE, "line is the final message")
 end)
 
+-- liveSpoilerLine: the per-send decision of whether the nudge rides and
+-- whether the reader's position is disclosed (release-blocking six-pack [3])
+
+TestRunner:test("liveSpoilerLine: nil unless _spoiler_live is exactly true", function()
+    TestRunner:assertEqual(BookToolRunner._liveSpoilerLine({ features = {} }, nil), nil,
+        "no eligibility flag -> no line")
+    TestRunner:assertEqual(
+        BookToolRunner._liveSpoilerLine({ features = { _spoiler_live = false } }, nil), nil,
+        "explicit false -> no line")
+    TestRunner:assertEqual(
+        BookToolRunner._liveSpoilerLine({ features = { _spoiler_live = true, is_general_context = true } }, nil),
+        nil, "general context never gets the line, whatever the flag claims")
+end)
+
+TestRunner:test("liveSpoilerLine: scope consent stands the nudge down ONCE", function()
+    local features = { _spoiler_live = true, _spoiler_scope_consent = true }
+    local line = BookToolRunner._liveSpoilerLine({ features = features }, nil)
+    TestRunner:assertEqual(line, nil, "consented request carries no nudge")
+    TestRunner:assertEqual(features._spoiler_scope_consent, nil, "one-shot flag consumed")
+end)
+
+TestRunner:test("liveSpoilerLine: stats off + untrusted -> no-progress variant, no position leak", function()
+    local Templates = require("prompts/templates")
+    local features = { _spoiler_live = true, enable_basic_stats = false }
+    local line = BookToolRunner._liveSpoilerLine({ features = features, provider = "openai" }, nil)
+    TestRunner:assertEqual(line, Templates.SPOILER_FREE_NUDGE_NO_PROGRESS,
+        "protected default posture with stats sharing off uses the no-progress nudge")
+    TestRunner:assertEqual(line:find("%d+%%"), nil, "no percentage anywhere in the line")
+end)
+
+TestRunner:test("liveSpoilerLine: substitutes the live position when stats allowed", function()
+    local saved = package.loaded["koassistant_context_extractor"]
+    package.loaded["koassistant_context_extractor"] = {
+        new = function(_self, _ui)
+            return { getReadingProgress = function() return { formatted = "42%" } end }
+        end,
+    }
+    local fake_ds = { readSetting = function() return nil end }
+    local ui = { document = { file = "/tmp/x.epub" }, doc_settings = fake_ds }
+    local features = { _spoiler_live = true, book_metadata = { file = "/tmp/x.epub" } }
+    local line = BookToolRunner._liveSpoilerLine({ features = features, provider = "anthropic" }, ui)
+    package.loaded["koassistant_context_extractor"] = saved
+    TestRunner:assertEqual(type(line), "string", "protected book chat gets the line")
+    TestRunner:assertEqual(line:find("42%%") ~= nil, true, "position substituted")
+    TestRunner:assertEqual(line:find("{reading_progress}", 1, true), nil, "placeholder resolved")
+end)
+
 return TestRunner:summary()

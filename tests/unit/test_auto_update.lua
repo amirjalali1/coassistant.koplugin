@@ -12,6 +12,8 @@ package.path = package.path .. ";./?.lua;./?/init.lua"
 require("tests.lib.mock_koreader")
 
 local lfs = require("lfs")
+local UpdateChecker = require("koassistant_update_checker")
+local Registry = require("koassistant_storage_registry")
 
 -- Test suite
 local TestAutoUpdate = {
@@ -104,12 +106,16 @@ function TestAutoUpdate:cleanup()
 end
 
 -- ============================================================================
--- Local implementations matching koassistant_update_checker.lua logic
--- These mirror the actual functions for testability
+-- Under test: the REAL registry-driven preserve/restore
+-- (UpdateChecker._preserveUserFiles/_restoreUserFiles) — the hand-copied
+-- mirrors are gone (six-pack [4]; they tested code that did not ship).
+-- verify/backup-path helpers below remain local mirrors (out of scope).
 -- ============================================================================
 
-local USER_FILES = { "apikeys.lua", "configuration.lua", "custom_actions.lua", "custom_models.lua" }
-local USER_DIRS = { "behaviors", "domains" }
+local USER_FILES = Registry.updateFiles()
+local USER_DIRS = Registry.updateDirs()
+local preserveUserFiles = UpdateChecker._preserveUserFiles
+local restoreUserFiles = UpdateChecker._restoreUserFiles
 
 local function verifyExtractedPlugin(staging_dir, expected_version)
     local meta_path = staging_dir .. "/_meta.lua"
@@ -144,67 +150,6 @@ local function findAvailableBackupPath(base_path)
     end
     -- Last resort: purge and reuse (tested via mock)
     return base_path
-end
-
-local function preserveUserFiles(src_dir, preserve_dir)
-    lfs.mkdir(preserve_dir)
-    for _idx, filename in ipairs(USER_FILES) do
-        local src_path = src_dir .. "/" .. filename
-        if lfs.attributes(src_path, "mode") == "file" then
-            -- Pure Lua copy for tests (production uses ffiutil.copyFile)
-            local inf = io.open(src_path, "rb")
-            if inf then
-                local outf = io.open(preserve_dir .. "/" .. filename, "wb")
-                if outf then
-                    outf:write(inf:read("*a"))
-                    outf:close()
-                end
-                inf:close()
-            end
-        end
-    end
-    for _idx, dirname in ipairs(USER_DIRS) do
-        local src_path = src_dir .. "/" .. dirname
-        if lfs.attributes(src_path, "mode") == "directory" then
-            local dest_path = preserve_dir .. "/" .. dirname
-            lfs.mkdir(dest_path)
-            for entry in lfs.dir(src_path) do
-                if entry ~= "." and entry ~= ".." then
-                    local inf = io.open(src_path .. "/" .. entry, "rb")
-                    if inf then
-                        local outf = io.open(dest_path .. "/" .. entry, "wb")
-                        if outf then
-                            outf:write(inf:read("*a"))
-                            outf:close()
-                        end
-                        inf:close()
-                    end
-                end
-            end
-        end
-    end
-    return true
-end
-
-local function restoreUserFiles(preserve_dir, target_dir)
-    if lfs.attributes(preserve_dir, "mode") ~= "directory" then
-        return false, "Preserve directory not found"
-    end
-    for _idx, filename in ipairs(USER_FILES) do
-        local src_path = preserve_dir .. "/" .. filename
-        if lfs.attributes(src_path, "mode") == "file" then
-            -- Use rename (same filesystem)
-            os.rename(src_path, target_dir .. "/" .. filename)
-        end
-    end
-    for _idx, dirname in ipairs(USER_DIRS) do
-        local src_path = preserve_dir .. "/" .. dirname
-        if lfs.attributes(src_path, "mode") == "directory" then
-            local target_path = target_dir .. "/" .. dirname
-            os.rename(src_path, target_path)
-        end
-    end
-    return true
 end
 
 -- ============================================================================
@@ -374,6 +319,55 @@ function TestAutoUpdate:runAll()
         local ok = restoreUserFiles(preserve, target)
         self:assert(ok, "Should succeed")
         self:assert(self:pathExists(target .. "/domains/islamic.md"), "domains/islamic.md should be restored")
+    end)
+
+    -- ---- registry-driven round-trip (the real shipping functions) ----
+
+    self:test("registry round-trip: every registered file survives byte-identically", function()
+        local src = self:makeTempDir("_rt_src")
+        local preserve = self:makeTempDir("_rt_preserve")
+        self:purgeDir(preserve)
+        local target = self:makeTempDir("_rt_target")
+        for i, name in ipairs(USER_FILES) do
+            self:writeFile(src .. "/" .. name, "content of " .. name .. " #" .. i)
+        end
+        self:assert(preserveUserFiles(src, preserve), "preserve should succeed")
+        self:assert(restoreUserFiles(preserve, target), "restore should succeed")
+        for i, name in ipairs(USER_FILES) do
+            self:assertEquals(self:readFile(target .. "/" .. name),
+                "content of " .. name .. " #" .. i, name .. " should round-trip byte-identically")
+        end
+    end)
+
+    self:test("registry round-trip: registered dir survives with NESTED contents", function()
+        local src = self:makeTempDir("_rtdir_src")
+        local preserve = self:makeTempDir("_rtdir_preserve")
+        self:purgeDir(preserve)
+        local target = self:makeTempDir("_rtdir_target")
+        local dirname = USER_DIRS[1]
+        self:assert(dirname ~= nil, "registry must list at least one plugin dir")
+        lfs.mkdir(src .. "/" .. dirname)
+        lfs.mkdir(src .. "/" .. dirname .. "/nested")
+        self:writeFile(src .. "/" .. dirname .. "/top.md", "top")
+        self:writeFile(src .. "/" .. dirname .. "/nested/deep.md", "deep")
+        self:assert(preserveUserFiles(src, preserve), "preserve should succeed")
+        self:assert(restoreUserFiles(preserve, target), "restore should succeed")
+        self:assertEquals(self:readFile(target .. "/" .. dirname .. "/top.md"), "top",
+            "top-level file survives")
+        self:assertEquals(self:readFile(target .. "/" .. dirname .. "/nested/deep.md"), "deep",
+            "nested file survives")
+    end)
+
+    self:test("registry drives the list: an unregistered file is NOT preserved", function()
+        local src = self:makeTempDir("_unreg_src")
+        local preserve = self:makeTempDir("_unreg_preserve")
+        self:purgeDir(preserve)
+        self:writeFile(src .. "/" .. USER_FILES[1], "registered")
+        self:writeFile(src .. "/not_registered.lua", "should stay behind")
+        self:assert(preserveUserFiles(src, preserve), "preserve should succeed")
+        self:assert(self:pathExists(preserve .. "/" .. USER_FILES[1]), "registered file preserved")
+        self:assert(not self:pathExists(preserve .. "/not_registered.lua"),
+            "unregistered file NOT preserved (the registry, not a snapshot, drives the list)")
     end)
 
     self:test("restoreUserFiles: fails gracefully with missing preserve dir", function()
