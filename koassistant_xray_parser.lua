@@ -2440,15 +2440,17 @@ local function mergeArrayCategory(old_items, new_items, never_set)
             -- Stored aliases survive the rewrite (dedup absorbs and renames
             -- live there; a model echo that drops them must not shed them)
             new_item.aliases = unionAliases(keep.aliases, new_item.aliases)
+            -- Relational data survives EVERY rewrite, not just rename folds
+            -- (staleness F2a, 2026-08-17): replace-on-match made re-emitting
+            -- an entry the riskiest move available — a status revision that
+            -- omitted connections shed them — which taught the model to leave
+            -- stale descriptions alone. Union is safe here: short name
+            -- strings, nil when both sides are empty, dedup absorbs overlap.
+            new_item.connections = unionStringArrays(new_item.connections, keep.connections)
+            new_item.references = unionStringArrays(new_item.references, keep.references)
             if via_rename then
                 -- Rename fold: the new name IS the point — it stays primary
-                -- (the old one rides in aliases, it is the bridge we matched
-                -- on). The model writes the fresh entry unaware it must carry
-                -- the old entry's relational data, so union it mechanically —
-                -- the first live case shipped with a relationship connection
-                -- stranded on the dead duplicate.
-                new_item.connections = unionStringArrays(new_item.connections, keep.connections)
-                new_item.references = unionStringArrays(new_item.references, keep.references)
+                -- (the old one rides in aliases, it is the bridge we matched on)
                 lookup[key] = idx
                 logger.info("KOAssistant: X-Ray merge folded rename '"
                     .. tostring(getItemSearchName(keep)) .. "' -> '" .. tostring(name) .. "'")

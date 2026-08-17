@@ -79,7 +79,9 @@ end
 -- @param next_text string text after the selection ("" ok)
 -- @param n number paragraphs per side (>= 1)
 -- @param max_per_side number UTF-8 char cap applied per side
--- @return before, after  (strings, possibly empty)
+-- @return before, after, before_bounded, after_bounded  (strings, possibly
+--         empty; a flag = that side hit a boundary — the char cap or the raw
+--         window's edge — so the caller can ellipsize honestly)
 function ScopeResolver.paragraphWindow(prev, next_text, n, max_per_side)
     n = (type(n) == "number" and n >= 1) and math.floor(n) or 1
     local floor_chars = ScopeResolver.PARAGRAPH_MIN_CHARS
@@ -91,7 +93,31 @@ function ScopeResolver.paragraphWindow(prev, next_text, n, max_per_side)
         end
         return segs
     end
+    -- Sentence snaps for the CAP cut (device 2026-08-17: the blind utf8 trim
+    -- opened the window mid-sentence). Only the cap cut snaps — a raw-window
+    -- edge was cut at word granularity upstream and a document edge is already
+    -- clean, so snapping those would drop a whole leading sentence. Degrades
+    -- to the raw cut when the capped window holds no boundary at all.
+    local function snapStartToSentence(text)
+        local _, e = text:find("[%.!%?]%s+")
+        if e and e < #text then return text:sub(e + 1) end
+        return text
+    end
+    local function snapEndToSentence(text)
+        local last
+        local pos = 1
+        while true do
+            local s = text:find("[%.!%?]", pos)
+            if not s then break end
+            local nxt = text:sub(s + 1, s + 1)
+            if nxt == "" or nxt:match("%s") then last = s end
+            pos = s + 1
+        end
+        if last and last < #text then return text:sub(1, last) end
+        return text
+    end
     local before, after = "", ""
+    local before_bounded, after_bounded = false, false
     local prev_segs = segments(prev or "")
     if #prev_segs > 0 then
         local count = math.min(n, #prev_segs)
@@ -100,6 +126,9 @@ function ScopeResolver.paragraphWindow(prev, next_text, n, max_per_side)
             count = count + 1
             before = table.concat(prev_segs, "\n", #prev_segs - count + 1, #prev_segs)
         end
+        -- All segments absorbed = the raw fetch window (or the document) is
+        -- the boundary, so the outermost paragraph may be partial
+        before_bounded = count >= #prev_segs
     end
     local next_segs = segments(next_text or "")
     if #next_segs > 0 then
@@ -109,10 +138,20 @@ function ScopeResolver.paragraphWindow(prev, next_text, n, max_per_side)
             count = count + 1
             after = table.concat(next_segs, "\n", 1, count)
         end
+        after_bounded = count >= #next_segs
     end
-    before = (ScopeResolver.utf8Last(before, max_per_side))
-    after = (ScopeResolver.utf8First(after, max_per_side))
-    return before, after
+    local cut
+    before, cut = ScopeResolver.utf8Last(before, max_per_side)
+    if cut then
+        before = snapStartToSentence(before)
+        before_bounded = true
+    end
+    after, cut = ScopeResolver.utf8First(after, max_per_side)
+    if cut then
+        after = snapEndToSentence(after)
+        after_bounded = true
+    end
+    return before, after, before_bounded, after_bounded
 end
 
 --- Chapter-preset availability for the unified scope popup (flexible_scope_plan.md
@@ -251,13 +290,16 @@ function ScopeResolver.trimContext(prev, next_text, highlighted_text, mode, opts
         return before .. " " .. word_marker .. " " .. after
 
     elseif mode == "paragraph" then
-        local before, after = ScopeResolver.paragraphWindow(prev, next_text, opts.paragraphs, max_per_side)
-        -- Always mark as an excerpt: the window itself was word-count-bounded,
-        -- so outermost segments may be partial paragraphs.
-        if #before > 0 then
+        local before, after, before_bounded, after_bounded =
+            ScopeResolver.paragraphWindow(prev, next_text, opts.paragraphs, max_per_side)
+        -- Ellipses only when the side actually hit a boundary (the char cap,
+        -- sentence-snapped in paragraphWindow, or the raw window's edge). The
+        -- old unconditional "..." read as "starts mid-sentence" even on
+        -- whole-paragraph windows (device 2026-08-17).
+        if #before > 0 and before_bounded then
             before = "..." .. before
         end
-        if #after > 0 then
+        if #after > 0 and after_bounded then
             after = after .. "..."
         end
         return before .. " " .. word_marker .. " " .. after

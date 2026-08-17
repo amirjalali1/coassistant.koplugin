@@ -252,9 +252,11 @@ end
 -- fingerprints the selection so a stale window can never attach to a different
 -- selection).
 
--- Words fetched per side. Generous enough for every trim mode's per-side cap
--- (1000 chars); the trim decides what is actually sent.
-local CONTEXT_WINDOW_WORDS = 200
+-- Words fetched per side. Must clear every trim mode's per-side cap (1000
+-- chars) with room to spare: 200 words (~1140 chars) sat barely above the cap,
+-- so paragraph mode's outermost segments were almost always the raw window's
+-- ragged edge (device 2026-08-17). The trim decides what is actually sent.
+local CONTEXT_WINDOW_WORDS = 300
 
 --- Fetch the raw text window around the live selection. Call while the selection
 -- still exists (works for hold-select, not single word taps).
@@ -8104,10 +8106,11 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         hold_callback = holdPicker,
                     }
                 end
-                if configuration.features.is_book_context and configuration.features._session_scope then
+                if configuration.features._session_scope then
                     -- A Scope-chip pick attaches text directly — tools are redundant for
-                    -- that send (chip wins, flexible_scope_plan.md §4). Gray with reason,
-                    -- like the other policy exclusions.
+                    -- that send (chip wins, flexible_scope_plan.md §4; covers the
+                    -- highlight facet's "Also send" pick too since 2026-08-17). Gray
+                    -- with reason, like the other policy exclusions.
                     return {
                         text = enable_emoji and ("\u{1F50D} " .. _("N/A")) or _("Tools N/A"),
                         callback = function()
@@ -8226,24 +8229,11 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 -- xray_context_prefix skip).
                 if is_xray_chat then return nil end
                 local feats = configuration.features
-                if feats.is_book_context then
-                    -- Book facet: pick a text range to attach to the sent message.
-                    local pick = feats._session_scope
-                    local label
-                    -- Emoji SWAPS the word "Scope" (🎯), state suffix stays — same
-                    -- pattern as the web/tools chips.
-                    if not pick then
-                        label = enable_emoji and ("\u{1F3AF} " .. _("OFF")) or _("Scope")
-                    elseif pick.kind == "page" then
-                        label = enable_emoji and ("\u{1F3AF} " .. _("page")) or _("Scope: page")
-                    elseif pick.kind == "to_position" then
-                        label = enable_emoji and ("\u{1F3AF} " .. _("so far")) or _("Scope: so far")
-                    else
-                        local short, truncated = require("koassistant_scope_resolver")
-                            .utf8First(pick.title or _("section"), 10)
-                        short = short .. (truncated and "…" or "")
-                        label = enable_emoji and ("\u{1F3AF} " .. short) or T(_("Scope: %1"), short)
-                    end
+                local pick = feats._session_scope
+                -- pickScope serves BOTH facets (2026-08-17): the book facet's tap
+                -- target, and the highlight facet's "Also send book text" row —
+                -- same rows, same _session_scope, same Send-time machinery.
+                -- (Body keeps its book-arm indentation for a minimal diff.)
                     local function pickScope()
                         local ButtonDialog = require("ui/widget/buttondialog")
                         local cur_page = (ui_instance.view and ui_instance.view.state
@@ -8326,10 +8316,28 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                     end
                                     if kind == "section" and session_spoiler_free
                                         and entry.start_page > cur_page then
-                                        UIManager:show(InfoMessage:new{
-                                            text = _("That section is beyond your current position (spoiler protection is on)."),
+                                        -- Consent instead of rejection (device
+                                        -- 2026-08-17): the reader may deliberately
+                                        -- ask about an unread span; consenting also
+                                        -- stands the spoiler nudge down for that
+                                        -- request (spoiler_consented, read at Send)
+                                        UIManager:show(require("ui/widget/confirmbox"):new{
+                                            text = _("That section is beyond your current position and spoiler protection is on. Include it anyway? The answer will discuss that section."),
+                                            ok_text = _("Include it"),
+                                            ok_callback = function()
+                                                feats._session_scope = {
+                                                    kind = kind,
+                                                    start_page = entry.start_page,
+                                                    end_page = entry.end_page,
+                                                    title = pickerEntryLabel(entry),
+                                                    spoiler_consented = true,
+                                                }
+                                                refreshInputDialog()
+                                            end,
+                                            cancel_callback = function()
+                                                refreshInputDialog()
+                                            end,
                                         })
-                                        refreshInputDialog()
                                         return
                                     end
                                     feats._session_scope = {
@@ -8347,6 +8355,31 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         -- END is allowed — Send-time chipScope clamps it with an honest
                         -- "trimmed to position" label (chip policy: clamp; the popup's
                         -- policy is reject).
+                        local function pickRangeEnd(start_entry, consented)
+                            plugin:_showSectionPicker({}, {
+                                title = _("Range end: which section?"),
+                                on_select = function(end_entry)
+                                    if end_entry.start_page < start_entry.start_page then
+                                        UIManager:show(InfoMessage:new{
+                                            text = _("The end section comes before the start section."),
+                                        })
+                                    else
+                                        local from_title = pickerEntryLabel(start_entry)
+                                        local to_title = pickerEntryLabel(end_entry)
+                                        feats._session_scope = {
+                                            kind = "range",
+                                            start_page = start_entry.start_page,
+                                            end_page = end_entry.end_page,
+                                            title = from_title .. " – " .. to_title,
+                                            from_title = from_title,
+                                            to_title = to_title,
+                                            spoiler_consented = consented or nil,
+                                        }
+                                    end
+                                    refreshInputDialog()
+                                end,
+                            })
+                        end
                         local function rangeRowPick()
                             if not consent then explainConsent() return end
                             UIManager:close(dialog)
@@ -8354,39 +8387,28 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 title = _("Range start: which section?"),
                                 on_select = function(start_entry)
                                     if session_spoiler_free and start_entry.start_page > cur_page then
-                                        UIManager:show(InfoMessage:new{
-                                            text = _("That section is beyond your current position (spoiler protection is on)."),
+                                        -- Consent instead of rejection (device
+                                        -- 2026-08-17), the section rows' sibling
+                                        UIManager:show(require("ui/widget/confirmbox"):new{
+                                            text = _("That range starts beyond your current position and spoiler protection is on. Use it anyway? The answer will discuss that part of the book."),
+                                            ok_text = _("Use the range"),
+                                            ok_callback = function()
+                                                pickRangeEnd(start_entry, true)
+                                            end,
+                                            cancel_callback = function()
+                                                refreshInputDialog()
+                                            end,
                                         })
-                                        refreshInputDialog()
                                         return
                                     end
-                                    plugin:_showSectionPicker({}, {
-                                        title = _("Range end: which section?"),
-                                        on_select = function(end_entry)
-                                            if end_entry.start_page < start_entry.start_page then
-                                                UIManager:show(InfoMessage:new{
-                                                    text = _("The end section comes before the start section."),
-                                                })
-                                            else
-                                                local from_title = pickerEntryLabel(start_entry)
-                                                local to_title = pickerEntryLabel(end_entry)
-                                                feats._session_scope = {
-                                                    kind = "range",
-                                                    start_page = start_entry.start_page,
-                                                    end_page = end_entry.end_page,
-                                                    title = from_title .. " – " .. to_title,
-                                                    from_title = from_title,
-                                                    to_title = to_title,
-                                                }
-                                            end
-                                            refreshInputDialog()
-                                        end,
-                                    })
+                                    pickRangeEnd(start_entry, false)
                                 end,
                             })
                         end
                         local rows = {
-                            {{ text = mark("none") .. _("No book text (metadata only)"),
+                            {{ text = mark("none") .. (feats.is_book_context
+                                and _("No book text (metadata only)")
+                                or _("No extra book text")),
                                 callback = function() setPick(nil) end }},
                             {{ text = mark("page") .. _("Current page"),
                                 callback = function() setPick({ kind = "page" }) end }},
@@ -8476,6 +8498,23 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         }
                         UIManager:show(dialog)
                     end
+                if feats.is_book_context then
+                    -- Book facet: pick a text range to attach to the sent message.
+                    local label
+                    -- Emoji SWAPS the word "Scope" (🎯), state suffix stays — same
+                    -- pattern as the web/tools chips.
+                    if not pick then
+                        label = enable_emoji and ("\u{1F3AF} " .. _("OFF")) or _("Scope")
+                    elseif pick.kind == "page" then
+                        label = enable_emoji and ("\u{1F3AF} " .. _("page")) or _("Scope: page")
+                    elseif pick.kind == "to_position" then
+                        label = enable_emoji and ("\u{1F3AF} " .. _("so far")) or _("Scope: so far")
+                    else
+                        local short, truncated = require("koassistant_scope_resolver")
+                            .utf8First(pick.title or _("section"), 10)
+                        short = short .. (truncated and "…" or "")
+                        label = enable_emoji and ("\u{1F3AF} " .. short) or T(_("Scope: %1"), short)
+                    end
                     return { text = label, callback = pickScope, hold_callback = pickScope }
                 elseif highlighted_text then
                     -- Highlight facet: session override of the ambient surrounding-context
@@ -8493,6 +8532,11 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         label = enable_emoji and ("\u{1F3AF} " .. _("characters")) or _("Ctx: characters")
                     else
                         label = enable_emoji and ("\u{1F3AF} " .. _("OFF")) or _("Ctx off")
+                    end
+                    if feats._session_scope then
+                        -- An "Also send" book scope is attached (rides beside the
+                        -- selection at Send) — mark the chip
+                        label = label .. "+"
                     end
                     local function pickMode()
                         local ButtonDialog = require("ui/widget/buttondialog")
@@ -8587,6 +8631,32 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 refreshInputDialog()
                             end
                         end
+                        -- "Also send" book scope (maintainer 2026-08-17, filing §3
+                        -- item 4): highlight chats get the book-facet scope rows one
+                        -- link away — the pick attaches a text range BESIDE the
+                        -- selection at Send (same _session_scope, consent, spoiler
+                        -- and size machinery).
+                        do
+                            local as_pick = feats._session_scope
+                            local as_label
+                            if not as_pick then
+                                as_label = _("Also send book text...")
+                            elseif as_pick.kind == "page" then
+                                as_label = T(_("Also send: %1"), _("Current page"))
+                            elseif as_pick.kind == "to_position" then
+                                as_label = T(_("Also send: %1"), _("Up to current position"))
+                            else
+                                as_label = T(_("Also send: %1"), as_pick.title or _("section"))
+                            end
+                            table.insert(rows, {{
+                                text = as_label,
+                                callback = function()
+                                    UIManager:close(dialog)
+                                    closeAndRefresh()
+                                    pickScope()
+                                end,
+                            }})
+                        end
                         table.insert(rows, {{ text = _("Close"),
                             callback = function()
                                 UIManager:close(dialog)
@@ -8678,8 +8748,10 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 -- Inline requires on purpose (60-upvalue cap).
                 local scope_block
                 local scope_pick = configuration.features and configuration.features._session_scope
-                if scope_pick and configuration.features.is_book_context
-                        and ui_instance and ui_instance.document then
+                -- Book AND highlight context (2026-08-17): the highlight facet's
+                -- "Also send" pick rides the same extraction; the chip never
+                -- renders elsewhere and fresh opens scrub the pick.
+                if scope_pick and ui_instance and ui_instance.document then
                     local CE = require("koassistant_context_extractor")
                     if scope_pick.kind == "page" then
                         -- Current visible page: extraction-gating exempt (use_page_text precedent)
@@ -8732,7 +8804,11 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         local range, range_reason = require("koassistant_scope_resolver").chipScope(
                             scope_pick, {
                                 current_page = cur_page,
-                                spoiler_free = session_spoiler_free == true,
+                                -- A consented beyond-position pick is neither
+                                -- clamped nor rejected (the pick-time ConfirmBox
+                                -- was the decision)
+                                spoiler_free = session_spoiler_free == true
+                                    and not scope_pick.spoiler_consented,
                             })
                         if not range then
                             UIManager:show(InfoMessage:new{
@@ -8797,6 +8873,14 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 scope_pick.title or "")
                         end
                         scope_block = { label = label, text = text }
+                        if scope_pick.spoiler_consented then
+                            -- One-shot stand-down for THIS request: the reader
+                            -- explicitly included a beyond-position span, so the
+                            -- live spoiler nudge steps aside once (consumed in
+                            -- BookToolRunner.liveSpoilerLine; strays die in
+                            -- _scrubContextFeatures at every entry point)
+                            configuration.features._spoiler_scope_consent = true
+                        end
                     end
                 end
                 local function performSend()
@@ -9012,6 +9096,17 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                     table.insert(parts, "")
                                 end
                             end
+                        end
+                        -- "Also send" book scope (highlight facet, 2026-08-17): the
+                        -- same one-shot block the book arm consumes — the scope
+                        -- rides beside the selection and its surrounding context
+                        local hsb = configuration.features._session_scope_block
+                        configuration.features._session_scope_block = nil
+                        if hsb then
+                            scope_attached = true
+                            table.insert(parts, hsb.label)
+                            table.insert(parts, hsb.text)
+                            table.insert(parts, "")
                         end
                     end
 

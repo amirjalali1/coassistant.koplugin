@@ -303,6 +303,14 @@ local function liveSpoilerLine(cfg, ui)
     -- get the line, whatever an upstream flag claims — the resume legacy
     -- default marked sentinel-path chats eligible for a while.
     if features.is_general_context or features.is_library_context then return nil end
+    -- One-shot stand-down (spoiler-scope consent, 2026-08-17): the reader
+    -- explicitly chose a beyond-position span for THIS request, so the nudge
+    -- must not fight the scope it consented to. Consumed here; the next
+    -- protected send re-resolves and the nudge returns.
+    if features._spoiler_scope_consent then
+        features._spoiler_scope_consent = nil
+        return nil
+    end
     local book_file = features.book_metadata and features.book_metadata.file
     local book_open = ui and ui.document
         and (not book_file or ui.document.file == book_file) or false

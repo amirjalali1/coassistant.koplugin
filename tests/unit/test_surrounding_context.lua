@@ -128,6 +128,44 @@ TestRunner:test("per-side char cap is enforced", function()
     TestRunner:assertEqual(#after, 100, "after capped")
 end)
 
+TestRunner:test("cap cut snaps the window to sentence boundaries", function()
+    -- Before side: three sentences, cap lands mid-second — the partial leading
+    -- sentence is dropped so the window opens at a sentence start
+    local s1 = "First sentence here padding padding. "
+    local s2 = "Second sentence with more words in it. "
+    local s3 = "Third sentence right before the selection."
+    local prev = s1 .. s2 .. s3
+    local before, _, bb = ScopeResolver.paragraphWindow(prev, "", 1, #s2 + #s3 + 10)
+    TestRunner:assertEqual(before:sub(1, 6), "Second", "before opens at a sentence start")
+    TestRunner:assertEqual(bb, true, "cap cut marks the side bounded")
+    -- After side: cap lands mid-third — the trailing partial sentence is dropped
+    local nxt = "Alpha beta gamma delta done. Second one also ends. Third trails off unfinished here"
+    local _, after, _, ab = ScopeResolver.paragraphWindow("", nxt, 1, 60)
+    TestRunner:assertEqual(after:sub(-5), "ends.", "after closes at a sentence end")
+    TestRunner:assertEqual(ab, true, "cap cut marks the side bounded")
+end)
+
+TestRunner:test("snap degrades to the raw cut when no boundary exists", function()
+    local long = string.rep("x", 600)
+    local before, after = ScopeResolver.paragraphWindow(long, long, 1, 100)
+    TestRunner:assertEqual(#before, 100, "before keeps the raw cap cut")
+    TestRunner:assertEqual(#after, 100, "after keeps the raw cap cut")
+end)
+
+TestRunner:test("paragraph mode ellipsizes only bounded sides", function()
+    -- Unbounded: n=1 of a 3-paragraph side over the floor — clean window, no "..."
+    local pad = string.rep("word ", 70)  -- ~350 chars, clears PARAGRAPH_MIN_CHARS
+    local prev = "Outer old paragraph. " .. pad .. "\nMiddle one. " .. pad .. "\nAdjacent paragraph. " .. pad
+    local nxt = "Rest of paragraph. " .. pad .. "\nNext paragraph. " .. pad .. "\nFar one. " .. pad
+    local result = ScopeResolver.trimContext(prev, nxt, "SEL", "paragraph", { paragraphs = 1 })
+    TestRunner:assertNotContains(result, "...", "clean paragraph window carries no ellipsis")
+    -- Bounded: single flat run over the cap — both sides ellipsized
+    local long = string.rep("y", 1200)
+    local bounded = ScopeResolver.trimContext(long, long, "SEL", "paragraph", { paragraphs = 1 })
+    TestRunner:assertEqual(bounded:sub(1, 3), "...", "capped before side ellipsized")
+    TestRunner:assertEqual(bounded:sub(-3), "...", "capped after side ellipsized")
+end)
+
 TestRunner:test("empty and whitespace-only sides yield empty strings", function()
     local before, after = ScopeResolver.paragraphWindow("", "  \n  \n", 1, 100)
     TestRunner:assertEqual(before, "", "empty prev")

@@ -168,19 +168,24 @@ Constants.QS_ITEMS_DEFAULT_ORDER = {
     -- from stored orders automatically.)
     "provider", "model", "behavior", "domain",
     "extended_thinking", "web_search",
-    "book_tools", "text_extraction", "quick_answer", "spoiler",
+    "book_tools", "quick_answer", "spoiler",
     "minimal_popup",
     "h_bypass", "d_bypass",
+    -- (text_extraction moved after the language rows 2026-08-17, maintainer;
+    -- new_book_chat retired the same day -- it only rendered with a book open,
+    -- exactly when the QA panel offers the same entry. processOrderedList
+    -- prunes retired ids from stored orders automatically.)
     "language", "translation_language", "dictionary_language",
+    "text_extraction",
     "chat_history", "browse_notebooks", "browse_artifacts", "book_groups",
     "library_actions",
     "general_chat", "continue_last_chat",
-    "new_book_chat", "manage_actions", "quick_actions",
+    "manage_actions", "quick_actions",
     "more_settings",
 }
 
 -- QS items that only appear when a book is open (dynamic)
-Constants.QS_DYNAMIC_ITEMS = { new_book_chat = true, quick_actions = true }
+Constants.QS_DYNAMIC_ITEMS = { quick_actions = true }
 
 -- Session chips shown above the input field, in CANONICAL render order (order is fixed;
 -- only membership is user-configurable, via the input dialog's gear menu → "Toolbar
@@ -282,7 +287,6 @@ function Constants.getQsItemText(id, _)
         library_actions = _("Library Chat/Action"),
         general_chat = _("General Chat/Action"),
         continue_last_chat = _("Continue Last Chat"),
-        new_book_chat = _("Book Chat/Action"),
         manage_actions = _("Manage Actions"),
         quick_actions = _("Quick Actions"),
         more_settings = _("More Settings"),

@@ -277,7 +277,10 @@ function NotebookManager:showBrowserMenuOptions(opts)
                 UIManager:nextTick(function()
                     if mc then UIManager:close(mc) end
                     local AskGPT = self_ref:getAskGPTInstance()
-                    if AskGPT then AskGPT:showChatHistory() end
+                    -- all_books: this browser is a cross-book surface, so the
+                    -- swap lands on the top level — without it, an open book
+                    -- jumped the swap into that book's chats (device 2026-08-17)
+                    if AskGPT then AskGPT:showChatHistory({ all_books = true }) end
                 end)
             end }},
             {{ text = "● " .. _("Notebooks"), align = "left", enabled = false,

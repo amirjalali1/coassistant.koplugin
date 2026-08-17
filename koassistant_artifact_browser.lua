@@ -628,7 +628,9 @@ function ArtifactBrowser:showBrowserMenuOptions(opts)
                 UIManager:nextTick(function()
                     if mc then UIManager:close(mc) end
                     local AskGPT = self_ref:getAskGPTInstance()
-                    if AskGPT then AskGPT:showChatHistory() end
+                    -- all_books: cross-book surface, swap lands on the top
+                    -- level (device 2026-08-17, notebook-swap sibling)
+                    if AskGPT then AskGPT:showChatHistory({ all_books = true }) end
                 end)
             end }},
             {{ text = _("Notebooks") .. " →", align = "left", callback = function()

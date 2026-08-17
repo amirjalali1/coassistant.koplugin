@@ -6505,6 +6505,48 @@ function AskGPT:showImageGenPromptTemplate()
   })
 end
 
+-- Ghost-widget net (device family #9, 2026-08-17): ReaderUI:showReader
+-- broadcasts ShowingReader before every book open but closes only the
+-- FileManager, so any cross-book plugin Menu/dialog left below survives into
+-- the reader — painted full-screen during the opening repaint, then stuck
+-- under it, and it blocks app exit (non-empty window stack). One sweep closes
+-- every module singleton at that moment; per-site closes remain the polite
+-- fast path. SetupShowReader (the calibre/cloudstorage pre-announce pattern)
+-- is honored too.
+function AskGPT:_sweepCrossBookSurfaces()
+  local function closeField(mod_path, field)
+    local ok, mod = pcall(require, mod_path)
+    if ok and type(mod) == "table" and mod[field] then
+      local widget = mod[field]
+      mod[field] = nil
+      UIManager:close(widget)
+    end
+  end
+  -- Detail overlay above the X-Ray browser first, then the hosts
+  closeField("koassistant_xray_browser", "_detail_viewer")
+  closeField("koassistant_xray_browser", "menu")
+  closeField("koassistant_book_page", "_menu")
+  closeField("koassistant_artifact_browser", "current_menu")
+  closeField("koassistant_chat_history_dialog", "current_menu")
+  closeField("koassistant_notebook_manager", "current_menu")
+  closeField("koassistant_book_groups_ui", "_group_dialog")
+  -- The stock long-press file dialog: ReaderUI closes the FileManager itself,
+  -- never this separate window (the #1 dead-guard sites' stock sibling)
+  if FileManager.instance and FileManager.instance.file_dialog then
+    local fd = FileManager.instance.file_dialog
+    FileManager.instance.file_dialog = nil
+    UIManager:close(fd)
+  end
+end
+
+function AskGPT:onShowingReader()
+  self:_sweepCrossBookSurfaces()
+end
+
+function AskGPT:onSetupShowReader()
+  self:_sweepCrossBookSurfaces()
+end
+
 -- Event handlers for gesture-triggered actions
 function AskGPT:onKOAssistantChatHistory()
   -- Use the same implementation as the settings menu
@@ -8772,6 +8814,7 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
             -- read-so-far/from-section end at the position by construction, and
             -- the chapter presets are clamped under protection (chapterPresets).
             local covers_unread
+            local explicit_span
             if state.scope == "full" then
               -- Unless this is a to-position action, whose "full" extraction
               -- already stops at the reading position. Smart retrieval is NOT
@@ -8785,8 +8828,18 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
               -- (range end_page >= start_page by the picker's order check).
               covers_unread = chapter.current_page and state.section_entry.end_page
                   and state.section_entry.end_page > chapter.current_page
+              explicit_span = covers_unread
             end
             confirmUnreadScope(covers_unread, function()
+              if explicit_span then
+                -- Consenting to an EXPLICIT beyond-position span stands the
+                -- spoiler nudge down for this request (prompt and content
+                -- agree); full-document consent keeps the nudge (the round-4
+                -- stance: whole-book context, spoiler-safe answer). One-shot,
+                -- consumed at the first protected send, strays scrubbed at
+                -- every entry point.
+                configuration.features._spoiler_scope_consent = true
+              end
               -- When summary source is selected but no summary exists yet,
               -- generate it first (cache saves it), then continue
               if state.source == "section_summary" then
@@ -16749,17 +16802,10 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
   button_defs["minimal_popup"] = {
     text = (function()
       -- QS tile (maintainer 2026-08-17): tap = ON/OFF toggle, hold = view mode
-      -- + action picker. Label names the mode, since "On" alone would hide
-      -- which of the two on-states is active.
+      -- + action picker. Label is plain ON/OFF; which on-state is active
+      -- (when-it-fits vs always) lives in the hold popup.
       local mode = features.minimal_popup_mode or "short"
-      local label
-      if mode == "off" then
-        label = _("Off")
-      elseif mode == "always" then
-        label = _("Always")
-      else
-        label = _("When it fits")
-      end
+      local label = (mode == "off") and _("Off") or _("On")
       return E("\u{1F4AD}", T(_("Minimal Popup: %1"), label))
     end)(),
     callback = function()
@@ -17074,15 +17120,8 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
 
   -- Dynamic items (only when book is open)
   if has_document then
-    button_defs["new_book_chat"] = {
-      text = E("\u{1F4AC}", _("Book Chat/Action")),
-      callback = function()
-        opening_subdialog = true
-        UIManager:close(dialog)
-        self_ref:onKOAssistantBookChat()
-      end,
-    }
-
+    -- (new_book_chat tile retired 2026-08-17, maintainer: it only rendered
+    -- with a book open, exactly when the QA panel carries the same entry.)
     button_defs["quick_actions"] = {
       -- 🔁 = cross-panel link (pairs with the QA panel's Quick Settings utility)
       text = E("\u{1F501}", _("Quick Actions...")),
@@ -19098,6 +19137,9 @@ function AskGPT:_scrubContextFeatures(features)
   -- reading scope from the LAST chat's chip instead of this book's posture
   -- (spoiler_posture_plan B1).
   features._spoiler_free_active = nil
+  -- Spoiler-scope consent is request-scoped (one-shot, consumed at the first
+  -- protected send); any stray on the shared table dies here
+  features._spoiler_scope_consent = nil
 end
 
 function AskGPT:executeHighlightBypassAction(action, selected_text, highlight_instance)
@@ -19701,6 +19743,7 @@ function AskGPT:resetQsItems()
   for _i, id in ipairs(Constants.QS_ITEMS_DEFAULT_ORDER) do
     features["qs_show_" .. id] = nil
   end
+  features.qs_show_new_book_chat = nil  -- retired tile (2026-08-17), clear residue
   self.settings:saveSetting("features", features)
   self.settings:flush()
 end

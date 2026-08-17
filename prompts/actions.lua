@@ -1186,7 +1186,7 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 - OMIT categories entirely if nothing changed in them — they will be preserved as-is
 - When adding a new entry to a category, include ONLY the new entries in that category's array
 - When modifying an existing entry, output the COMPLETE entry with all fields (it will replace the old version)
-- A modified entry REPLACES the old one — carry over its existing details (identifying facts, relationships, earlier developments) and add the new; anything you leave out is lost
+- A modified entry REPLACES the old one — carry its existing details (identifying facts, earlier developments) into the revised text and add the new. Connection and reference lists are merged automatically, so a revision never loses them.
 - If an entity's primary name has CHANGED in the new content (marriage, title, a revealed identity), do NOT keep or create a separate entry under the old name: output ONE entry under the NEW name, include the old name in "aliases", and carry the existing entry's details forward
 - To reference an existing entity, use the EXACT name from the entity list above
 - Names listed under "dormant" are carried from related books and have NOT appeared in this book yet — they are not existing entries. If a character, place, or term you are adding or updating is the same person, place, or thing as a dormant name, include that dormant name among its aliases.
@@ -1195,8 +1195,8 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 If the previous analysis is in plain text rather than JSON, produce a fresh COMPLETE JSON analysis using the academic schema.
 
 Guidelines:
+- FIRST review the existing entries against the new content: any entry whose situation, status, or standing has CHANGED (a revised claim, a superseded method, a challenged finding, a figure whose role shifted) MUST be re-emitted with a revised description. A description states where things stand NOW, not where they stood when first added.
 - Add new concepts, foundations, methods, findings, referenced works, terms, or figures from the new content
-- Update existing entries only when new content reveals significant new information
 - Add new findings with their supporting evidence
 - Track methodology details as they emerge
 - If highlights are provided, consider what the reader found notable
@@ -1235,7 +1235,7 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 - OMIT categories entirely if nothing changed in them — they will be preserved as-is
 - When adding a new entry to a category, include ONLY the new entries in that category's array
 - When modifying an existing entry, output the COMPLETE entry with all fields (it will replace the old version)
-- A modified entry REPLACES the old one — carry over its existing details (identifying facts, relationships, earlier developments) and add the new; anything you leave out is lost
+- A modified entry REPLACES the old one — carry its existing details (identifying facts, earlier developments) into the revised text and add the new. Connection and reference lists are merged automatically, so a revision never loses them.
 - If an entity's primary name has CHANGED in the new content (marriage, title, a revealed identity), do NOT keep or create a separate entry under the old name: output ONE entry under the NEW name, include the old name in "aliases", and carry the existing entry's details forward
 - To reference an existing entity, use the EXACT name from the entity list above
 - Names listed under "dormant" are carried from related books and have NOT appeared in this book yet — they are not existing entries. If a character, place, or term you are adding or updating is the same person, place, or thing as a dormant name, include that dormant name among its aliases.
@@ -1244,9 +1244,9 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 If the previous analysis is in plain text rather than JSON, produce a fresh COMPLETE JSON analysis using the appropriate schema for the content type (fiction or nonfiction).
 
 Guidelines:
+- FIRST review the existing entries against the new content: any entity whose situation, status, or standing has CHANGED (death, injury, betrayal, departure, a revealed identity, changed allegiance, a turning point in their arc) MUST be re-emitted with a revised description. A description states where they stand NOW, not where they stood when first introduced.
 - Add new characters, locations, themes, concepts, or key figures that appeared in the new content
 - Add aliases and connections for new characters/key figures
-- Update existing entries only when the new content reveals significant new information (arc developments, turning points, shifting relationships)
 - Add new timeline/argument_development entries for events in the new content
 - If highlights are provided, consider what the reader found notable
 
