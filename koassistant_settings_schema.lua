@@ -3058,7 +3058,7 @@ local SettingsSchema = {
                     text = _("AI Book Tools"),
                     help_text = _("EXPERIMENTAL: Gemini, Claude (Anthropic), OpenAI, OpenRouter (Claude/GPT/Gemini models), DeepSeek, Mistral, Groq, and xAI. Book tools let the AI search the open book's text, read specific pages, and view the table of contents, so it can ground answers in the actual book instead of guessing. Requires \"Allow Text Extraction\".\n\nThis sets whether the Tools chip in book chats starts ON or OFF; you can always flip it per chat, and the AI still decides per question whether to actually search.\n\nPredefined actions are unaffected either way; they never use tools unless they explicitly offer smart retrieval. Override per book in Book Settings. Work in progress; behavior may change."),
                     path = "features.enable_book_tools",
-                    default = true,
+                    default = false,
                 },
                 {
                     id = "tool_mode",

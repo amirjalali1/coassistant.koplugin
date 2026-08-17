@@ -5254,6 +5254,9 @@ function PromptsManager:getPlaceholdersForContext(context)
         -- Context extraction placeholders (require extraction flags + global settings)
         { value = "{reading_progress}", text = _("Reading Progress (%)"), contexts = {"highlight", "book", "both"} },
         { value = "{progress_decimal}", text = _("Progress (0.0-1.0)"), contexts = {"highlight", "book", "both"} },
+        { value = "{page_number}", text = _("Page Number"), contexts = {"highlight", "book", "both"} },
+        { value = "{page_text_section}", text = _("Current Page Text (with label)"), contexts = {"highlight", "book", "both"} },
+        { value = "{page_text}", text = _("Current Page Text (raw)"), contexts = {"highlight", "book", "both"} },
         { value = "{book_text_section}", text = _("Book Text (with label)"), contexts = {"highlight", "book", "both"} },
         { value = "{book_text}", text = _("Book Text (raw)"), contexts = {"highlight", "book", "both"} },
         { value = "{highlights_section}", text = _("Highlights (with label)"), contexts = {"highlight", "book", "both"} },

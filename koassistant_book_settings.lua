@@ -342,10 +342,10 @@ local function toolsValueOn(v)
 end
 
 --- Effective AI Book Tools default for a book: per-book override > global
--- `enable_book_tools` (default ON — preserves the pre-collapse "auto" fresh
--- install; the A9 sitting owns any default flip) > legacy `tools_posture`
--- read-through for configs the migration hasn't touched. Pure boolean:
--- true = the Tools chip starts ON.
+-- `enable_book_tools` (default OFF since v0.21 — maintainer 2026-08-17, off
+-- until retrieval quality matures; explicit values and legacy "auto" picks
+-- keep resolving ON) > legacy `tools_posture` read-through for configs the
+-- migration hasn't touched. Pure boolean: true = the Tools chip starts ON.
 function BookSettings.resolveBookTools(doc_settings, features)
     local per_book = toolsValueOn(
         doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOLS))
@@ -357,7 +357,7 @@ function BookSettings.resolveBookTools(doc_settings, features)
         local legacy = toolsValueOn(features.tools_posture)
         if legacy ~= nil then return legacy end
     end
-    return true
+    return false
 end
 
 -- Per-book domain ("<domain id>" | "_none" = explicitly no domain | nil = follow global)

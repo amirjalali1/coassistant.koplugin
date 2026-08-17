@@ -318,8 +318,12 @@ TestRunner:test("shouldUse follows the tools posture when no session choice exis
         provider = "gemini",
         features = { is_book_context = true, enable_book_text_extraction = true },
     }
+    TestRunner:assertFalse(BookToolRunner.shouldUse(cfg, makeUi()),
+        "untouched default (off since the 2026-08-17 flip) does not activate tools")
+    cfg.features.enable_book_tools = true
     TestRunner:assertTrue(BookToolRunner.shouldUse(cfg, makeUi()),
-        "default posture (auto, schema default) activates tools when consent+capability hold")
+        "explicit global on activates tools when consent+capability hold")
+    cfg.features.enable_book_tools = nil
     cfg.features.tools_posture = "manual"
     TestRunner:assertFalse(BookToolRunner.shouldUse(cfg, makeUi()),
         "manual posture does not auto-activate tools")

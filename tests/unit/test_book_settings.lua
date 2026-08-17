@@ -686,9 +686,9 @@ local function fakeDocSettings(values)
     return { readSetting = function(_self, key) return values[key] end }
 end
 
-TestRunner:test("resolveBookTools: per-book override > global > true (schema default)", function()
-    TestRunner:assertEqual(BookSettings.resolveBookTools(nil, nil), true,
-        "no book, no features → true (must match the schema default)")
+TestRunner:test("resolveBookTools: per-book override > global > false (schema default)", function()
+    TestRunner:assertEqual(BookSettings.resolveBookTools(nil, nil), false,
+        "no book, no features → false (must match the schema default; flipped 2026-08-17)")
     TestRunner:assertEqual(BookSettings.resolveBookTools(nil, { enable_book_tools = false }), false,
         "global off, no book override")
     local ds = fakeDocSettings({ koassistant_book_tools = false })
@@ -722,8 +722,8 @@ TestRunner:test("resolveBookTools: unknown values fall through, never wedge", fu
     local ds = fakeDocSettings({ koassistant_book_tools = "banana" })
     TestRunner:assertEqual(BookSettings.resolveBookTools(ds, { enable_book_tools = false }), false,
         "corrupt sidecar value falls through to the global")
-    TestRunner:assertEqual(BookSettings.resolveBookTools(nil, { tools_posture = 42 }), true,
-        "corrupt legacy global falls through to the default")
+    TestRunner:assertEqual(BookSettings.resolveBookTools(nil, { tools_posture = 42 }), false,
+        "corrupt legacy global falls through to the default (off)")
 end)
 
 TestRunner:test("KEY_TOOLS is registered in SIDECAR_KEYS (reset/count coverage)", function()
