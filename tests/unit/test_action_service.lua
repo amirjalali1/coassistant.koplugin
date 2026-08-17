@@ -750,8 +750,8 @@ local function runInputInjectionTests()
     TestRunner:test("fresh highlight-menu defaults match the pared A9 order", function()
         local service = createService({})
         local result = service:getHighlightMenuActions()
-        local expected = { "translate", "xray_lookup", "explain", "summarize",
-            "quick_define", "dictionary", "image_gen" }
+        local expected = { "translate", "xray_lookup", "explain", "quick_explain",
+            "summarize", "quick_define", "dictionary", "image_gen" }
         TestRunner:assertEqual(#result, #expected, "exactly " .. #expected .. " default rows")
         for i, id in ipairs(expected) do
             TestRunner:assertEqual(result[i], id, "row " .. i .. " is " .. id)

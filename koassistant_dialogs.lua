@@ -10197,17 +10197,18 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             input_hint_text = _("Add items to chat about them or run any action...")
         end
     else
-        -- Context-specific titles (A9 sitting 2026-08-17, maintainer: "book,
-        -- book (closed), and highlight for now"). input_context is the safe
-        -- discriminator: X-Ray chat is its OWN context value and artifact chat
-        -- never reaches this dialog, so the pseudo-contexts keep the generic
-        -- title by construction (general does too, deliberately).
+        -- Context-specific titles (A9 sitting 2026-08-17). input_context is the
+        -- safe discriminator: X-Ray chat is its OWN context value (titled since
+        -- the same-day follow-up) and artifact chat never reaches this dialog,
+        -- so general/library-side entries keep the generic title deliberately.
         if input_context == "highlight" then
             dialog_title = _("KOAssistant: Highlight")
         elseif input_context == "book" then
             dialog_title = _("KOAssistant: Book")
         elseif input_context == "book_filebrowser" then
             dialog_title = _("KOAssistant: Book (not open)")
+        elseif input_context == "xray_chat" then
+            dialog_title = _("KOAssistant: X-Ray Chat")
         else
             dialog_title = _("KOAssistant Actions")
         end

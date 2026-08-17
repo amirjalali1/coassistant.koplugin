@@ -2056,8 +2056,10 @@ local INPUT_CONTEXTS = {
         dismissed_key = "_dismissed_input_book_actions",
         action_context = "book",
         has_open_book = true,
-        -- Curated defaults: conversational actions for asking about a book
-        default_ids = {"book_info", "xray_simple", "similar_books", "key_arguments",
+        -- Curated defaults: conversational actions for asking about a book.
+        -- xray_simple left 2026-08-17 (A9 follow-up, maintainer: heavy artifact
+        -- actions don't belong under a typed-input popup; it stays pickable)
+        default_ids = {"book_info", "similar_books", "key_arguments",
             "counterarguments", "extract_insights", "discussion_questions", "explain_author",
             "book_reviews"},
     },
@@ -2067,8 +2069,9 @@ local INPUT_CONTEXTS = {
         action_context = "book",
         has_open_book = false,  -- filters out requiresOpenBook actions
         -- Curated defaults: non-open-book actions suitable for file browser context
-        -- Includes sidecar-powered actions (analyze_highlights, xray_simple) that read from DocSettings
-        default_ids = {"book_info", "xray_simple", "similar_books", "analyze_highlights", "related_thinkers", "explain_author", "historical_context", "book_reviews", "suggest_from_library"},
+        -- Includes the sidecar-powered analyze_highlights (reads DocSettings);
+        -- xray_simple left 2026-08-17 (A9 follow-up, same call as the book list)
+        default_ids = {"book_info", "similar_books", "analyze_highlights", "related_thinkers", "explain_author", "historical_context", "book_reviews", "suggest_from_library"},
     },
     highlight = {
         settings_key = "input_highlight_actions",
@@ -2119,13 +2122,22 @@ function ActionService.getInputContextKeys()
 end
 
 -- Get all eligible action IDs for an input context (respects enabled state and open book filtering)
+-- X-Ray chat rides the highlight context, but its "selection" is an X-Ray
+-- entry, not document text: smart-retrieval actions (explain/analyze in
+-- context) would gather around nothing, so they leave the eligible pool
+-- entirely — defaults AND the manager's pickable list (A9 follow-up
+-- 2026-08-17; revisit if X-Ray chat ever gains document access)
+local function excludedFromInputCtx(ctx_name, action)
+    return ctx_name == "xray_chat" and action.smart_retrieval == true
+end
+
 function ActionService:_getEligibleInputActionIds(ctx_name)
     local ctx = INPUT_CONTEXTS[ctx_name]
     if not ctx then return {} end
     local all = self:getAllActions(ctx.action_context, false, ctx.has_open_book)
     local ids = {}
     for _, action in ipairs(all) do
-        if action.id then
+        if action.id and not excludedFromInputCtx(ctx_name, action) then
             table.insert(ids, action.id)
         end
     end
@@ -2332,7 +2344,7 @@ function ActionService:getAllActionsWithInputState(ctx_name)
     local all_actions = self:getAllActions(ctx.action_context, true, ctx.has_open_book)
     local result = {}
     for _, action in ipairs(all_actions) do
-        if action.id then
+        if action.id and not excludedFromInputCtx(ctx_name, action) then
             table.insert(result, {
                 action = action,
                 in_input = input_positions[action.id] ~= nil,

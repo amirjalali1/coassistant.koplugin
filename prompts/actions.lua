@@ -275,6 +275,10 @@ Actions.highlight = {
         enable_web_search = false,
         reasoning_config = "off",
         accept_quick_answer = true,
+        -- Joined the menu defaults + DEFAULT_MINIMAL_POPUP_ACTIONS in the A9
+        -- follow-up 2026-08-17 (maintainer): the minimal-popup registry needs a
+        -- launch surface, and this is the popup's natural resident.
+        in_highlight_menu = 4,
         text = _("Quick Explain"),
         description = _("A two-or-three-sentence plain-language explanation of the selection, on a fast model."),
         context = "highlight",
@@ -321,7 +325,7 @@ Actions.highlight = {
             temperature = 0.4,  -- More deterministic for summaries
         },
         include_book_context = true,
-        in_highlight_menu = 4,  -- A9 pare-down 2026-08-17 (was 6)
+        in_highlight_menu = 5,  -- A9 pare-down 2026-08-17 (was 6; 5 since quick_explain joined at 4)
         builtin = true,
     },
     elaborate = {
@@ -663,7 +667,7 @@ Write in an encyclopedic tone: factual, neutral, well-organized. Prioritize accu
         local_handler = "image_gen",
         local_note = _("This action skips the chat pipeline, but it does send one AI request: the framed prompt below goes to the image provider's API. Provider, model, size and prompt framing are set in Settings → Advanced → Image Generation."),
         requires_image_provider = true,
-        in_highlight_menu = 7,  -- A9 pare-down 2026-08-17: last, it is conditional (maintainer)
+        in_highlight_menu = 8,  -- A9 pare-down 2026-08-17: last, it is conditional (maintainer)
         exclude_from_compact = true,
         no_duplicate = true,
         builtin = true,
@@ -2122,7 +2126,7 @@ Actions.special = {
         behavior_variant = "dictionary_direct",  -- Use built-in dictionary behavior
         use_surrounding_context = false,  -- {context_section} channel already carries the passage
         in_dictionary_popup = 2,  -- Default order in dictionary popup
-        in_highlight_menu = 5,    -- A9 pare-down 2026-08-17: dict pair joins the menu
+        in_highlight_menu = 6,    -- A9 pare-down 2026-08-17: dict pair joins the menu
         prompt = [[Define "{highlighted_text}"
 
 Write entirely in {dictionary_language}. Only the headword stays in original language.
@@ -2155,7 +2159,7 @@ One line only. No etymology, no synonyms. No headers.]],
         behavior_variant = "dictionary_direct",  -- Use built-in dictionary behavior
         use_surrounding_context = false,  -- {context_section} channel already carries the passage
         in_dictionary_popup = 1,  -- Default order in dictionary popup
-        in_highlight_menu = 6,    -- A9 pare-down 2026-08-17: dict pair joins the menu
+        in_highlight_menu = 7,    -- A9 pare-down 2026-08-17: dict pair joins the menu
         prompt = [[Dictionary entry for "{highlighted_text}"
 
 Write entirely in {dictionary_language}. Only the headword, lemma, and synonyms stay in original language.

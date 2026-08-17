@@ -312,7 +312,9 @@ function AskGPT:init()
         text = _("Add to notebook") .. " (KOA)",
         show_in_highlight_dialog_func = function()
           local feats = self.settings:readSetting("features") or {}
-          return feats.show_notebook_in_highlight ~= false
+          -- Opt-in since the A9 follow-up 2026-08-17 (maintainer: highlight-menu
+          -- pare-down; the toggle lives in Menus & Buttons > Highlight menu)
+          return feats.show_notebook_in_highlight == true
         end,
         hold_callback = function()
           UIManager:show(InfoMessage:new{
@@ -908,11 +910,18 @@ function AskGPT:addFileDialogButtons()
   -- when a KOA row will actually follow, so folders/non-documents get no
   -- stray line. Shares the row cache (it runs first, so it fills it).
   local separator_generator = function(file, is_file, book_props)
-    -- Recompute UNCONDITIONALLY: this generator runs FIRST per dialog build,
-    -- so the cache now only shares the compute among the 4 generators of ONE
-    -- build (A9 sitting 2026-08-17: the old file-keyed reuse survived ACROSS
-    -- opens, so re-long-pressing the SAME file after a settings toggle showed
-    -- the pre-toggle rows).
+    -- Recompute UNCONDITIONALLY: this generator runs FIRST per dialog build
+    -- (verified: filechooser.lua iterates file_dialog_added_buttons with ipairs
+    -- in registration order), so the cache now only shares the compute among
+    -- the 4 generators of ONE build (A9 sitting 2026-08-17: the old file-keyed
+    -- reuse survived ACROSS opens, so re-long-pressing the SAME file after a
+    -- settings toggle showed the pre-toggle rows).
+    -- Disk refresh (A9 device round 2026-08-17): these closures bind ONE plugin
+    -- instance forever (KOReader's addFileDialogButtons is register-once per id
+    -- — duplicates are silently ignored), while toggles/dismissals may be saved
+    -- by the OTHER instance (FileManager vs ReaderUI). readSetting is an
+    -- in-memory read, so without this the rows only healed on restart.
+    self:updateConfigFromSettings()
     self._file_dialog_row_cache.file = file
     self._file_dialog_row_cache.rows = self:generateFileDialogRows(file, is_file, book_props)
     local rows = self._file_dialog_row_cache.rows
@@ -990,11 +999,12 @@ function AskGPT:addFileDialogButtons()
 end
 
 function AskGPT:removeFileDialogButtons()
-  -- Remove file dialog buttons when plugin is unloaded
-  if not self.file_dialog_buttons_added then
-    return
-  end
-
+  -- Remove file dialog buttons (unload + the live master toggle). NO guard on
+  -- self.file_dialog_buttons_added (A9 device round 2026-08-17): registration is
+  -- first-instance-wins, so the toggle's on_change may run in the plugin
+  -- instance that never registered — the old early-return made that a silent
+  -- no-op. Removal is id-keyed and safe to attempt regardless; a follow-up
+  -- addFileDialogButtons from THIS instance then re-registers live closures.
   logger.info("KOAssistant: Removing file dialog buttons")
 
   local FileManagerHistory = require("apps/filemanager/filemanagerhistory")
@@ -1727,6 +1737,18 @@ function AskGPT:updateConfigFromSettings()
         end
       else
         self.settings:saveSetting("features", fresh_features)
+      end
+    end
+    -- Sync the top-level action-list keys consumed by the register-once file
+    -- dialog closures (A9 device round 2026-08-17): those closures bind one
+    -- plugin instance forever, so File Browser Items edits/dismissals saved by
+    -- the OTHER instance must be pulled from disk here or they wait for restart.
+    for _idx, key in ipairs({ "file_browser_actions", "_dismissed_file_browser_actions" }) do
+      local disk_v = fresh:readSetting(key)
+      if disk_v ~= nil then
+        self.settings:saveSetting(key, disk_v)
+      else
+        self.settings:delSetting(key)
       end
     end
   end

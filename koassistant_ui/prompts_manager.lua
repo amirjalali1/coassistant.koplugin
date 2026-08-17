@@ -5603,9 +5603,10 @@ end
 
 -- Full nav loop for the ordering managers' hamburgers (A7b): every manager
 -- lists ALL the others, skipping itself via from_field — the QS/QA panel
--- managers used to be islands that only linked each other. Input Actions
--- appears in no list (it needs a context argument, so it stays reachable
--- from the input dialogs' gear) but its own hamburger calls this too.
+-- managers used to be islands that only linked each other. Input Dialog
+-- Actions joined the carousel in the A9 follow-up 2026-08-17 (maintainer:
+-- it was gear-only): the row opens a small context chooser since the
+-- managers themselves need a context argument.
 function PromptsManager:_managerNavButtons(from)
     local self_ref = self
     -- Grouped by surface family (maintainer picks 2026-08-13): the action
@@ -5621,6 +5622,7 @@ function PromptsManager:_managerNavButtons(from)
         { group = 1, field = "prompts_menu", label = _("Manage Actions"), show = function() self_ref:showPromptsMenu() end },
         { group = 2, field = "highlight_menu_manager", label = _("Highlight Menu"), show = function() self_ref:showHighlightMenuManager() end },
         { group = 2, field = "dictionary_popup_menu", label = _("Dictionary Popup"), show = function() self_ref:showDictionaryPopupManager() end },
+        { group = 2, field = "input_actions_menu", label = _("Input Dialog Actions"), show = function() self_ref:showInputActionsChooser() end },
         { group = 3, field = "quick_actions_menu", label = _("QA Panel Actions"), show = function() self_ref:showQuickActionsManager() end },
         { group = 3, field = "qa_utilities_menu", label = _("QA Panel Utilities"), show = function() self_ref:showQaUtilitiesManager() end },
         { group = 3, field = "qs_items_menu", label = _("QS Panel Items"), show = function() self_ref:showQsItemsManager() end },
@@ -6505,6 +6507,31 @@ local INPUT_CONTEXT_TITLES = {
     highlight = _("Highlight Input Actions"),
     xray_chat = _("X-Ray Chat Actions"),
 }
+
+-- Context chooser for the manager carousel (A9 follow-up 2026-08-17): the
+-- input managers need a context argument, so the carousel row lands here
+-- first. The gear inside each input dialog still jumps straight to its own
+-- context's manager.
+function PromptsManager:showInputActionsChooser()
+    local self_ref = self
+    local rows = {}
+    for _idx, ctx_name in ipairs({ "book", "book_filebrowser", "highlight", "xray_chat", "general" }) do
+        table.insert(rows, {{
+            text = INPUT_CONTEXT_TITLES[ctx_name],
+            align = "left",
+            callback = function()
+                UIManager:close(self_ref._input_ctx_chooser)
+                self_ref._input_ctx_chooser = nil
+                self_ref:showInputActionsManager(ctx_name)
+            end,
+        }})
+    end
+    self._input_ctx_chooser = ButtonDialog:new{
+        title = _("Input dialog actions for..."),
+        buttons = rows,
+    }
+    UIManager:show(self._input_ctx_chooser)
+end
 
 function PromptsManager:_buildInputActionsItems(ctx_name, bold_id)
     local features = self.plugin.settings:readSetting("features") or {}

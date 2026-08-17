@@ -455,3 +455,7 @@ print(string.format("\n=== Results: %d passed, %d failed ===", TestRunner.passed
 if TestRunner.failed > 0 then
     os.exit(1)
 end
+-- Harness contract (tests/README.md): a file returning nil is counted as
+-- PASSING by run_tests.lua — this was the suite's only nil-return offender
+-- (test-suite audit 2026-08-17)
+return TestRunner.failed == 0

@@ -2192,7 +2192,9 @@ local SettingsSchema = {
                     type = "toggle",
                     text = _("Show Add to Notebook button"),
                     path = "features.show_notebook_in_highlight",
-                    default = true,
+                    -- Opt-in since the A9 follow-up 2026-08-17 (pare-down;
+                    -- read pattern in main.lua is `== true` to match)
+                    default = false,
                     help_text = _("Add an 'Add to notebook' button to the highlight menu, saving the selected text directly to this book's notebook. Takes effect the next time the menu opens."),
                 },
                 -- (The old "Show Generate Image button" toggle is retired:

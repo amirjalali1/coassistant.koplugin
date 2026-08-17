@@ -241,7 +241,7 @@ end
 -- minimal_popup_mode setting (off / "short" = when it fits / always);
 -- everything else keeps its normal view.
 Constants.DEFAULT_MINIMAL_POPUP_ACTIONS = {
-    "translate", "quick_define",
+    "translate", "quick_define", "quick_explain",
 }
 
 --- Resolve the minimal-popup action registry into a lookup set. PURE.
