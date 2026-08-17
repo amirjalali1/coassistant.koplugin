@@ -2581,6 +2581,221 @@ end
 --- @param item_title string Display title for refreshing detail view
 --- @param source table|nil Navigation source for back-button chain
 --- @param nav_context table|nil Category navigation context (preserved for detail view)
+--- Entity history through the stored versions (maintainer request 2026-08-17):
+--- a mechanical, no-AI walk of ONE entity across every version on disk —
+--- ladder rungs + archived ring versions + the installed artifact (a
+--- promotion COPY, folded onto its source rung) — rendered oldest to newest
+--- with unchanged spans collapsed. Under spoiler protection, versions past
+--- max(position, installed coverage) stay concealed behind the standard
+--- reveal confirm; a complete INSTALL stands the gate down (round-7 ruling).
+--- @param item table The entity (from the hosting view)
+--- @param category_key string Its category
+--- @param reveal boolean|nil true = concealed versions shown (post-confirm)
+function XrayBrowser:showEntityHistory(item, category_key, reveal)
+    local ActionCache = require("koassistant_action_cache")
+    local file = self.metadata and self.metadata.book_file
+    if not file then return end
+    local entry_name = XrayParser.getItemName(item, category_key)
+    -- Identity handles: name + aliases, so a renamed/bridged entity resolves
+    -- in versions that knew it under another handle
+    local names = { entry_name }
+    if type(item.aliases) == "table" then
+        for _idx, a in ipairs(item.aliases) do
+            if type(a) == "string" and a ~= "" then names[#names + 1] = a end
+        end
+    elseif type(item.aliases) == "string" and item.aliases ~= "" then
+        names[#names + 1] = item.aliases
+    end
+
+    local versions = {}
+    for _idx, rung in ipairs(ActionCache.getXrayLadder(file)) do
+        versions[#versions + 1] = { src = rung, kind = "checkpoint" }
+    end
+    for _idx, cp in ipairs(ActionCache.getXrayCheckpoints(file)) do
+        versions[#versions + 1] = { src = cp, kind = "archived" }
+    end
+    local live = ActionCache.getXrayCache(file)
+    if live and live.result then
+        versions[#versions + 1] = { src = live, kind = "installed" }
+    end
+
+    local rows = {}
+    for _idx, v in ipairs(versions) do
+        local src = v.src
+        if type(src.result) == "string" then
+            local data = XrayParser.parse(src.result)
+            local found = data and XrayParser.findByIdentity(data, names, category_key)
+            if found then
+                local cov = tonumber(src.progress_decimal) or 0
+                if src.full_document then cov = 1 end
+                local aliases = {}
+                if type(found.aliases) == "table" then
+                    for _i, a in ipairs(found.aliases) do
+                        if type(a) == "string" then aliases[#aliases + 1] = a end
+                    end
+                elseif type(found.aliases) == "string" then
+                    aliases[1] = found.aliases
+                end
+                rows[#rows + 1] = {
+                    cov = cov,
+                    ts = tonumber(src.timestamp) or tonumber(src.archived_at) or 0,
+                    kind = v.kind,
+                    complete = (src.full_document or cov >= 0.995) and true or nil,
+                    description = tostring(found.description or ""),
+                    aliases = table.concat(aliases, ", "),
+                }
+            end
+        end
+    end
+    if #rows == 0 then
+        UIManager:show(InfoMessage:new{
+            text = _("No stored versions carry this entry."),
+        })
+        return
+    end
+    table.sort(rows, function(a, b)
+        if a.cov ~= b.cov then return a.cov < b.cov end
+        return a.ts < b.ts
+    end)
+    -- Fold the installed copy onto its source rung (identical coverage+text
+    -- in either adjacency order); a diverged install keeps its own row
+    local folded = {}
+    for _idx, r in ipairs(rows) do
+        local prev = folded[#folded]
+        if prev and prev.cov == r.cov and prev.description == r.description
+            and (r.kind == "installed" or prev.kind == "installed") then
+            prev.installed = true
+            if prev.kind == "installed" then prev.kind = r.kind end
+        else
+            r.installed = r.kind == "installed" or nil
+            folded[#folded + 1] = r
+        end
+    end
+    rows = folded
+
+    -- Spoiler gate at version granularity (mirrors _spoilerGate's resolution)
+    local gate
+    do
+        local BookSettings = require("koassistant_book_settings")
+        local SafeDocSettings = require("koassistant_doc_settings")
+        local ds = SafeDocSettings.resolve(file, self.ui)
+        local features = self.metadata and self.metadata.configuration
+            and self.metadata.configuration.features
+        if BookSettings.resolveSpoilerFree(ds, features) then
+            local g = 0
+            if live then
+                if live.full_document then g = 1 end
+                g = math.max(g, tonumber(live.progress_decimal) or 0)
+            end
+            local ui = self.ui
+            if ui and ui.document and ui.document.info
+                and (ui.document.info.number_of_pages or 0) > 0 then
+                g = math.max(g, (getCurrentPage(ui) or 0) / ui.document.info.number_of_pages)
+            elseif ds and ds.readSetting then
+                local pf = tonumber(ds:readSetting("percent_finished"))
+                if pf then g = math.max(g, pf) end
+            end
+            if g < 0.995 then gate = g end
+        end
+    end
+    local concealed = 0
+    if gate and not reveal then
+        local visible = {}
+        for _idx, r in ipairs(rows) do
+            if r.cov <= gate + 0.001 then
+                visible[#visible + 1] = r
+            else
+                concealed = concealed + 1
+            end
+        end
+        rows = visible
+    end
+
+    -- Collapse unchanged spans (description + aliases + kind identical)
+    local blocks = {}
+    for _idx, r in ipairs(rows) do
+        local prev = blocks[#blocks]
+        if prev and prev.description == r.description and prev.aliases == r.aliases
+            and prev.kind == r.kind then
+            prev.to_cov = r.cov
+            prev.installed = prev.installed or r.installed
+        else
+            blocks[#blocks + 1] = {
+                from_cov = r.cov, to_cov = r.cov, ts = r.ts, kind = r.kind,
+                complete = r.complete, installed = r.installed,
+                description = r.description, aliases = r.aliases,
+            }
+        end
+    end
+
+    local function pct(c) return string.format("%d%%", math.floor(c * 100 + 0.5)) end
+    local parts = {}
+    for _idx, b in ipairs(blocks) do
+        local head
+        if b.kind == "archived" then
+            head = b.complete and _("Archived version (complete)")
+                or T(_("Archived version (to %1)"), pct(b.from_cov))
+        elseif b.complete then
+            head = _("Complete")
+        elseif b.to_cov > b.from_cov then
+            head = T(_("To %1, unchanged through %2"), pct(b.from_cov), pct(b.to_cov))
+        else
+            head = T(_("To %1"), pct(b.from_cov))
+        end
+        if b.ts and b.ts > 0 then
+            head = head .. " · " .. os.date("%Y-%m-%d", b.ts)
+        end
+        if b.installed then
+            head = head .. " · " .. _("installed")
+        end
+        parts[#parts + 1] = "[" .. head .. "]"
+        if b.aliases ~= "" then
+            parts[#parts + 1] = T(_("Aliases: %1"), b.aliases)
+        end
+        parts[#parts + 1] = b.description
+        parts[#parts + 1] = ""
+    end
+    if #blocks == 0 and concealed > 0 then
+        parts[#parts + 1] = _("Every version carrying this entry is beyond your reading position.")
+        parts[#parts + 1] = ""
+    end
+    if concealed > 0 then
+        parts[#parts + 1] = T(_("%1 later version(s) concealed (spoiler protection)."), concealed)
+    end
+
+    local self_ref = self
+    local viewer
+    local button_row = {}
+    if concealed > 0 then
+        table.insert(button_row, {
+            text = _("Show later versions"),
+            callback = function()
+                local ConfirmBox = require("ui/widget/confirmbox")
+                UIManager:show(ConfirmBox:new{
+                    text = _("The later versions are beyond your reading position and may contain spoilers.\n\nShow them?"),
+                    ok_text = _("Show them"),
+                    ok_callback = function()
+                        UIManager:close(viewer)
+                        self_ref:showEntityHistory(item, category_key, true)
+                    end,
+                })
+            end,
+        })
+    end
+    table.insert(button_row, {
+        text = _("Close"),
+        callback = function() UIManager:close(viewer) end,
+    })
+    viewer = TextViewer:new{
+        title = T(_("History: %1"), tostring(entry_name)),
+        text = table.concat(parts, "\n"),
+        width = Screen:getWidth(),
+        height = Screen:getHeight(),
+        buttons_table = { button_row },
+    }
+    UIManager:show(viewer)
+end
+
 --- One popup for per-entry management (2026-08-09 unified entry-management
 --- direction, "Manage…"): search terms + rename + move-back-to-carried;
 --- merge-with-another-entry is the queued addition (needs an entity picker —
@@ -2592,6 +2807,31 @@ function XrayBrowser:_showEntityManagePopup(item, category_key, title, source, n
     local self_ref = self
     local dialog
     local buttons = {}
+    -- Shared gates (hoisted 2026-08-17 for the History row): live main views
+    -- only for WRITE ops; History is a read view, offered from checkpoint
+    -- views too (same walk), sections excluded (main-lineage versions would
+    -- mislead about a section entity)
+    local live_main = not self.scope and not self.metadata.checkpoint
+        and self.metadata.book_file
+    local entry_name = XrayParser.getItemName(item, category_key)
+    local named = type(entry_name) == "string" and entry_name ~= ""
+    -- History through checkpoints (maintainer request 2026-08-17): mechanical
+    -- per-entity walk across stored versions; only offered when versions
+    -- beyond the live artifact exist (O(1) header counts)
+    if not self.scope and named and self.metadata.book_file then
+        local ActionCache = require("koassistant_action_cache")
+        local vcount = (ActionCache.getXrayLadderCount(self.metadata.book_file) or 0)
+            + (ActionCache.getXrayCheckpointCount(self.metadata.book_file) or 0)
+        if vcount > 0 then
+            table.insert(buttons, {{
+                text = _("History through checkpoints…"),
+                callback = function()
+                    UIManager:close(dialog)
+                    self_ref:showEntityHistory(item, category_key)
+                end,
+            }})
+        end
+    end
     if can_edit_terms then
         table.insert(buttons, {{
             text = _("Edit search terms"),
@@ -2603,10 +2843,6 @@ function XrayBrowser:_showEntityManagePopup(item, category_key, title, source, n
     end
     -- Rename (2026-08-09): live main views only — the commit path writes the
     -- MAIN artifact, so a section/checkpoint view must not offer it
-    local live_main = not self.scope and not self.metadata.checkpoint
-        and self.metadata.book_file
-    local entry_name = XrayParser.getItemName(item, category_key)
-    local named = type(entry_name) == "string" and entry_name ~= ""
     if live_main and named then
         table.insert(buttons, {{
             text = _("Rename…"),
