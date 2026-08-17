@@ -1367,6 +1367,53 @@ TestRunner:test("resolveResearch: DOI layer sits between book and global", funct
         BookSettings.resolveResearch(nil, nil), false, "nothing set = off")
 end)
 
+TestRunner:suite("resolveXrayCategories (book > global default > full)")
+
+local KXC = BookSettings.KEY_XRAY_CATEGORIES
+
+TestRunner:test("nothing set = full, no layer", function()
+    local sel, layer = BookSettings.resolveXrayCategories(makeDocSettings({}), {})
+    TestRunner:assertNil(sel); TestRunner:assertNil(layer)
+end)
+
+TestRunner:test("book csv beats a different global", function()
+    local sel, layer = BookSettings.resolveXrayCategories(
+        makeDocSettings({ [KXC] = "people" }),
+        { xray_default_categories = "events" })
+    TestRunner:assertEqual(sel, "people")
+    TestRunner:assertEqual(layer, "book")
+end)
+
+TestRunner:test("book 'full' sentinel beats a narrowed global", function()
+    local sel, layer = BookSettings.resolveXrayCategories(
+        makeDocSettings({ [KXC] = "full" }),
+        { xray_default_categories = "people" })
+    TestRunner:assertNil(sel, "explicit full = nil selection")
+    TestRunner:assertEqual(layer, "book")
+end)
+
+TestRunner:test("unset book follows the global default", function()
+    local sel, layer = BookSettings.resolveXrayCategories(
+        makeDocSettings({}), { xray_default_categories = "people,places" })
+    TestRunner:assertEqual(sel, "people,places")
+    TestRunner:assertEqual(layer, "global")
+end)
+
+TestRunner:test("nil doc_settings still applies the global (no-book create path)", function()
+    local sel, layer = BookSettings.resolveXrayCategories(
+        nil, { xray_default_categories = "people" })
+    TestRunner:assertEqual(sel, "people")
+    TestRunner:assertEqual(layer, "global")
+end)
+
+TestRunner:test("junk book value falls through; full-set global folds to full", function()
+    local sel, layer = BookSettings.resolveXrayCategories(
+        makeDocSettings({ [KXC] = "bogus" }),
+        { xray_default_categories = "people,places,ideas,terms,events" })
+    TestRunner:assertNil(sel, "full-set csv normalizes to nil = full")
+    TestRunner:assertNil(layer)
+end)
+
 print("")
 print(string.rep("-", 50))
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))

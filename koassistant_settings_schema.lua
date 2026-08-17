@@ -959,6 +959,13 @@ local SettingsSchema = {
                             help_text = _("When building X-Ray checkpoints, place each checkpoint at the nearest chapter end (within a few percent) instead of an exact percentage; checkpoints then read as \"up to the end of a chapter\", and the versions list shows the chapter names. Needs a table of contents. Checkpoint spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones."),
                         },
                         {
+                            id = "xray_default_categories_picker",
+                            type = "action",
+                            text = _("Categories for New X-Rays"),
+                            callback = "showXrayDefaultCategoriesPicker",
+                            help_text = _("Which category groups a new X-Ray tracks by default: everything, or a narrower pick like character tracking. Applies when an X-Ray is created or rebuilt; individual books can pick their own categories in Book Settings."),
+                        },
+                        {
                             id = "xray_update_trim_appends",
                             type = "toggle",
                             text = _("Shorter Update Requests"),

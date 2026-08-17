@@ -1794,6 +1794,25 @@ local XRAY_CATEGORY_LABELS = {
     events = _("Timeline & development"),
 }
 
+--- Effective category selection for NEW X-Rays: book pick > global default >
+--- full. Sidecar value "full" is the explicit-full sentinel (this book stays
+--- Full even under a narrowed global — the domain `_none` precedent); any
+--- other sidecar value is a csv of group ids; nil follows the global
+--- (`features.xray_default_categories`, csv, nil = full).
+--- @param doc_settings table|nil the book's DocSettings (nil = no book layer)
+--- @param features table|nil global features table
+--- @return string|nil normalized csv (nil = full), string|nil deciding layer ("book"/"global")
+function BookSettings.resolveXrayCategories(doc_settings, features)
+    local Actions = require("prompts.actions")
+    local raw = doc_settings and doc_settings:readSetting(BookSettings.KEY_XRAY_CATEGORIES)
+    if raw == "full" then return nil, "book" end
+    local sel = Actions.normalizeXrayCategories(raw)
+    if sel then return sel, "book" end
+    local gsel = Actions.normalizeXrayCategories(features and features.xray_default_categories)
+    if gsel then return gsel, "global" end
+    return nil, nil
+end
+
 --- Short label for a stored category selection (row/button text).
 --- @param value string|nil raw stored value (normalized internally)
 --- @return string "Full" / "Character tracking" / "N of 5"
@@ -1809,21 +1828,43 @@ end
 
 --- Category picker for NEW X-Rays (presets v0.21): two preset rows (Full /
 --- Character tracking) over per-group checkboxes; any manual mix is "custom"
---- implicitly. Writes KEY_XRAY_CATEGORIES on the spot (sticky, per-book) —
---- callers get on_close to refresh their surface. At least one group must
---- stay checked (an X-Ray with zero entity categories is rejected by the
---- create gate). Self-rebuilding dialog (marking-popup precedent).
---- @param opts table { ui, document_path, on_close }
+--- implicitly. Book mode (default) writes KEY_XRAY_CATEGORIES on the spot
+--- (sticky, per-book): the "Follow global" row deletes the key, and explicit
+--- Full writes the "full" sentinel so the book resists a narrowed global (the
+--- domain `_none` precedent). Global mode (opts.target = "global", needs
+--- opts.plugin for the write) edits features.xray_default_categories — the
+--- default every book without its own pick follows. Callers get on_close to
+--- refresh their surface. At least one group must stay checked (an X-Ray with
+--- zero entity categories is rejected by the create gate). Self-rebuilding
+--- dialog (marking-popup precedent); preset dots reflect the STORED pick of
+--- the edited layer, checkboxes show the EFFECTIVE working set.
+--- @param opts table { ui, document_path, on_close, target, plugin }
 function BookSettings.showXrayCategoriesPicker(opts)
     opts = opts or {}
-    local doc_settings = resolveDocSettings(opts.ui, opts.document_path)
-    if not doc_settings then
-        if opts.on_close then opts.on_close() end
-        return
-    end
     local Actions = require("prompts.actions")
-    local sel = Actions.normalizeXrayCategories(
-        doc_settings:readSetting(BookSettings.KEY_XRAY_CATEGORIES))
+    local is_global = opts.target == "global"
+    local features = opts.plugin and opts.plugin.settings
+        and opts.plugin.settings:readSetting("features") or {}
+    local doc_settings
+    if not is_global then
+        doc_settings = resolveDocSettings(opts.ui, opts.document_path)
+        if not doc_settings then
+            if opts.on_close then opts.on_close() end
+            return
+        end
+    end
+    local raw = is_global and features.xray_default_categories
+        or doc_settings:readSetting(BookSettings.KEY_XRAY_CATEGORIES)
+    local stored = raw ~= "full" and Actions.normalizeXrayCategories(raw) or nil
+    -- Working checkbox set seeds from the EFFECTIVE selection (book mode
+    -- follows the global while unset) so a toggle starts from what a build
+    -- would actually use.
+    local sel
+    if is_global then
+        sel = stored
+    else
+        sel = BookSettings.resolveXrayCategories(doc_settings, features)
+    end
     local set = {}
     if sel then
         for id in sel:gmatch("[^,]+") do set[id] = true end
@@ -1838,12 +1879,18 @@ function BookSettings.showXrayCategoriesPicker(opts)
             if set[id] then ids[#ids + 1] = id end
         end
         local value = Actions.normalizeXrayCategories(table.concat(ids, ","))
-        if value then
+        if is_global then
+            writeGlobalFeature(opts.plugin, "xray_default_categories", value)
+        elseif value then
             doc_settings:saveSetting(BookSettings.KEY_XRAY_CATEGORIES, value)
+            doc_settings:flush()
         else
-            doc_settings:delSetting(BookSettings.KEY_XRAY_CATEGORIES)
+            -- All five checked in book mode = the explicit-full sentinel, not
+            -- a key delete: checking every box is a deliberate pick and must
+            -- survive a narrowed global. "Follow global" is the way back.
+            doc_settings:saveSetting(BookSettings.KEY_XRAY_CATEGORIES, "full")
+            doc_settings:flush()
         end
-        doc_settings:flush()
     end
     local function reshow()
         if dialog then UIManager:close(dialog); dialog = nil end
@@ -1858,27 +1905,37 @@ function BookSettings.showXrayCategoriesPicker(opts)
         for _id, on in pairs(set) do if on then n = n + 1 end end
         return n
     end
-    local all_on = countChecked() == #Actions.XRAY_CATEGORY_ORDER
     local function dot(active) return active and "● " or "○ " end
     -- Toggle idiom shared with the quick-preset pickers (dialogs): ✓ / ○
     local function mark(active) return active and "✓ " or "○ " end
 
-    local buttons = {
-        {{ text = dot(all_on) .. _("Full (all categories)"),
+    local full_stored
+    if is_global then full_stored = (stored == nil) else full_stored = (raw == "full") end
+    local buttons = {}
+    if not is_global then
+        buttons[#buttons + 1] = {{ text = dot(raw == nil)
+                .. T(_("Follow global (%1)"),
+                    BookSettings.xrayCategoriesLabel(features.xray_default_categories)),
             callback = function()
-                for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = true end
-                save()
+                doc_settings:delSetting(BookSettings.KEY_XRAY_CATEGORIES)
+                doc_settings:flush()
                 reshow()
-            end }},
-        {{ text = dot(not all_on and set.people and countChecked() == 1)
-                .. _("Character tracking (people only)"),
-            callback = function()
-                for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = nil end
-                set.people = true
-                save()
-                reshow()
-            end }},
-    }
+            end }}
+    end
+    buttons[#buttons + 1] = {{ text = dot(full_stored) .. _("Full (all categories)"),
+        callback = function()
+            for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = true end
+            save()
+            reshow()
+        end }}
+    buttons[#buttons + 1] = {{ text = dot(stored == "people")
+            .. _("Character tracking (people only)"),
+        callback = function()
+            for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = nil end
+            set.people = true
+            save()
+            reshow()
+        end }}
     for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do
         buttons[#buttons + 1] = {{ text = mark(set[id]) .. XRAY_CATEGORY_LABELS[id],
             callback = function()
@@ -1895,9 +1952,14 @@ function BookSettings.showXrayCategoriesPicker(opts)
     end
     buttons[#buttons + 1] = {{ text = _("Done"), id = "close", callback = closeAll }}
 
+    local title = (is_global and _("Categories for new X-Rays (global)")
+            or _("Categories for new X-Rays (this book)")) .. "\n"
+        .. _("Applies when an X-Ray is created or rebuilt. An existing X-Ray keeps the categories it was built with; adding one later needs a rebuild, since the text is only read once. Fewer categories mean cheaper, faster builds. Academic X-Rays (research mode) use their own structure and ignore this selection.")
+    if is_global then
+        title = title .. "\n" .. _("Books can pick their own categories in Book Settings.")
+    end
     dialog = ButtonDialog:new{
-        title = _("Categories for new X-Rays (this book)") .. "\n"
-            .. _("Applies when an X-Ray is created or rebuilt. An existing X-Ray keeps the categories it was built with; adding one later needs a rebuild, since the text is only read once. Fewer categories mean cheaper, faster builds. Academic X-Rays (research mode) use their own structure and ignore this selection."),
+        title = title,
         buttons = buttons,
         tap_close_callback = function()
             dialog = nil
@@ -2595,15 +2657,17 @@ function BookSettings.showXrayConfig(opts)
         end }})
 
     -- Categories for NEW X-Rays (presets v0.21): the sticky per-book pick the
-    -- create/rebuild paths read. First-class here so closed books can set it
-    -- before their first build (the creation chooser's button needs the form).
+    -- create/rebuild paths read (book > global default > full). First-class
+    -- here so closed books can set it before their first build (the creation
+    -- chooser's button needs the form).
+    local cat_sel, cat_layer = BookSettings.resolveXrayCategories(doc_settings, features)
     table.insert(buttons, {{ text = T(_("New X-Ray categories: %1"),
-            BookSettings.xrayCategoriesLabel(
-                doc_settings:readSetting(BookSettings.KEY_XRAY_CATEGORIES))),
+            cat_layer == "book" and BookSettings.xrayCategoriesLabel(cat_sel)
+                or T(_("Follow global (%1)"), BookSettings.xrayCategoriesLabel(cat_sel))),
         callback = function()
             closeDialog()
             BookSettings.showXrayCategoriesPicker({
-                ui = ui, document_path = opts.document_path,
+                ui = ui, document_path = opts.document_path, plugin = plugin,
                 on_close = function()
                     syncConfig()
                     BookSettings.showXrayConfig(opts)

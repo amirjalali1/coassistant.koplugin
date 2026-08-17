@@ -10927,8 +10927,8 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
     -- pick (categories cannot be added incrementally). Sticky per-book write
     -- via the shared picker; the row label re-reads it on return.
     if force_rebuild or mode ~= "extend" or pickIsRebuild() then
-      local cat_value = self.ui.doc_settings
-        and self.ui.doc_settings:readSetting(BookSettings.KEY_XRAY_CATEGORIES)
+      local cat_value = BookSettings.resolveXrayCategories(self.ui.doc_settings,
+        self.settings and self.settings:readSetting("features"))
       local ButtonTableC = require("ui/widget/buttontable")
       local cat_table = ButtonTableC:new{
         width = content_width,
@@ -10939,7 +10939,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
             callback = function()
               UIManager:close(current_dialog)
               BookSettings.showXrayCategoriesPicker({
-                ui = self_ref.ui,
+                ui = self_ref.ui, plugin = self_ref,
                 on_close = function() buildAndShow() end,
               })
             end,
@@ -19889,6 +19889,13 @@ end
 -- users until the release flip: the only route here is the debug-gated
 -- Settings > Advanced row. At release, checkSetupWizard/rerunSetupWizard
 -- switch to the new module and this row retires.
+-- Settings ▸ X-Ray ▸ "Categories for New X-Rays": the global default every
+-- book without its own pick follows (presets v0.21; schema action row).
+function AskGPT:showXrayDefaultCategoriesPicker()
+  local BookSettings = require("koassistant_book_settings")
+  BookSettings.showXrayCategoriesPicker({ target = "global", plugin = self })
+end
+
 function AskGPT:showSetupWizardDev()
   require("koassistant_setup_wizard").showDevMenu(self)
 end

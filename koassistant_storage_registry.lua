@@ -107,6 +107,7 @@ Registry.SETTINGS_SUBKEYS = {
         "gesture_actions", "markdown_font_size", "export_custom_path",
         "session_chips", "_dismissed_session_chips",
         "minimal_popup_actions",
+        "xray_default_categories",  -- global default for new X-Rays' category groups (presets v0.21)
     },
     internal = {
         "languages_migrated", "behavior_migrated", "prompts_migrated_v2",

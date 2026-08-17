@@ -4280,16 +4280,18 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         local xr_file = (ui and ui.document and ui.document.file)
             or (config.features and config.features.book_metadata
                 and config.features.book_metadata.file)
-        local xr_sel
+        local xr_ds
         if xr_file then
-            local ok_ds, xr_ds = pcall(function()
+            local ok_ds, got_ds = pcall(function()
                 return require("koassistant_doc_settings").resolve(xr_file, ui)
             end)
-            if ok_ds and xr_ds then
-                xr_sel = PromptsActions.normalizeXrayCategories(xr_ds:readSetting(
-                    require("koassistant_book_settings").KEY_XRAY_CATEGORIES))
-            end
+            if ok_ds then xr_ds = got_ds end
         end
+        -- Book pick > global default > full (the resolver handles the
+        -- explicit-full "full" sentinel; a nil ds still lets the global
+        -- default apply)
+        local xr_sel = require("koassistant_book_settings")
+            .resolveXrayCategories(xr_ds, config.features)
         if xr_sel then
             if not prompt._is_copy then
                 local original_prompt = prompt
@@ -4992,6 +4994,21 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                         message_data.incremental_coverage_start = range_result.coverage_start
                         message_data.incremental_coverage_end = range_result.coverage_end
                     end
+                end
+
+                -- The update prompt sends only {cached_result} + the incremental
+                -- delta; the generic to-position extraction (book_text) never
+                -- rides an update request. Drop it so the large-extraction
+                -- warning counts what is actually sent (a 73->83% extend of a
+                -- big book warned at ~1M chars while the request carried the
+                -- ~119K delta) and the dead string is freed before the send.
+                -- Guarded on the placeholders so a custom update_prompt that
+                -- DOES reference them keeps its text.
+                if type(prompt.prompt) == "string"
+                        and not prompt.prompt:find("{book_text", 1, true)
+                        and not prompt.prompt:find("{full_document", 1, true) then
+                    message_data.book_text = nil
+                    message_data.full_document = nil
                 end
             end
         end
