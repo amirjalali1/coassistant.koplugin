@@ -5912,27 +5912,110 @@ function AskGPT:buildMinimalPopupActionsMenu()
         end,
         keep_menu_open = true,
         callback = function()
-          local f = self_ref.settings:readSetting("features") or {}
-          local set = Constants.resolveMinimalPopupActions(f.minimal_popup_actions)
-          if set[action_id] then
-            set[action_id] = nil
-          else
-            set[action_id] = true
-          end
-          -- Persist as a stable sorted array: consumers do set lookups, so order
-          -- is free — sorting keeps the settings file diff-friendly.
-          local list = {}
-          for id in pairs(set) do list[#list + 1] = id end
-          table.sort(list)
-          f.minimal_popup_actions = list
-          self_ref.settings:saveSetting("features", f)
-          self_ref.settings:flush()
-          self_ref:updateConfigFromSettings()
+          self_ref:_toggleMinimalPopupAction(action_id)
         end,
       })
     end
   end
   return menu_items
+end
+
+-- Toggle one action's minimal-popup registration. Shared by the Settings
+-- screen picker above and the QS tile's hold popup below — one persistence
+-- truth for both surfaces.
+function AskGPT:_toggleMinimalPopupAction(action_id)
+  local f = self.settings:readSetting("features") or {}
+  local set = Constants.resolveMinimalPopupActions(f.minimal_popup_actions)
+  if set[action_id] then
+    set[action_id] = nil
+  else
+    set[action_id] = true
+  end
+  -- Persist as a stable sorted array: consumers do set lookups, so order
+  -- is free — sorting keeps the settings file diff-friendly.
+  local list = {}
+  for id in pairs(set) do list[#list + 1] = id end
+  table.sort(list)
+  f.minimal_popup_actions = list
+  self.settings:saveSetting("features", f)
+  self.settings:flush()
+  self:updateConfigFromSettings()
+end
+
+-- Minimal Popup quick settings (QS tile hold, maintainer design 2026-08-17):
+-- the view mode as one radio row, then the action registry as tap-to-toggle
+-- rows, two per row. Self-rebuilding on every change (fresh marks); Close and
+-- tap-outside both return to the caller via on_close.
+function AskGPT:showMinimalPopupQuickSettings(on_close)
+  local ButtonDialog = require("ui/widget/buttondialog")
+  local self_ref = self
+  local function dot(active) return active and "\u{25CF} " or "\u{25CB} " end
+  local f = self.settings:readSetting("features") or {}
+  local mode = f.minimal_popup_mode or "short"
+  local set = Constants.resolveMinimalPopupActions(f.minimal_popup_actions)
+
+  local dialog
+  local function reshow()
+    UIManager:close(dialog)
+    self_ref:showMinimalPopupQuickSettings(on_close)
+  end
+  local function setMode(new_mode)
+    return function()
+      local ff = self_ref.settings:readSetting("features") or {}
+      ff.minimal_popup_mode = new_mode
+      self_ref.settings:saveSetting("features", ff)
+      self_ref.settings:flush()
+      self_ref:updateConfigFromSettings()
+      reshow()
+    end
+  end
+
+  local buttons = {
+    {
+      { text = dot(mode == "off") .. _("Off"), callback = setMode("off") },
+      { text = dot(mode == "short") .. _("When it fits"), callback = setMode("short") },
+      { text = dot(mode == "always") .. _("Always"), callback = setMode("always") },
+    },
+  }
+
+  -- Registered actions, same eligibility as the Settings screen picker above
+  local actions = self.action_service
+    and self.action_service:getAllActions("highlight", true, true) or {}
+  local row = {}
+  for _idx, action in ipairs(actions) do
+    if (action.original_context or action.context) == "highlight" and action.id then
+      local action_id = action.id
+      table.insert(row, {
+        text = dot(set[action_id] == true) .. (action.text or action_id),
+        callback = function()
+          self_ref:_toggleMinimalPopupAction(action_id)
+          reshow()
+        end,
+      })
+      if #row == 2 then
+        table.insert(buttons, row)
+        row = {}
+      end
+    end
+  end
+  if #row > 0 then table.insert(buttons, row) end
+
+  table.insert(buttons, {
+    {
+      text = _("Close"),
+      callback = function()
+        UIManager:close(dialog)
+        if on_close then on_close() end
+      end,
+    },
+  })
+
+  dialog = ButtonDialog:new{
+    title = _("Minimal Popup"),
+    buttons = buttons,
+    tap_close_callback = on_close,
+  }
+  UIManager:show(dialog)
 end
 
 -- (buildDictionaryLanguageMenu lives further down, next to the gesture handler
@@ -16663,6 +16746,46 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
     end,
   }
 
+  button_defs["minimal_popup"] = {
+    text = (function()
+      -- QS tile (maintainer 2026-08-17): tap = ON/OFF toggle, hold = view mode
+      -- + action picker. Label names the mode, since "On" alone would hide
+      -- which of the two on-states is active.
+      local mode = features.minimal_popup_mode or "short"
+      local label
+      if mode == "off" then
+        label = _("Off")
+      elseif mode == "always" then
+        label = _("Always")
+      else
+        label = _("When it fits")
+      end
+      return E("\u{1F4AD}", T(_("Minimal Popup: %1"), label))
+    end)(),
+    callback = function()
+      local f = self_ref.settings:readSetting("features") or {}
+      local mode = f.minimal_popup_mode or "short"
+      if mode == "off" then
+        -- Restore the remembered on-state (a user on "always" round-trips)
+        f.minimal_popup_mode = f._minimal_popup_prev_mode or "short"
+      else
+        f._minimal_popup_prev_mode = mode
+        f.minimal_popup_mode = "off"
+      end
+      self_ref.settings:saveSetting("features", f)
+      self_ref.settings:flush()
+      self_ref:updateConfigFromSettings()
+      opening_subdialog = true
+      UIManager:close(dialog)
+      reopenQuickSettings()
+    end,
+    hold_callback = function()
+      opening_subdialog = true
+      UIManager:close(dialog)
+      self_ref:showMinimalPopupQuickSettings(reopenQuickSettings)
+    end,
+  }
+
   button_defs["web_search"] = {
     text = (function()
       -- Binary-global rule (seam 2): tap toggles the GLOBAL default in place, hold
@@ -16865,7 +16988,9 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
     callback = function()
       opening_subdialog = true
       UIManager:close(dialog)
-      self_ref:showChatHistory()
+      -- Always the main browser, even with a book open (all_books) — the QA
+      -- panel's entry is the book-specific one
+      self_ref:showChatHistory({ all_books = true })
     end,
   }
 
@@ -19265,14 +19390,18 @@ function AskGPT:startGeneralChat()
   showChatGPTDialog(self.ui, nil, configuration, nil, self)
 end
 
-function AskGPT:showChatHistory()
+function AskGPT:showChatHistory(opts)
   -- Load the chat history manager
   local ChatHistoryManager = require("koassistant_chat_history_manager")
   local chat_history_manager = ChatHistoryManager:new()
   
-  -- Get the current document path if a document is open
+  -- Get the current document path if a document is open. opts.all_books skips
+  -- the open-book jump-in (maintainer 2026-08-17: the QS tile is the CROSS-BOOK
+  -- surface, like Browse Artifacts/Notebooks; the book-scoped landing stays on
+  -- the Quick Actions panel entry and the gesture, which keep the default).
   local document_path = nil
-  if self.ui and self.ui.document and self.ui.document.file then
+  if not (opts and opts.all_books)
+      and self.ui and self.ui.document and self.ui.document.file then
       document_path = self.ui.document.file
   end
   
