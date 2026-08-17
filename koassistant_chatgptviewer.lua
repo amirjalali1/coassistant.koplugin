@@ -3296,8 +3296,11 @@ function ChatGPTViewer:askAnotherQuestion()
     local web_state
     if self.session_web_search_override ~= nil then
       web_state = self.session_web_search_override
-    elseif quick_on and cfg_features.quick_preset_web_off ~= false then
-      web_state = false  -- ⚡ preset forces web off at dispatch
+    elseif quick_on and cfg_features.quick_preset_web_off ~= false
+      and not cfg_features._session_web_touched then
+      web_state = false  -- ⚡ preset forces web off at dispatch (unless the
+      -- facet was PINNED in the input dialog — A9 (b) touch mark, in sync
+      -- with applyQuickReplyOverrides)
     else
       -- Baseline: the pre-quick value (stash if a reply already dispatched),
       -- else the config's own web flag, else the global feature default.
@@ -3379,8 +3382,10 @@ function ChatGPTViewer:askAnotherQuestion()
         local tools_effective
         if self.session_tools_override ~= nil then
           tools_effective = self.session_tools_override
-        elseif quick_on and cfg_features.quick_preset_tools_off ~= false then
+        elseif quick_on and cfg_features.quick_preset_tools_off ~= false
+          and not cfg_features._session_tools_touched then
           tools_effective = false  -- ⚡ preset forces tools off at dispatch
+          -- (unless pinned in the input dialog — A9 (b) touch mark)
         else
           -- Baseline: pre-quick stash if a reply dispatched, else the baked
           -- per-chat flag; failing both, the effective default (resumed
@@ -3438,6 +3443,12 @@ function ChatGPTViewer:askAnotherQuestion()
         -- false makes applyQuickReplyOverrides re-resolve reasoning from prefs
         -- instead of leaving the baked quick-off in place.
         cfg.features._session_quick_answer = not qa_on
+        if not qa_on then
+          -- OFF->ON = fresh preset application (A9 (b) invariant): stale
+          -- input-dialog pins must not exempt facets from the quick retry
+          cfg.features._session_web_touched = nil
+          cfg.features._session_tools_touched = nil
+        end
         reopenWithDraft()
       end,
       hold_callback = function()

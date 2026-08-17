@@ -267,6 +267,30 @@ Actions.highlight = {
         include_book_context = true,
         builtin = true,
     },
+    -- Quick Explain (A9 sitting 2026-08-17): the fast sibling of Explain.
+    -- Registerable-only by decision: no default placements anywhere -- users
+    -- add it via the managers (highlight menu, input actions, minimal popup).
+    quick_explain = {
+        id = "quick_explain",
+        enable_web_search = false,
+        reasoning_config = "off",
+        accept_quick_answer = true,
+        text = _("Quick Explain"),
+        description = _("A two-or-three-sentence plain-language explanation of the selection, on a fast model."),
+        context = "highlight",
+        prompt = [[Explain this in two or three short sentences, in plain language. If it is a single word or phrase, explain what it means in this context:
+
+"{highlighted_text}"]],
+        include_book_context = true,
+        skip_domain = true,  -- Speed posture: no domain layer, like the dictionary family
+        model_tier = "fast",
+        compact_view = true,
+        minimal_buttons = true,
+        api_params = {
+            temperature = 0.4,
+        },
+        builtin = true,
+    },
     eli5 = {
         id = "eli5",
         enable_web_search = false,
@@ -282,7 +306,6 @@ Actions.highlight = {
         },
         include_book_context = true,
         builtin = true,
-        in_highlight_menu = 4,    -- Appears in Highlight menu
     },
     summarize = {
         id = "summarize",
@@ -298,7 +321,7 @@ Actions.highlight = {
             temperature = 0.4,  -- More deterministic for summaries
         },
         include_book_context = true,
-        in_highlight_menu = 6,
+        in_highlight_menu = 4,  -- A9 pare-down 2026-08-17 (was 6)
         builtin = true,
     },
     elaborate = {
@@ -314,7 +337,6 @@ Actions.highlight = {
             temperature = 0.7,  -- Balanced for expansive but coherent elaboration
         },
         include_book_context = true,
-        in_highlight_menu = 5,
         builtin = true,
     },
     connect = {
@@ -336,7 +358,6 @@ Surface connections that enrich understanding, not tangential trivia. {concisene
         api_params = {
             temperature = 0.7,
         },
-        in_highlight_menu = 7,
         builtin = true,
     },
     connect_with_notes = {
@@ -501,7 +522,6 @@ Ground the analysis in the specific passage — what makes THIS particular piece
         description = _("Searches the web to verify claims in the selected passage, rating accuracy and citing current sources as evidence."),
         context = "highlight",
         include_book_context = true,
-        in_highlight_menu = 8,
         skip_domain = true,  -- Fact-checking format is standardized
         prompt = [[Fact-check this claim or statement:
 
@@ -530,7 +550,6 @@ If multiple claims are present, address each separately. If the passage is opini
         description = _("Argues against the selected passage: the strongest objections to its claim, reasoning, and framing, and who would disagree. Fact Check verifies accuracy; Counterpoint challenges the argument."),
         context = "highlight",
         include_book_context = true,
-        in_highlight_menu = 11,
         -- No skip_domain: domain expertise sharpens the critique
         prompt = [[Argue against this passage:
 
@@ -591,7 +610,6 @@ Focus on what's genuinely new or different from what the text describes. If the 
         include_book_context = true,
         use_surrounding_context = true,  -- For _forced_surrounding_context from X-Ray browser
         exclude_from_compact = true,  -- Not relevant in compact view action switcher
-        in_highlight_menu = 9,    -- After Fact Check (8)
         in_dictionary_popup = 4,  -- After dictionary_deep(3), before xray_lookup(6)
         prompt = [[Write a Wikipedia-style encyclopedia entry about:
 
@@ -645,7 +663,7 @@ Write in an encyclopedic tone: factual, neutral, well-organized. Prioritize accu
         local_handler = "image_gen",
         local_note = _("This action skips the chat pipeline, but it does send one AI request: the framed prompt below goes to the image provider's API. Provider, model, size and prompt framing are set in Settings → Advanced → Image Generation."),
         requires_image_provider = true,
-        in_highlight_menu = 12,
+        in_highlight_menu = 7,  -- A9 pare-down 2026-08-17: last, it is conditional (maintainer)
         exclude_from_compact = true,
         no_duplicate = true,
         builtin = true,
@@ -2104,6 +2122,7 @@ Actions.special = {
         behavior_variant = "dictionary_direct",  -- Use built-in dictionary behavior
         use_surrounding_context = false,  -- {context_section} channel already carries the passage
         in_dictionary_popup = 2,  -- Default order in dictionary popup
+        in_highlight_menu = 5,    -- A9 pare-down 2026-08-17: dict pair joins the menu
         prompt = [[Define "{highlighted_text}"
 
 Write entirely in {dictionary_language}. Only the headword stays in original language.
@@ -2136,6 +2155,7 @@ One line only. No etymology, no synonyms. No headers.]],
         behavior_variant = "dictionary_direct",  -- Use built-in dictionary behavior
         use_surrounding_context = false,  -- {context_section} channel already carries the passage
         in_dictionary_popup = 1,  -- Default order in dictionary popup
+        in_highlight_menu = 6,    -- A9 pare-down 2026-08-17: dict pair joins the menu
         prompt = [[Dictionary entry for "{highlighted_text}"
 
 Write entirely in {dictionary_language}. Only the headword, lemma, and synonyms stay in original language.

@@ -718,14 +718,17 @@ local function runInputInjectionTests()
     end)
 
     TestRunner:test("non-default eligible actions are NOT injected into curated lists", function()
+        -- quick_define: highlight-eligible, deliberately outside the curated
+        -- input defaults (wiki was the fixture until it JOINED default_ids in
+        -- the A9 complement reorder 2026-08-17)
         local data = {
             input_highlight_actions = { "translate", "explain", "eli5" },
         }
         local service = createService(data)
         local result = service:getInputActions("highlight")
         for _i, id in ipairs(result) do
-            if id == "wiki" then
-                error("wiki is eligible but not a curated default; must not be injected")
+            if id == "quick_define" then
+                error("quick_define is eligible but not a curated default; must not be injected")
             end
         end
     end)
@@ -738,6 +741,21 @@ local function runInputInjectionTests()
         local result = service:getInputActions("highlight")
         TestRunner:assertEqual(result[1], "eli5", "user order kept")
         TestRunner:assertEqual(result[2], "translate", "user order kept")
+    end)
+
+    -- Fresh-install highlight-menu default order (A9 pare-down 2026-08-17).
+    -- buildDefaultFromFlags sorts by the numeric in_highlight_menu values with
+    -- no tiebreaker, so a future duplicate/gap in those hand-edited literals
+    -- would ship a nondeterministic order silently — this pins the exact set.
+    TestRunner:test("fresh highlight-menu defaults match the pared A9 order", function()
+        local service = createService({})
+        local result = service:getHighlightMenuActions()
+        local expected = { "translate", "xray_lookup", "explain", "summarize",
+            "quick_define", "dictionary", "image_gen" }
+        TestRunner:assertEqual(#result, #expected, "exactly " .. #expected .. " default rows")
+        for i, id in ipairs(expected) do
+            TestRunner:assertEqual(result[i], id, "row " .. i .. " is " .. id)
+        end
     end)
 end
 

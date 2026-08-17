@@ -2241,13 +2241,23 @@ local SettingsSchema = {
                     text = _("Show KOAssistant actions"),
                     path = "features.show_in_file_browser",
                     default = true,
-                    help_text = _("Add KOAssistant buttons to file browser context menus. Requires restart."),
-                    on_change = function()
-                        local InfoMessage = require("ui/widget/infomessage")
-                        local UIManager = require("ui/uimanager")
-                        UIManager:show(InfoMessage:new{
-                            text = _("Please restart KOReader for this change to take effect."),
-                        })
+                    help_text = _("Add KOAssistant buttons to file browser context menus."),
+                    on_change = function(new_value, plugin)
+                        -- Live since the A9 sitting 2026-08-17 (maintainer: "are you
+                        -- sure it can't be re-registered?"): the registered rows are
+                        -- closures rebuilt per dialog open, so only this
+                        -- register/unregister pair needed wiring — the old row said
+                        -- "requires restart" while removeFileDialogButtons sat
+                        -- uncalled. The setting is written before on_change runs, so
+                        -- addFileDialogButtons' fresh feature read passes its gate.
+                        if not plugin then return end
+                        if new_value == false then
+                            if plugin.removeFileDialogButtons then
+                                plugin:removeFileDialogButtons()
+                            end
+                        elseif plugin.addFileDialogButtons then
+                            plugin:addFileDialogButtons()
+                        end
                     end,
                 },
                 -- Utility-button toggles in POPUP ORDER (File Browser Items

@@ -727,22 +727,7 @@ function SystemPrompts.getEffectiveDictionaryLanguage(config)
     return dict_lang
 end
 
--- Get effective dictionary source language (for specifying input word language)
--- @param config: {
---   dictionary_source_language: string (optional, default "auto")
--- }
--- @return string or nil: Source language or nil for auto-detect
-function SystemPrompts.getEffectiveDictionarySourceLanguage(config)
-    config = config or {}
-
-    local source_lang = config.dictionary_source_language
-
-    -- "auto" or not set means auto-detect (return nil)
-    if source_lang == "auto" or source_lang == nil or source_lang == "" then
-        return nil
-    end
-
-    return source_lang
-end
+-- (getEffectiveDictionarySourceLanguage deleted 2026-08-17, A8 sweep: zero
+-- callers since its Track-14 feature never shipped; revive with Book language.)
 
 return SystemPrompts

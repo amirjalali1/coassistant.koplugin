@@ -908,10 +908,13 @@ function AskGPT:addFileDialogButtons()
   -- when a KOA row will actually follow, so folders/non-documents get no
   -- stray line. Shares the row cache (it runs first, so it fills it).
   local separator_generator = function(file, is_file, book_props)
-    if self._file_dialog_row_cache.file ~= file then
-      self._file_dialog_row_cache.file = file
-      self._file_dialog_row_cache.rows = self:generateFileDialogRows(file, is_file, book_props)
-    end
+    -- Recompute UNCONDITIONALLY: this generator runs FIRST per dialog build,
+    -- so the cache now only shares the compute among the 4 generators of ONE
+    -- build (A9 sitting 2026-08-17: the old file-keyed reuse survived ACROSS
+    -- opens, so re-long-pressing the SAME file after a settings toggle showed
+    -- the pre-toggle rows).
+    self._file_dialog_row_cache.file = file
+    self._file_dialog_row_cache.rows = self:generateFileDialogRows(file, is_file, book_props)
     local rows = self._file_dialog_row_cache.rows
     if rows and rows[1] then return {} end
   end
@@ -19144,6 +19147,10 @@ function AskGPT:_scrubContextFeatures(features)
   -- Spoiler-scope consent is request-scoped (one-shot, consumed at the first
   -- protected send); any stray on the shared table dies here
   features._spoiler_scope_consent = nil
+  -- Quick-pin touch marks are dialog-scoped (A9 (b) 2026-08-17); stale marks
+  -- would exempt a facet from the preset in the NEXT quick chat
+  features._session_web_touched = nil
+  features._session_tools_touched = nil
 end
 
 function AskGPT:executeHighlightBypassAction(action, selected_text, highlight_instance)

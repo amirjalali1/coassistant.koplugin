@@ -2021,8 +2021,13 @@ function ActionService.getActionDisplayText(action, features, opts)
     if action.enable_web_search == true then
         -- Forced on: solid icon
         table.insert(indicators, "🌐")
-    elseif action.enable_web_search == nil and effective_web then
-        -- Follows the effective default (currently on): parenthesized
+    elseif action.enable_web_search == nil and effective_web
+        and not (opts and opts.quick_web_strip and action.accept_quick_answer == true) then
+        -- Follows the effective default (currently on): parenthesized.
+        -- quick_web_strip (A9 (b) verify round 2026-08-17): under the ⚡ preset
+        -- an ACCEPTING action's send has web stripped at bake, so its
+        -- follows-default badge hides; non-accepting actions ignore Quick
+        -- (governance matrix) and keep the raw chip value — per-action honesty.
         table.insert(indicators, "(🌐)")
     end
     -- Smart retrieval: the action may search the book via tools (parenthesized — the
@@ -2070,9 +2075,13 @@ local INPUT_CONTEXTS = {
         dismissed_key = "_dismissed_input_highlight_actions",
         action_context = "highlight",
         has_open_book = true,
-        -- Curated defaults: core highlight actions without heavy data requirements
-        default_ids = {"translate", "explain", "eli5", "elaborate", "summarize",
-            "connect", "fact_check", "counterpoint", "explain_in_context"},
+        -- Curated defaults, COMPLEMENT order since the A9 sitting 2026-08-17
+        -- (maintainer): the pared highlight MENU covers translate/explain/
+        -- summarize with one tap, so the input dialog leads with the actions
+        -- that are NOT in that menu; the menu trio closes the list. wiki
+        -- joined the same day (it left the menu defaults).
+        default_ids = {"eli5", "elaborate", "connect", "fact_check", "wiki",
+            "counterpoint", "explain_in_context", "translate", "explain", "summarize"},
     },
     xray_chat = {
         settings_key = "input_xray_chat_actions",

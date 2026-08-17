@@ -779,6 +779,10 @@ function BookToolRunner.queryWith(query_fn, messages, cfg, callback, plugin, ui)
             cfg.features = cfg.features or {}
             cfg.features._session_quick_answer = true
             cfg.features._quick_reply_orig = nil  -- fresh baseline for the transform
+            -- OFF->ON = fresh preset application (A9 (b) invariant): stale
+            -- input-dialog pins must not keep web/tools alive on the quick retry
+            cfg.features._session_web_touched = nil
+            cfg.features._session_tools_touched = nil
             require("koassistant_dialogs").applyQuickReplyOverrides(cfg, plugin)
             return BookToolRunner.queryWith(query_fn, messages, cfg, callback, plugin, ui)
         end

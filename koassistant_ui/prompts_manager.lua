@@ -43,6 +43,18 @@ local function getBuiltinBehaviorOptions(custom_behaviors)
     return options
 end
 
+-- Helper: manager-row suffix for conditionally-visible actions (A9 sitting
+-- 2026-08-17, maintainer): X-Ray lookup renders only when the book has an
+-- X-Ray, Generate Image only when a configured provider supports images —
+-- the label explains a registered-but-absent menu row. Managers only; the
+-- real menus never show it (they simply omit the row).
+local function dynamicSuffix(action)
+    if action and (action.requires_xray_cache or action.requires_image_provider) then
+        return " " .. _("(dynamic)")
+    end
+    return ""
+end
+
 -- Helper: Check if a behavior_variant resolves to a known behavior (builtin,
 -- user behaviors/ folder, or UI-created — the per-action pickers list all
 -- three, so current-selection detection must accept all three)
@@ -5677,7 +5689,7 @@ function PromptsManager:_buildHighlightMenuItems(bold_id)
         elseif action.source == "config" then source_indicator = " ◆" end
 
         table.insert(menu_items, {
-            text = prefix .. position .. ActionService.getActionDisplayText(action, features) .. source_indicator,
+            text = prefix .. position .. ActionService.getActionDisplayText(action, features) .. source_indicator .. dynamicSuffix(action),
             action = action,
             in_menu = item.in_menu,
             menu_position = item.menu_position,
@@ -5802,7 +5814,7 @@ function PromptsManager:_buildQuickActionsItems(bold_id)
         elseif action.source == "config" then source_indicator = " ◆" end
 
         table.insert(menu_items, {
-            text = prefix .. position .. ActionService.getActionDisplayText(action, features) .. source_indicator,
+            text = prefix .. position .. ActionService.getActionDisplayText(action, features) .. source_indicator .. dynamicSuffix(action),
             action = action,
             in_quick_actions = item.in_quick_actions,
             quick_actions_position = item.quick_actions_position,
@@ -6258,7 +6270,7 @@ function PromptsManager:_buildFileBrowserItems(bold_id)
         elseif action.source == "config" then source_indicator = " ◆" end
 
         table.insert(menu_items, {
-            text = prefix .. position .. ActionService.getActionDisplayText(action, features) .. source_indicator,
+            text = prefix .. position .. ActionService.getActionDisplayText(action, features) .. source_indicator .. dynamicSuffix(action),
             action = action,
             in_file_browser = item.in_file_browser,
             file_browser_position = item.file_browser_position,
@@ -6383,7 +6395,7 @@ function PromptsManager:_buildDictionaryPopupItems(bold_id)
         elseif action.source == "config" then source_indicator = " ◆" end
 
         table.insert(menu_items, {
-            text = prefix .. position .. ActionService.getActionDisplayText(action, features) .. source_indicator,
+            text = prefix .. position .. ActionService.getActionDisplayText(action, features) .. source_indicator .. dynamicSuffix(action),
             action = action,
             in_popup = item.in_popup,
             popup_position = item.popup_position,
@@ -6532,7 +6544,7 @@ function PromptsManager:_buildInputActionsItems(ctx_name, bold_id)
         elseif action.source == "config" then source_indicator = " ◆" end
 
         table.insert(menu_items, {
-            text = prefix .. position .. ActionService.getActionDisplayText(action, features) .. source_indicator,
+            text = prefix .. position .. ActionService.getActionDisplayText(action, features) .. source_indicator .. dynamicSuffix(action),
             action = action,
             in_input = item.in_input,
             input_position = item.input_position,

@@ -575,9 +575,13 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
             config.provider_settings[config.provider] = ps
         end
     end
-    if quick_answer and features.quick_preset_tools_off ~= false then
+    if quick_answer and features.quick_preset_tools_off ~= false
+        and not features._session_tools_touched then
         -- Preset "no slow features": book tools off for this chat (explicit false —
         -- rides the viewer config into replies, same mechanics as the G6 clear).
+        -- Pin-beats-preset (A9 sitting 2026-08-17, option (b)): a chip TOUCHED
+        -- while Quick is on is the user's pin for that facet — the preset stands
+        -- down and the baked chip value (just written by performSend) rides.
         features._tools_active = false
     end
 
@@ -741,9 +745,12 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
     -- the brevity posture, so no ⚡ on their streams. Read into stream_settings by queryChatGPT.
     features._quick_eligible = (action == nil) or (action.accept_quick_answer == true)
     -- Quick Answer preset: web search off for this request unless the preset
-    -- component is disabled or the action forces web on (explicit action flag
-    -- wins — matrix §10).
+    -- component is disabled, the action forces web on (explicit action flag
+    -- wins — matrix §10), or the chip was touched while Quick was on (the pin,
+    -- A9 sitting 2026-08-17 option (b) — the manual chip value baked at line
+    -- ~635 stays authoritative).
     if quick_answer and features.quick_preset_web_off ~= false
+        and not features._session_web_touched
         and not (action and action.enable_web_search == true) then
         config.enable_web_search = false
     end
@@ -1584,9 +1591,16 @@ local function applyQuickReplyOverrides(config, plugin)
     end
 
     -- Preset "no slow features" (only under the ⚡ posture; explicit reply
-    -- toggles are applied after this by the callers and win)
-    if qa and f.quick_preset_web_off ~= false then config.enable_web_search = false end
-    if qa and f.quick_preset_tools_off ~= false then f._tools_active = false end
+    -- toggles are applied after this by the callers and win). Pin-beats-preset
+    -- (A9 (b) verify round 2026-08-17): a facet PINNED in the input dialog
+    -- rides in as a touch mark on the chat's config copy — the preset stands
+    -- down and the stashed baseline (the pinned value) survives replies.
+    if qa and f.quick_preset_web_off ~= false and not f._session_web_touched then
+        config.enable_web_search = false
+    end
+    if qa and f.quick_preset_tools_off ~= false and not f._session_tools_touched then
+        f._tools_active = false
+    end
 
     -- Reasoning: wipe the wire keys, then re-resolve for the (possibly new)
     -- model. Same layering as the Send-time bake minus the action layer — a
@@ -3525,6 +3539,11 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             tf._session_quick_answer = nil
             tf._session_reasoning = nil
             tf._session_model = nil
+            -- Quick-pin touch marks are dialog-scoped (A9 (b) verify round):
+            -- inherited stale marks would exempt a facet from the preset on a
+            -- direct-entry quick request (bypass wrappers copy features wholesale)
+            tf._session_web_touched = nil
+            tf._session_tools_touched = nil
             -- Quick Answer DEFAULT reaches direct entries too (maintainer
             -- 2026-08-11: "if quick mode global is on it should touch all
             -- receptive requests regardless of entry point"). The dialog seeds
@@ -6545,6 +6564,10 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
         if not configuration.features._session_keep_scope then
             configuration.features._session_scope = nil
             configuration.features._session_highlight_context = nil
+            -- Quick-pin touch marks (A9 (b)): same lifecycle as the chip state —
+            -- survive a refresh, cleared on a fresh open
+            configuration.features._session_web_touched = nil
+            configuration.features._session_tools_touched = nil
             -- Per-request context dials (round 5, maintainer): direction and
             -- amount overrides picked from the Ctx chip's tap popup — same
             -- config-resident session lifecycle as the mode above.
@@ -6896,10 +6919,19 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
         if not ConfigHelper:supportsWebSearch(configuration) then
             return enable_emoji and ("\u{1F310} " .. _("N/A")) or _("Web N/A")
         end
-        if enable_emoji then
-            return "\u{1F310} " .. (session_web_search and _("ON") or _("OFF"))
+        -- Effective state (A9 sitting 2026-08-17, pin-beats-preset (b)): while
+        -- Quick holds an UNTOUCHED facet off, the chip says so instead of lying
+        -- ON; a touched chip shows its own value (the pin), which dispatch honors.
+        local eff = session_web_search
+        local qf = configuration.features
+        if qf._session_quick_answer and qf.quick_preset_web_off ~= false
+            and not qf._session_web_touched then
+            eff = false
         end
-        return session_web_search and _("Web ON") or _("Web OFF")
+        if enable_emoji then
+            return "\u{1F310} " .. (eff and _("ON") or _("OFF"))
+        end
+        return eff and _("Web ON") or _("Web OFF")
     end
 
     -- Shared action execution for grid buttons, More Actions, and expanded in-grid buttons.
@@ -7976,6 +8008,12 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
         -- the session Tools chip is on (the chip governs the popup's default pick).
         local indicator_opts = {
             effective_web_search = session_web_search == true,
+            -- A9 (b) verify round: hide an ACCEPTING action's follows-default
+            -- (🌐) when the ⚡ preset would strip web from its send — the chip
+            -- label describes the freeform posture, the button badge the action
+            quick_web_strip = configuration.features._session_quick_answer == true
+                and configuration.features.quick_preset_web_off ~= false
+                and not configuration.features._session_web_touched,
             tools_allowed = session_book_tools == true
                 and (BookToolRunner.smartRetrievalAllowed(configuration, ui_instance)) == true,
         }
@@ -8033,8 +8071,25 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             })
                             return
                         end
-                        session_web_search = not session_web_search
+                        -- Pin-beats-preset (b): the tap flips the EFFECTIVE state
+                        -- (an untouched facet reads OFF while Quick holds it), and
+                        -- the touch is the pin — this chat's chip beats the preset.
+                        local qf = configuration.features
+                        local eff = session_web_search
+                        if qf._session_quick_answer and qf.quick_preset_web_off ~= false
+                            and not qf._session_web_touched then
+                            eff = false
+                        end
+                        session_web_search = not eff
+                        qf._session_web_touched = true
+                        -- Refresh FIRST so the toast paints above the reopened dialog
                         refreshInputDialog()
+                        if qf._session_quick_answer and qf.quick_preset_web_off ~= false
+                            and session_web_search then
+                            UIManager:show(require("ui/widget/notification"):new{
+                                text = _("Web search on (overrides Quick preset)"),
+                            })
+                        end
                     end,
                     hold_callback = function()
                         -- A general/library chat has no book subject even when a book is
@@ -8052,6 +8107,8 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             -- reach the chip until a fresh dialog)
                             on_close = function()
                                 session_web_search = nil
+                                -- Back to defaults = the pin dissolves too
+                                configuration.features._session_web_touched = nil
                                 refreshInputDialog()
                             end,
                         })
@@ -8090,6 +8147,8 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         -- Same re-seed as the Web chip: picker changes reach the chip
                         on_close = function()
                             session_book_tools = nil
+                            -- Back to defaults = the pin dissolves too
+                            configuration.features._session_tools_touched = nil
                             refreshInputDialog()
                         end,
                     })
@@ -8125,13 +8184,38 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         hold_callback = holdPicker,
                     }
                 end
+                -- Effective state under Quick (A9 sitting 2026-08-17, pin (b)):
+                -- untouched + preset component on = reads OFF; touched = the pin.
+                local tools_eff = session_book_tools
+                do
+                    local qf = configuration.features
+                    if qf._session_quick_answer and qf.quick_preset_tools_off ~= false
+                        and not qf._session_tools_touched then
+                        tools_eff = false
+                    end
+                end
                 return {
                     text = enable_emoji
-                        and ("\u{1F50D} " .. (session_book_tools and _("ON") or _("OFF")))
-                        or (session_book_tools and _("Tools ON") or _("Tools OFF")),
+                        and ("\u{1F50D} " .. (tools_eff and _("ON") or _("OFF")))
+                        or (tools_eff and _("Tools ON") or _("Tools OFF")),
                     callback = function()
-                        session_book_tools = not session_book_tools
+                        -- Pin-beats-preset (b): flip the EFFECTIVE state, touch = pin
+                        local qf = configuration.features
+                        local eff = session_book_tools
+                        if qf._session_quick_answer and qf.quick_preset_tools_off ~= false
+                            and not qf._session_tools_touched then
+                            eff = false
+                        end
+                        session_book_tools = not eff
+                        qf._session_tools_touched = true
+                        -- Refresh FIRST so the toast paints above the reopened dialog
                         refreshInputDialog()
+                        if qf._session_quick_answer and qf.quick_preset_tools_off ~= false
+                            and session_book_tools then
+                            UIManager:show(require("ui/widget/notification"):new{
+                                text = _("Book tools on (overrides Quick preset)"),
+                            })
+                        end
                     end,
                     hold_callback = holdPicker,
                 }
@@ -8158,8 +8242,61 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 return {
                     text = label,
                     callback = function()
-                        configuration.features._session_quick_answer = (not qa_on) or nil
+                        -- A9 sitting 2026-08-17: the tap also tells the reader what
+                        -- visibly changed (maintainer: short conditional toast).
+                        -- Turning ON starts a FRESH preset application — pins form
+                        -- from touches made WHILE Quick is on (option (b)), so
+                        -- stale touch marks clear first. Chip labels recompute to
+                        -- effective state on the refresh; values are not mutated.
+                        -- (qf = the chip def's configuration.features local.)
+                        local turning_on = not qa_on
+                        local supports_web = ConfigHelper:supportsWebSearch(configuration)
+                        -- Tools may only be NAMED in the toast when they could
+                        -- actually flip: chip present AND session-eligible AND no
+                        -- Scope pick forcing them off (A9 (b) verify round — the
+                        -- consent/provider N/A states made the toast overclaim)
+                        local tools_present = chips_book_or_highlight and has_open_book
+                            and not is_xray_chat and not qf._session_scope
+                        if tools_present then
+                            tools_present = BookToolRunner.sessionEligible(configuration,
+                                ui_instance) == true
+                        end
+                        local msg
+                        if turning_on then
+                            qf._session_web_touched = nil
+                            qf._session_tools_touched = nil
+                            local web_flips = qf.quick_preset_web_off ~= false
+                                and session_web_search == true and supports_web
+                            local tools_flips = qf.quick_preset_tools_off ~= false
+                                and session_book_tools == true and tools_present
+                            if web_flips and tools_flips then
+                                msg = _("Quick answer: web search and book tools off for this chat")
+                            elseif web_flips then
+                                msg = _("Quick answer: web search off for this chat")
+                            elseif tools_flips then
+                                msg = _("Quick answer: book tools off for this chat")
+                            end
+                        else
+                            local web_back = qf.quick_preset_web_off ~= false
+                                and not qf._session_web_touched
+                                and session_web_search == true and supports_web
+                            local tools_back = qf.quick_preset_tools_off ~= false
+                                and not qf._session_tools_touched
+                                and session_book_tools == true and tools_present
+                            if web_back and tools_back then
+                                msg = _("Quick answer off: web search and book tools back on")
+                            elseif web_back then
+                                msg = _("Quick answer off: web search back on")
+                            elseif tools_back then
+                                msg = _("Quick answer off: book tools back on")
+                            end
+                        end
+                        qf._session_quick_answer = turning_on or nil
+                        -- Refresh FIRST so the toast paints above the reopened dialog
                         refreshInputDialog()
+                        if msg then
+                            UIManager:show(require("ui/widget/notification"):new{ text = msg })
+                        end
                     end,
                     hold_callback = function()
                         -- Same book-subject gate as the Web chip: in general/library
@@ -8182,9 +8319,18 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             on_close = function()
                                 local qa_ds = chips_book_or_highlight and ui_instance
                                     and ui_instance.doc_settings or nil
-                                configuration.features._session_quick_answer =
-                                    BookSettings.resolveQuickAnswerDefault(qa_ds,
-                                        configuration.features) and true or nil
+                                local was_on = configuration.features._session_quick_answer == true
+                                local now_on = BookSettings.resolveQuickAnswerDefault(qa_ds,
+                                    configuration.features) and true or nil
+                                if now_on and not was_on then
+                                    -- OFF->ON through the picker = the same fresh
+                                    -- preset application as the tap path (A9 (b)
+                                    -- verify round): stale pre-Quick touches must
+                                    -- not ride in as pins
+                                    configuration.features._session_web_touched = nil
+                                    configuration.features._session_tools_touched = nil
+                                end
+                                configuration.features._session_quick_answer = now_on
                                 refreshInputDialog()
                             end,
                         })
@@ -10051,7 +10197,20 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             input_hint_text = _("Add items to chat about them or run any action...")
         end
     else
-        dialog_title = _("KOAssistant Actions")
+        -- Context-specific titles (A9 sitting 2026-08-17, maintainer: "book,
+        -- book (closed), and highlight for now"). input_context is the safe
+        -- discriminator: X-Ray chat is its OWN context value and artifact chat
+        -- never reaches this dialog, so the pseudo-contexts keep the generic
+        -- title by construction (general does too, deliberately).
+        if input_context == "highlight" then
+            dialog_title = _("KOAssistant: Highlight")
+        elseif input_context == "book" then
+            dialog_title = _("KOAssistant: Book")
+        elseif input_context == "book_filebrowser" then
+            dialog_title = _("KOAssistant: Book (not open)")
+        else
+            dialog_title = _("KOAssistant Actions")
+        end
         -- Rolling hints — a fresh pick per dialog open (the hint is the input
         -- field's placeholder; it cannot change while the dialog is up). The
         -- empty-input-Send hint is gated on the HIGHLIGHT input context, not on
