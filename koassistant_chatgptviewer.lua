@@ -4123,6 +4123,11 @@ function ChatGPTViewer:expandToFullView()
     text_align = self.text_align,
     show_debug_in_chat = self.show_debug_in_chat,
     hide_highlighted_text = false,  -- Show highlighted text in full view
+    -- Thread plugin/ui like the rotation recreate_func does — a second expand
+    -- hop otherwise loses every self._plugin/_ui-dependent feature (and the
+    -- streaming reset silently misresolves)
+    _plugin = self._plugin,
+    _ui = self._ui,
     _recreate_func = self._recreate_func,
     settings_callback = self.settings_callback,
     update_debug_callback = self.update_debug_callback,
@@ -4234,6 +4239,8 @@ function ChatGPTViewer:expandToDictionaryView()
     text_align = self.text_align,
     show_debug_in_chat = self.show_debug_in_chat,
     hide_highlighted_text = self.hide_highlighted_text,
+    _plugin = self._plugin,
+    _ui = self._ui,
     _recreate_func = self._recreate_func,
     settings_callback = self.settings_callback,
     update_debug_callback = self.update_debug_callback,

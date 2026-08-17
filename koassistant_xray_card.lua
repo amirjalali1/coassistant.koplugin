@@ -163,12 +163,15 @@ local function showPopupCard(hit, opts)
     local MinimalPopup = require("koassistant_minimal_popup")
     local ok_v, Viewer = pcall(require, "koassistant_chatgptviewer")
     local can_md = ok_v and Viewer and Viewer.stripMarkdown
+    -- Ahead hits: the NAME line leads with the triangle too (device round
+    -- 2026-08-17 — the warning line alone sat below where the eye lands)
+    local ahead = aheadLine(hit)
     local head = can_md and ("**" .. (hit.name or "") .. "**") or (hit.name or "")
+    if ahead then head = "\u{26A0} " .. head end
     local kind = kindLabel(hit)
     if kind ~= "" then head = head .. " · " .. kind end
     local parts = { head }
     -- Ahead warning ABOVE the description (2f: early placement)
-    local ahead = aheadLine(hit)
     if ahead then parts[#parts + 1] = ahead end
     local ident = XrayCard.firstSentence(itemText(hit.item))
     if ident ~= "" then parts[#parts + 1] = ident end
@@ -203,10 +206,11 @@ local function showFootnoteCard(hit, opts)
         return s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
     end
     local kind = kindLabel(hit)
-    local html = "<div><b>" .. esc(hit.name or "") .. "</b>"
-        .. (kind ~= "" and (" · " .. esc(kind)) or "") .. "</div>"
-    -- Ahead warning ABOVE the description (2f: early placement)
+    -- Ahead hits: the NAME line leads with the triangle too (device round
+    -- 2026-08-17); the warning line below stays
     local ahead = aheadLine(hit)
+    local html = "<div>" .. (ahead and "\u{26A0} " or "") .. "<b>" .. esc(hit.name or "") .. "</b>"
+        .. (kind ~= "" and (" · " .. esc(kind)) or "") .. "</div>"
     if ahead then
         html = html .. '<div class="koa-meta">' .. esc(ahead) .. "</div>"
     end
@@ -320,7 +324,7 @@ function XrayCard.showFullDetail(hit)
     end
     if #parts == 0 then parts[1] = _("(no description)") end
     UIManager:show(TextViewer:new{
-        title = hit.name or "",
+        title = ahead and ("\u{26A0} " .. (hit.name or "")) or hit.name or "",
         text = table.concat(parts, "\n\n"),
         justified = false,
     })

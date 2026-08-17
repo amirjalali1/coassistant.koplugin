@@ -3240,6 +3240,21 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
             use_minimal_popup = false
         end
     end
+    -- The dispatch gate disabled streaming for the popup's own request only;
+    -- REPLIES are a regular chat and must follow the user's streaming setting
+    -- again. Restore BEFORE any show path: most popup-registered actions build
+    -- a plain viewer whose Reply is immediate, so the expand-button resets
+    -- never run for them (device 2026-08-17). Spelled out, not
+    -- `cond and false or nil` (that idiom always yields nil).
+    if mp_f and mp_f._minimal_popup_eligible then
+        local gf = plugin and plugin.settings
+            and plugin.settings:readSetting("features")
+        if gf and gf.enable_streaming == false then
+            mp_f.enable_streaming = false
+        else
+            mp_f.enable_streaming = nil
+        end
+    end
     local popup_shown = false
     if use_minimal_popup then
         popup_shown = require("koassistant_minimal_popup").showForResponse({
@@ -6970,7 +6985,14 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         -- For cache-first actions (Recap, X-Ray Simple): open in simple viewer
                         if action.use_response_caching and action.id and plugin then
                             local ActionCache = require("koassistant_action_cache")
-                            local file = ui_instance and ui_instance.document and ui_instance.document.file
+                            -- Same closed-book fallback as the WRITE path (book_metadata.file):
+                            -- ui.document is nil for fb-dialog launches and mid-flight book
+                            -- closes, and the bare read skipped the just-written artifact,
+                            -- dropping it into the chat viewer (device 2026-08-17)
+                            local file = (ui_instance and ui_instance.document and ui_instance.document.file)
+                                or (temp_config.features and temp_config.features.book_metadata
+                                    and temp_config.features.book_metadata.file)
+                                or document_path
                             if file then
                                 local cached = ActionCache.get(file, action.id)
                                 if cached and cached.result then
@@ -6983,7 +7005,10 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         -- For document analysis/summary: open in cache viewer
                         if (action.cache_as_analyze or action.cache_as_summary) and plugin then
                             local ActionCache = require("koassistant_action_cache")
-                            local file = ui_instance and ui_instance.document and ui_instance.document.file
+                            local file = (ui_instance and ui_instance.document and ui_instance.document.file)
+                                or (temp_config.features and temp_config.features.book_metadata
+                                    and temp_config.features.book_metadata.file)
+                                or document_path
                             if file then
                                 local cached, cache_name, cache_key
                                 if action.cache_as_analyze then
@@ -10819,7 +10844,10 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
         local XrayBrowser = openXrayBrowserFromCache(ui, data, cached, config, plugin, book_metadata, best,
             #cleanup_widgets > 0 and cleanup_widgets or nil, document_path)
 
-        if #exact == 1 or #results == 1 then
+        -- Exact only (device 2026-08-17): a LONE fuzzy hit used to auto-open
+        -- too ("or #results == 1"), which read as landing on an unrelated
+        -- entry — substring hits inside names are results-list material
+        if #exact == 1 then
             -- One clear target: the entity page, stacked on its home
             -- category so the back arrow lands in the entry's natural group
             -- (not the search carousel — maintainer 2026-08-13)

@@ -598,7 +598,7 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
       callback = function()
         local UIManager = require("ui/uimanager")
         local current_dialog = UIManager:getTopmostVisibleWidget()
-        if current_dialog and current_dialog.close then
+        if current_dialog then
           UIManager:close(current_dialog)
         end
         self_ref_main:showKOAssistantDialogForFile(file, title, authors, book_props)
@@ -615,7 +615,7 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
       callback = function()
         local UIManager = require("ui/uimanager")
         local current_dialog = UIManager:getTopmostVisibleWidget()
-        if current_dialog and current_dialog.close then
+        if current_dialog then
           UIManager:close(current_dialog)
         end
         self:openNotebookForFile(file)  -- view mode
@@ -623,7 +623,7 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
       hold_callback = function()
         local UIManager = require("ui/uimanager")
         local current_dialog = UIManager:getTopmostVisibleWidget()
-        if current_dialog and current_dialog.close then
+        if current_dialog then
           UIManager:close(current_dialog)
         end
         self:openNotebookForFile(file, true)  -- edit mode
@@ -638,7 +638,7 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
       callback = function()
         local UIManager = require("ui/uimanager")
         local current_dialog = UIManager:getTopmostVisibleWidget()
-        if current_dialog and current_dialog.close then
+        if current_dialog then
           UIManager:close(current_dialog)
         end
         self:showChatHistoryForFile(file)
@@ -764,7 +764,7 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
       callback = function()
         local UIManager = require("ui/uimanager")
         local current_dialog = UIManager:getTopmostVisibleWidget()
-        if current_dialog and current_dialog.close then
+        if current_dialog then
           UIManager:close(current_dialog)
         end
         require("koassistant_book_page").show({
@@ -787,7 +787,7 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
       callback = function()
         local UIManager = require("ui/uimanager")
         local current_dialog = UIManager:getTopmostVisibleWidget()
-        if current_dialog and current_dialog.close then
+        if current_dialog then
           UIManager:close(current_dialog)
         end
         local BookSettings = require("koassistant_book_settings")
@@ -809,7 +809,7 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
         callback = function()
           local UIManager = require("ui/uimanager")
           local current_dialog = UIManager:getTopmostVisibleWidget()
-          if current_dialog and current_dialog.close then
+          if current_dialog then
             UIManager:close(current_dialog)
           end
           self_ref:executeFileBrowserAction(file, title, authors, book_props, fb_action.id)
@@ -843,7 +843,7 @@ function AskGPT:generateMultiSelectButtons(file, is_file, book_props)
         callback = function()
           local UIManager = require("ui/uimanager")
           local current_dialog = UIManager:getTopmostVisibleWidget()
-          if current_dialog and current_dialog.close then
+          if current_dialog then
             UIManager:close(current_dialog)
           end
           self:compareSelectedBooks(FileManager.instance.selected_files)

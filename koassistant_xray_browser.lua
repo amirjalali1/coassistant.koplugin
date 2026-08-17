@@ -3464,7 +3464,13 @@ local function buildDistributionBar(count, max_count, bar_width, count_width)
     if max_count == 0 or count == 0 then
         return string.rep("\u{2591}", bar_width) .. "  " .. count_str
     end
-    local filled = math.max(1, math.floor((count / max_count) * bar_width + 0.5))
+    -- Log-scaled fill: mention counts are heavy-tailed, and the linear ratio
+    -- collapsed every count under max/width into the same one-block bar
+    -- (device 2026-08-17: 75 and 5 rendered identically next to a dominant
+    -- max). Log keeps the fill monotone in count, so parent roll-ups still
+    -- dominate in the appearances tree.
+    local filled = math.max(1, math.floor(
+        bar_width * math.log(count + 1) / math.log(max_count + 1) + 0.5))
     if filled > bar_width then filled = bar_width end
     local empty = bar_width - filled
     return string.rep("\u{2588}", filled)
