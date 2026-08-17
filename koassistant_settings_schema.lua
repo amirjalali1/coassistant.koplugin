@@ -959,6 +959,14 @@ local SettingsSchema = {
                             help_text = _("When building X-Ray checkpoints, place each checkpoint at the nearest chapter end (within a few percent) instead of an exact percentage; checkpoints then read as \"up to the end of a chapter\", and the versions list shows the chapter names. Needs a table of contents. Checkpoint spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones."),
                         },
                         {
+                            id = "xray_update_trim_appends",
+                            type = "toggle",
+                            text = _("Shorter Update Requests"),
+                            path = "features.xray_update_trim_appends",
+                            default = true,
+                            help_text = _("When updating an X-Ray (manually or through checkpoints), send the model only the most recent entries of the ever-growing event lists (timeline, argument development) instead of the whole lists, which makes updates noticeably cheaper on long books. The stored X-Ray always keeps all entries; this only shortens what is sent. In rare cases the model may re-add an old event it can no longer see."),
+                        },
+                        {
                             id = "xray_selection_intercept",
                             type = "toggle",
                             text = _("X-Ray Entry for Matching Selections"),

@@ -2560,6 +2560,59 @@ function XrayParser.stripForPromptJSON(json_str)
     return json_str
 end
 
+--- Append-only categories in a stable order (the SET lives in
+--- APPEND_CATEGORIES above; this list pairs it with a canonical order for
+--- prompt notes and tests).
+local APPEND_ORDER = { "timeline", "argument_development" }
+
+--- Request-size trim for UPDATE prompts (presets session 2026-08-17,
+--- maintainer-approved): the append-only lists are the largest category share
+--- of every measured artifact (28-36%) and the model only ever APPENDS to
+--- them — it never edits old entries — so the re-sent copy keeps only the
+--- most recent ones. PROMPT-SIDE ONLY: the stored artifact is untouched;
+--- callers pair the trimmed copy with a prompt note stating that earlier
+--- entries exist (never re-emit). The entity index callers build stays FULL,
+--- so all names remain known — only old events go dark. Same never-fail
+--- contract as the strip helpers: any parse/encode trouble returns the input
+--- unchanged. Trims only past `threshold` so a note never rides for a
+--- one-entry saving.
+--- @param json_str string|nil Prompt-ready artifact JSON (post-strip; fenced ok)
+--- @param opts table|nil { keep = 15, threshold = 20 }
+--- @return string|nil trimmed JSON (or the input unchanged)
+--- @return table|nil info array of { category, kept, total }, nil when untouched
+function XrayParser.trimAppendsForPrompt(json_str, opts)
+    if type(json_str) ~= "string" then return json_str, nil end
+    opts = opts or {}
+    local keep = opts.keep or 15
+    local threshold = opts.threshold or 20
+    local any = false
+    for _idx, cat in ipairs(APPEND_ORDER) do
+        if json_str:find('"' .. cat .. '"', 1, true) then
+            any = true
+            break
+        end
+    end
+    if not any then return json_str, nil end
+    local data = XrayParser.parse(json_str)
+    if type(data) ~= "table" or data.error then return json_str, nil end
+    local info = {}
+    for _idx, cat in ipairs(APPEND_ORDER) do
+        local arr = data[cat]
+        if type(arr) == "table" and #arr > threshold then
+            local tail = {}
+            for i = #arr - keep + 1, #arr do
+                tail[#tail + 1] = arr[i]
+            end
+            data[cat] = tail
+            info[#info + 1] = { category = cat, kept = keep, total = #arr }
+        end
+    end
+    if #info == 0 then return json_str, nil end
+    local ok, encoded = pcall(json.encode, data, { pretty = true, indent = true })
+    if ok and type(encoded) == "string" then return encoded, info end
+    return json_str, nil
+end
+
 --- Background lines a stub contributes to an entity that doesn't already
 --- carry lines from those source books (fill-gaps-only — an existing entry
 --- from the same source book wins, same rule as the transitive carry).

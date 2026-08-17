@@ -4932,6 +4932,33 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     end
                     message_data._xray_categories_applied =
                         PromptsActions.normalizeXrayCategories(cached_entry.xray_categories)
+
+                    -- Request-size trim (presets session, maintainer-approved
+                    -- 2026-08-17): the re-sent X-Ray copy keeps only the most
+                    -- recent timeline/argument_development entries — the model
+                    -- only ever appends to those lists, and they are the
+                    -- largest category share of every measured artifact.
+                    -- Stored artifact untouched; the entity index above stays
+                    -- FULL so all names remain known. The prompt note tells
+                    -- the model the earlier entries exist (never re-emit).
+                    if (config.features and config.features.xray_update_trim_appends) ~= false then
+                        local trimmed, trim_info =
+                            XrayParser.trimAppendsForPrompt(message_data.cached_result)
+                        if trim_info then
+                            message_data.cached_result = trimmed
+                            local bits = {}
+                            for _idx, t in ipairs(trim_info) do
+                                bits[#bits + 1] = t.category .. ": most recent "
+                                    .. t.kept .. " of " .. t.total .. " entries"
+                                logger.info("KOAssistant: X-Ray update trimmed",
+                                    t.category, "to last", t.kept, "of", t.total)
+                            end
+                            prompt.prompt = prompt.prompt
+                                .. "\n\nRequest-size note: in the provided X-Ray, long append-only lists were shortened to their most recent entries ("
+                                .. table.concat(bits, "; ")
+                                .. "). The omitted earlier entries still exist and are preserved outside this request. Never re-emit them. Add new entries to these lists only for developments that occur in the newly provided text, not for earlier events merely recalled or referenced there."
+                        end
+                    end
                 end
 
                 -- Get incremental book text (from cached to current position)
