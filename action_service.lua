@@ -20,6 +20,27 @@ local Constants = require("koassistant_constants")
 
 local ActionService = {}
 
+-- ONE membership-first comparator for the six ordered-list builders (test-suite
+-- audit 2026-08-17 real-bug finding): members sort by their stored position,
+-- members precede non-members, and non-members fall back alphabetically
+-- CASE-INSENSITIVE. Four of the six hand copies compared case-sensitively, so a
+-- lowercase-titled custom action sank below every uppercase built-in in some
+-- managers but not others.
+local function membershipFirstComparator(flag_field, pos_field)
+    return function(a, b)
+        if a[flag_field] and b[flag_field] then
+            return a[pos_field] < b[pos_field]
+        elseif a[flag_field] then
+            return true
+        elseif b[flag_field] then
+            return false
+        else
+            return (a.action.text or ""):lower() < (b.action.text or ""):lower()
+        end
+    end
+end
+ActionService._membershipFirstComparator = membershipFirstComparator  -- test seam
+
 function ActionService:new(settings)
     local o = {
         settings = settings,
@@ -869,17 +890,7 @@ function ActionService:getAllHighlightActionsWithMenuState()
     end
 
     -- Sort: menu items first (by position), then non-menu items (alphabetically)
-    table.sort(result, function(a, b)
-        if a.in_menu and b.in_menu then
-            return a.menu_position < b.menu_position
-        elseif a.in_menu then
-            return true
-        elseif b.in_menu then
-            return false
-        else
-            return (a.action.text or "") < (b.action.text or "")
-        end
-    end)
+    table.sort(result, membershipFirstComparator("in_menu", "menu_position"))
 
     return result
 end
@@ -1031,17 +1042,7 @@ function ActionService:getAllHighlightActionsWithPopupState()
     end
 
     -- Sort: popup items first (by position), then non-popup items (alphabetically)
-    table.sort(result, function(a, b)
-        if a.in_popup and b.in_popup then
-            return a.popup_position < b.popup_position
-        elseif a.in_popup then
-            return true
-        elseif b.in_popup then
-            return false
-        else
-            return (a.action.text or "") < (b.action.text or "")
-        end
-    end)
+    table.sort(result, membershipFirstComparator("in_popup", "popup_position"))
 
     return result
 end
@@ -1221,17 +1222,7 @@ function ActionService:getAllGeneralActionsWithMenuState()
     end
 
     -- Sort: menu items first (by position), then non-menu items (alphabetically)
-    table.sort(result, function(a, b)
-        if a.in_menu and b.in_menu then
-            return a.menu_position < b.menu_position
-        elseif a.in_menu then
-            return true
-        elseif b.in_menu then
-            return false
-        else
-            return (a.action.text or ""):lower() < (b.action.text or ""):lower()
-        end
-    end)
+    table.sort(result, membershipFirstComparator("in_menu", "menu_position"))
 
     return result
 end
@@ -1407,17 +1398,7 @@ function ActionService:getAllBookActionsWithQuickActionsState()
     end
 
     -- Sort: quick action items first (by position), then non-quick items (alphabetically)
-    table.sort(result, function(a, b)
-        if a.in_quick_actions and b.in_quick_actions then
-            return a.quick_actions_position < b.quick_actions_position
-        elseif a.in_quick_actions then
-            return true
-        elseif b.in_quick_actions then
-            return false
-        else
-            return (a.action.text or "") < (b.action.text or "")
-        end
-    end)
+    table.sort(result, membershipFirstComparator("in_quick_actions", "quick_actions_position"))
 
     return result
 end
@@ -1758,17 +1739,7 @@ function ActionService:getAllBookActionsWithFileBrowserState()
     end
 
     -- Sort: file browser items first (by position), then non-FB items (alphabetically)
-    table.sort(result, function(a, b)
-        if a.in_file_browser and b.in_file_browser then
-            return a.file_browser_position < b.file_browser_position
-        elseif a.in_file_browser then
-            return true
-        elseif b.in_file_browser then
-            return false
-        else
-            return (a.action.text or "") < (b.action.text or "")
-        end
-    end)
+    table.sort(result, membershipFirstComparator("in_file_browser", "file_browser_position"))
 
     return result
 end
@@ -2354,17 +2325,7 @@ function ActionService:getAllActionsWithInputState(ctx_name)
     end
 
     -- Sort: input items first (by position), then non-input items (alphabetically)
-    table.sort(result, function(a, b)
-        if a.in_input and b.in_input then
-            return a.input_position < b.input_position
-        elseif a.in_input then
-            return true
-        elseif b.in_input then
-            return false
-        else
-            return (a.action.text or ""):lower() < (b.action.text or ""):lower()
-        end
-    end)
+    table.sort(result, membershipFirstComparator("in_input", "input_position"))
 
     return result
 end

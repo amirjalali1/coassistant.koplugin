@@ -176,6 +176,13 @@ local function runUnitTests()
             if not ok then
                 print(string.format("    ✗ Error: %s", tostring(result)))
                 all_passed = false
+            elseif result == nil then
+                -- Harness contract (test-suite audit 2026-08-17): a nil return
+                -- used to count as PASSING, silently skipping a whole file's
+                -- verdict. Every test file must return a boolean or a
+                -- runAll-table.
+                print("    ✗ Test file returned nil (must return TestRunner.failed == 0 or a runAll table)")
+                all_passed = false
             elseif result == false then
                 all_passed = false
             elseif type(result) == "table" and type(result.runAll) == "function" then

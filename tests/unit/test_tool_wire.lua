@@ -147,4 +147,49 @@ TestRunner:test("appendToolTurn is a no-op for an unknown provider", function()
     TestRunner:assertEqual(#messages, 1, "no messages appended")
 end)
 
+-- Audit quick wins: the custom_ fallback and the Responses branch
+
+TestRunner:test("custom_ providers ride the openai adapter; the anchor is strict", function()
+    TestRunner:assertEqual(ToolWire.hasAdapter("custom_lmstudio"), true, "custom_ prefix matches")
+    TestRunner:assertEqual(ToolWire.hasAdapter("notcustom_x"), false, "prefix is anchored at start")
+end)
+
+TestRunner:test("custom_ appendToolTurn produces the openai chat shape", function()
+    local messages = {}
+    local turn = { role = "assistant", content = "", tool_calls = {
+        { id = "c1", type = "function", ["function"] = { name = "toc", arguments = "{}" } },
+    } }
+    ToolWire.appendToolTurn("custom_lmstudio", messages, turn,
+        { { call = { id = "c1", name = "toc" }, result = { ok = true } } })
+    TestRunner:assertEqual(#messages, 2, "assistant echo + one tool message")
+    TestRunner:assertEqual(messages[1].tool_calls[1].id, "c1", "echo carries the call")
+    TestRunner:assertEqual(messages[2].role, "tool", "result role")
+    TestRunner:assertEqual(messages[2].tool_call_id, "c1", "keyed by call id")
+    TestRunner:assertEqual(type(messages[2].content), "string", "string content")
+end)
+
+TestRunner:test("_responses_output branch: junk dropped, order kept, outputs + auto-stub appended", function()
+    local messages = {}
+    local turn = { _responses_output = {
+        { type = "reasoning", id = "r1" },
+        { type = "function_call", call_id = "c1", name = "toc", arguments = "{}" },
+        { type = "message", content = {} },
+        { type = "web_search_call", id = "junk-item" },
+        { type = "function_call", call_id = "c2", name = "search_book", arguments = "{}" },
+    } }
+    ToolWire.appendToolTurn("openai", messages, turn,
+        { { call = { id = "c1", name = "toc" }, result = { ok = true } } })
+    TestRunner:assertEqual(#messages, 1, "one _responses_items history entry")
+    local items = messages[1]._responses_items
+    TestRunner:assertEqual(items[1].type, "reasoning", "reasoning precedes its call")
+    TestRunner:assertEqual(items[2].type, "function_call", "call order preserved")
+    TestRunner:assertEqual(items[3].type, "message", "message kept")
+    TestRunner:assertEqual(items[4].type, "function_call", "second call kept")
+    TestRunner:assertEqual(items[5].type, "function_call_output", "executed output appended")
+    TestRunner:assertEqual(items[5].call_id, "c1", "output keyed to the executed call")
+    TestRunner:assertEqual(items[6].type, "function_call_output", "auto-stub for the unanswered call")
+    TestRunner:assertEqual(items[6].call_id, "c2", "stub keyed to the unanswered id")
+    TestRunner:assertEqual(#items, 6, "the junk item was dropped")
+end)
+
 return TestRunner:summary()

@@ -930,6 +930,51 @@ TestRunner:test("background survives behavior_variant='none' (domain-less reques
     TestRunner:assertContains(result.text, "MARKER_BACKGROUND", "still injected with no behavior")
 end)
 
+-- Layer ORDER (audit quick win): the "language rule stays last among the cached
+-- layers" comment is load-bearing for the Anthropic cache boundary; nudges come
+-- after. Asserted via successive find offsets.
+TestRunner:suite("buildUnifiedSystem() layer order")
+
+TestRunner:test("background < language < research < web < quick", function()
+    local Templates = require("prompts.templates")
+    local result = SystemPrompts.buildUnifiedSystem({
+        behavior_variant = "minimal",
+        book_background = "READER-BACKGROUND-MARKER",
+        user_languages = "English, Spanish",
+        research_mode = true,
+        web_search = true,
+        quick_answer = true,
+    })
+    local text = result.text
+    local p_bg = text:find("READER-BACKGROUND-MARKER", 1, true)
+    local p_lang = text:find("Response language", 1, true)
+    local p_research = text:find(Templates.RESEARCH_NUDGE:sub(1, 40), 1, true)
+    local p_web = text:find(Templates.WEB_SEARCH_PROSE_NUDGE:sub(1, 40), 1, true)
+    local p_quick = text:find(Templates.QUICK_ANSWER_NUDGE:sub(1, 40), 1, true)
+    TestRunner:assertNotNil(p_bg, "background present")
+    TestRunner:assertNotNil(p_lang, "language instruction present")
+    TestRunner:assertNotNil(p_research, "research nudge present")
+    TestRunner:assertNotNil(p_web, "web nudge present")
+    TestRunner:assertNotNil(p_quick, "quick nudge present")
+    TestRunner:assertEqual((p_bg < p_lang) and true, true, "background BEFORE the language instruction (cached block)")
+    TestRunner:assertEqual((p_lang < p_research) and true, true, "research nudge after language")
+    TestRunner:assertEqual((p_research < p_web) and true, true, "web nudge after research")
+    TestRunner:assertEqual((p_web < p_quick) and true, true, "quick nudge last")
+end)
+
+TestRunner:test("quick_answer 'strict' swaps in the ultra-brief nudge", function()
+    local Templates = require("prompts.templates")
+    local std = SystemPrompts.buildUnifiedSystem({
+        behavior_variant = "minimal", quick_answer = true }).text
+    local strict = SystemPrompts.buildUnifiedSystem({
+        behavior_variant = "minimal", quick_answer = "strict" }).text
+    TestRunner:assertNotNil(std:find(Templates.QUICK_ANSWER_NUDGE:sub(1, 40), 1, true),
+        "standard nudge on true")
+    TestRunner:assertNotNil(strict:find(Templates.QUICK_ANSWER_NUDGE_STRICT:sub(1, 40), 1, true),
+        "strict nudge on 'strict'")
+    TestRunner:assertEqual((std ~= strict) and true, true, "the two postures differ")
+end)
+
 -- Summary
 local success = TestRunner:summary()
 return success

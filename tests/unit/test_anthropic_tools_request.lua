@@ -177,4 +177,37 @@ TestRunner:test("output_config merges field-wise; the effort clamp never mutates
         "json_schema", "sibling output_config keys survive the merge")
 end)
 
+-- Audit quick win (rank 12): sampling strip + automatic cache_control
+
+TestRunner:test("sampling strip: opus-4-8 drops pinned temperature/top_p; sonnet-4-6 keeps them", function()
+    local msgs = { { role = "user", content = "hi" } }
+    local r1 = AnthropicHandler:buildRequestBody(msgs, {
+        model = "claude-opus-4-8", api_key = "test", features = {},
+        api_params = { temperature = 0.7, top_p = 0.9 },
+    })
+    TestRunner:assertEqual(r1.body.temperature, nil, "opus-4-8 rejects sampling params: temperature stripped")
+    TestRunner:assertEqual(r1.body.top_p, nil, "top_p stripped")
+    local r2 = AnthropicHandler:buildRequestBody(msgs, {
+        model = "claude-sonnet-4-6", api_key = "test", features = {},
+        api_params = { temperature = 0.7, top_p = 0.9 },
+    })
+    TestRunner:assertEqual(r2.body.temperature, 0.7, "sonnet-4-6 keeps temperature")
+    -- top_p is never FORWARDED on this wire (whitelist builder) — only
+    -- defensively stripped on no-sampling models; no passthrough assert.
+end)
+
+TestRunner:test("automatic caching: top-level cache_control by default; enable_caching=false removes it", function()
+    local msgs = { { role = "user", content = "hi" } }
+    local r1 = AnthropicHandler:buildRequestBody(msgs, {
+        model = "claude-sonnet-5", api_key = "test", features = {},
+    })
+    TestRunner:assertEqual(r1.body.cache_control and r1.body.cache_control.type, "ephemeral",
+        "default build carries the automatic top-level breakpoint")
+    local r2 = AnthropicHandler:buildRequestBody(msgs, {
+        model = "claude-sonnet-5", api_key = "test", features = {},
+        system = { text = "sys", enable_caching = false },
+    })
+    TestRunner:assertEqual(r2.body.cache_control, nil, "enable_caching=false: no top-level breakpoint")
+end)
+
 return TestRunner:summary()

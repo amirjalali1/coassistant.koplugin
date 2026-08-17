@@ -763,6 +763,48 @@ end
 -- Run All Tests
 -- =============================================================================
 
+local function runOrderingAndContextTests()
+    print("\n--- Shared sort comparator + input-context map (audit quick wins) ---")
+
+    local cmp = ActionService._membershipFirstComparator("in_x", "pos_x")
+
+    TestRunner:test("members order by position; member precedes non-member", function()
+        TestRunner:assertEqual(cmp({ in_x = true, pos_x = 1 }, { in_x = true, pos_x = 2 }), true)
+        TestRunner:assertEqual(cmp({ in_x = true, pos_x = 9, action = {} },
+            { action = { text = "aaa" } }), true)
+        TestRunner:assertEqual(cmp({ action = { text = "aaa" } },
+            { in_x = true, pos_x = 9, action = {} }), false)
+    end)
+
+    TestRunner:test("non-member fallback is CASE-INSENSITIVE alphabetical (the audit bug)", function()
+        -- Case-sensitive compare would put "Beta" first ("B" < "a" in byte order)
+        TestRunner:assertEqual(cmp({ action = { text = "alpha" } },
+            { action = { text = "Beta" } }), true)
+        TestRunner:assertEqual(cmp({ action = { text = "Beta" } },
+            { action = { text = "alpha" } }), false)
+    end)
+
+    print("\n--- getInputContextForAction ---")
+    local MAP_CASES = {
+        { { context = "book" }, "book" },
+        { { context = "highlight" }, "highlight" },
+        -- Deliberate asymmetry: legacy compound 'both' maps to highlight ONLY,
+        -- never also book (unlike Constants.expandContext) — a plausible-looking
+        -- "symmetry fix" would silently break input-action placement.
+        { { context = "both" }, "highlight" },
+        { { context = "library" }, "library" },
+        { { context = "general" }, nil },
+        { nil, nil },
+    }
+    TestRunner:test("context map incl. the deliberate both->highlight-only asymmetry", function()
+        for _idx, case in ipairs(MAP_CASES) do
+            local got = ActionService.getInputContextForAction(case[1])
+            TestRunner:assertEqual(got, case[2],
+                "case " .. _idx .. " (" .. tostring(case[1] and case[1].context) .. ")")
+        end
+    end)
+end
+
 local function runAll()
     print("\n=== Testing ActionService ===")
 
@@ -773,6 +815,7 @@ local function runAll()
     runCreateDuplicateTests()
     runFileBrowserTests()
     runInputInjectionTests()
+    runOrderingAndContextTests()
 
     print(string.format("\n=== Results: %d passed, %d failed ===\n", TestRunner.passed, TestRunner.failed))
     return TestRunner.failed == 0
