@@ -724,8 +724,8 @@ local function runInputInjectionTests()
         local service = createService(data)
         local result = service:getInputActions("highlight")
         for _i, id in ipairs(result) do
-            if id == "grammar" then
-                error("grammar is eligible but not a curated default; must not be injected")
+            if id == "wiki" then
+                error("wiki is eligible but not a curated default; must not be injected")
             end
         end
     end)

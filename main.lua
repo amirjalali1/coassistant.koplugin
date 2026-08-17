@@ -5895,14 +5895,17 @@ end
 -- over highlight actions. Membership in features.minimal_popup_actions (nil =
 -- Constants.DEFAULT_MINIMAL_POPUP_ACTIONS read-through); dispatch gate in
 -- koassistant_dialogs.lua createTempConfig. Highlight-only actions listed, to
--- match the dispatch gate (prompt.context == "highlight").
+-- match the dispatch gate (prompt.context == "highlight"); local_handler
+-- pseudo actions (xray_lookup, image_gen) excluded — they never enter the
+-- chat pipeline, so a minimal-popup registration would be meaningless.
 function AskGPT:buildMinimalPopupActionsMenu()
   local self_ref = self
   local menu_items = {}
   local actions = self.action_service
     and self.action_service:getAllActions("highlight", true, true) or {}
   for _idx, action in ipairs(actions) do
-    if (action.original_context or action.context) == "highlight" and action.id then
+    if (action.original_context or action.context) == "highlight" and action.id
+        and not action.local_handler then
       local action_id = action.id
       table.insert(menu_items, {
         text = action.text or action_id,
@@ -5983,7 +5986,8 @@ function AskGPT:showMinimalPopupQuickSettings(on_close)
     and self.action_service:getAllActions("highlight", true, true) or {}
   local row = {}
   for _idx, action in ipairs(actions) do
-    if (action.original_context or action.context) == "highlight" and action.id then
+    if (action.original_context or action.context) == "highlight" and action.id
+        and not action.local_handler then
       local action_id = action.id
       table.insert(row, {
         text = dot(set[action_id] == true) .. (action.text or action_id),

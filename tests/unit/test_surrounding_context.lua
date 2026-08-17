@@ -356,8 +356,8 @@ TestRunner:test("built-in exclusions and inclusions carry the right flags", func
     TestRunner:assertEqual(Actions.special.quick_define.use_surrounding_context, false, "quick_define excluded")
     TestRunner:assertEqual(Actions.special.deep.use_surrounding_context, false, "dictionary_deep excluded")
     TestRunner:assertEqual(Actions.highlight.wiki.use_surrounding_context, true, "wiki stays explicit-true")
-    TestRunner:assertNil(Actions.highlight.grammar.use_surrounding_context,
-        "grammar follows ambient (strong beneficiary)")
+    TestRunner:assertNil(Actions.highlight.fact_check.use_surrounding_context,
+        "fact_check follows ambient (strong beneficiary)")
 end)
 
 --==========================================================================
