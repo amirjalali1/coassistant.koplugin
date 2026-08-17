@@ -171,7 +171,8 @@ git clone https://github.com/zeeyado/koassistant.koplugin
 
 Extract or copy the `koassistant.koplugin` folder to your KOReader plugins directory:
 ```
-Kobo/Kindle:  /mnt/onboard/.adds/koreader/plugins/koassistant.koplugin/
+Kobo:         /mnt/onboard/.adds/koreader/plugins/koassistant.koplugin/
+Kindle:       /mnt/us/koreader/plugins/koassistant.koplugin/
 Android:      /sdcard/koreader/plugins/koassistant.koplugin/
 macOS:        ~/Library/Application Support/koreader/plugins/koassistant.koplugin/
 Linux:        ~/.config/koreader/plugins/koassistant.koplugin/
@@ -3003,7 +3004,8 @@ New and changed files are overwritten; your configuration files are untouched.
 2. Connect your device via USB (or use a file manager on Android)
 3. Extract the zip **directly over** the existing `koassistant.koplugin` folder in your plugins directory:
    ```
-   Kobo/Kindle:  /mnt/onboard/.adds/koreader/plugins/
+   Kobo:         /mnt/onboard/.adds/koreader/plugins/
+   Kindle:       /mnt/us/koreader/plugins/
    Android:      /sdcard/koreader/plugins/
    macOS:        ~/Library/Application Support/koreader/plugins/
    Linux:        ~/.config/koreader/plugins/
