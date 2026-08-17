@@ -846,23 +846,47 @@ class APITranslator:
                                     target_lang: str, log=print,
                                     use_spinner: bool = True,
                                     label: str = "") -> Dict[int, str]:
-        """Translate a batch with retry logic."""
+        """Translate a batch with retry logic.
+
+        An incomplete parse (fewer results than batch strings) is retried like
+        an error — a batch the model answered in an unparseable form used to
+        count as success-with-zero-results and silently dropped all 50 strings.
+        After the last attempt, partial results ARE returned (a warning is
+        logged): failing hard here would abort the whole language and discard
+        its already-translated batches, since the .po is written at the end.
+        """
+        results: Dict[int, str] = {}
         for attempt in range(self.MAX_RETRIES):
             try:
-                return self._translate_batch(batch, target_lang, log, use_spinner, label)
+                results = self._translate_batch(batch, target_lang, log, use_spinner, label)
             except Exception as e:
                 if attempt < self.MAX_RETRIES - 1:
                     log(f"  Retry {attempt + 1}/{self.MAX_RETRIES} after error: {e}")
                     time.sleep(self.RETRY_DELAY * (attempt + 1))
-                else:
-                    raise
-        return {}
+                    continue
+                raise
+            if len(results) >= len(batch):
+                return results
+            if attempt < self.MAX_RETRIES - 1:
+                log(f"  Incomplete batch ({len(results)}/{len(batch)} parsed), retrying")
+                time.sleep(self.RETRY_DELAY)
+        if len(results) < len(batch):
+            log(f"  WARNING: batch incomplete after {self.MAX_RETRIES} attempts: "
+                f"{len(results)}/{len(batch)} strings applied")
+        return results
 
     def _translate_batch(self, batch: List[Tuple[int, str]], target_lang: str,
                          log=print, use_spinner: bool = True,
                          label: str = "") -> Dict[int, str]:
         """Translate a single batch via API."""
-        prompt = self._build_prompt(batch, target_lang)
+        # Number strings LOCALLY 1..N in the prompt. Sonnet 5 often renumbers
+        # its reply to 1..N regardless of the input numbering (Sonnet 4.6
+        # echoed it faithfully) — keyed on global entry numbers, that parsed
+        # as zero results and silently dropped whole batches (2026-08-17 run:
+        # 472 of 934 batches lost this way). Local numbers make the reply
+        # numbering deterministic; results are mapped back positionally.
+        local_batch = [(i, text) for i, (_num, text) in enumerate(batch, 1)]
+        prompt = self._build_prompt(local_batch, target_lang)
 
         spinner = None
         if use_spinner:
@@ -887,8 +911,10 @@ class APITranslator:
         else:
             log(f"  {label or self.provider} ✓ {time.time() - start_time:.1f}s")
 
-        # Parse response
-        return self._parse_response(response, batch)
+        # Parse against local numbers, then map back to the caller's numbers
+        local_results = self._parse_response(response, local_batch)
+        nums = [num for num, _text in batch]
+        return {nums[i - 1]: text for i, text in local_results.items()}
 
     def _build_prompt(self, batch: List[Tuple[int, str]], lang: str) -> str:
         """Build translation prompt for API."""
@@ -974,14 +1000,18 @@ CRITICAL RULES:
     def _parse_response(self, response: str, batch: List[Tuple[int, str]]) -> Dict[int, str]:
         """Parse API response to extract translations."""
         results = {}
-        expected_nums = {num for num, _ in batch}
+        expected = dict(batch)
 
         for line in response.split('\n'):
             match = re.match(r'^(\d+)\.\s*(.*)$', line.strip())
             if match:
                 num = int(match.group(1))
                 text = match.group(2).strip()
-                if num in expected_nums:
+                if num in expected:
+                    # Strip stray "NNNN. " double-numbering the model sometimes
+                    # emits, unless the source itself starts with a number
+                    if re.match(r'^\d{1,4}\.\s', text) and not re.match(r'^\d', expected[num]):
+                        text = re.sub(r'^\d{1,4}\.\s+', '', text)
                     results[num] = text
 
         return results
