@@ -32,6 +32,7 @@ import time
 import urllib.request
 import urllib.error
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -800,14 +801,20 @@ class APITranslator:
         self.api_key = api_key
 
     def translate_strings(self, strings: Dict[int, str], target_lang: str,
-                          progress_callback=None) -> Dict[int, str]:
-        """Translate all strings in batches."""
+                          progress_callback=None, log=print,
+                          use_spinner: bool = True) -> Dict[int, str]:
+        """Translate all strings in batches.
+
+        log/use_spinner: concurrent multi-language runs pass a lang-prefixed
+        log and use_spinner=False (the \\r spinner can't share stdout across
+        threads); batch progress then arrives as one completed line per batch.
+        """
         results = {}
         sorted_nums = sorted(strings.keys())
         total_batches = (len(sorted_nums) + self.BATCH_SIZE - 1) // self.BATCH_SIZE
         total_strings = len(sorted_nums)
 
-        print(f"  {total_strings} strings in {total_batches} batch(es)")
+        log(f"  {total_strings} strings in {total_batches} batch(es)")
 
         for batch_idx in range(total_batches):
             start_idx = batch_idx * self.BATCH_SIZE
@@ -816,14 +823,17 @@ class APITranslator:
 
             batch_strings = [(num, strings[num]) for num in batch_nums]
 
-            # Show batch number
-            print(f"  [{batch_idx + 1}/{total_batches}] {len(batch_strings)} strings")
+            label = f"[{batch_idx + 1}/{total_batches}] {len(batch_strings)} strings"
+            if use_spinner:
+                # Show batch number (spinner line follows)
+                log(f"  {label}")
 
             if progress_callback:
                 progress_callback(batch_idx + 1, total_batches)
 
             # Translate batch with retry (spinner shows live progress)
-            batch_results = self._translate_batch_with_retry(batch_strings, target_lang)
+            batch_results = self._translate_batch_with_retry(
+                batch_strings, target_lang, log, use_spinner, label)
             results.update(batch_results)
 
             # Small delay between batches to avoid rate limits
@@ -833,37 +843,49 @@ class APITranslator:
         return results
 
     def _translate_batch_with_retry(self, batch: List[Tuple[int, str]],
-                                    target_lang: str) -> Dict[int, str]:
+                                    target_lang: str, log=print,
+                                    use_spinner: bool = True,
+                                    label: str = "") -> Dict[int, str]:
         """Translate a batch with retry logic."""
         for attempt in range(self.MAX_RETRIES):
             try:
-                return self._translate_batch(batch, target_lang)
+                return self._translate_batch(batch, target_lang, log, use_spinner, label)
             except Exception as e:
                 if attempt < self.MAX_RETRIES - 1:
-                    print(f"  Retry {attempt + 1}/{self.MAX_RETRIES} after error: {e}")
+                    log(f"  Retry {attempt + 1}/{self.MAX_RETRIES} after error: {e}")
                     time.sleep(self.RETRY_DELAY * (attempt + 1))
                 else:
                     raise
         return {}
 
-    def _translate_batch(self, batch: List[Tuple[int, str]], target_lang: str) -> Dict[int, str]:
+    def _translate_batch(self, batch: List[Tuple[int, str]], target_lang: str,
+                         log=print, use_spinner: bool = True,
+                         label: str = "") -> Dict[int, str]:
         """Translate a single batch via API."""
         prompt = self._build_prompt(batch, target_lang)
 
-        spinner = Spinner(self.provider)
-        spinner.start()
+        spinner = None
+        if use_spinner:
+            spinner = Spinner(self.provider)
+            spinner.start()
+        start_time = time.time()
         try:
             if self.provider == "anthropic":
                 response = self._call_anthropic(prompt)
             elif self.provider == "openai":
                 response = self._call_openai(prompt)
             else:
-                spinner.stop(success=False)
                 raise ValueError(f"Unknown provider: {self.provider}")
-            spinner.stop(success=True)
         except Exception:
-            spinner.stop(success=False)
+            if spinner:
+                spinner.stop(success=False)
+            else:
+                log(f"  {label or self.provider} ✗ {time.time() - start_time:.1f}s")
             raise
+        if spinner:
+            spinner.stop(success=True)
+        else:
+            log(f"  {label or self.provider} ✓ {time.time() - start_time:.1f}s")
 
         # Parse response
         return self._parse_response(response, batch)
@@ -1353,134 +1375,61 @@ def cmd_all_status(script_dir: Path, locale_dir: Path):
 
 
 def cmd_all_run(args, script_dir: Path, locale_dir: Path):
-    """Run translation for all languages."""
-    if not args.api:
-        print("Error: --api required (anthropic or openai)")
-        return 1
+    """Run translation for all languages (delegates to the multi-language runner)."""
+    return cmd_multi_run(args, sorted(LANGUAGE_NAMES.keys()), script_dir, locale_dir)
 
-    provider = args.api.lower()
-    if provider not in ('anthropic', 'openai'):
-        print(f"Error: Unknown API provider: {provider}")
-        return 1
 
-    # Load API keys
-    api_keys = load_api_keys()
-    api_key = api_keys.get(provider)
+def translate_one_language(translator: APITranslator, mode: str, lang_code: str,
+                           po_path: Path, entries: List[POEntry], log) -> int:
+    """Translate one language and write its PO file. Returns applied count.
 
-    if not api_key or api_key.startswith("YOUR_"):
-        print(f"Error: No valid API key for {provider}")
-        print("Set your key in apikeys.lua")
-        return 1
+    Validates like cmd_run: invalid strings (placeholder/brand/[NL] mismatches
+    that auto-fix couldn't repair) are skipped with a logged reason, never
+    written to the PO file.
+    """
+    to_translate = filter_entries(entries, mode)
 
-    # Determine model
-    if args.model:
-        model = args.model
-    elif provider == 'anthropic':
-        model = 'claude-sonnet-5'
-    else:
-        model = 'gpt-5.2'
+    # Build strings dict (same pattern as cmd_run)
+    strings = {}
+    msgid_by_num = {}
+    for i, entry in enumerate(to_translate, 1):
+        strings[i] = NewlineHandler.encode(entry.msgid)
+        msgid_by_num[i] = entry.msgid
 
-    # Determine mode
-    if args.errors_only:
-        mode = 'errors'
-    elif args.fuzzy:
-        mode = 'fuzzy'
-    elif args.all:
-        mode = 'all'
-    else:
-        mode = 'empty'
+    results = translator.translate_strings(strings, lang_code, log=log, use_spinner=False)
 
-    mode_desc = {'empty': 'empty', 'fuzzy': 'fuzzy', 'all': 'all non-verified', 'errors': 'with validation issues'}
+    # Build translations dict
+    translations = {}
+    add_fuzzy = set()
+    invalid = 0
 
-    print(f"\n=== Translating All Languages ===")
-    print(f"Mode: {mode_desc[mode]}")
-    print(f"Provider: {provider} ({model})")
-
-    # Collect languages that need work
-    languages_to_process = []
-    for lang_code in sorted(LANGUAGE_NAMES.keys()):
-        po_path = locale_dir / lang_code / "LC_MESSAGES" / "koassistant.po"
-        if not po_path.exists():
+    for num, trans_text in results.items():
+        source_encoded = strings.get(num, "")
+        msgid = msgid_by_num.get(num)
+        if not msgid:
             continue
 
-        entries = parse_po_file(po_path)
-        to_translate = filter_entries(entries, mode)
+        # Auto-fix, validate, decode
+        trans_text, _fixes = PlaceholderValidator.auto_fix(source_encoded, trans_text)
+        validation_errors = PlaceholderValidator.validate(source_encoded, trans_text)
+        if validation_errors:
+            invalid += 1
+            log(f"  Skipped #{num}: {validation_errors[0]}")
+            continue
+        final_text = NewlineHandler.decode(trans_text)
+        translations[msgid] = final_text
+        add_fuzzy.add(msgid)
 
-        if to_translate:
-            languages_to_process.append((lang_code, len(to_translate), po_path, entries))
+    # Apply translations
+    for entry in entries:
+        if entry.msgid in translations:
+            entry.msgstr = translations[entry.msgid]
 
-    if not languages_to_process:
-        print(f"\nNo languages have {mode_desc[mode]} strings to translate.")
-        return 0
-
-    total_strings = sum(count for _, count, _, _ in languages_to_process)
-    print(f"\nLanguages to process: {len(languages_to_process)}")
-    print(f"Total strings: {total_strings}")
-
-    # Confirm
-    if not args.yes:
-        response = input("\nProceed? [y/N] ").strip().lower()
-        if response != 'y':
-            print("Cancelled.")
-            return 0
-
-    # Process each language
-    translator = APITranslator(provider, model, api_key)
-    success_count = 0
-    fail_count = 0
-
-    for lang_code, count, po_path, entries in languages_to_process:
-        lang_name = LANGUAGE_NAMES.get(lang_code, lang_code)
-        print(f"\n--- {lang_name} ({lang_code}): {count} strings ---")
-
-        to_translate = filter_entries(entries, mode)
-
-        # Build strings dict (same pattern as cmd_run)
-        strings = {}
-        msgid_by_num = {}
-        for i, entry in enumerate(to_translate, 1):
-            strings[i] = NewlineHandler.encode(entry.msgid)
-            msgid_by_num[i] = entry.msgid
-
-        try:
-            results = translator.translate_strings(strings, lang_code)
-
-            # Build translations dict
-            translations = {}
-            add_fuzzy = set()
-
-            for num, trans_text in results.items():
-                source_encoded = strings.get(num, "")
-                msgid = msgid_by_num.get(num)
-                if not msgid:
-                    continue
-
-                # Auto-fix and decode
-                trans_text, _ = PlaceholderValidator.auto_fix(source_encoded, trans_text)
-                final_text = NewlineHandler.decode(trans_text)
-                translations[msgid] = final_text
-                add_fuzzy.add(msgid)
-
-            # Apply translations
-            for entry in entries:
-                if entry.msgid in translations:
-                    entry.msgstr = translations[entry.msgid]
-
-            # Write back
-            write_po_file(entries, po_path, add_fuzzy_for=add_fuzzy)
-            print(f"  Applied {len(translations)} translations")
-            success_count += 1
-
-        except Exception as e:
-            print(f"  ERROR: {e}")
-            fail_count += 1
-
-    print(f"\n=== Complete ===")
-    print(f"Success: {success_count} languages")
-    if fail_count:
-        print(f"Failed: {fail_count} languages")
-
-    return 0 if fail_count == 0 else 1
+    # Write back
+    write_po_file(entries, po_path, add_fuzzy_for=add_fuzzy)
+    suffix = f" ({invalid} invalid skipped)" if invalid else ""
+    log(f"  Applied {len(translations)} translations{suffix}")
+    return len(translations)
 
 
 def cmd_multi_run(args, langs: List[str], script_dir: Path, locale_dir: Path):
@@ -1553,8 +1502,10 @@ def cmd_multi_run(args, langs: List[str], script_dir: Path, locale_dir: Path):
         return 0
 
     total_strings = sum(count for _, count, _, _ in languages_to_process)
+    workers = max(1, min(args.concurrency, len(languages_to_process)))
     print(f"\nLanguages to process: {len(languages_to_process)}")
     print(f"Total strings: {total_strings}")
+    print(f"Concurrency: {workers} language(s) in parallel")
 
     # Confirm
     if not args.yes:
@@ -1563,56 +1514,39 @@ def cmd_multi_run(args, langs: List[str], script_dir: Path, locale_dir: Path):
             print("Cancelled.")
             return 0
 
-    # Process each language
+    # Process languages concurrently — each language owns its own PO file,
+    # so workers share nothing but the stdout lock and the (stateless)
+    # translator. Batches within a language stay sequential (rate pacing).
     translator = APITranslator(provider, model, api_key)
+    print_lock = threading.Lock()
     success_count = 0
     fail_count = 0
+    print()
 
-    for lang_code, count, po_path, entries in languages_to_process:
+    def process_language(lang_code, count, po_path, entries):
         lang_name = LANGUAGE_NAMES.get(lang_code, lang_code)
-        print(f"\n--- {lang_name} ({lang_code}): {count} strings ---")
 
-        to_translate = filter_entries(entries, mode)
+        def log(msg):
+            with print_lock:
+                print(f"[{lang_code}] {msg.strip()}")
 
-        # Build strings dict (same pattern as cmd_run)
-        strings = {}
-        msgid_by_num = {}
-        for i, entry in enumerate(to_translate, 1):
-            strings[i] = NewlineHandler.encode(entry.msgid)
-            msgid_by_num[i] = entry.msgid
+        log(f"{lang_name}: {count} strings")
+        return translate_one_language(translator, mode, lang_code, po_path, entries, log)
 
-        try:
-            results = translator.translate_strings(strings, lang_code)
-
-            # Build translations dict
-            translations = {}
-            add_fuzzy = set()
-
-            for num, trans_text in results.items():
-                source_encoded = strings.get(num, "")
-                msgid = msgid_by_num.get(num)
-                if not msgid:
-                    continue
-
-                # Auto-fix and decode
-                trans_text, _ = PlaceholderValidator.auto_fix(source_encoded, trans_text)
-                final_text = NewlineHandler.decode(trans_text)
-                translations[msgid] = final_text
-                add_fuzzy.add(msgid)
-
-            # Apply translations
-            for entry in entries:
-                if entry.msgid in translations:
-                    entry.msgstr = translations[entry.msgid]
-
-            # Write back
-            write_po_file(entries, po_path, add_fuzzy_for=add_fuzzy)
-            print(f"  Applied {len(translations)} translations")
-            success_count += 1
-
-        except Exception as e:
-            print(f"  ERROR: {e}")
-            fail_count += 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(process_language, lang_code, count, po_path, entries): lang_code
+            for lang_code, count, po_path, entries in languages_to_process
+        }
+        for future in as_completed(futures):
+            lang_code = futures[future]
+            try:
+                future.result()
+                success_count += 1
+            except Exception as e:
+                with print_lock:
+                    print(f"[{lang_code}] ERROR: {e}")
+                fail_count += 1
 
     print(f"\n=== Complete ===")
     print(f"Success: {success_count} languages")
@@ -1743,6 +1677,8 @@ ALL AI translations are marked fuzzy. Verified translations are never touched.
     # API options
     parser.add_argument("--api", help="API provider (anthropic or openai)")
     parser.add_argument("--model", help="Model name (e.g., claude-sonnet-4-5, gpt-4o)")
+    parser.add_argument("--concurrency", type=int, default=4,
+                        help="Languages translated in parallel for multi-language runs (default: 4)")
 
     args = parser.parse_args()
 
