@@ -16053,7 +16053,7 @@ function AskGPT:showReasoningQuickPopup(on_close_callback, provider_arg, model_a
   -- read as if the stance were per-model, maintainer 2026-08-12) + close
   if is_model_target then
     table.insert(buttons, {{
-      text = _("Other models\u{2026}"),
+      text = _("Other models…"),
       callback = function()
         UIManager:close(self_ref._reasoning_qs_dialog)
         self_ref._reasoning_qs_dialog = nil
@@ -16071,7 +16071,7 @@ function AskGPT:showReasoningQuickPopup(on_close_callback, provider_arg, model_a
   }})
 
   self._reasoning_qs_dialog = ButtonDialog:new{
-    title = is_model_target and T(_("Reasoning \u{00B7} %1"), provider_display) or _("Reasoning"),
+    title = is_model_target and T(_("Reasoning · %1"), provider_display) or _("Reasoning"),
     buttons = buttons,
     tap_close_callback = function()
       self_ref._reasoning_qs_dialog = nil
@@ -16204,7 +16204,7 @@ function AskGPT:showReasoningModelBrowser(on_close_callback, show_all)
       if ModelConstraints.getReasoningProfile(provider, model).axis ~= "none" then
         local m = model
         table.insert(buttons, {{
-          text = T(_("%1 \u{00B7} %2"), m, ReasoningPrefs.summaryLabel(features, provider, m)),
+          text = T(_("%1 · %2"), m, ReasoningPrefs.summaryLabel(features, provider, m)),
           callback = function()
             closeBrowser()
             self_ref:showReasoningQuickPopup(on_close_callback, provider, m, "model")
@@ -16217,7 +16217,7 @@ function AskGPT:showReasoningModelBrowser(on_close_callback, show_all)
     end
     table.insert(buttons, {{ text = _("Close"), callback = closeBrowser }})
     self_ref._reasoning_browser_dialog = ButtonDialog:new{
-      title = T(_("Reasoning \u{00B7} %1"), self_ref:getProviderDisplayName(provider)),
+      title = T(_("Reasoning · %1"), self_ref:getProviderDisplayName(provider)),
       buttons = buttons,
       tap_close_callback = function() self_ref._reasoning_browser_dialog = nil end,
     }
@@ -16255,7 +16255,7 @@ function AskGPT:showReasoningModelBrowser(on_close_callback, show_all)
   end
   table.insert(buttons, {{ text = _("Close"), callback = closeBrowser }})
   self._reasoning_browser_dialog = ButtonDialog:new{
-    title = _("Reasoning \u{00B7} pick a provider"),
+    title = _("Reasoning · pick a provider"),
     buttons = buttons,
     tap_close_callback = function() self_ref._reasoning_browser_dialog = nil end,
   }
@@ -16351,7 +16351,7 @@ function AskGPT:buildReasoningModelListMenu(provider)
           if pref == nil then
             -- No override: show what "Follow global" actually resolves to for this
             -- model, so the list answers "what will it do?" without drilling in.
-            return T(_("%1: Follow global \u{2192} %2"), m, ReasoningPrefs.summaryLabel(f, provider, m))
+            return T(_("%1: Follow global → %2"), m, ReasoningPrefs.summaryLabel(f, provider, m))
           end
           return T(_("%1: %2"), m, reasoningPrefSummary(pref))
         end,
@@ -16750,7 +16750,7 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       local ModelConstraintsQS = require("model_constraints")
       if not (ModelConstraintsQS.supportsCapability(provider, model, "tools")
               and ToolWire.hasAdapter(provider)) then
-        base = base .. " \u{00B7} " .. T(_("N/A for %1"), model)
+        base = base .. " · " .. T(_("N/A for %1"), model)
       end
       return E("\u{1F50D}", base)
     end)(),
@@ -16925,7 +16925,7 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       local base = T(_("Web Search: %1"), label)
       if not web_search_supported then
         -- Provider can't search — annotate but keep the global default toggle usable
-        base = base .. " \u{00B7} " .. T(_("N/A for %1"), provider_display)
+        base = base .. " · " .. T(_("N/A for %1"), provider_display)
       end
       return E("\u{1F310}", base)
     end)(),

@@ -2323,7 +2323,7 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         local plugin_ref = self.metadata.plugin
         local group_file = self.metadata.book_file
         group_button = {
-            text = "\u{2192} " .. _("Group"),
+            text = "→ " .. _("Group"),
             callback = function()
                 local jump_location = self_ref.location
                 plugin_ref:_showGroupMembersPopup(group_file, "xray", {
@@ -4582,20 +4582,20 @@ function XrayBrowser:showMentions(chapter)
         local chapter_depth = type(chapter) == "table" and chapter.depth or nil
         if is_all then
             if self_ref.scope and chapter ~= "all_reveal" then
-                picker_label = T(_("Entire section (%1) \u{25BE}"), self_ref.scope.page_summary or "")
+                picker_label = T(_("Entire section (%1) ▾"), self_ref.scope.page_summary or "")
             elseif chapter == "all_reveal" or not mentions_gate then
-                picker_label = _("Entire document \u{25BE}")
+                picker_label = _("Entire document ▾")
             else
-                picker_label = T(_("To p. %1 \u{25BE}"), mentions_gate)
+                picker_label = T(_("To p. %1 ▾"), mentions_gate)
             end
         elseif chapter_title and chapter_title ~= "" then
             picker_label = clipped_to
-                and T(_("%1 (up to p. %2) \u{25BE}"), chapter_title, clipped_to)
-                or (chapter_title .. " \u{25BE}")
+                and T(_("%1 (up to p. %2) ▾"), chapter_title, clipped_to)
+                or (chapter_title .. " ▾")
         else
             picker_label = clipped_to
-                and T(_("This Chapter (up to p. %1) \u{25BE}"), clipped_to)
-                or _("This Chapter \u{25BE}")
+                and T(_("This Chapter (up to p. %1) ▾"), clipped_to)
+                or _("This Chapter ▾")
         end
 
         table.insert(items, {
@@ -6227,7 +6227,7 @@ function XrayBrowser:showOptions()
             local plugin_ref = self.metadata.plugin
             local group_file = self.metadata.book_file
             table.insert(buttons, {{
-                text = "\u{2192} " .. _("Group"),
+                text = "→ " .. _("Group"),
                 align = "left",
                 callback = function()
                     closeOptions()

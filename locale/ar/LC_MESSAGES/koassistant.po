@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: KOAssistant 0.6.2\n"
 "Report-Msgid-Bugs-To: https://github.com/zeeyado/koassistant.koplugin/issues\n"
-"POT-Creation-Date: 2026-08-17 23:10+0200\n"
+"POT-Creation-Date: 2026-08-18 00:21+0200\n"
 "PO-Revision-Date: 2026-01-06 18:39+0000\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: Arabic\n"
@@ -5358,8 +5358,8 @@ msgstr "تعذّر استخراج النص للنطاق المحدد. أزل ش�
 #: koassistant_dialogs.lua:9584
 #, fuzzy
 msgid ""
-"Your typed input was saved. Reopen this dialog and tap the gear u{2699}, then \"Restore last input\"."
-msgstr "تم حفظ ما كتبته. أعد فتح هذا الحوار واضغط على أيقونة الترس u{2699}، ثم اختر \"استعادة آخر إدخال\"."
+"Your typed input was saved. Reopen this dialog and tap the gear ⚙, then \"Restore last input\"."
+msgstr "تم حفظ إدخالك المكتوب. أعد فتح هذا الحوار واضغط على أيقونة الترس ⚙، ثم \"استعادة آخر إدخال\"."
 
 #: koassistant_dialogs.lua:9660
 #, fuzzy
@@ -5391,18 +5391,18 @@ msgstr "إظهار المزيد من الإجراءات…"
 
 #: koassistant_dialogs.lua:10096
 #, fuzzy
-msgid "Library Scan u{25BE}"
-msgstr "مسح المكتبة u{25BE}"
+msgid "Library Scan ▾"
+msgstr "مسح المكتبة ▾"
 
 #: koassistant_dialogs.lua:10098
 #, fuzzy
-msgid "Library Scan (%1) u{25BE}"
-msgstr "مسح المكتبة (%1) u{25BE}"
+msgid "Library Scan (%1) ▾"
+msgstr "مسح المكتبة (%1) ▾"
 
 #: koassistant_dialogs.lua:10100
 #, fuzzy
-msgid "Library Scan (%1/%2) u{25BE}"
-msgstr "مسح المكتبة (%1/%2) u{25BE}"
+msgid "Library Scan (%1/%2) ▾"
+msgstr "مسح المكتبة (%1/%2) ▾"
 
 #: koassistant_dialogs.lua:10109
 #, fuzzy
@@ -5417,13 +5417,13 @@ msgstr ""
 
 #: koassistant_dialogs.lua:10124
 #, fuzzy
-msgid "Items u{25BE}"
-msgstr "العناصر u{25BE}"
+msgid "Items ▾"
+msgstr "العناصر ▾"
 
 #: koassistant_dialogs.lua:10126
 #, fuzzy
-msgid "Items (%1) u{25BE}"
-msgstr "العناصر (%1) u{25BE}"
+msgid "Items (%1) ▾"
+msgstr "العناصر (%1) ▾"
 
 #: koassistant_dialogs.lua:10215
 #, fuzzy
@@ -10923,33 +10923,33 @@ msgstr "تعذر استخراج نص الفصل."
 
 #: koassistant_xray_browser.lua:4585
 #, fuzzy
-msgid "Entire section (%1) u{25BE}"
-msgstr "القسم بأكمله (%1) u{25BE}"
+msgid "Entire section (%1) ▾"
+msgstr "القسم بالكامل (%1) ▾"
 
 #: koassistant_xray_browser.lua:4587
 #, fuzzy
-msgid "Entire document u{25BE}"
-msgstr "المستند بالكامل u{25BE}"
+msgid "Entire document ▾"
+msgstr "المستند بالكامل ▾"
 
 #: koassistant_xray_browser.lua:4589
 #, fuzzy
-msgid "To p. %1 u{25BE}"
-msgstr "حتى ص. %1 u{25BE}"
+msgid "To p. %1 ▾"
+msgstr "إلى ص. %1 ▾"
 
 #: koassistant_xray_browser.lua:4593
 #, fuzzy
-msgid "%1 (up to p. %2) u{25BE}"
-msgstr "%1 (حتى ص. %2) u{25BE}"
+msgid "%1 (up to p. %2) ▾"
+msgstr "%1 (حتى ص. %2) ▾"
 
 #: koassistant_xray_browser.lua:4597
 #, fuzzy
-msgid "This Chapter (up to p. %1) u{25BE}"
-msgstr "هذا الفصل (حتى ص. %1) u{25BE}"
+msgid "This Chapter (up to p. %1) ▾"
+msgstr "هذا الفصل (حتى ص. %1) ▾"
 
 #: koassistant_xray_browser.lua:4598
 #, fuzzy
-msgid "This Chapter u{25BE}"
-msgstr "هذا الفصل u{25BE}"
+msgid "This Chapter ▾"
+msgstr "هذا الفصل ▾"
 
 #: koassistant_xray_browser.lua:4617
 #, fuzzy
@@ -15333,13 +15333,13 @@ msgstr "الإعداد الافتراضي للنموذج"
 
 #: main.lua:16056
 #, fuzzy
-msgid "Other modelsu{2026}"
+msgid "Other models…"
 msgstr "نماذج أخرى…"
 
 #: main.lua:16074 main.lua:16220
 #, fuzzy
-msgid "Reasoning u{00B7} %1"
-msgstr "التفكير · %1"
+msgid "Reasoning · %1"
+msgstr "الاستدلال · %1"
 
 #: main.lua:16096
 #, fuzzy
@@ -15368,7 +15368,7 @@ msgstr "الإعداد الافتراضي للنموذج"
 
 #: main.lua:16207
 #, fuzzy
-msgid "%1 u{00B7} %2"
+msgid "%1 · %2"
 msgstr "%1 · %2"
 
 #: main.lua:16216 main.lua:16365
@@ -15378,12 +15378,12 @@ msgstr "لا توجد نماذج قابلة للتكوين"
 
 #: main.lua:16258
 #, fuzzy
-msgid "Reasoning u{00B7} pick a provider"
-msgstr "التفكير · اختر مزوداً"
+msgid "Reasoning · pick a provider"
+msgstr "الاستدلال · اختر مزودًا"
 
 #: main.lua:16354
 #, fuzzy
-msgid "%1: Follow global u{2192} %2"
+msgid "%1: Follow global → %2"
 msgstr "%1: اتباع الإعداد العام ← %2"
 
 #: main.lua:16696 koassistant_ui/prompts_manager.lua:913

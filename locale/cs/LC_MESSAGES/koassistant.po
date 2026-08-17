@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: KOAssistant 0.12.0-dev\n"
 "Report-Msgid-Bugs-To: https://github.com/zeeyado/koassistant.koplugin/issues\n"
-"POT-Creation-Date: 2026-08-17 23:10+0200\n"
+"POT-Creation-Date: 2026-08-18 00:21+0200\n"
 "PO-Revision-Date: 2026-08-01 07:11+0000\n"
 "Last-Translator: Michal Várady <miko.vaji@gmail.com>\n"
 "Language-Team: Czech <https://hosted.weblate.org/projects/koassistant/koassistant/cs/>\n"
@@ -4880,8 +4880,8 @@ msgstr "Nepodařilo se extrahovat text pro zvolený rozsah. Zrušte štítek Roz
 #: koassistant_dialogs.lua:9584
 #, fuzzy
 msgid ""
-"Your typed input was saved. Reopen this dialog and tap the gear u{2699}, then \"Restore last input\"."
-msgstr "Váš napsaný text byl uložen. Znovu otevřete tento dialog, klepněte na ozubené kolečko u{2699} a poté na \"Obnovit poslední vstup\"."
+"Your typed input was saved. Reopen this dialog and tap the gear ⚙, then \"Restore last input\"."
+msgstr "Zadaný text byl uložen. Znovu otevřete tento dialog a klepněte na ozubené kolečko ⚙, poté na \"Obnovit poslední zadání\"."
 
 #: koassistant_dialogs.lua:9660
 #, fuzzy
@@ -4909,16 +4909,19 @@ msgid "Show More Actions…"
 msgstr "Zobrazit více akcí…"
 
 #: koassistant_dialogs.lua:10096
-msgid "Library Scan u{25BE}"
-msgstr "Prohledávání knihovny u{25BE}"
+#, fuzzy
+msgid "Library Scan ▾"
+msgstr "Skenování knihovny ▾"
 
 #: koassistant_dialogs.lua:10098
-msgid "Library Scan (%1) u{25BE}"
-msgstr "Prohledávání knihovny (%1) u{25BE}"
+#, fuzzy
+msgid "Library Scan (%1) ▾"
+msgstr "Skenování knihovny (%1) ▾"
 
 #: koassistant_dialogs.lua:10100
-msgid "Library Scan (%1/%2) u{25BE}"
-msgstr "Prohledávání knihovny (%1/%2) u{25BE}"
+#, fuzzy
+msgid "Library Scan (%1/%2) ▾"
+msgstr "Skenování knihovny (%1/%2) ▾"
 
 #: koassistant_dialogs.lua:10109
 msgid ""
@@ -4931,12 +4934,14 @@ msgstr ""
 "Pokud tyto akce nepotřebujete, můžete tuto sekci skrýt z nabídky ozubeného kola."
 
 #: koassistant_dialogs.lua:10124
-msgid "Items u{25BE}"
-msgstr "Položky u{25BE}"
+#, fuzzy
+msgid "Items ▾"
+msgstr "Položky ▾"
 
 #: koassistant_dialogs.lua:10126
-msgid "Items (%1) u{25BE}"
-msgstr "Položky (%1) u{25BE}"
+#, fuzzy
+msgid "Items (%1) ▾"
+msgstr "Položky (%1) ▾"
 
 #: koassistant_dialogs.lua:10215
 #, fuzzy
@@ -9986,31 +9991,34 @@ msgid "Could not extract chapter text."
 msgstr "Nepodařilo se extrahovat text kapitoly."
 
 #: koassistant_xray_browser.lua:4585
-msgid "Entire section (%1) u{25BE}"
-msgstr "Celá sekce (%1) u{25BE}"
+#, fuzzy
+msgid "Entire section (%1) ▾"
+msgstr "Celá sekce (%1) ▾"
 
 #: koassistant_xray_browser.lua:4587
-msgid "Entire document u{25BE}"
-msgstr "Celý dokument u{25BE}"
+#, fuzzy
+msgid "Entire document ▾"
+msgstr "Celý dokument ▾"
 
 #: koassistant_xray_browser.lua:4589
 #, fuzzy
-msgid "To p. %1 u{25BE}"
-msgstr "Do s. %1 u{25BE}"
+msgid "To p. %1 ▾"
+msgstr "Do str. %1 ▾"
 
 #: koassistant_xray_browser.lua:4593
 #, fuzzy
-msgid "%1 (up to p. %2) u{25BE}"
-msgstr "%1 (do s. %2) u{25BE}"
+msgid "%1 (up to p. %2) ▾"
+msgstr "%1 (do str. %2) ▾"
 
 #: koassistant_xray_browser.lua:4597
 #, fuzzy
-msgid "This Chapter (up to p. %1) u{25BE}"
-msgstr "Tato kapitola (do s. %1) u{25BE}"
+msgid "This Chapter (up to p. %1) ▾"
+msgstr "Tato kapitola (do str. %1) ▾"
 
 #: koassistant_xray_browser.lua:4598
-msgid "This Chapter u{25BE}"
-msgstr "Tato kapitola u{25BE}"
+#, fuzzy
+msgid "This Chapter ▾"
+msgstr "Tato kapitola ▾"
 
 #: koassistant_xray_browser.lua:4617
 #, fuzzy
@@ -14124,11 +14132,13 @@ msgid "model default"
 msgstr "výchozí nastavení modelu"
 
 #: main.lua:16056
-msgid "Other modelsu{2026}"
-msgstr "Ostatní modely…"
+#, fuzzy
+msgid "Other models…"
+msgstr "Další modely…"
 
 #: main.lua:16074 main.lua:16220
-msgid "Reasoning u{00B7} %1"
+#, fuzzy
+msgid "Reasoning · %1"
 msgstr "Uvažování · %1"
 
 #: main.lua:16096
@@ -14153,7 +14163,8 @@ msgid "Model default"
 msgstr "Výchozí model"
 
 #: main.lua:16207
-msgid "%1 u{00B7} %2"
+#, fuzzy
+msgid "%1 · %2"
 msgstr "%1 · %2"
 
 #: main.lua:16216 main.lua:16365
@@ -14161,11 +14172,13 @@ msgid "No configurable models"
 msgstr "Žádné konfigurovatelné modely"
 
 #: main.lua:16258
-msgid "Reasoning u{00B7} pick a provider"
+#, fuzzy
+msgid "Reasoning · pick a provider"
 msgstr "Uvažování · vyberte poskytovatele"
 
 #: main.lua:16354
-msgid "%1: Follow global u{2192} %2"
+#, fuzzy
+msgid "%1: Follow global → %2"
 msgstr "%1: Sledovat globální → %2"
 
 #: main.lua:16696 koassistant_ui/prompts_manager.lua:913

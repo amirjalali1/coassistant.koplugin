@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: KOAssistant 0.18.0-dev\n"
 "Report-Msgid-Bugs-To: https://github.com/zeeyado/koassistant.koplugin/issues\n"
-"POT-Creation-Date: 2026-08-17 23:10+0200\n"
+"POT-Creation-Date: 2026-08-18 00:21+0200\n"
 "PO-Revision-Date: 2026-07-05 13:12+0200\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -5359,8 +5359,8 @@ msgstr "استخراج متن برای محدوده انتخاب‌شده ممک
 #: koassistant_dialogs.lua:9584
 #, fuzzy
 msgid ""
-"Your typed input was saved. Reopen this dialog and tap the gear u{2699}, then \"Restore last input\"."
-msgstr "ورودی تایپ‌شده شما ذخیره شد. این پنجره را دوباره باز کنید و روی چرخ‌دنده u{2699} ضربه بزنید، سپس «بازگرداندن آخرین ورودی» را انتخاب کنید."
+"Your typed input was saved. Reopen this dialog and tap the gear ⚙, then \"Restore last input\"."
+msgstr "متن تایپ‌شده شما ذخیره شد. این کادر را دوباره باز کنید و روی چرخ‌دنده ⚙ ضربه بزنید، سپس «بازیابی آخرین ورودی» را انتخاب کنید."
 
 #: koassistant_dialogs.lua:9660
 #, fuzzy
@@ -5392,18 +5392,18 @@ msgstr "نمایش عملکردهای بیشتر…"
 
 #: koassistant_dialogs.lua:10096
 #, fuzzy
-msgid "Library Scan u{25BE}"
-msgstr "اسکن کتابخانه u{25BE}"
+msgid "Library Scan ▾"
+msgstr "اسکن کتابخانه ▾"
 
 #: koassistant_dialogs.lua:10098
 #, fuzzy
-msgid "Library Scan (%1) u{25BE}"
-msgstr "اسکن کتابخانه (%1) u{25BE}"
+msgid "Library Scan (%1) ▾"
+msgstr "اسکن کتابخانه (%1) ▾"
 
 #: koassistant_dialogs.lua:10100
 #, fuzzy
-msgid "Library Scan (%1/%2) u{25BE}"
-msgstr "اسکن کتابخانه (%1/%2) u{25BE}"
+msgid "Library Scan (%1/%2) ▾"
+msgstr "اسکن کتابخانه (%1/%2) ▾"
 
 #: koassistant_dialogs.lua:10109
 #, fuzzy
@@ -5418,13 +5418,13 @@ msgstr ""
 
 #: koassistant_dialogs.lua:10124
 #, fuzzy
-msgid "Items u{25BE}"
-msgstr "موارد u{25BE}"
+msgid "Items ▾"
+msgstr "موارد ▾"
 
 #: koassistant_dialogs.lua:10126
 #, fuzzy
-msgid "Items (%1) u{25BE}"
-msgstr "موارد (%1) u{25BE}"
+msgid "Items (%1) ▾"
+msgstr "موارد (%1) ▾"
 
 #: koassistant_dialogs.lua:10215
 #, fuzzy
@@ -8653,6 +8653,7 @@ msgid "Rebuild Data Indexes"
 msgstr "بازسازی نمایه‌های داده"
 
 #: koassistant_settings_schema.lua:2514
+#, fuzzy
 msgid ""
 "Finds books whose KOAssistant data (artifacts, chats, notebooks, pinned) exists on disk but doesn't show in this device's browsers, e.g. after syncing sidecar files from another device, restoring a backup, or migrating devices.\n"
 "\n"
@@ -8660,6 +8661,11 @@ msgid ""
 "\n"
 "May take a while on large libraries."
 msgstr ""
+"کتاب‌هایی را می‌یابد که داده‌های KOAssistant آن‌ها (آثار، گفتگوها، دفترچه‌ها، سنجاق‌شده‌ها) روی دیسک وجود دارد اما در مرورگرهای این دستگاه نمایش داده نمی‌شود، مثلاً پس از همگام‌سازی فایل‌های سایدکار از دستگاهی دیگر، بازیابی یک پشتیبان، یا انتقال دستگاه‌ها.\n"
+"\n"
+"تاریخچه مطالعه شما، مکان‌های سایدکار KOReader، و پوشه‌های اسکن پیکربندی‌شده در زیر را بررسی می‌کند، سپس ورودی‌های قدیمی را حذف می‌کند. کتاب‌های روی حافظه‌ی جدانشده حذف می‌شوند؛ با نصب حافظه دوباره اجرا کنید تا مجدداً اضافه شوند.\n"
+"\n"
+"ممکن است در کتابخانه‌های بزرگ مدتی طول بکشد."
 
 #: koassistant_settings_schema.lua:2524
 #, fuzzy
@@ -8688,9 +8694,10 @@ msgid "Auto-Rebuild on Startup"
 msgstr "بازسازی خودکار هنگام راه‌اندازی"
 
 #: koassistant_settings_schema.lua:2538
+#, fuzzy
 msgid ""
 "Also run the index rebuild automatically after KOReader starts: at most once per day, only when scan folders are configured, quietly in the background."
-msgstr ""
+msgstr "همچنین بازسازی نمایه را به‌طور خودکار پس از شروع KOReader اجرا کن: حداکثر یک‌بار در روز، فقط زمانی که پوشه‌های اسکن پیکربندی شده باشند، به‌آرامی در پس‌زمینه."
 
 #: koassistant_settings_schema.lua:2545
 #, fuzzy
@@ -10917,33 +10924,33 @@ msgstr "استخراج متن فصل ممکن نشد."
 
 #: koassistant_xray_browser.lua:4585
 #, fuzzy
-msgid "Entire section (%1) u{25BE}"
-msgstr "کل بخش (%1) u{25BE}"
+msgid "Entire section (%1) ▾"
+msgstr "کل بخش (%1) ▾"
 
 #: koassistant_xray_browser.lua:4587
 #, fuzzy
-msgid "Entire document u{25BE}"
-msgstr "کل سند u{25BE}"
+msgid "Entire document ▾"
+msgstr "کل سند ▾"
 
 #: koassistant_xray_browser.lua:4589
 #, fuzzy
-msgid "To p. %1 u{25BE}"
-msgstr "تا ص. %1 u{25BE}"
+msgid "To p. %1 ▾"
+msgstr "تا صفحه %1 ▾"
 
 #: koassistant_xray_browser.lua:4593
 #, fuzzy
-msgid "%1 (up to p. %2) u{25BE}"
-msgstr "%1 (تا ص. %2) u{25BE}"
+msgid "%1 (up to p. %2) ▾"
+msgstr "%1 (تا صفحه %2) ▾"
 
 #: koassistant_xray_browser.lua:4597
 #, fuzzy
-msgid "This Chapter (up to p. %1) u{25BE}"
-msgstr "این فصل (تا ص. %1) u{25BE}"
+msgid "This Chapter (up to p. %1) ▾"
+msgstr "این فصل (تا صفحه %1) ▾"
 
 #: koassistant_xray_browser.lua:4598
 #, fuzzy
-msgid "This Chapter u{25BE}"
-msgstr "این فصل u{25BE}"
+msgid "This Chapter ▾"
+msgstr "این فصل ▾"
 
 #: koassistant_xray_browser.lua:4617
 #, fuzzy
@@ -15327,12 +15334,12 @@ msgstr "پیش‌فرض مدل"
 
 #: main.lua:16056
 #, fuzzy
-msgid "Other modelsu{2026}"
-msgstr "سایر مدل‌ها…"
+msgid "Other models…"
+msgstr "مدل‌های دیگر…"
 
 #: main.lua:16074 main.lua:16220
 #, fuzzy
-msgid "Reasoning u{00B7} %1"
+msgid "Reasoning · %1"
 msgstr "استدلال · %1"
 
 #: main.lua:16096
@@ -15362,7 +15369,7 @@ msgstr "پیش‌فرض مدل"
 
 #: main.lua:16207
 #, fuzzy
-msgid "%1 u{00B7} %2"
+msgid "%1 · %2"
 msgstr "%1 · %2"
 
 #: main.lua:16216 main.lua:16365
@@ -15372,13 +15379,13 @@ msgstr "هیچ مدل قابل تنظیمی وجود ندارد"
 
 #: main.lua:16258
 #, fuzzy
-msgid "Reasoning u{00B7} pick a provider"
+msgid "Reasoning · pick a provider"
 msgstr "استدلال · یک ارائه‌دهنده انتخاب کنید"
 
 #: main.lua:16354
 #, fuzzy
-msgid "%1: Follow global u{2192} %2"
-msgstr "%1: پیروی از کلی ← %2"
+msgid "%1: Follow global → %2"
+msgstr "%1: پیروی از سراسری → %2"
 
 #: main.lua:16696 koassistant_ui/prompts_manager.lua:913
 #: koassistant_ui/prompts_manager.lua:1646

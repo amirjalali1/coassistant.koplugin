@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: KOAssistant 0.6.2\n"
 "Report-Msgid-Bugs-To: https://github.com/zeeyado/koassistant.koplugin/issues\n"
-"POT-Creation-Date: 2026-08-17 23:10+0200\n"
+"POT-Creation-Date: 2026-08-18 00:21+0200\n"
 "PO-Revision-Date: 2026-01-06 18:39+0000\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: Chinese (Simplified)\n"
@@ -5358,8 +5358,8 @@ msgstr "无法为所选范围提取文本。请清除范围标签或选择其他
 #: koassistant_dialogs.lua:9584
 #, fuzzy
 msgid ""
-"Your typed input was saved. Reopen this dialog and tap the gear u{2699}, then \"Restore last input\"."
-msgstr "您输入的内容已保存。请重新打开此对话框，点击齿轮 u{2699}，然后选择“恢复上次输入”。"
+"Your typed input was saved. Reopen this dialog and tap the gear ⚙, then \"Restore last input\"."
+msgstr "您输入的内容已保存。重新打开此对话框并点击齿轮⚙，然后选择\"恢复上次输入\"。"
 
 #: koassistant_dialogs.lua:9660
 #, fuzzy
@@ -5391,18 +5391,18 @@ msgstr "显示更多操作…"
 
 #: koassistant_dialogs.lua:10096
 #, fuzzy
-msgid "Library Scan u{25BE}"
-msgstr "库扫描 u{25BE}"
+msgid "Library Scan ▾"
+msgstr "库扫描 ▾"
 
 #: koassistant_dialogs.lua:10098
 #, fuzzy
-msgid "Library Scan (%1) u{25BE}"
-msgstr "库扫描（%1）u{25BE}"
+msgid "Library Scan (%1) ▾"
+msgstr "库扫描 (%1) ▾"
 
 #: koassistant_dialogs.lua:10100
 #, fuzzy
-msgid "Library Scan (%1/%2) u{25BE}"
-msgstr "库扫描（%1/%2）u{25BE}"
+msgid "Library Scan (%1/%2) ▾"
+msgstr "库扫描 (%1/%2) ▾"
 
 #: koassistant_dialogs.lua:10109
 #, fuzzy
@@ -5417,13 +5417,13 @@ msgstr ""
 
 #: koassistant_dialogs.lua:10124
 #, fuzzy
-msgid "Items u{25BE}"
-msgstr "项目 u{25BE}"
+msgid "Items ▾"
+msgstr "项目 ▾"
 
 #: koassistant_dialogs.lua:10126
 #, fuzzy
-msgid "Items (%1) u{25BE}"
-msgstr "项目（%1）u{25BE}"
+msgid "Items (%1) ▾"
+msgstr "项目 (%1) ▾"
 
 #: koassistant_dialogs.lua:10215
 #, fuzzy
@@ -10923,33 +10923,33 @@ msgstr "无法提取章节文本。"
 
 #: koassistant_xray_browser.lua:4585
 #, fuzzy
-msgid "Entire section (%1) u{25BE}"
-msgstr "整个章节（%1）u{25BE}"
+msgid "Entire section (%1) ▾"
+msgstr "整个章节 (%1) ▾"
 
 #: koassistant_xray_browser.lua:4587
 #, fuzzy
-msgid "Entire document u{25BE}"
-msgstr "整个文档 u{25BE}"
+msgid "Entire document ▾"
+msgstr "整个文档 ▾"
 
 #: koassistant_xray_browser.lua:4589
 #, fuzzy
-msgid "To p. %1 u{25BE}"
-msgstr "至第%1页 u{25BE}"
+msgid "To p. %1 ▾"
+msgstr "至第 %1 页 ▾"
 
 #: koassistant_xray_browser.lua:4593
 #, fuzzy
-msgid "%1 (up to p. %2) u{25BE}"
-msgstr "%1（至第%2页）u{25BE}"
+msgid "%1 (up to p. %2) ▾"
+msgstr "%1（最多至第 %2 页）▾"
 
 #: koassistant_xray_browser.lua:4597
 #, fuzzy
-msgid "This Chapter (up to p. %1) u{25BE}"
-msgstr "本章（至第%1页）u{25BE}"
+msgid "This Chapter (up to p. %1) ▾"
+msgstr "本章（最多至第 %1 页）▾"
 
 #: koassistant_xray_browser.lua:4598
 #, fuzzy
-msgid "This Chapter u{25BE}"
-msgstr "本章节 u{25BE}"
+msgid "This Chapter ▾"
+msgstr "本章 ▾"
 
 #: koassistant_xray_browser.lua:4617
 #, fuzzy
@@ -11364,8 +11364,9 @@ msgid "This feature requires the book to be open in Reader mode."
 msgstr "此功能需要在阅读器模式下打开书籍。"
 
 #: koassistant_xray_card.lua:88
+#, fuzzy
 msgid "From a future checkpoint (built to %1%), may contain spoilers"
-msgstr ""
+msgstr "来自未来的检查点（构建至 %1%），可能包含剧透"
 
 #: koassistant_xray_card.lua:223
 #, fuzzy
@@ -15332,12 +15333,12 @@ msgstr "模型默认"
 
 #: main.lua:16056
 #, fuzzy
-msgid "Other modelsu{2026}"
+msgid "Other models…"
 msgstr "其他模型…"
 
 #: main.lua:16074 main.lua:16220
 #, fuzzy
-msgid "Reasoning u{00B7} %1"
+msgid "Reasoning · %1"
 msgstr "推理 · %1"
 
 #: main.lua:16096
@@ -15367,7 +15368,7 @@ msgstr "模型默认"
 
 #: main.lua:16207
 #, fuzzy
-msgid "%1 u{00B7} %2"
+msgid "%1 · %2"
 msgstr "%1 · %2"
 
 #: main.lua:16216 main.lua:16365
@@ -15377,13 +15378,13 @@ msgstr "无可配置模型"
 
 #: main.lua:16258
 #, fuzzy
-msgid "Reasoning u{00B7} pick a provider"
+msgid "Reasoning · pick a provider"
 msgstr "推理 · 选择提供商"
 
 #: main.lua:16354
 #, fuzzy
-msgid "%1: Follow global u{2192} %2"
-msgstr "%1：遵循全局 → %2"
+msgid "%1: Follow global → %2"
+msgstr "%1：跟随全局 → %2"
 
 #: main.lua:16696 koassistant_ui/prompts_manager.lua:913
 #: koassistant_ui/prompts_manager.lua:1646

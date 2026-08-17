@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: KOAssistant 0.6.2\n"
 "Report-Msgid-Bugs-To: https://github.com/zeeyado/koassistant.koplugin/issues\n"
-"POT-Creation-Date: 2026-08-17 23:10+0200\n"
+"POT-Creation-Date: 2026-08-18 00:21+0200\n"
 "PO-Revision-Date: 2026-07-11 12:01+0000\n"
 "Last-Translator: Champiñon Traductor <300458929+champinondev-lab@users.noreply.github.com>\n"
 "Language-Team: Spanish <https://hosted.weblate.org/projects/koassistant/koassistant/es/>\n"
@@ -5333,8 +5333,8 @@ msgstr "No se pudo extraer el texto para el alcance elegido. Borra el chip de Al
 #: koassistant_dialogs.lua:9584
 #, fuzzy
 msgid ""
-"Your typed input was saved. Reopen this dialog and tap the gear u{2699}, then \"Restore last input\"."
-msgstr "Se guardó tu texto escrito. Vuelve a abrir este diálogo y toca el engranaje u{2699}, luego \"Restaurar última entrada\"."
+"Your typed input was saved. Reopen this dialog and tap the gear ⚙, then \"Restore last input\"."
+msgstr "Su entrada escrita fue guardada. Vuelva a abrir este diálogo y toque el engranaje ⚙, luego \"Restaurar última entrada\"."
 
 #: koassistant_dialogs.lua:9660
 #, fuzzy
@@ -5366,18 +5366,18 @@ msgstr "Mostrar Más Acciones…"
 
 #: koassistant_dialogs.lua:10096
 #, fuzzy
-msgid "Library Scan u{25BE}"
-msgstr "Escaneo de biblioteca u{25BE}"
+msgid "Library Scan ▾"
+msgstr "Escaneo de biblioteca ▾"
 
 #: koassistant_dialogs.lua:10098
 #, fuzzy
-msgid "Library Scan (%1) u{25BE}"
-msgstr "Escaneo de biblioteca (%1) u{25BE}"
+msgid "Library Scan (%1) ▾"
+msgstr "Escaneo de biblioteca (%1) ▾"
 
 #: koassistant_dialogs.lua:10100
 #, fuzzy
-msgid "Library Scan (%1/%2) u{25BE}"
-msgstr "Escaneo de biblioteca (%1/%2) u{25BE}"
+msgid "Library Scan (%1/%2) ▾"
+msgstr "Escaneo de biblioteca (%1/%2) ▾"
 
 #: koassistant_dialogs.lua:10109
 #, fuzzy
@@ -5392,13 +5392,13 @@ msgstr ""
 
 #: koassistant_dialogs.lua:10124
 #, fuzzy
-msgid "Items u{25BE}"
-msgstr "Elementos u{25BE}"
+msgid "Items ▾"
+msgstr "Elementos ▾"
 
 #: koassistant_dialogs.lua:10126
 #, fuzzy
-msgid "Items (%1) u{25BE}"
-msgstr "Elementos (%1) u{25BE}"
+msgid "Items (%1) ▾"
+msgstr "Elementos (%1) ▾"
 
 #: koassistant_dialogs.lua:10215
 #, fuzzy
@@ -10898,33 +10898,33 @@ msgstr "No se pudo extraer el texto del capítulo."
 
 #: koassistant_xray_browser.lua:4585
 #, fuzzy
-msgid "Entire section (%1) u{25BE}"
-msgstr "Sección completa (%1) u{25BE}"
+msgid "Entire section (%1) ▾"
+msgstr "Sección completa (%1) ▾"
 
 #: koassistant_xray_browser.lua:4587
 #, fuzzy
-msgid "Entire document u{25BE}"
-msgstr "Documento completo u{25BE}"
+msgid "Entire document ▾"
+msgstr "Documento completo ▾"
 
 #: koassistant_xray_browser.lua:4589
 #, fuzzy
-msgid "To p. %1 u{25BE}"
-msgstr "Hasta p. %1 u{25BE}"
+msgid "To p. %1 ▾"
+msgstr "A la p. %1 ▾"
 
 #: koassistant_xray_browser.lua:4593
 #, fuzzy
-msgid "%1 (up to p. %2) u{25BE}"
-msgstr "%1 (hasta p. %2) u{25BE}"
+msgid "%1 (up to p. %2) ▾"
+msgstr "%1 (hasta la p. %2) ▾"
 
 #: koassistant_xray_browser.lua:4597
 #, fuzzy
-msgid "This Chapter (up to p. %1) u{25BE}"
-msgstr "Este capítulo (hasta p. %1) u{25BE}"
+msgid "This Chapter (up to p. %1) ▾"
+msgstr "Este capítulo (hasta la p. %1) ▾"
 
 #: koassistant_xray_browser.lua:4598
 #, fuzzy
-msgid "This Chapter u{25BE}"
-msgstr "Este capítulo u{25BE}"
+msgid "This Chapter ▾"
+msgstr "Este capítulo ▾"
 
 #: koassistant_xray_browser.lua:4617
 #, fuzzy
@@ -15308,13 +15308,13 @@ msgstr "predeterminado del modelo"
 
 #: main.lua:16056
 #, fuzzy
-msgid "Other modelsu{2026}"
-msgstr "Otros modelosu{2026}"
+msgid "Other models…"
+msgstr "Otros modelos…"
 
 #: main.lua:16074 main.lua:16220
 #, fuzzy
-msgid "Reasoning u{00B7} %1"
-msgstr "Razonamiento u{00B7} %1"
+msgid "Reasoning · %1"
+msgstr "Razonamiento · %1"
 
 #: main.lua:16096
 #, fuzzy
@@ -15343,8 +15343,8 @@ msgstr "Predeterminado del modelo"
 
 #: main.lua:16207
 #, fuzzy
-msgid "%1 u{00B7} %2"
-msgstr "%1 u{00B7} %2"
+msgid "%1 · %2"
+msgstr "%1 · %2"
 
 #: main.lua:16216 main.lua:16365
 #, fuzzy
@@ -15353,13 +15353,13 @@ msgstr "No hay modelos configurables"
 
 #: main.lua:16258
 #, fuzzy
-msgid "Reasoning u{00B7} pick a provider"
-msgstr "Razonamiento u{00B7} elige un proveedor"
+msgid "Reasoning · pick a provider"
+msgstr "Razonamiento · elige un proveedor"
 
 #: main.lua:16354
 #, fuzzy
-msgid "%1: Follow global u{2192} %2"
-msgstr "%1: Seguir global u{2192} %2"
+msgid "%1: Follow global → %2"
+msgstr "%1: Seguir global → %2"
 
 #: main.lua:16696 koassistant_ui/prompts_manager.lua:913
 #: koassistant_ui/prompts_manager.lua:1646

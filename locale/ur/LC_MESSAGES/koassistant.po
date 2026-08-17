@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: KOAssistant 0.18.0-dev\n"
 "Report-Msgid-Bugs-To: https://github.com/zeeyado/koassistant.koplugin/issues\n"
-"POT-Creation-Date: 2026-08-17 23:10+0200\n"
+"POT-Creation-Date: 2026-08-18 00:21+0200\n"
 "PO-Revision-Date: 2026-07-05 13:12+0200\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -5359,8 +5359,8 @@ msgstr "منتخب کردہ دائرہ کار کے لیے متن نکالا نہ
 #: koassistant_dialogs.lua:9584
 #, fuzzy
 msgid ""
-"Your typed input was saved. Reopen this dialog and tap the gear u{2699}, then \"Restore last input\"."
-msgstr "آپ کا ٹائپ کردہ ان پٹ محفوظ کر لیا گیا ہے۔ یہ ڈائیلاگ دوبارہ کھولیں اور گیئر u{2699} پر ٹیپ کریں، پھر \"آخری ان پٹ بحال کریں\" پر جائیں۔"
+"Your typed input was saved. Reopen this dialog and tap the gear ⚙, then \"Restore last input\"."
+msgstr "آپ کی ٹائپ کی گئی ان پٹ محفوظ کر لی گئی ہے۔ اس ڈائیلاگ کو دوبارہ کھولیں اور گیئر ⚙ پر ٹیپ کریں، پھر \"آخری ان پٹ بحال کریں\" پر جائیں۔"
 
 #: koassistant_dialogs.lua:9660
 #, fuzzy
@@ -5392,18 +5392,18 @@ msgstr "مزید اعمال دکھائیں…"
 
 #: koassistant_dialogs.lua:10096
 #, fuzzy
-msgid "Library Scan u{25BE}"
-msgstr "لائبریری اسکین u{25BE}"
+msgid "Library Scan ▾"
+msgstr "لائبریری اسکین ▾"
 
 #: koassistant_dialogs.lua:10098
 #, fuzzy
-msgid "Library Scan (%1) u{25BE}"
-msgstr "لائبریری اسکین (%1) u{25BE}"
+msgid "Library Scan (%1) ▾"
+msgstr "لائبریری اسکین (%1) ▾"
 
 #: koassistant_dialogs.lua:10100
 #, fuzzy
-msgid "Library Scan (%1/%2) u{25BE}"
-msgstr "لائبریری اسکین (%1/%2) u{25BE}"
+msgid "Library Scan (%1/%2) ▾"
+msgstr "لائبریری اسکین (%1/%2) ▾"
 
 #: koassistant_dialogs.lua:10109
 #, fuzzy
@@ -5418,13 +5418,13 @@ msgstr ""
 
 #: koassistant_dialogs.lua:10124
 #, fuzzy
-msgid "Items u{25BE}"
-msgstr "آئٹمز u{25BE}"
+msgid "Items ▾"
+msgstr "آئٹمز ▾"
 
 #: koassistant_dialogs.lua:10126
 #, fuzzy
-msgid "Items (%1) u{25BE}"
-msgstr "آئٹمز (%1) u{25BE}"
+msgid "Items (%1) ▾"
+msgstr "آئٹمز (%1) ▾"
 
 #: koassistant_dialogs.lua:10215
 #, fuzzy
@@ -6168,12 +6168,14 @@ msgid ""
 msgstr "غیر سرکاری انضمام۔ اگر OpenAI نے Codex سروس تبدیل کی تو یہ کام کرنا بند کر سکتا ہے۔"
 
 #: koassistant_openai_codex_oauth.lua:413
+#, fuzzy
 msgid "Open this URL on another device:"
-msgstr ""
+msgstr "کسی دوسرے ڈیوائس پر یہ یو آر ایل کھولیں:"
 
 #: koassistant_openai_codex_oauth.lua:416
+#, fuzzy
 msgid "Enter this code:"
-msgstr ""
+msgstr "یہ کوڈ درج کریں:"
 
 #: koassistant_openai_codex_oauth.lua:419
 #, fuzzy
@@ -10922,33 +10924,33 @@ msgstr "باب کا متن نکالا نہیں جا سکا۔"
 
 #: koassistant_xray_browser.lua:4585
 #, fuzzy
-msgid "Entire section (%1) u{25BE}"
-msgstr "پورا سیکشن (%1) u{25BE}"
+msgid "Entire section (%1) ▾"
+msgstr "مکمل سیکشن (%1) ▾"
 
 #: koassistant_xray_browser.lua:4587
 #, fuzzy
-msgid "Entire document u{25BE}"
-msgstr "پوری دستاویز u{25BE}"
+msgid "Entire document ▾"
+msgstr "مکمل دستاویز ▾"
 
 #: koassistant_xray_browser.lua:4589
 #, fuzzy
-msgid "To p. %1 u{25BE}"
-msgstr "ص %1 تک u{25BE}"
+msgid "To p. %1 ▾"
+msgstr "صفحہ %1 تک ▾"
 
 #: koassistant_xray_browser.lua:4593
 #, fuzzy
-msgid "%1 (up to p. %2) u{25BE}"
-msgstr "%1 (ص %2 تک) u{25BE}"
+msgid "%1 (up to p. %2) ▾"
+msgstr "%1 (صفحہ %2 تک) ▾"
 
 #: koassistant_xray_browser.lua:4597
 #, fuzzy
-msgid "This Chapter (up to p. %1) u{25BE}"
-msgstr "یہ باب (ص %1 تک) u{25BE}"
+msgid "This Chapter (up to p. %1) ▾"
+msgstr "یہ باب (صفحہ %1 تک) ▾"
 
 #: koassistant_xray_browser.lua:4598
 #, fuzzy
-msgid "This Chapter u{25BE}"
-msgstr "یہ باب u{25BE}"
+msgid "This Chapter ▾"
+msgstr "یہ باب ▾"
 
 #: koassistant_xray_browser.lua:4617
 #, fuzzy
@@ -15332,12 +15334,12 @@ msgstr "ماڈل کی پہلے سے طے شدہ ترتیب"
 
 #: main.lua:16056
 #, fuzzy
-msgid "Other modelsu{2026}"
+msgid "Other models…"
 msgstr "دیگر ماڈلز…"
 
 #: main.lua:16074 main.lua:16220
 #, fuzzy
-msgid "Reasoning u{00B7} %1"
+msgid "Reasoning · %1"
 msgstr "استدلال · %1"
 
 #: main.lua:16096
@@ -15367,7 +15369,7 @@ msgstr "ماڈل پہلے سے طے شدہ"
 
 #: main.lua:16207
 #, fuzzy
-msgid "%1 u{00B7} %2"
+msgid "%1 · %2"
 msgstr "%1 · %2"
 
 #: main.lua:16216 main.lua:16365
@@ -15377,13 +15379,13 @@ msgstr "کوئی قابل ترتیب ماڈل نہیں"
 
 #: main.lua:16258
 #, fuzzy
-msgid "Reasoning u{00B7} pick a provider"
-msgstr "استدلال · کوئی فراہم کنندہ منتخب کریں"
+msgid "Reasoning · pick a provider"
+msgstr "استدلال · ایک فراہم کنندہ منتخب کریں"
 
 #: main.lua:16354
 #, fuzzy
-msgid "%1: Follow global u{2192} %2"
-msgstr "%1: عمومی پیروی کریں ← %2"
+msgid "%1: Follow global → %2"
+msgstr "%1: گلوبل کی پیروی کریں → %2"
 
 #: main.lua:16696 koassistant_ui/prompts_manager.lua:913
 #: koassistant_ui/prompts_manager.lua:1646

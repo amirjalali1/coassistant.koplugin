@@ -7706,7 +7706,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
         for idx, folder_path in ipairs(session_state.adhoc_folders) do
             local display = folder_path:match("([^/]+)$") or folder_path
             table.insert(menu_buttons, {{
-                text = "\u{2611} " .. display .. " \u{00B7}",
+                text = "\u{2611} " .. display .. " ·",
                 callback = function()
                     UIManager:close(library_folder_dialog)
                     table.remove(session_state.adhoc_folders, idx)
@@ -9581,7 +9581,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             local recoverable = plugin and plugin._last_input
                                 and plugin._last_input ~= ""
                             if recoverable then
-                                err_text = err_text .. "\n\n" .. _("Your typed input was saved. Reopen this dialog and tap the gear \u{2699}, then \"Restore last input\".")
+                                err_text = err_text .. "\n\n" .. _("Your typed input was saved. Reopen this dialog and tap the gear ⚙, then \"Restore last input\".")
                             end
                             -- Rate-limit retry: nothing was appended to this history on
                             -- failure, so re-issuing is the same call (the query layer
@@ -10093,11 +10093,11 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 local total_count = #perm_folder_list + #adhoc_folders
                 local library_label
                 if total_count == 0 then
-                    library_label = _("Library Scan \u{25BE}")
+                    library_label = _("Library Scan ▾")
                 elseif active_count == total_count then
-                    library_label = T(_("Library Scan (%1) \u{25BE}"), total_count)
+                    library_label = T(_("Library Scan (%1) ▾"), total_count)
                 else
-                    library_label = T(_("Library Scan (%1/%2) \u{25BE}"), active_count, total_count)
+                    library_label = T(_("Library Scan (%1/%2) ▾"), active_count, total_count)
                 end
                 table.insert(button_rows, {{
                     text = library_label,
@@ -10121,9 +10121,9 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             local book_count = books and #books or 0
             local items_label
             if book_count == 0 then
-                items_label = _("Items \u{25BE}")
+                items_label = _("Items ▾")
             else
-                items_label = T(_("Items (%1) \u{25BE}"), book_count)
+                items_label = T(_("Items (%1) ▾"), book_count)
             end
             table.insert(button_rows, {{
                 text = items_label,
