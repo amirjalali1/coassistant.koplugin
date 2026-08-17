@@ -1608,6 +1608,46 @@ local function findAvailableBackupPath(base_path)
     return base_path
 end
 
+--- Extract the update zip into staging_path with the archive's single root
+--- directory ("koassistant.koplugin/") stripped.
+--- KOReader builds through mid-2026 provide Device:unpackArchive; newer builds
+--- removed it in favor of ffi/archiver (shipped since KOReader 2025.06), so
+--- support both. The iterate/extractToPath loop below replicates what the old
+--- Device method did internally.
+--- @return boolean ok, string|nil error (error is for logging, not display)
+local function extractUpdateArchive(archive_path, staging_path)
+    if Device.unpackArchive then
+        return Device:unpackArchive(archive_path, staging_path, true)
+    end
+    local ok_mod, Archiver = pcall(require, "ffi/archiver")
+    if not ok_mod or type(Archiver) ~= "table" or not Archiver.Reader then
+        return false, "no archive extraction API in this KOReader version"
+    end
+    local arc = Archiver.Reader:new()
+    if not arc:open(archive_path) then
+        local open_err = arc.err
+        arc:close()
+        return false, open_err or "could not open archive"
+    end
+    for entry in arc:iterate() do
+        -- Strip one leading path component; the root directory entry itself
+        -- (no remainder after the slash) is skipped.
+        local tail = entry.path:match("^[^/]+/(.+)$")
+        if tail then
+            if not arc:extractToPath(entry.path, staging_path .. "/" .. tail) then
+                break
+            end
+        end
+    end
+    local ok = not arc.err
+    local extract_err = arc.err
+    arc:close()
+    if not ok then
+        return false, extract_err or "extraction failed"
+    end
+    return true
+end
+
 --- Main auto-update orchestrator. Called when user taps "Update Now".
 --- Downloads, extracts, verifies, and installs the update with user file preservation.
 --- @param update_info table Contains zip_url, latest_version, and other update metadata
@@ -1694,8 +1734,11 @@ performUpdate = function(update_info)
         end
         lfs.mkdir(staging_path)
 
-        local extract_ok = Device:unpackArchive(archive_path, staging_path, true)
+        local extract_ok, extract_err = extractUpdateArchive(archive_path, staging_path)
         if not extract_ok then
+            if extract_err then
+                logger.err("UpdateChecker: extract failed:", extract_err)
+            end
             UIManager:close(install_msg)
             updateFailed(_("Failed to extract update archive"), { archive_path, staging_path })
             return
