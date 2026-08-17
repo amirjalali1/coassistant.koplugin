@@ -1540,7 +1540,7 @@ Write a quick recap to help me re-immerse. Adapt your approach based on content 
 
 **For FICTION** - Use a "Previously on..." narrative style:
 1. **Sets the scene** - The story's situation at this point
-2. **Recent events** - What happened recently (prioritize recent over early)
+2. **Recent events** - What happened recently (the most detail goes here)
 3. **Active threads** - Conflicts, mysteries, or goals in play
 4. **Where I stopped** - The specific moment or scene where I paused
 
@@ -1561,6 +1561,7 @@ Style guidance:
 - Use **bold** for key names, terms, and concepts
 - Use *italics* for important revelations or claims
 - Keep it concise - this is a refresher, not a full summary
+- Scale coverage to my position: early in a book, stick to the recent stretch; deep into it, first walk the whole arc so far in a few sentences (early events compressed to their consequences), then give the recent stretch the detail. At {reading_progress} I am re-entering everything read so far, not only the last chapter
 - If the reader has highlighted passages, note what they found notable
 - No spoilers beyond {reading_progress}
 
@@ -1595,7 +1596,7 @@ Guidelines:
 - Update the "Where I stopped" or "Current focus" section for the new position
 - Keep the same tone and style as the original recap
 - Maintain the appropriate structure (fiction vs non-fiction)
-- Keep total length concise - summarize earlier content more briefly as you go
+- Keep total length concise - compress earlier content to its consequences as you go, but never drop it: however deep into the book, the recap still walks the whole arc so far in brief before the recent stretch gets the detail
 - If the reader has highlighted passages, note what they found notable
 
 CRITICAL: No spoilers beyond {reading_progress}.]],
