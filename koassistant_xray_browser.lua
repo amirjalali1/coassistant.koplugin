@@ -52,7 +52,7 @@ local ELLIPSIS = "…"
 -- ButtonTable takes whatever height it needs and TextViewer gives the text
 -- whatever is left, with no floor — so an entity with dozens of connections
 -- squeezed its own description down to a couple of lines (issue #90).
-local CONNECTION_BUTTONS_DEFAULT = 5
+local CONNECTION_BUTTONS_DEFAULT = 9
 
 --- Truncate `secondary` (UTF-8 safe) so it fits beside `name` in a menu row.
 --- @param name string The row's subject (measured, never truncated here —
@@ -2212,6 +2212,9 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         chat_text = _("As of") .. " " .. self.metadata.progress .. "\n\n" .. chat_text
     end
     local item_highlights = {}
+    -- Populated by the connections block below; the More… popup is built
+    -- BEFORE it, and its callbacks run after, so the closure sees the filled list
+    local conn_entries = {}
 
     -- Append matching highlights for searchable categories
     if not DISTRIBUTION_EXCLUDED[category_key] and self.ui then
@@ -2447,10 +2450,11 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
             -- now; rename and manual merge are queued to join it (unified
             -- entry-management direction)
             table.insert(search_row, {
-                text = _("Manage…"),
+                text = _("More…"),
                 callback = function()
                     self_ref:_showEntityManagePopup(item, category_key, title,
-                        source, nav_context, viewer, true)
+                        source, nav_context, viewer, true,
+                        { connections = conn_entries, highlights = item_highlights })
                 end,
             })
         end
@@ -2473,10 +2477,11 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         and type(item) == "table" and type(item.background) == "table"
         and #item.background > 0 then
         table.insert(fallback_row, {
-            text = _("Manage…"),
+            text = _("More…"),
             callback = function()
                 self_ref:_showEntityManagePopup(item, category_key, title,
-                    source, nav_context, viewer, false)
+                    source, nav_context, viewer, false,
+                    { connections = conn_entries, highlights = item_highlights })
             end,
         })
     end
@@ -2485,29 +2490,6 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
     end
     if #fallback_row > 0 then
         table.insert(buttons_rows, fallback_row)
-    end
-
-    -- Your own highlights that mention this entity: a row, not a wall. They are
-    -- render-time only (found locally in the open book's annotations, never
-    -- generated and never stored in the artifact), so this is purely display.
-    if #item_highlights > 0 then
-        local captured_highlights = item_highlights
-        local captured_name = title
-        table.insert(buttons_rows, {{
-            text = T(_("Your highlights (%1)…"), #item_highlights),
-            callback = function()
-                local body = {}
-                for _idx, hl in ipairs(captured_highlights) do
-                    body[#body + 1] = "> " .. hl
-                end
-                UIManager:show(TextViewer:new{
-                    title = captured_name or _("Your highlights"),
-                    text = table.concat(body, "\n\n"),
-                    width = Screen:getWidth() * 0.9,
-                    height = Screen:getHeight() * 0.8,
-                })
-            end,
-        }})
     end
 
     -- Resolve references into tappable cross-category navigation buttons
@@ -2543,7 +2525,6 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
             -- name the same entity — and the button label is the bare name, so
             -- they rendered as identical repeated buttons and the ◀/▶ carousel
             -- walked the same entry several times with an inflated (i/N).
-            local conn_entries = {}
             local seen_target = {}
             for _idx, name_str in ipairs(names_list) do
                 local resolved = XrayParser.resolveConnection(self.xray_data, name_str)
@@ -2568,7 +2549,12 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
             -- distinct connection, so the arrows still reach them all.
             local cap = tonumber(((self.metadata.configuration or {}).features or {})
                 .xray_connection_buttons) or CONNECTION_BUTTONS_DEFAULT
-            local drawn = math.min(cap, #conn_entries)
+            -- `cap` is the number of BOXES the row block may hold. Past it the
+            -- last box becomes the overflow row, so a long list still costs
+            -- exactly cap boxes; at or under it every connection is drawn and
+            -- no extra button appears (the list lives in More… instead).
+            local overflowing = #conn_entries > cap
+            local drawn = overflowing and math.max(cap - 1, 0) or #conn_entries
             local conn_row = {}
             for conn_idx = 1, drawn do
                 local entry = conn_entries[conn_idx]
@@ -2591,25 +2577,23 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
                     conn_row = {}
                 end
             end
-            -- The list is ALWAYS reachable — it is where the relationship text
-            -- lives now that the entity page no longer prints the connection
-            -- wall. It rides the last partial row as its final box, so a
-            -- capped page costs two rows rather than three.
-            local list_button = {
-                text = drawn < #conn_entries
-                    and T(_("All connections (%1)…"), #conn_entries)
-                    or _("List connections…"),
-                callback = function()
-                    self_ref:_dismissDetail(viewer)
-                    self_ref:_showConnectionList(conn_entries, current_source, title)
-                end,
-            }
-            if #conn_row < 3 then
-                table.insert(conn_row, list_button)
+            if overflowing then
+                local list_button = {
+                    text = T(_("All connections (%1)…"), #conn_entries),
+                    callback = function()
+                        self_ref:_dismissDetail(viewer)
+                        self_ref:_showConnectionList(conn_entries, current_source, title)
+                    end,
+                }
+                if #conn_row < 3 then
+                    table.insert(conn_row, list_button)
+                    table.insert(buttons_rows, conn_row)
+                else
+                    table.insert(buttons_rows, conn_row)
+                    table.insert(buttons_rows, { list_button })
+                end
+            elseif #conn_row > 0 then
                 table.insert(buttons_rows, conn_row)
-            else
-                table.insert(buttons_rows, conn_row)
-                table.insert(buttons_rows, { list_button })
             end
         end
     end
@@ -2924,7 +2908,11 @@ end
 --- the dedup scan covers duplicate merges today). Replaces the per-op
 --- detail-page buttons.
 --- @param can_edit_terms boolean Search-terms row (searchable categories only)
-function XrayBrowser:_showEntityManagePopup(item, category_key, title, source, nav_context, viewer, can_edit_terms)
+--- @param view_payload table|nil { connections = resolved+deduped entries,
+---   highlights = the reader's matching annotations } — the READ rows. The
+---   popup is built before the connection block fills its list, so these are
+---   closures over locals that are populated by the time a callback runs.
+function XrayBrowser:_showEntityManagePopup(item, category_key, title, source, nav_context, viewer, can_edit_terms, view_payload)
     local ButtonDialog = require("ui/widget/buttondialog")
     local self_ref = self
     local dialog
@@ -2954,6 +2942,44 @@ function XrayBrowser:_showEntityManagePopup(item, category_key, title, source, n
             }})
         end
     end
+    -- Reading rows. The entity page draws up to CONNECTION_BUTTONS_DEFAULT
+    -- connection buttons and only grows an "All connections" box once it
+    -- overflows, so at or under the cap this is where the full list (with the
+    -- relationship text) lives. Highlights are here for the same reason: they
+    -- are worth reading, not worth spending the page on.
+    local payload = view_payload or {}
+    if type(payload.connections) == "table" and #payload.connections > 0 then
+        table.insert(buttons, {{
+            text = T(_("List connections (%1)…"), #payload.connections),
+            callback = function()
+                UIManager:close(dialog)
+                self_ref:_dismissDetail(viewer)
+                self_ref:_showConnectionList(payload.connections, source, title)
+            end,
+        }})
+    end
+    if type(payload.highlights) == "table" and #payload.highlights > 0 then
+        table.insert(buttons, {{
+            text = T(_("Your highlights (%1)…"), #payload.highlights),
+            callback = function()
+                UIManager:close(dialog)
+                local body = {}
+                for _idx, hl in ipairs(payload.highlights) do
+                    body[#body + 1] = "> " .. hl
+                end
+                UIManager:show(TextViewer:new{
+                    title = title or _("Your highlights"),
+                    text = table.concat(body, "\n\n"),
+                    width = Screen:getWidth() * 0.9,
+                    height = Screen:getHeight() * 0.8,
+                })
+            end,
+        }})
+    end
+    -- Split the reading rows above from the ops below (maintainer 2026-08-18).
+    -- ButtonTable already rules between every row, so a disabled row reads as
+    -- the double line asked for, and labelling it says WHY the split is there.
+    local ops_start = #buttons
     if can_edit_terms then
         table.insert(buttons, {{
             text = _("Edit search terms"),
@@ -3052,6 +3078,10 @@ function XrayBrowser:_showEntityManagePopup(item, category_key, title, source, n
                 end,
             }})
         end
+    end
+    if ops_start > 0 and #buttons > ops_start then
+        table.insert(buttons, ops_start + 1,
+            {{ text = _("— Edit this entry —"), enabled = false }})
     end
     table.insert(buttons, {{
         text = _("Cancel"),

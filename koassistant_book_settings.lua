@@ -1976,10 +1976,13 @@ function BookSettings.showXrayCategoriesPicker(opts)
                 reshow()
             end }}
     end
-    -- Highlights are an INPUT rather than an output category, but from the
-    -- reader's side it is the same question the rest of this screen asks —
-    -- what goes into this X-Ray — and there was no way to keep highlight
-    -- sharing on for other actions while keeping it out of the X-Ray.
+    -- reader_engagement IS a category of the X-Ray schema — the model's read of
+    -- what the reader's highlights show about their interests — so it belongs
+    -- on this screen with the others. Switching it off also stops the
+    -- highlights being SENT, since the section cannot exist without them; that
+    -- is the point (no section, no tokens). It does NOT touch the entity page's
+    -- local highlight matching, which is computed on each open from the book's
+    -- own annotations and stays governed by the privacy gates alone.
     do
         local hl_on, hl_layer
         if is_global then
@@ -1988,7 +1991,7 @@ function BookSettings.showXrayCategoriesPicker(opts)
         else
             hl_on, hl_layer = BookSettings.resolveXrayHighlights(doc_settings, features)
         end
-        local label = mark(hl_on) .. _("Include my highlights")
+        local label = mark(hl_on) .. _("Reader engagement")
         if not is_global and hl_layer ~= "book" then
             label = label .. " " .. T(_("(%1)"), _("global"))
         end
