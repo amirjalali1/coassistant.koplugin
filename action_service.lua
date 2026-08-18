@@ -196,8 +196,18 @@ function ActionService:loadActions()
                     if override.model then
                         action_data.model = override.model
                     end
-                    if override.reasoning_config then
-                        action_data.reasoning_config = override.reasoning_config
+                    -- Reasoning (2026-08-18): "global" CLEARS a built-in's pin
+                    -- (nil in the merged action = follow the global stance).
+                    -- nil cannot be stored in the override table, so without a
+                    -- sentinel an action whose built-in pins reasoning_config
+                    -- (xray, quiz, recap, summarize...) could never be set back
+                    -- to Global from the GUI. model_tier "none" precedent.
+                    if override.reasoning_config ~= nil then
+                        if override.reasoning_config == "global" then
+                            action_data.reasoning_config = nil
+                        else
+                            action_data.reasoning_config = override.reasoning_config
+                        end
                     end
                     if override.skip_language_instruction ~= nil then
                         action_data.skip_language_instruction = override.skip_language_instruction
