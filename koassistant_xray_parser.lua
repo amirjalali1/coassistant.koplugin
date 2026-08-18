@@ -566,6 +566,25 @@ function XrayParser.parse(text)
         return data, nil
     end
 
+    -- Attempt 5: drop stray closing braces/brackets (2026-08-18, from a live
+    -- rejected checkpoint rung): one extra `}`/`]` in an otherwise-valid
+    -- response crashes the bundled decoder with the state.lua:81 'active'
+    -- error rather than a syntax message. Same only-after-strict-failure rule
+    -- as attempt 4; the quote repair is layered on top for responses carrying
+    -- both defects.
+    local rebalanced = JsonRepair.dropExtraClosers(candidate)
+    if rebalanced ~= candidate then
+        ok, data = pcall(json.decode, rebalanced)
+        if not (ok and isValidXrayData(data)) then
+            ok, data = pcall(json.decode, JsonRepair.escapeInnerQuotes(rebalanced))
+        end
+        if ok and isValidXrayData(data) then
+            logger.dbg("XrayParser: parsed via stray-closer repair")
+            normalizeShapes(data)
+            return data, nil
+        end
+    end
+
     return nil, decode_err or "failed to parse JSON from response"
 end
 

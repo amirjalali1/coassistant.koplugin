@@ -570,6 +570,38 @@ TestRunner:test("delta omitting connections leaves the old array intact", functi
 end)
 
 print("")
+print("\n  [dropExtraClosers - stray-closer repair (state.lua:81 class)]")
+
+TestRunner:test("doubled final closer is dropped and the result parses", function()
+    local JR = require("koassistant_json_repair")
+    TestRunner:eq(JR.dropExtraClosers('{"characters":[{"name":"A","description":"d"}]}}'),
+        '{"characters":[{"name":"A","description":"d"}]}', "final stray } dropped")
+    local parsed = XrayParser.parse('```json\n{"characters":[{"name":"A","description":"d"}]}}\n```')
+    TestRunner:eq(parsed ~= nil, true, "parse recovers via the stray-closer repair")
+    TestRunner:eq(parsed.characters[1].name, "A", "content intact")
+end)
+
+TestRunner:test("stray closer mid-document is dropped", function()
+    local JR = require("koassistant_json_repair")
+    local fixed = JR.dropExtraClosers('{"a":[{"x":1}]],"b":[2]}')
+    TestRunner:eq(fixed, '{"a":[{"x":1}],"b":[2]}', "mismatched ] dropped where it appears")
+end)
+
+TestRunner:test("closers inside strings and escapes are untouched", function()
+    local JR = require("koassistant_json_repair")
+    local text = '{"name":"A }] \\" x","d":"]] }"}'
+    TestRunner:eq(JR.dropExtraClosers(text), text, "string content never counts as structure")
+end)
+
+TestRunner:test("balanced input is byte-identical; missing closers are not papered over", function()
+    local JR = require("koassistant_json_repair")
+    local good = '{"characters":[{"name":"A"}]}'
+    TestRunner:eq(JR.dropExtraClosers(good), good, "no-op on balanced input")
+    local truncated = '{"characters":[{"name":"A"}]'
+    TestRunner:eq(JR.dropExtraClosers(truncated), truncated, "truncation left for the caller to see")
+end)
+
+
 print(string.rep("-", 50))
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))
 print(string.rep("-", 50))
