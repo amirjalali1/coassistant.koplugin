@@ -1577,14 +1577,40 @@ function ActionCache.getXrayCheckpointsPath(document_path)
     return sidecar_dir .. "/" .. ActionCache.XRAY_CHECKPOINTS_FILE
 end
 
+--- How much of the book an archived version covers. A whole-document build is
+--- worth 1 even when its progress stamp says otherwise (a complete install is
+--- not always stamped 1.0 -- see the posture notes on full_document).
+local function checkpointCoverage(entry)
+    if type(entry) ~= "table" then return 0 end
+    if entry.full_document then return 1 end
+    return tonumber(entry.progress_decimal) or 0
+end
+
 --- Trim a newest-first checkpoint list to the ring limit (pure helper, unit-tested).
+--- Eviction is by VALUE, not by age (2026-08-18): the entries dropped are the
+--- ones covering the least of the book, oldest first among equal coverage. The
+--- ring used to truncate its tail, which spent its five slots on whatever
+--- happened to overwrite something most recently -- one real ring held 40.9%,
+--- 9.7%, 17.8%, 80.8% and 49.7%, where four were abandoned experiments and the
+--- one worth keeping was a single rebuild from eviction. Surviving entries keep
+--- their newest-first order, so display and index semantics are unchanged.
 --- @param list table Array of checkpoint entries, newest first
 --- @param limit number|nil Max entries (default XRAY_CHECKPOINT_LIMIT)
---- @return table The same list, truncated in place
+--- @return table The same list, trimmed in place
 function ActionCache.trimCheckpoints(list, limit)
     limit = limit or ActionCache.XRAY_CHECKPOINT_LIMIT
-    for i = #list, limit + 1, -1 do
-        table.remove(list, i)
+    if #list <= limit then return list end
+    local order = {}
+    for i = 1, #list do order[i] = i end
+    table.sort(order, function(a, b)
+        local ca, cb = checkpointCoverage(list[a]), checkpointCoverage(list[b])
+        if ca ~= cb then return ca > cb end
+        return a < b
+    end)
+    local keep = {}
+    for i = 1, limit do keep[order[i]] = true end
+    for i = #list, 1, -1 do
+        if not keep[i] then table.remove(list, i) end
     end
     return list
 end

@@ -202,12 +202,49 @@ package.loaded["luasettings"] = {
 local ActionCache = require("koassistant_action_cache")
 local DOC_PATH = TMP_ROOT .. "/book.epub"
 
-TestRunner:test("trimCheckpoints keeps the newest N", function()
-    local list = {}
-    for i = 1, 8 do list[i] = { progress_decimal = i } end
+TestRunner:test("trimCheckpoints evicts the least coverage, not the oldest", function()
+    -- Newest first. The tail-truncating version kept 0.10 and dropped 0.95.
+    local list = {
+        { progress_decimal = 0.10 }, { progress_decimal = 0.20 },
+        { progress_decimal = 0.30 }, { progress_decimal = 0.40 },
+        { progress_decimal = 0.50 }, { progress_decimal = 0.60 },
+        { progress_decimal = 0.95 }, { progress_decimal = 0.05 },
+    }
     ActionCache.trimCheckpoints(list, 5)
     TestRunner:assertEqual(#list, 5, "trimmed to limit")
-    TestRunner:assertEqual(list[1].progress_decimal, 1, "head (newest) kept")
+    TestRunner:assertEqual(list[1].progress_decimal, 0.30, "0.10 and 0.20 evicted as the thinnest")
+    TestRunner:assertEqual(list[#list].progress_decimal, 0.95, "the near-complete version survives")
+
+    -- Order among survivors is untouched (display + restore indexes rely on it)
+    local prev = 0
+    for i = 2, #list do
+        TestRunner:assertEqual(list[i].progress_decimal > list[i - 1].progress_decimal, true,
+            "survivors keep their original relative order")
+        prev = i
+    end
+    TestRunner:assertEqual(prev, #list, "walked every survivor")
+
+    -- A whole-document build counts as complete even without a 1.0 stamp
+    local full = {
+        { progress_decimal = 0.90 }, { progress_decimal = 0.90 },
+        { progress_decimal = 0.90 }, { progress_decimal = 0.90 },
+        { progress_decimal = 0.90 }, { progress_decimal = 0.40, full_document = true },
+    }
+    ActionCache.trimCheckpoints(full, 5)
+    TestRunner:assertEqual(full[#full].full_document, true, "full_document outranks a higher stamp")
+
+    -- Equal coverage falls back to age: the oldest goes
+    local tied = {}
+    for i = 1, 7 do tied[i] = { progress_decimal = 0.5, tag = i } end
+    ActionCache.trimCheckpoints(tied, 5)
+    TestRunner:assertEqual(tied[1].tag, 1, "newest of the tied kept")
+    TestRunner:assertEqual(tied[#tied].tag, 5, "the two oldest tied entries evicted")
+
+    -- Under the limit nothing moves
+    local small = { { progress_decimal = 0.1 }, { progress_decimal = 0.9 } }
+    ActionCache.trimCheckpoints(small, 5)
+    TestRunner:assertEqual(#small, 2, "no eviction below the limit")
+    TestRunner:assertEqual(small[1].progress_decimal, 0.1, "order untouched below the limit")
 
     -- Real push/get round-trip: ring order, cap, and tricky-result serialization
     for i = 1, 7 do
