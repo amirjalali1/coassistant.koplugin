@@ -64,7 +64,7 @@ Definition(s), numbered if multiple
 Etymology (brief)
 Synonyms
 
-2. Second entry: a complete Persian (Farsi) dictionary entry for the same word. This entire section must contain ZERO Latin letters -- not the headword, not IPA, not the lemma, not the synonyms. Give the headword as a Persian-script transliteration instead of the Latin spelling (it already appears in Latin in entry 1 above), then part of speech, definition(s), brief etymology, and synonyms, all as Persian words. Do not mix any Latin character into this section under any circumstance, even for names or loanwords -- transliterate everything into Persian script.
+2. Second entry: Meaning of the word in Persian (Farsi) and then after that a complete Persian (Farsi) dictionary entry for the same word. This entire section must contain ZERO Latin letters -- not the headword, not IPA, not the lemma, not the synonyms. Give the headword as a Persian-script transliteration instead of the Latin spelling (it already appears in Latin in entry 1 above), then part of speech, definition(s), brief etymology, and synonyms, all as Persian words. Do not mix any Latin character into this section under any circumstance, even for names or loanwords -- transliterate everything into Persian script.
 
 {context_section}
 
