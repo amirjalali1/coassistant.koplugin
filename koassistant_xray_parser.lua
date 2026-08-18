@@ -790,29 +790,51 @@ XrayParser.TEXT_MATCH_EXCLUDED = TEXT_MATCH_EXCLUDED
 function XrayParser.resolveConnection(data, connection_string)
     if not connection_string or connection_string == "" then return nil end
 
-    -- Extract the name portion. A connection is written "Name (relationship)",
-    -- but a NAME may itself carry a disambiguating parenthetical — a real
-    -- artifact holds "Ayesha (of Titlipur)" and "Ayesha (wife of Mahound)", and
-    -- another "the black Jackson (John Jackson)". Stripping at the FIRST "("
-    -- reduced every such connection to the bare shared handle, which pass 1
-    -- missed and pass 3 then resolved by substring to whichever entry sorted
-    -- first — so half the buttons opened the wrong entity, all labelled alike.
-    -- Try the LONGEST form first (strip only the LAST parenthetical group) and
-    -- fall back to the short form, matching the marks index, which already
-    -- folds both raw and parenthetical-stripped handles.
+    -- A connection is written "Name (relationship)", but a NAME may itself
+    -- carry a disambiguating parenthetical: one artifact holds both
+    -- "John Jackson (the black)" and "John Jackson (the white)", another both
+    -- "Ayesha (of Titlipur)" and "Ayesha (wife of Mahound)". So the string is
+    -- ambiguous on its face and we try three readings, longest first, each as
+    -- a (handle, annotation) pair:
+    --   1. the WHOLE string is the name          -- "John Jackson (the black)"
+    --   2. all but the LAST group is the name    -- "John Jackson (the black)" + "killed by Yumas"
+    --   3. up to the FIRST group is the name     -- "John Jackson" + "the black"
+    -- Reading 3 alone (the original) reduced every such connection to the
+    -- shared handle, which the exact pass missed and the substring pass then
+    -- resolved to whichever entry sorted first — so half the buttons opened
+    -- the wrong character, and the name's own qualifier was displayed as if it
+    -- were the relationship.
     local function trim(v) return v and (v:match("^%s*(.-)%s*$")) or v end
-    local long_portion = trim(connection_string:match("^(.*)%s*%b()%s*$"))
-    local name_portion = trim(connection_string:match("^(.-)%s*%(") or connection_string)
+    local last_group = connection_string:match("(%b())%s*$")
+    local candidates = {
+        { handle = trim(connection_string) },
+    }
+    if last_group then
+        local without_last = trim(connection_string:match("^(.*)%s*%b()%s*$"))
+        if without_last and without_last ~= "" then
+            candidates[#candidates + 1] = {
+                handle = without_last, relationship = last_group:sub(2, -2),
+            }
+        end
+    end
+    local first_group = connection_string:match("%((.-)%)")
+    local short_handle = trim(connection_string:match("^(.-)%s*%("))
+    if short_handle and short_handle ~= "" then
+        candidates[#candidates + 1] = { handle = short_handle, relationship = first_group }
+    end
 
-    -- Extract relationship if present (the LAST group — the annotation)
-    local relationship = connection_string:match("%b()%s*$")
-    if relationship then relationship = relationship:sub(2, -2) end
-
-    if not name_portion or name_portion == "" then return nil end
+    -- De-duplicate identical handles, keeping the FIRST (longest) reading
+    local seen_handle, ordered = {}, {}
+    for _idx, c in ipairs(candidates) do
+        if c.handle and c.handle ~= "" and not seen_handle[c.handle] then
+            seen_handle[c.handle] = true
+            ordered[#ordered + 1] = c
+        end
+    end
+    if #ordered == 0 then return nil end
 
     local categories = XrayParser.getCategories(data)
     local normalize = XrayParser.normalizeArabic
-    local name_lower = normalize(name_portion:lower())
 
     -- Build flat list of searchable items with their category keys
     -- Skip singleton categories (current_state, current_position, reader_engagement)
@@ -827,18 +849,26 @@ function XrayParser.resolveConnection(data, connection_string)
 
     if #searchable == 0 then return nil end
 
-    -- Pass 0: exact match on the LONG form, so a name that carries its own
-    -- parenthetical wins over the ambiguous shared handle
-    if long_portion and long_portion ~= "" and long_portion ~= name_portion then
-        local long_lower = normalize(long_portion:lower())
+    local function hit(entry, c)
+        return { item = entry.item, category_key = entry.category_key,
+                 name_portion = c.handle, relationship = c.relationship }
+    end
+
+    -- Pass 0: exact name match, longest reading first — a name carrying its own
+    -- parenthetical beats the ambiguous shared handle
+    for _ci, c in ipairs(ordered) do
+        local c_lower = normalize(c.handle:lower())
         for _idx, entry in ipairs(searchable) do
             local item_name = getItemSearchName(entry.item)
-            if item_name and normalize(item_name:lower()) == long_lower then
-                return { item = entry.item, category_key = entry.category_key,
-                         name_portion = long_portion, relationship = relationship }
+            if item_name and normalize(item_name:lower()) == c_lower then
+                return hit(entry, c)
             end
         end
     end
+
+    local name_portion = ordered[#ordered].handle
+    local relationship = ordered[#ordered].relationship
+    local name_lower = normalize(name_portion:lower())
 
     -- Pass 1: exact name match (name, term, or event)
     for _idx, entry in ipairs(searchable) do
@@ -1169,8 +1199,15 @@ end
 --- @param item table The item entry
 --- @param category_key string The category key
 --- @return string detail Formatted detail text
-function XrayParser.formatItemDetail(item, category_key)
+--- @param opts table|nil { omit_connections = true } — the browser's entity
+---   page renders connections as tappable buttons plus a list, so repeating
+---   them as a comma-joined wall of prose (one real entity ran past 1500
+---   characters) pushed the description off the screen. Model-facing callers
+---   (AI Wiki context) and the card's full-detail view, which have no buttons,
+---   pass nothing and keep them.
+function XrayParser.formatItemDetail(item, category_key, opts)
     local parts = {}
+    local omit_connections = opts and opts.omit_connections
 
     if category_key == "characters" or category_key == "key_figures" or category_key == "referenced_works" then
         local name = item.name or _("Unknown")
@@ -1193,7 +1230,7 @@ function XrayParser.formatItemDetail(item, category_key)
             table.insert(parts, "")
         end
 
-        local connections = ensure_array(item.connections)
+        local connections = not omit_connections and ensure_array(item.connections)
         if connections and #connections > 0 then
             table.insert(parts, _("Connections:") .. " " .. table.concat(connections, ", "))
         end
@@ -1216,7 +1253,7 @@ function XrayParser.formatItemDetail(item, category_key)
             table.insert(parts, _("Significance:") .. " " .. sig)
             table.insert(parts, "")
         end
-        local refs = ensure_array(item.references)
+        local refs = not omit_connections and ensure_array(item.references)
         if refs and #refs > 0 then
             table.insert(parts, _("References:") .. " " .. table.concat(refs, ", "))
         end
@@ -1236,7 +1273,7 @@ function XrayParser.formatItemDetail(item, category_key)
             table.insert(parts, _("Significance:") .. " " .. item.significance)
             table.insert(parts, "")
         end
-        local refs = ensure_array(item.references)
+        local refs = not omit_connections and ensure_array(item.references)
         if refs and #refs > 0 then
             table.insert(parts, _("References:") .. " " .. table.concat(refs, ", "))
         end

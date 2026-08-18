@@ -52,7 +52,7 @@ local ELLIPSIS = "…"
 -- ButtonTable takes whatever height it needs and TextViewer gives the text
 -- whatever is left, with no floor — so an entity with dozens of connections
 -- squeezed its own description down to a couple of lines (issue #90).
-local CONNECTION_BUTTONS_DEFAULT = 9
+local CONNECTION_BUTTONS_DEFAULT = 5
 
 --- Truncate `secondary` (UTF-8 safe) so it fits beside `name` in a menu row.
 --- @param name string The row's subject (measured, never truncated here —
@@ -2198,7 +2198,8 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         item_name = XrayParser.getItemName(item, category_key),
         item_aliases = item.aliases,
     }
-    local detail_text = XrayParser.formatItemDetail(item, category_key)
+    local detail_text = XrayParser.formatItemDetail(item, category_key,
+        { omit_connections = true })
 
     -- For current state/position: prepend reading progress for clarity
     if (category_key == "current_state" or category_key == "current_position") and self.metadata.progress then
@@ -2556,17 +2557,25 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
                     conn_row = {}
                 end
             end
-            if #conn_row > 0 then
+            -- The list is ALWAYS reachable — it is where the relationship text
+            -- lives now that the entity page no longer prints the connection
+            -- wall. It rides the last partial row as its final box, so a
+            -- capped page costs two rows rather than three.
+            local list_button = {
+                text = drawn < #conn_entries
+                    and T(_("All connections (%1)…"), #conn_entries)
+                    or _("List connections…"),
+                callback = function()
+                    self_ref:_dismissDetail(viewer)
+                    self_ref:_showConnectionList(conn_entries, current_source, title)
+                end,
+            }
+            if #conn_row < 3 then
+                table.insert(conn_row, list_button)
                 table.insert(buttons_rows, conn_row)
-            end
-            if drawn < #conn_entries then
-                table.insert(buttons_rows, {{
-                    text = T(_("All connections (%1)…"), #conn_entries),
-                    callback = function()
-                        self_ref:_dismissDetail(viewer)
-                        self_ref:_showConnectionList(conn_entries, current_source, title)
-                    end,
-                }})
+            else
+                table.insert(buttons_rows, conn_row)
+                table.insert(buttons_rows, { list_button })
             end
         end
     end
