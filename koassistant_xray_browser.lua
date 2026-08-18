@@ -47,6 +47,13 @@ local dismissSearchReturnButton
 local MANDATORY_MAX_SHARE = 0.45   -- right column never claims more than this
 local ELLIPSIS = "…"
 
+-- How many connection buttons an entity page draws before the rest move behind
+-- an overflow row (schema key features.xray_connection_buttons overrides).
+-- ButtonTable takes whatever height it needs and TextViewer gives the text
+-- whatever is left, with no floor — so an entity with dozens of connections
+-- squeezed its own description down to a couple of lines (issue #90).
+local CONNECTION_BUTTONS_DEFAULT = 9
+
 --- Truncate `secondary` (UTF-8 safe) so it fits beside `name` in a menu row.
 --- @param name string The row's subject (measured, never truncated here —
 ---   the Menu widget elides it if the remainder is still too small)
@@ -2110,6 +2117,36 @@ function XrayBrowser:showCategoryItems(category)
     self:navigateForward(title, items)
 end
 
+--- Every connection of one entity as a paged list (the overflow behind the
+--- entity page's button cap). Uses the browser's own nav stack, so back
+--- returns to the category the reader came from, and each row opens the target
+--- with the full carousel in place.
+--- @param conn_entries table Resolved, target-deduped connection entries
+--- @param source table|nil Back-navigation chain from the entity page
+--- @param owner_title string Name of the entity these belong to
+function XrayBrowser:_showConnectionList(conn_entries, source, owner_title)
+    if not self.menu then return end
+    local self_ref = self
+    local items = {}
+    for idx, entry in ipairs(conn_entries) do
+        local captured_idx = idx
+        table.insert(items, {
+            text = entry.button_text,
+            mandatory = entry.relationship,
+            mandatory_dim = true,
+            callback = function()
+                self_ref:showItemDetail(entry.item, entry.category_key,
+                    entry.name, source, {
+                        entries = conn_entries, index = captured_idx,
+                        source = source,
+                    })
+            end,
+        })
+    end
+    self:navigateForward(T(_("%1 — connections (%2)"), owner_title or _("Details"),
+        #conn_entries), items)
+end
+
 --- Show detail view for a single item (overlays as TextViewer)
 --- @param item table The item data
 --- @param category_key string The category key
@@ -2450,22 +2487,39 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
                 nav_context = nav_context,  -- Preserve prev/next navigation for back-button
             }
             -- Resolve all connections first for nav_context
+            -- Collapse by TARGET, not by string: a revision restates a
+            -- relationship by extending its annotation, so several strings can
+            -- name the same entity — and the button label is the bare name, so
+            -- they rendered as identical repeated buttons and the ◀/▶ carousel
+            -- walked the same entry several times with an inflated (i/N).
             local conn_entries = {}
+            local seen_target = {}
             for _idx, name_str in ipairs(names_list) do
                 local resolved = XrayParser.resolveConnection(self.xray_data, name_str)
-                if resolved and resolved.item ~= item then  -- Skip self-references
+                if resolved and resolved.item ~= item          -- skip self-references
+                    and not seen_target[resolved.item] then
+                    seen_target[resolved.item] = true
                     table.insert(conn_entries, {
                         item = resolved.item,
                         category_key = resolved.category_key,
                         name = resolved.item.name or resolved.item.term
                             or resolved.item.event or _("Details"),
                         button_text = resolved.name_portion,
+                        -- The annotation is what tells two connections apart;
+                        -- the button drops it for width, the overflow list keeps it
+                        relationship = resolved.relationship,
                     })
                 end
             end
-            -- Build connection buttons with nav_context for prev/next arrows
+            -- Build connection buttons with nav_context for prev/next arrows.
+            -- Only the first `cap` are DRAWN; the nav_context keeps every
+            -- distinct connection, so the arrows still reach them all.
+            local cap = tonumber(((self.metadata.configuration or {}).features or {})
+                .xray_connection_buttons) or CONNECTION_BUTTONS_DEFAULT
+            local drawn = math.min(cap, #conn_entries)
             local conn_row = {}
-            for conn_idx, entry in ipairs(conn_entries) do
+            for conn_idx = 1, drawn do
+                local entry = conn_entries[conn_idx]
                 local captured_idx = conn_idx
                 table.insert(conn_row, {
                     text = entry.button_text,
@@ -2487,6 +2541,15 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
             end
             if #conn_row > 0 then
                 table.insert(buttons_rows, conn_row)
+            end
+            if drawn < #conn_entries then
+                table.insert(buttons_rows, {{
+                    text = T(_("All connections (%1)…"), #conn_entries),
+                    callback = function()
+                        self_ref:_dismissDetail(viewer)
+                        self_ref:_showConnectionList(conn_entries, current_source, title)
+                    end,
+                }})
             end
         end
     end

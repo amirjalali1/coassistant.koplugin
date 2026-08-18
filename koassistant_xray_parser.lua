@@ -790,12 +790,23 @@ XrayParser.TEXT_MATCH_EXCLUDED = TEXT_MATCH_EXCLUDED
 function XrayParser.resolveConnection(data, connection_string)
     if not connection_string or connection_string == "" then return nil end
 
-    -- Extract name portion: everything before the last " (" or the whole string
-    local name_portion = connection_string:match("^(.-)%s*%(") or connection_string
-    name_portion = name_portion:match("^%s*(.-)%s*$")  -- trim
+    -- Extract the name portion. A connection is written "Name (relationship)",
+    -- but a NAME may itself carry a disambiguating parenthetical — a real
+    -- artifact holds "Ayesha (of Titlipur)" and "Ayesha (wife of Mahound)", and
+    -- another "the black Jackson (John Jackson)". Stripping at the FIRST "("
+    -- reduced every such connection to the bare shared handle, which pass 1
+    -- missed and pass 3 then resolved by substring to whichever entry sorted
+    -- first — so half the buttons opened the wrong entity, all labelled alike.
+    -- Try the LONGEST form first (strip only the LAST parenthetical group) and
+    -- fall back to the short form, matching the marks index, which already
+    -- folds both raw and parenthetical-stripped handles.
+    local function trim(v) return v and (v:match("^%s*(.-)%s*$")) or v end
+    local long_portion = trim(connection_string:match("^(.*)%s*%b()%s*$"))
+    local name_portion = trim(connection_string:match("^(.-)%s*%(") or connection_string)
 
-    -- Extract relationship if present
-    local relationship = connection_string:match("%((.-)%)")
+    -- Extract relationship if present (the LAST group — the annotation)
+    local relationship = connection_string:match("%b()%s*$")
+    if relationship then relationship = relationship:sub(2, -2) end
 
     if not name_portion or name_portion == "" then return nil end
 
@@ -815,6 +826,19 @@ function XrayParser.resolveConnection(data, connection_string)
     end
 
     if #searchable == 0 then return nil end
+
+    -- Pass 0: exact match on the LONG form, so a name that carries its own
+    -- parenthetical wins over the ambiguous shared handle
+    if long_portion and long_portion ~= "" and long_portion ~= name_portion then
+        local long_lower = normalize(long_portion:lower())
+        for _idx, entry in ipairs(searchable) do
+            local item_name = getItemSearchName(entry.item)
+            if item_name and normalize(item_name:lower()) == long_lower then
+                return { item = entry.item, category_key = entry.category_key,
+                         name_portion = long_portion, relationship = relationship }
+            end
+        end
+    end
 
     -- Pass 1: exact name match (name, term, or event)
     for _idx, entry in ipairs(searchable) do
