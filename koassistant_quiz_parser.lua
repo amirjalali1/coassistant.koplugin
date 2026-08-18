@@ -310,10 +310,13 @@ function QuizParser.parse(text)
     -- instead of a syntax message. Same layering as the X-Ray parser's
     -- Attempt 5: only after strict parsing fails, quote repair on top.
     local rebalanced = JsonRepair.dropExtraClosers(candidate)
+    if rebalanced == candidate then
+        rebalanced = JsonRepair.closeUnclosed(candidate)
+    end
     if rebalanced ~= candidate then
         data = tryDecode(rebalanced) or tryDecode(JsonRepair.escapeInnerQuotes(rebalanced))
         if data then
-            logger.dbg("QuizParser: parsed via stray-closer repair")
+            logger.dbg("QuizParser: parsed via bracket-balance repair")
             return data, nil
         end
     end

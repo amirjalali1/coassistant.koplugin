@@ -602,6 +602,40 @@ TestRunner:test("balanced input is byte-identical; missing closers are not paper
 end)
 
 
+print("\n  [closeUnclosed - under-closed complete document]")
+
+TestRunner:test("complete document missing its final brace recovers", function()
+    local JR = require("koassistant_json_repair")
+    local txt = '{"type":"fiction","characters":[{"name":"A","description":"d"}],"current_state":{"summary":"s","questions":["q?"]}'
+    TestRunner:eq(JR.closeUnclosed(txt), txt .. "}", "one missing } appended")
+    local parsed = XrayParser.parse(txt)
+    TestRunner:eq(parsed ~= nil, true, "parse recovers the under-closed response")
+    TestRunner:eq(parsed.characters[1].name, "A", "content intact")
+end)
+
+TestRunner:test("several missing closers append innermost first", function()
+    local JR = require("koassistant_json_repair")
+    TestRunner:eq(JR.closeUnclosed('{"a":[{"x":"y"}'), '{"a":[{"x":"y"}]}', "]} appended in order")
+end)
+
+TestRunner:test("true truncation still fails: mid-string, after comma, after colon, mid-number", function()
+    local JR = require("koassistant_json_repair")
+    for _i, cut in ipairs({
+        '{"characters":[{"name":"A","description":"cut mid sent',
+        '{"characters":[{"name":"A"},',
+        '{"characters":[{"name":',
+        '{"count": 12',
+    }) do
+        TestRunner:eq(JR.closeUnclosed(cut), cut, "not papered over: " .. cut:sub(1, 30))
+    end
+end)
+
+TestRunner:test("balanced input untouched", function()
+    local JR = require("koassistant_json_repair")
+    local good = '{"characters":[{"name":"A"}]}'
+    TestRunner:eq(JR.closeUnclosed(good), good, "no-op when nothing is open")
+end)
+
 print(string.rep("-", 50))
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))
 print(string.rep("-", 50))

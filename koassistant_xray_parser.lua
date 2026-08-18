@@ -573,13 +573,18 @@ function XrayParser.parse(text)
     -- as attempt 4; the quote repair is layered on top for responses carrying
     -- both defects.
     local rebalanced = JsonRepair.dropExtraClosers(candidate)
+    if rebalanced == candidate then
+        -- Not over-closed; try the mirror defect (complete document, closers
+        -- missing at the end — the "Unclosed elements present" class).
+        rebalanced = JsonRepair.closeUnclosed(candidate)
+    end
     if rebalanced ~= candidate then
         ok, data = pcall(json.decode, rebalanced)
         if not (ok and isValidXrayData(data)) then
             ok, data = pcall(json.decode, JsonRepair.escapeInnerQuotes(rebalanced))
         end
         if ok and isValidXrayData(data) then
-            logger.dbg("XrayParser: parsed via stray-closer repair")
+            logger.dbg("XrayParser: parsed via bracket-balance repair")
             normalizeShapes(data)
             return data, nil
         end

@@ -103,4 +103,55 @@ function JsonRepair.dropExtraClosers(text)
     return table.concat(out)
 end
 
+--- Close unclosed braces/brackets on a COMPLETE-looking document — the mirror
+--- of dropExtraClosers (2026-08-18, from a live rejected rung the same
+--- evening): a response can end on end_turn with full content and one `}` too
+--- few, which the bundled decoder reports as "Unclosed elements present".
+---
+--- The gate is deliberately conservative so real truncation keeps failing
+--- visibly: the string-aware scan must end OUTSIDE any string, and the last
+--- non-whitespace character must be a COMPLETED value (`}`, `]`, or `"`).
+--- A cut mid-string fails the in-string check; a cut after `,` or `:` fails
+--- the last-character check; a number cut short (12 of 123) is excluded
+--- because digits never pass the gate. Only then are the missing closers
+--- appended, innermost first.
+--- @param text string
+--- @return string
+function JsonRepair.closeUnclosed(text)
+    if type(text) ~= "string" or text == "" then return text end
+    local stack = {}
+    local in_string = false
+    local i, n = 1, #text
+    while i <= n do
+        local c = text:sub(i, i)
+        if in_string then
+            if c == "\\" then
+                i = i + 2
+            else
+                if c == '"' then in_string = false end
+                i = i + 1
+            end
+        else
+            if c == '"' then
+                in_string = true
+            elseif c == "{" or c == "[" then
+                stack[#stack + 1] = c
+            elseif c == "}" or c == "]" then
+                local want = (c == "}") and "{" or "["
+                if stack[#stack] == want then stack[#stack] = nil end
+            end
+            i = i + 1
+        end
+    end
+    if #stack == 0 or in_string then return text end
+    local trimmed = text:gsub("%s+$", "")
+    local last = trimmed:sub(-1)
+    if last ~= "}" and last ~= "]" and last ~= '"' then return text end
+    local closers = {}
+    for j = #stack, 1, -1 do
+        closers[#closers + 1] = (stack[j] == "{") and "}" or "]"
+    end
+    return trimmed .. table.concat(closers)
+end
+
 return JsonRepair

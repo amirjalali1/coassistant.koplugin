@@ -76,9 +76,13 @@ TestRunner:test("stray closer mid-document recovers", function()
     local d = QP.parse('{"questions":[{"type":"essay","question":"Q?","key_points":["a"]}]],"extra":[1]}')
     TestRunner:ok(d)
 end)
-TestRunner:test("truncated response still fails visibly", function()
+TestRunner:test("under-closed but complete document recovers; mid-string truncation fails", function()
+    -- Ends on a completed value: the closeUnclosed mirror repair finishes it.
     local d = QP.parse('{"questions":[{"type":"essay","question":"Q?","key_points":["a"]}')
-    TestRunner:eq(d, nil, "missing closers are not papered over")
+    TestRunner:ok(d, "complete-but-under-closed recovers")
+    -- Genuine truncation (cut mid-string) still fails visibly.
+    local t = QP.parse('{"questions":[{"type":"essay","question":"Q?","key_points":["cut mid')
+    TestRunner:eq(t, nil, "mid-string truncation is not papered over")
 end)
 
 TestRunner:suite("QuizParser.parse — correct-letter normalization")
