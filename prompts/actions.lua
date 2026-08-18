@@ -178,9 +178,11 @@ Actions.REQUIRES_BOOK_TEXT = {
 }
 
 -- Flags that require use_highlights to be set (cascading requirement)
--- X-Ray cache includes highlight data, so accessing it needs highlight permission
+-- LEGACY caches may include highlight data (X-Ray builds consumed highlights
+-- until 2026-08-18), so accessing the cache still needs highlight permission;
+-- the dynamic used_highlights gate in the extractor covers the per-cache truth.
 Actions.REQUIRES_HIGHLIGHTS = {
-    "use_xray_cache",  -- X-Ray uses {highlights_section}
+    "use_xray_cache",
 }
 
 -- Flags that are double-gated (require global consent + explicit per-action checkbox)
@@ -897,7 +899,19 @@ local function assembleXraySchemaParts(selection)
     -- the next build came back with 36 of the previous 79 cast entries and 10
     -- of 35 themes. A rule about connection LISTS has to sit outside the
     -- category it would otherwise be read as narrowing.
-    local conn_rule = "- **Connections and references**: a connection is a relationship that helps the reader follow the work, not a record that two entries appeared together. Every one carries its relationship in parentheses — `Name (short phrase, under 12 words)` — and a bare name with no parenthesis is not a connection, so leave it out. The name before the parenthesis must match another entry in this X-Ray exactly, including any parenthetical the entry's own name carries. On a single entry, aim for at most 8 connections for a major one and 3 for a minor one. This governs the CONNECTION LISTS only: it is never a reason to leave an entry out of the X-Ray itself."
+    --
+    -- The rule states FORM only. An earlier version also asked for "at most 8
+    -- connections for a major entry and 3 for a minor one", and at matched 80.8%
+    -- coverage that build carried 56 cast entries against the previous 79 and 10
+    -- themes against 29, with the bullet correctly placed. Every response in
+    -- that build ended on end_turn, nowhere near the 65536-token ceiling, so
+    -- nothing was truncated: the model was choosing to write less, and a number
+    -- attached to one list reads as a parsimony signal over the whole answer.
+    -- How many connections a reader can stand to see is a RENDERING question,
+    -- and the entity page already answers it deterministically (nine rows, the
+    -- rest behind "All connections"). Never spend model behaviour on what code
+    -- decides exactly.
+    local conn_rule = "- **Connections and references**: a connection is a relationship that helps the reader follow the work, not a record that two entries appeared together. Every one carries its relationship in parentheses — `Name (short phrase, under 12 words)` — and a bare name with no parenthesis is not a connection, so leave it out. The name before the parenthesis must match another entry in this X-Ray exactly, including any parenthetical the entry's own name carries. This governs the FORM of connection lists only: it is never a reason to leave an entry out of the X-Ray, to shorten a description, or to write less than the category guidance above asks for."
     fg[#fg + 1] = conn_rule
     ng[#ng + 1] = conn_rule
     return {
@@ -921,8 +935,6 @@ end
 local XRAY_PROMPT_TEMPLATE = [[Create a structured reader's companion for "{title}"{author_clause}.{doi_clause}
 
 __SCOPE_LINE__
-
-{highlights_section}
 
 __TEXT_SECTION__
 
@@ -955,10 +967,6 @@ Guidance for non-fiction:
 __NONFICTION_GUIDANCE__
 - __NONFICTION_STATUS_GUIDANCE__
 - **Output size**: This is a reference companion, not a retelling. Prioritize depth over breadth. Give detailed entries for significant items and brief entries for minor ones. Include all items discussed in the text, but keep minor entries concise to stay within output limits.
-
----
-
-{highlight_analysis_nudge}
 
 __CLOSING__
 
@@ -1026,8 +1034,6 @@ local XRAY_SECTION_REPLACEMENTS = {
 local ACADEMIC_XRAY_PROMPT_TEMPLATE = [[Create a structured research companion for "{title}"{author_clause}.{doi_clause}
 
 __SCOPE_LINE__
-
-{highlights_section}
 
 __TEXT_SECTION__
 
@@ -1106,10 +1112,6 @@ Guidance for academic papers:
 - __STATUS_GUIDANCE__
 - **Discipline adaptation**: Adapt your categorization to the discipline — a neuroscience paper emphasizes methods and data differently than a philosophy paper or a linguistics study. Include what's natural for the field.
 - **Output size**: This is a research companion, not a paper summary. Prioritize depth for central items and brevity for peripheral ones. Include all significant items from the text but keep minor entries concise.
-
----
-
-{highlight_analysis_nudge}
 
 __CLOSING__
 
@@ -1338,7 +1340,6 @@ Do not use emojis. {hallucination_nudge}]],
         blocked_hint = _("Or use X-Ray (Simple) for an overview based on AI knowledge."),
         -- Context extraction flags
         use_book_text = true,
-        use_highlights = true,
         use_reading_progress = true,
         prompt = assemble_xray_prompt(XRAY_PROMPT_TEMPLATE, XRAY_PARTIAL_REPLACEMENTS, nil),
         complete_prompt = assemble_xray_prompt(XRAY_PROMPT_TEMPLATE, XRAY_COMPLETE_REPLACEMENTS, nil),
@@ -1354,8 +1355,6 @@ Previous analysis (at {cached_progress}):
 
 New content since then (now at {reading_progress}):
 {incremental_book_text_section}
-
-{highlights_section}
 
 Output ONLY the new or changed entries as a JSON object. Use exactly the same JSON keys and structure as shown in the previous analysis. Your output will be programmatically merged with the existing data, so:
 - OMIT categories entirely if nothing changed in them — they will be preserved as-is
@@ -1378,9 +1377,7 @@ Guidelines:
 - When you re-emit an entry, send its FULL current connection list with the relationships revised to where things stand now. Each entry is kept once per target, so a revised phrasing REPLACES the earlier one rather than joining it.
 - Add new findings with their supporting evidence
 - Track methodology details as they emerge
-- If highlights are provided, consider what the reader found notable
 
-{highlight_analysis_nudge}
 
 CRITICAL: This must cover only content up to {reading_progress}. Output ONLY valid JSON — no other text. JSON keys must remain in English. Technical terms and concept names must match the paper's language. All other string values must be written in {response_language}, regardless of the language of the source text.]],
         skip_language_instruction = false,
@@ -1408,8 +1405,6 @@ Previous analysis (at {cached_progress}):
 New content since then (now at {reading_progress}):
 {incremental_book_text_section}
 
-{highlights_section}
-
 Output ONLY the new or changed entries as a JSON object. Use exactly the same JSON keys and structure as shown in the previous analysis. Your output will be programmatically merged with the existing data, so:
 - OMIT categories entirely if nothing changed in them — they will be preserved as-is
 - When adding a new entry to a category, include ONLY the new entries in that category's array
@@ -1430,9 +1425,7 @@ Guidelines:
 - Add aliases and connections for new characters/key figures. A connection always carries its relationship in parentheses — `Name (short phrase)`; a bare name is not a connection. The name must match an existing entry exactly, including any parenthetical in that entry's own name.
 - When you re-emit an entry, send its FULL current connection list with the relationships revised to where things stand now. Each entry is kept once per target, so a revised phrasing REPLACES the earlier one rather than joining it — do not append a second line for someone already listed.
 - Add new timeline/argument_development entries for events in the new content
-- If highlights are provided, consider what the reader found notable
 
-{highlight_analysis_nudge}
 
 CRITICAL: This must remain spoiler-free up to {reading_progress}. Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values must be written in {response_language}, regardless of the language of the source text.]],
     },
@@ -1444,14 +1437,11 @@ CRITICAL: This must remain spoiler-free up to {reading_progress}. Output ONLY va
         text = _("X-Ray (Simple)"),
         description = _("A prose companion guide from AI knowledge: characters, themes, settings, key terms. No text extraction needed. Uses reading progress to avoid spoilers. Highlights add personal context when shared."),
         context = "book",
-        use_highlights = true,          -- Optional, gated by enable_highlights_sharing
         use_reading_progress = true,    -- For spoiler avoidance
         -- NO use_book_text — intentionally omitted
         doi_prompt = [[Create a research companion for "{title}"{author_clause}.{doi_clause}
 
 I'm currently at {reading_progress}. Using your knowledge of this paper, provide a reference guide covering ONLY content up to approximately this point.
-
-{highlights_section}
 
 ## Key Concepts & Frameworks
 Central ideas, theoretical frameworks, and models introduced or used up to this point:
@@ -1487,8 +1477,6 @@ CRITICAL: Do not reveal ANYTHING beyond {reading_progress}. No results, conclusi
         prompt = [[Create a reader's companion for "{title}"{author_clause}.{doi_clause}
 
 I'm currently at {reading_progress}. Using your knowledge of this work, provide a spoiler-free reference guide covering ONLY what happens up to approximately this point.
-
-{highlights_section}
 
 ## Characters
 For each significant character the reader has encountered by this point:

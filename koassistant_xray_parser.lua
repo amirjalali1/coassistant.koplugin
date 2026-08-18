@@ -203,9 +203,9 @@ function XrayParser.isJSON(result)
 end
 
 -- Known category keys for validating parsed X-Ray data
-local FICTION_KEYS = { "characters", "locations", "themes", "lexicon", "timeline", "reader_engagement", "current_state", "conclusion" }
-local NONFICTION_KEYS = { "key_figures", "locations", "core_concepts", "arguments", "terminology", "argument_development", "reader_engagement", "current_position", "conclusion" }
-local ACADEMIC_KEYS = { "key_concepts", "foundations", "methodology", "findings", "referenced_works", "technical_terms", "figures_data", "reader_engagement", "current_position", "conclusion" }
+local FICTION_KEYS = { "characters", "locations", "themes", "lexicon", "timeline", "current_state", "conclusion" }
+local NONFICTION_KEYS = { "key_figures", "locations", "core_concepts", "arguments", "terminology", "argument_development", "current_position", "conclusion" }
+local ACADEMIC_KEYS = { "key_concepts", "foundations", "methodology", "findings", "referenced_works", "technical_terms", "figures_data", "current_position", "conclusion" }
 
 -- Build normalized key → canonical key map for fuzzy matching.
 -- Normalizing = lowercase + strip separators (_, -, spaces).
@@ -365,6 +365,11 @@ end
 --- @param data table Parsed X-Ray data (mutated)
 local function normalizeShapes(data)
     if type(data) ~= "table" then return end
+    -- reader_engagement is REMOVED as a feature (maintainer 2026-08-18): the
+    -- X-Ray no longer requests, stores, or shows the section. Legacy artifacts
+    -- still carry it; stripping at the parse chokepoint makes every consumer
+    -- blind to it at once, and the next write persists the removal.
+    data.reader_engagement = nil
     local seen = {}
     for _i, list in ipairs({ FICTION_KEYS, NONFICTION_KEYS, ACADEMIC_KEYS }) do
         for _j, key in ipairs(list) do
@@ -382,35 +387,6 @@ local function normalizeShapes(data)
                         end
                         for _k, f in ipairs(SINGLETON_ARRAY_FIELDS) do
                             if val[f] ~= nil then val[f] = coerceStringArray(val[f]) end
-                        end
-                    end
-                elseif key == "reader_engagement" then
-                    if type(val) == "table" then
-                        if val.patterns ~= nil and type(val.patterns) ~= "string" then
-                            val.patterns = coerceText(val.patterns)
-                        end
-                        if val.connections ~= nil and type(val.connections) ~= "string" then
-                            val.connections = coerceText(val.connections)
-                        end
-                        -- notable_highlights: strings AND {passage, why_notable}
-                        -- objects are both legal shapes — coerce fields, drop junk
-                        if val.notable_highlights ~= nil then
-                            local out
-                            if type(val.notable_highlights) == "table" then
-                                out = {}
-                                for _n, h in ipairs(val.notable_highlights) do
-                                    if type(h) == "string" then
-                                        if h ~= "" then out[#out + 1] = h end
-                                    elseif type(h) == "table" then
-                                        local passage = coerceText(h.passage)
-                                        if passage and passage ~= "" then
-                                            out[#out + 1] = { passage = passage,
-                                                why_notable = coerceText(h.why_notable) }
-                                        end
-                                    end
-                                end
-                            end
-                            val.notable_highlights = out and #out > 0 and out or nil
                         end
                     end
                 elseif type(val) == "table" then
@@ -928,9 +904,6 @@ function XrayParser.getCategories(data)
             { key = "technical_terms",  label = _("Technical Terms"),  items = data.technical_terms or {} },
             { key = "figures_data",     label = _("Figures & Data"),   items = data.figures_data or {} },
         }
-        if data.reader_engagement then
-            table.insert(cats, { key = "reader_engagement", label = _("Reader Engagement"), items = { data.reader_engagement } })
-        end
         if data.conclusion then
             table.insert(cats, { key = "conclusion", label = _("Conclusion"), items = { data.conclusion } })
         elseif data.current_position then
@@ -945,9 +918,6 @@ function XrayParser.getCategories(data)
             { key = "lexicon",       label = _("Lexicon"),       items = data.lexicon or {} },
             { key = "timeline",      label = _("Story Arc"),     items = data.timeline or {} },
         }
-        if data.reader_engagement then
-            table.insert(cats, { key = "reader_engagement", label = _("Reader Engagement"), items = { data.reader_engagement } })
-        end
         -- Complete X-Ray uses conclusion; incremental uses current_state
         if data.conclusion then
             table.insert(cats, { key = "conclusion", label = _("Conclusion"), items = { data.conclusion } })
@@ -964,9 +934,6 @@ function XrayParser.getCategories(data)
             { key = "terminology",          label = _("Terminology"),          items = data.terminology or {} },
             { key = "argument_development", label = _("Argument Development"), items = data.argument_development or {} },
         }
-        if data.reader_engagement then
-            table.insert(cats, { key = "reader_engagement", label = _("Reader Engagement"), items = { data.reader_engagement } })
-        end
         -- Complete X-Ray uses conclusion; incremental uses current_position
         if data.conclusion then
             table.insert(cats, { key = "conclusion", label = _("Conclusion"), items = { data.conclusion } })
@@ -1104,9 +1071,6 @@ function XrayParser.getItemName(item, category_key)
     if category_key == "timeline" or category_key == "argument_development" then
         return item.event or _("Unknown")
     end
-    if category_key == "reader_engagement" then
-        return _("Reader Engagement")
-    end
     if category_key == "conclusion" then
         return _("Conclusion")
     end
@@ -1197,9 +1161,6 @@ function XrayParser.getItemSecondary(item, category_key)
         return item.chapter or ""
     end
     if category_key == "lexicon" or category_key == "terminology" or category_key == "technical_terms" then
-        return ""
-    end
-    if category_key == "reader_engagement" then
         return ""
     end
     return ""
@@ -1311,34 +1272,6 @@ function XrayParser.formatItemDetail(item, category_key, opts)
         local characters = ensure_array(item.characters) or ensure_array(item.references)
         if characters and #characters > 0 then
             table.insert(parts, _("Characters:") .. " " .. table.concat(characters, ", "))
-        end
-
-    elseif category_key == "reader_engagement" then
-        if item.patterns and item.patterns ~= "" then
-            table.insert(parts, _("Patterns:") .. " " .. item.patterns)
-            table.insert(parts, "")
-        end
-        local notable = ensure_array(item.notable_highlights)
-        if notable then
-            table.insert(parts, _("Notable highlights:"))
-            for _idx, h in ipairs(notable) do
-                if type(h) == "table" then
-                    local passage = h.passage or ""
-                    local why = h.why_notable or ""
-                    if passage ~= "" then
-                        table.insert(parts, "- \"" .. passage .. "\"")
-                        if why ~= "" then
-                            table.insert(parts, "  " .. why)
-                        end
-                    end
-                elseif type(h) == "string" and h ~= "" then
-                    table.insert(parts, "- " .. h)
-                end
-            end
-            table.insert(parts, "")
-        end
-        if item.connections and item.connections ~= "" then
-            table.insert(parts, _("Connections:") .. " " .. item.connections)
         end
 
     elseif category_key == "current_state" or category_key == "current_position" then
@@ -1643,34 +1576,6 @@ function XrayParser.renderToMarkdown(data, title, progress)
                     table.insert(lines, "- " .. entry)
                 end
                 table.insert(lines, "")
-            elseif cat.key == "reader_engagement" then
-                local engagement = cat.items[1]
-                if engagement.patterns and engagement.patterns ~= "" then
-                    table.insert(lines, engagement.patterns)
-                    table.insert(lines, "")
-                end
-                local r_notable = ensure_array(engagement.notable_highlights)
-                if r_notable and #r_notable > 0 then
-                    for _idx2, h in ipairs(r_notable) do
-                        if type(h) == "table" then
-                            local passage = h.passage or ""
-                            local why = h.why_notable or ""
-                            if passage ~= "" then
-                                table.insert(lines, "- \"" .. passage .. "\"")
-                                if why ~= "" then
-                                    table.insert(lines, "  " .. why)
-                                end
-                            end
-                        elseif type(h) == "string" and h ~= "" then
-                            table.insert(lines, "- " .. h)
-                        end
-                    end
-                    table.insert(lines, "")
-                end
-                if engagement.connections and engagement.connections ~= "" then
-                    table.insert(lines, "*" .. engagement.connections .. "*")
-                    table.insert(lines, "")
-                end
             end
         end
     end

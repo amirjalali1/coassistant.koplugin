@@ -313,7 +313,7 @@ function TestXrayMerge:runAll()
         self:assertEquals(merged.current_position.summary, "Updated nonfiction position.", "current_position replaced")
     end)
 
-    self:test("reader_engagement singleton replaced", function()
+    self:test("reader_engagement is ignored by merge and stripped by parse (feature removed 2026-08-18)", function()
         local old = deepcopy(makeFictionData())
         old.reader_engagement = { pattern = "Original pattern." }
         local new_data = {
@@ -321,7 +321,10 @@ function TestXrayMerge:runAll()
             reader_engagement = { pattern = "Updated engagement pattern." },
         }
         local merged = XrayParser.merge(old, new_data)
-        self:assertEquals(merged.reader_engagement.pattern, "Updated engagement pattern.", "reader_engagement replaced")
+        self:assertEquals(merged.reader_engagement == nil or merged.reader_engagement.pattern == "Original pattern.", true,
+            "merge must never adopt an incoming reader_engagement section")
+        local parsed = XrayParser.parse('{"characters":[{"name":"A","description":"d"}],"reader_engagement":{"patterns":"x"}}')
+        self:assertEquals(parsed.reader_engagement, nil, "parse strips the legacy section")
     end)
 
     self:test("nil new_data returns old_data", function()

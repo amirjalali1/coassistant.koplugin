@@ -208,12 +208,6 @@ BookSettings.KEY_XRAY_CARD = "koassistant_book_xray_card"                       
 -- follows its cache STAMP (xray_categories on the entry), never this key —
 -- categories cannot be added incrementally (the text is only read once).
 BookSettings.KEY_XRAY_CATEGORIES = "koassistant_book_xray_categories"
---- Whether a NEW X-Ray may read the reader's highlights (tri-state: nil =
---- follow global). Checkpoint/ladder builds prune highlights regardless — a
---- rung must not carry annotations from past its own coverage — so this
---- governs attended creates and updates.
-BookSettings.KEY_XRAY_HIGHLIGHTS = "koassistant_book_xray_highlights"
-
 --- Effective X-Ray marking & lookup config for a book: book override > global
 --- > default. Pure. Read pattern must match the schema defaults (marking ON,
 --- tap ON, density "10", families "all", ahead ON, intercept ON, card
@@ -726,7 +720,6 @@ BookSettings.SIDECAR_KEYS = {
     BookSettings.KEY_XRAY_INTERCEPT,
     BookSettings.KEY_XRAY_CARD,
     BookSettings.KEY_XRAY_CATEGORIES,
-    BookSettings.KEY_XRAY_HIGHLIGHTS,
     -- (KEY_XRAY_COVERAGE_ASKED is deliberately NOT here: a stamp, not an
     -- override — it must not count as "customized" nor block on reset;
     -- registered as its own storage-registry entry like the last-opened stamp)
@@ -1832,22 +1825,6 @@ function BookSettings.xrayCategoriesLabel(value)
     return T(_("%1 of %2"), n, #Actions.XRAY_CATEGORY_ORDER)
 end
 
---- Category picker for NEW X-Rays (presets v0.21): two preset rows (Full /
---- Character tracking) over per-group checkboxes; any manual mix is "custom"
---- Whether an X-Ray build may read the reader's highlights.
---- book override > global `features.xray_include_highlights` > true.
---- @param doc_settings table|nil
---- @param features table|nil
---- @return boolean allowed
---- @return string layer "book" | "global" | "default"
-function BookSettings.resolveXrayHighlights(doc_settings, features)
-    local ov = doc_settings and doc_settings:readSetting(BookSettings.KEY_XRAY_HIGHLIGHTS)
-    if ov ~= nil then return ov == true, "book" end
-    local g = features and features.xray_include_highlights
-    if g ~= nil then return g ~= false, "global" end
-    return true, "default"
-end
-
 --- implicitly. Book mode (default) writes KEY_XRAY_CATEGORIES on the spot
 --- (sticky, per-book): the "Follow global" row deletes the key, and explicit
 --- Full writes the "full" sentinel so the book resists a narrowed global (the
@@ -1975,46 +1952,6 @@ function BookSettings.showXrayCategoriesPicker(opts)
                 save()
                 reshow()
             end }}
-    end
-    -- reader_engagement IS a category of the X-Ray schema — the model's read of
-    -- what the reader's highlights show about their interests — so it belongs
-    -- on this screen with the others. Switching it off also stops the
-    -- highlights being SENT, since the section cannot exist without them; that
-    -- is the point (no section, no tokens). It does NOT touch the entity page's
-    -- local highlight matching, which is computed on each open from the book's
-    -- own annotations and stays governed by the privacy gates alone.
-    do
-        local hl_on, hl_layer
-        if is_global then
-            hl_on = features.xray_include_highlights ~= false
-            hl_layer = "global"
-        else
-            hl_on, hl_layer = BookSettings.resolveXrayHighlights(doc_settings, features)
-        end
-        local label = mark(hl_on) .. _("Reader engagement")
-        if not is_global and hl_layer ~= "book" then
-            label = label .. " " .. T(_("(%1)"), _("global"))
-        end
-        buttons[#buttons + 1] = {{ text = label,
-            callback = function()
-                if is_global then
-                    writeGlobalFeature(opts.plugin, "xray_include_highlights",
-                        hl_on and false or nil)
-                else
-                    doc_settings:saveSetting(BookSettings.KEY_XRAY_HIGHLIGHTS, not hl_on)
-                    doc_settings:flush()
-                end
-                reshow()
-            end }}
-        if not is_global and hl_layer == "book" then
-            buttons[#buttons + 1] = {{ text = "   " .. T(_("Follow global (%1)"),
-                    features.xray_include_highlights ~= false and _("on") or _("off")),
-                callback = function()
-                    doc_settings:delSetting(BookSettings.KEY_XRAY_HIGHLIGHTS)
-                    doc_settings:flush()
-                    reshow()
-                end }}
-        end
     end
     buttons[#buttons + 1] = {{ text = _("Done"), id = "close", callback = closeAll }}
 
