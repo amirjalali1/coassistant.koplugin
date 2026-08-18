@@ -5358,7 +5358,18 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     if prev and prev.result then
                         xray_unusable = _("the response was not valid X-Ray data")
                         cache_answer = nil
+                        -- Dump the offending response. Two rungs of a real
+                        -- ladder failed here on 2026-08-18 and the cause was
+                        -- unrecoverable afterwards: the run log keeps only a
+                        -- few KB of the response, so "not valid JSON" was the
+                        -- whole evidence. A parse failure is rare, so the
+                        -- bytes cost nothing in normal operation.
                         logger.info("KOAssistant: X-Ray response is not valid JSON - keeping existing X-Ray, skipping cache")
+                        logger.info("KOAssistant: unparseable X-Ray response, length",
+                            type(answer) == "string" and #answer or "n/a",
+                            "head:", type(answer) == "string" and answer:sub(1, 1200) or "n/a")
+                        logger.info("KOAssistant: unparseable X-Ray response, tail:",
+                            type(answer) == "string" and answer:sub(-1200) or "n/a")
                     else
                         logger.info("KOAssistant: X-Ray response is not valid JSON, using as-is")
                     end

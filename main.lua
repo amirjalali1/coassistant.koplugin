@@ -14928,7 +14928,14 @@ function AskGPT:_fireXrayLadderRung()
         rung_written = result and on_disk and on_disk >= target - XrayAuto.LADDER_TOLERANCE
       end
       if not rung_written then
-        local err_text = tostring(meta_or_err or "rung not saved")
+        -- The completion callback is (history, temp_config) on SUCCESS and
+        -- (nil, err_string) on failure, so a request that SUCCEEDED but whose
+        -- rung failed to write arrives here with a TABLE in the error slot —
+        -- tostring gave "table: 0x…" as the stop reason, which is what the
+        -- device log showed when a rung was rejected as invalid JSON.
+        local err_text = type(meta_or_err) == "string" and meta_or_err
+            or (result and "rung not written (response rejected or save failed)")
+            or "rung not saved"
         -- Item 50 follow-up: declining the size warning is a clean user
         -- cancel, not a failure — no stop record, no resume nudge
         if err_text == "size_warning_declined" then
