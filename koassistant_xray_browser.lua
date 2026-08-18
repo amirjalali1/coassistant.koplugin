@@ -2126,13 +2126,30 @@ end
 --- @param owner_title string Name of the entity these belong to
 function XrayBrowser:_showConnectionList(conn_entries, source, owner_title)
     if not self.menu then return end
+    local Font = require("ui/font")
+    local Size = require("ui/size")
     local self_ref = self
+    -- The relationship is free-form model prose and can be a whole clause;
+    -- handing it to Menu raw left the subject column zero width and crashed
+    -- TextWidget ("width must be strictly positive"). Every other list in this
+    -- file goes through the shared measured fitter — so does this one.
+    local content_width = Screen:getWidth() - 2 * (Size.padding.fullscreen or 0)
+    local text_face = Font:getFace("smallinfofont", 18)
+    local mandatory_face = Font:getFace("infont", 14)
+    local padding = Screen:scaleBySize(10)
     local items = {}
     for idx, entry in ipairs(conn_entries) do
         local captured_idx = idx
+        local secondary = fitMandatory(entry.button_text, entry.relationship or "", {
+            content_width = content_width,
+            text_face = text_face,
+            mandatory_face = mandatory_face,
+            padding = padding,
+            min_chars = 5,
+        })
         table.insert(items, {
             text = entry.button_text,
-            mandatory = entry.relationship,
+            mandatory = secondary ~= "" and secondary or nil,
             mandatory_dim = true,
             callback = function()
                 self_ref:showItemDetail(entry.item, entry.category_key,
