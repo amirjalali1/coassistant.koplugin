@@ -261,6 +261,30 @@ local CONTEXT_WINDOW_WORDS = 300
 --- Fetch the raw text window around the live selection. Call while the selection
 -- still exists (works for hold-select, not single word taps).
 -- @return table { prev, next, text } or nil when unavailable
+--- Page ceiling for highlight extraction on an X-Ray build.
+--- Mirrors the progress overrides applied later in handlePredefinedPrompt
+--- (full-document / ladder rung), because the extractor is CONSTRUCTED before
+--- those run. Returns nil for non-X-Ray actions and when no page count is
+--- known, which means "do not clip".
+local function xrayHighlightCeiling(prompt, config, ui, message_data)
+    if not (prompt and prompt.cache_as_xray) then return nil end
+    if not (ui and ui.document and ui.document.info) then return nil end
+    local total = ui.document.info.number_of_pages
+    if not total or total <= 0 then return nil end
+    local features = config and config.features
+    if features and (features._full_document_xray or features._update_to_full_progress
+            or features._complete_analysis) then
+        return total
+    end
+    local lt = message_data and message_data._ladder_target
+    if lt then return math.max(1, math.floor(lt * total)) end
+    local ok, page = pcall(function()
+        return ui.paging and ui.paging.current_page or (ui.rolling and ui.rolling.current_page)
+    end)
+    if ok and tonumber(page) then return tonumber(page) end
+    return total
+end
+
 local function fetchSelectionContextWindow(ui, highlighted_text)
     if ui and ui.highlight and ui.highlight.getSelectedWordContext then
         local prev_context, next_context = ui.highlight:getSelectedWordContext(CONTEXT_WINDOW_WORDS)
@@ -4479,8 +4503,12 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 -- reader_engagement from every checkpoint-built X-Ray, so the
                 -- section only ever existed on attended builds (maintainer
                 -- 2026-08-18: "it should be there for all").
-                highlight_max_page = (prompt and prompt.cache_as_xray)
-                    and tonumber(message_data.progress_page) or nil,
+                -- The ceiling is computed HERE and not read from
+                -- message_data.progress_page, which the ladder/full-document
+                -- overrides do not assign until ~250 lines below this call:
+                -- reading it here silently yielded nil, so nothing was clipped
+                -- at all and a 9.7% rung saw the whole book's highlights.
+                highlight_max_page = xrayHighlightCeiling(prompt, config, ui, message_data),
             })
             logger.info("KOAssistant: Extractor settings - enable_book_text_extraction=",
                        config.features and config.features.enable_book_text_extraction and "true" or "false/nil")
