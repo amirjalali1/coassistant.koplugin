@@ -1418,13 +1418,13 @@ Output ONLY the new or changed entries as a JSON object. Use exactly the same JS
 If the previous analysis is in plain text rather than JSON, produce a fresh COMPLETE JSON analysis using the appropriate schema for the content type (fiction or nonfiction).
 
 Guidelines:
-- FIRST review the existing entries against the new content: any entity whose situation, status, or standing has CHANGED (death, injury, betrayal, departure, a revealed identity, changed allegiance, a turning point in their arc) MUST be re-emitted with a revised description. A description states where they stand NOW, not where they stood when first introduced.
+- FIRST review the existing entries against the new content: any entity whose situation, status, or standing has CHANGED (death, injury, betrayal, departure, a revealed identity, changed allegiance, a turning point in their arc) MUST be re-emitted with a revised description. A description states where they stand NOW, not where they stood when first introduced. Re-emitting applies to NAMED entries only — never to timeline/argument_development events.
 - If the new content reveals that two EXISTING entries are the same person or thing, re-emit BOTH entries in this response: each includes the other's name in its "aliases", and both descriptions state the revealed identity. Never leave one side of a reveal contradicting the other.
 - The FIRST sentence of every re-emitted description must state who or what they are now; a reveal or status change must never sit behind an opening sentence written for an earlier point in the story.
 - Add new characters, locations, themes, concepts, or key figures that appeared in the new content
 - Add aliases and connections for new characters/key figures. A connection always carries its relationship in parentheses — `Name (short phrase)`; a bare name is not a connection. The name must match an existing entry exactly, including any parenthetical in that entry's own name.
 - When you re-emit an entry, send its FULL current connection list with the relationships revised to where things stand now. Each entry is kept once per target, so a revised phrasing REPLACES the earlier one rather than joining it — do not append a second line for someone already listed.
-- Add new timeline/argument_development entries for events in the new content
+- Add new timeline/argument_development entries for events in the new content. These lists are the ONE exception to the re-emit rule: they are permanent records with no name matching, and every entry you send is APPENDED as-is — re-sending an existing event, even reworded, creates a duplicate. Never re-send existing events; do record the significant events of the newly provided text.
 
 
 CRITICAL: This must remain spoiler-free up to {reading_progress}. Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values must be written in {response_language}, regardless of the language of the source text.]],
