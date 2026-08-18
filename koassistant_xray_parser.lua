@@ -2159,13 +2159,24 @@ end
 --- Used in update prompts so the AI uses exact matching strings for existing entities.
 --- @param data table Parsed X-Ray data
 --- @return string index Multi-line string: "category: Name1 (alias1, alias2); Name2\n..."
+--- Append-only categories carry EVENTS, not named entities: the merge routes
+--- them to appendCategory (no name matching at all), and getItemSearchName
+--- falls through to item.event, so indexing them emitted every event's full
+--- sentence as an "existing entity name" -- 80-87% of the index on a real
+--- book, and the very content the update-request trim had just removed.
+local INDEX_EXCLUDED_CATEGORIES = {
+    timeline = true,
+    argument_development = true,
+}
+
 function XrayParser.buildEntityIndex(data)
     local categories = XrayParser.getCategories(data)
     if not categories or #categories == 0 then return "" end
 
     local lines = {}
     for _idx, cat in ipairs(categories) do
-        if not SINGLETON_CATEGORIES[cat.key] and cat.items and #cat.items > 0 then
+        if not SINGLETON_CATEGORIES[cat.key] and not INDEX_EXCLUDED_CATEGORIES[cat.key]
+            and cat.items and #cat.items > 0 then
             local names = {}
             for _idx2, item in ipairs(cat.items) do
                 local name = getItemSearchName(item)
@@ -2336,13 +2347,22 @@ local function unionStringArrays(new_list, keep_list)
     local function baseKey(s)
         return (s:gsub("%s*%b()%s*$", ""):lower():gsub("^%s+", ""):gsub("%s+$", ""))
     end
+    -- ONE survivor per TARGET (2026-08-18). A revision re-states a
+    -- relationship by extending its own annotation -- "Tobin (a)" becomes
+    -- "Tobin (a; b)" -- so keeping every distinct parenthetical accumulated a
+    -- fresh copy of the same link at every update, compounding down a ladder
+    -- (device: 47 connections resolving to 23 people). Annotated still beats
+    -- bare; among annotated the earliest in `out` wins, and `out` leads with
+    -- the new side, so the freshest phrasing is the one kept.
     local annotated = {}
     for _i, s in ipairs(out) do
         if s:match("%b()%s*$") then annotated[baseKey(s)] = true end
     end
-    local filtered = {}
+    local filtered, taken = {}, {}
     for _i, s in ipairs(out) do
-        if s:match("%b()%s*$") or not annotated[baseKey(s)] then
+        local key = baseKey(s)
+        if not taken[key] and (s:match("%b()%s*$") or not annotated[key]) then
+            taken[key] = true
             filtered[#filtered + 1] = s
         end
     end
