@@ -547,6 +547,16 @@ function BaseHandler.fetchInSubprocess(url, opts)
     return tonumber(code), table.concat(chunks)
 end
 
+--- Socket read timeout for the request subprocess, in seconds (maintainer
+--- 2026-08-18). This is a BLOCK timeout — LuaSocket's set_timeout(block, -1)
+--- caps a single read, not the whole request — and a NON-streaming request is
+--- one long silent read: nothing arrives until the model has finished. The old
+--- 180 killed a 384-second X-Ray update that had already returned HTTP 200,
+--- wasting the whole paid request. Killing a slow request is worse than
+--- letting it run: the reader can cancel from the loading dialog, close the
+--- book, or exit, and the ladder records the stop either way.
+BaseHandler.SUBPROCESS_READ_TIMEOUT = 900
+
 --- Background request function for streaming responses
 --- This function is used to make a request in the background (subprocess),
 --- and write the response to a pipe for real-time processing.
@@ -573,7 +583,8 @@ function BaseHandler:backgroundRequest(url, headers, body)
                 local parsed_port = tonumber(url:match("https://[^/:]+:(%d+)")) or 443
                 local parsed_path = url:match("https://[^/]+(.*)") or "/"
 
-                local ssl_sock = BaseHandler.connectSSLInSubprocess(resolved_ip, parsed_host, parsed_port, 180)
+                local ssl_sock = BaseHandler.connectSSLInSubprocess(resolved_ip, parsed_host,
+                    parsed_port, BaseHandler.SUBPROCESS_READ_TIMEOUT)
                 local status_code, is_chunked = sendRequestAndReadHeaders(
                     ssl_sock, "POST", parsed_path, parsed_host, headers, body)
 
@@ -593,9 +604,9 @@ function BaseHandler:backgroundRequest(url, headers, body)
                 -- Non-macOS or non-HTTPS: use standard http.request path
                 local su_ok, socketutil = pcall(require, "socketutil")
                 if su_ok and socketutil then
-                    socketutil:set_timeout(180, -1)
+                    socketutil:set_timeout(BaseHandler.SUBPROCESS_READ_TIMEOUT, -1)
                 elseif is_https then
-                    https.TIMEOUT = 180
+                    https.TIMEOUT = BaseHandler.SUBPROCESS_READ_TIMEOUT
                 end
 
                 -- macOS http (ollama, custom local providers): connect by the

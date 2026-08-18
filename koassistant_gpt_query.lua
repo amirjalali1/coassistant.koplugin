@@ -315,7 +315,10 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
         -- Parse JSON response
         local ok, parsed = pcall(json.decode, full_response)
         if not ok then
-            logger.warn("Failed to parse non-streaming response:", full_response:sub(1, 200))
+            -- 200 chars stopped inside the HTTP headers, so a 200-with-unparseable-body
+            -- (the 2026-08-18 X-Ray case) could not be diagnosed at all. This is a
+            -- rare failure path; 2000 buys the start of the body without spamming.
+            logger.warn("Failed to parse non-streaming response:", full_response:sub(1, 2000))
             finish(false, nil, "Failed to parse response from " .. provider)
             return
         end
