@@ -2198,13 +2198,20 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         item_name = XrayParser.getItemName(item, category_key),
         item_aliases = item.aliases,
     }
+    -- Two texts. The page shows a trimmed one (connections are buttons plus a
+    -- list, highlights are a button); "Chat about this" sends the FULL one —
+    -- dropping connections from the display must not quietly shrink what the
+    -- model is told about the entity.
+    local chat_text = XrayParser.formatItemDetail(item, category_key)
     local detail_text = XrayParser.formatItemDetail(item, category_key,
         { omit_connections = true })
 
     -- For current state/position: prepend reading progress for clarity
     if (category_key == "current_state" or category_key == "current_position") and self.metadata.progress then
         detail_text = _("As of") .. " " .. self.metadata.progress .. "\n\n" .. detail_text
+        chat_text = _("As of") .. " " .. self.metadata.progress .. "\n\n" .. chat_text
     end
+    local item_highlights = {}
 
     -- Append matching highlights for searchable categories
     if not DISTRIBUTION_EXCLUDED[category_key] and self.ui then
@@ -2231,16 +2238,19 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
                 .effectivePrivacyOverrides(self.ui.doc_settings).highlights
             if ov ~= nil then highlights_allowed = ov end
         end
-        local highlights = highlights_allowed and findItemHighlights(item, self.ui) or {}
-        if #highlights > 0 then
-            detail_text = detail_text .. "\n\n" .. _("Your highlights:") .. "\n"
-            for _idx, hl in ipairs(highlights) do
-                -- Truncate very long highlights
+        item_highlights = highlights_allowed and findItemHighlights(item, self.ui) or {}
+        if #item_highlights > 0 then
+            -- The chat context keeps them inline (that is the whole point of
+            -- gating them on the sharing settings); the PAGE moves them behind
+            -- a button. A well-highlighted character buried its own X-Ray
+            -- description under a wall of quotes (device 2026-08-18).
+            chat_text = chat_text .. "\n\n" .. _("Your highlights:") .. "\n"
+            for _idx, hl in ipairs(item_highlights) do
                 local display_hl = hl
                 if #display_hl > 200 then
                     display_hl = display_hl:sub(1, 200) .. "..."
                 end
-                detail_text = detail_text .. "\n> " .. display_hl
+                chat_text = chat_text .. "\n> " .. display_hl
             end
         end
     end
@@ -2354,7 +2364,7 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         table.insert(row, {
             text = _("Chat about this"),
             callback = function()
-                self_ref:chatAboutItem(detail_text, {
+                self_ref:chatAboutItem(chat_text, {
                     name = XrayParser.getItemName(item, category_key),
                     category = (nav_context and nav_context.category_label) or category_key,
                 })
@@ -2475,6 +2485,29 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
     end
     if #fallback_row > 0 then
         table.insert(buttons_rows, fallback_row)
+    end
+
+    -- Your own highlights that mention this entity: a row, not a wall. They are
+    -- render-time only (found locally in the open book's annotations, never
+    -- generated and never stored in the artifact), so this is purely display.
+    if #item_highlights > 0 then
+        local captured_highlights = item_highlights
+        local captured_name = title
+        table.insert(buttons_rows, {{
+            text = T(_("Your highlights (%1)…"), #item_highlights),
+            callback = function()
+                local body = {}
+                for _idx, hl in ipairs(captured_highlights) do
+                    body[#body + 1] = "> " .. hl
+                end
+                UIManager:show(TextViewer:new{
+                    title = captured_name or _("Your highlights"),
+                    text = table.concat(body, "\n\n"),
+                    width = Screen:getWidth() * 0.9,
+                    height = Screen:getHeight() * 0.8,
+                })
+            end,
+        }})
     end
 
     -- Resolve references into tappable cross-category navigation buttons

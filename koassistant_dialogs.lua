@@ -4494,7 +4494,21 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 -- prune them for rung generation. The LIVE X-Ray keeps its highlight
                 -- enrichment through normal updates; rung permission metadata stays
                 -- honest via the sticky-true inheritance from the base.
-                local prune_highlights = message_data._ladder_build
+                -- Ladder rungs always prune (a rung must not carry annotations
+                -- from past its own coverage). Beyond that, the reader can keep
+                -- highlight sharing on for other actions while keeping their
+                -- highlights OUT of the X-Ray: the categories picker's
+                -- "Include my highlights" row, book over global.
+                local xray_wants_highlights = true
+                if extract_prompt.cache_as_xray then
+                    local ds = SafeDocSettings.resolve(
+                        (config.features and config.features.book_metadata
+                            and config.features.book_metadata.file) or nil, ui)
+                    xray_wants_highlights = BookSettings.resolveXrayHighlights(
+                        ds, config.features)
+                end
+                local prune_highlights = (message_data._ladder_build
+                        or not xray_wants_highlights)
                     and (extract_prompt.use_highlights or extract_prompt.use_annotations)
                 if prune_book_text or prune_highlights then
                     local pruned = {}

@@ -208,6 +208,11 @@ BookSettings.KEY_XRAY_CARD = "koassistant_book_xray_card"                       
 -- follows its cache STAMP (xray_categories on the entry), never this key —
 -- categories cannot be added incrementally (the text is only read once).
 BookSettings.KEY_XRAY_CATEGORIES = "koassistant_book_xray_categories"
+--- Whether a NEW X-Ray may read the reader's highlights (tri-state: nil =
+--- follow global). Checkpoint/ladder builds prune highlights regardless — a
+--- rung must not carry annotations from past its own coverage — so this
+--- governs attended creates and updates.
+BookSettings.KEY_XRAY_HIGHLIGHTS = "koassistant_book_xray_highlights"
 
 --- Effective X-Ray marking & lookup config for a book: book override > global
 --- > default. Pure. Read pattern must match the schema defaults (marking ON,
@@ -721,6 +726,7 @@ BookSettings.SIDECAR_KEYS = {
     BookSettings.KEY_XRAY_INTERCEPT,
     BookSettings.KEY_XRAY_CARD,
     BookSettings.KEY_XRAY_CATEGORIES,
+    BookSettings.KEY_XRAY_HIGHLIGHTS,
     -- (KEY_XRAY_COVERAGE_ASKED is deliberately NOT here: a stamp, not an
     -- override — it must not count as "customized" nor block on reset;
     -- registered as its own storage-registry entry like the last-opened stamp)
@@ -1828,6 +1834,20 @@ end
 
 --- Category picker for NEW X-Rays (presets v0.21): two preset rows (Full /
 --- Character tracking) over per-group checkboxes; any manual mix is "custom"
+--- Whether an X-Ray build may read the reader's highlights.
+--- book override > global `features.xray_include_highlights` > true.
+--- @param doc_settings table|nil
+--- @param features table|nil
+--- @return boolean allowed
+--- @return string layer "book" | "global" | "default"
+function BookSettings.resolveXrayHighlights(doc_settings, features)
+    local ov = doc_settings and doc_settings:readSetting(BookSettings.KEY_XRAY_HIGHLIGHTS)
+    if ov ~= nil then return ov == true, "book" end
+    local g = features and features.xray_include_highlights
+    if g ~= nil then return g ~= false, "global" end
+    return true, "default"
+end
+
 --- implicitly. Book mode (default) writes KEY_XRAY_CATEGORIES on the spot
 --- (sticky, per-book): the "Follow global" row deletes the key, and explicit
 --- Full writes the "full" sentinel so the book resists a narrowed global (the
@@ -1955,6 +1975,43 @@ function BookSettings.showXrayCategoriesPicker(opts)
                 save()
                 reshow()
             end }}
+    end
+    -- Highlights are an INPUT rather than an output category, but from the
+    -- reader's side it is the same question the rest of this screen asks —
+    -- what goes into this X-Ray — and there was no way to keep highlight
+    -- sharing on for other actions while keeping it out of the X-Ray.
+    do
+        local hl_on, hl_layer
+        if is_global then
+            hl_on = features.xray_include_highlights ~= false
+            hl_layer = "global"
+        else
+            hl_on, hl_layer = BookSettings.resolveXrayHighlights(doc_settings, features)
+        end
+        local label = mark(hl_on) .. _("Include my highlights")
+        if not is_global and hl_layer ~= "book" then
+            label = label .. " " .. T(_("(%1)"), _("global"))
+        end
+        buttons[#buttons + 1] = {{ text = label,
+            callback = function()
+                if is_global then
+                    writeGlobalFeature(opts.plugin, "xray_include_highlights",
+                        hl_on and false or nil)
+                else
+                    doc_settings:saveSetting(BookSettings.KEY_XRAY_HIGHLIGHTS, not hl_on)
+                    doc_settings:flush()
+                end
+                reshow()
+            end }}
+        if not is_global and hl_layer == "book" then
+            buttons[#buttons + 1] = {{ text = "   " .. T(_("Follow global (%1)"),
+                    features.xray_include_highlights ~= false and _("on") or _("off")),
+                callback = function()
+                    doc_settings:delSetting(BookSettings.KEY_XRAY_HIGHLIGHTS)
+                    doc_settings:flush()
+                    reshow()
+                end }}
+        end
     end
     buttons[#buttons + 1] = {{ text = _("Done"), id = "close", callback = closeAll }}
 

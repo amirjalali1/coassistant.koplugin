@@ -108,6 +108,7 @@ Registry.SETTINGS_SUBKEYS = {
         "session_chips", "_dismissed_session_chips",
         "minimal_popup_actions",
         "xray_default_categories",  -- global default for new X-Rays' category groups (presets v0.21)
+        "xray_include_highlights",  -- global default for feeding highlights to new X-Rays
     },
     internal = {
         "languages_migrated", "behavior_migrated", "prompts_migrated_v2",
