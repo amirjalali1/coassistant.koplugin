@@ -514,12 +514,20 @@ function XrayParser.parse(text)
         return nil, "empty input"
     end
 
-    -- Attempt 1: direct decode
+    -- Attempt 1: direct decode.
+    -- `decode_err` carries the LAST decode failure so callers can say WHY a
+    -- response was rejected. Three checkpoint builds died on "not valid JSON"
+    -- with no further detail on 2026-08-18, and the message conflates two very
+    -- different failures: a genuine syntax error, and a decode that SUCCEEDED
+    -- whose object carried no recognized X-Ray key (isValidXrayData).
+    local decode_err
     local ok, data = pcall(json.decode, text)
     if ok and isValidXrayData(data) then
         normalizeShapes(data)
         return data, nil
     end
+    decode_err = (not ok) and tostring(data)
+        or "decoded, but no recognized X-Ray key (isValidXrayData)"
 
     -- Attempt 2: strip markdown code fences (find-based to cross newlines)
     local fence_open = text:find("```json%s*\n") or text:find("```%s*\n")
@@ -545,6 +553,8 @@ function XrayParser.parse(text)
                 normalizeShapes(data)
                 return data, nil
             end
+            decode_err = (not ok) and ("fenced: " .. tostring(data))
+                or "fenced: decoded, but no recognized X-Ray key"
         end
     end
 
@@ -580,7 +590,7 @@ function XrayParser.parse(text)
         return data, nil
     end
 
-    return nil, "failed to parse JSON from response"
+    return nil, decode_err or "failed to parse JSON from response"
 end
 
 --- True when a model response is well-formed JSON that carries NO X-Ray

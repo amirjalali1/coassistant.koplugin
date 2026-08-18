@@ -5236,7 +5236,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             local xray_unusable  -- round 28 (#90): reason text when the response must not become the artifact
             if action.cache_as_xray then
                 local XrayParser = require("koassistant_xray_parser")
-                local parsed = XrayParser.parse(answer)
+                local parsed, parse_err = XrayParser.parse(answer)
                 if parsed and parsed.error then
                     -- AI returned error (e.g., "I don't recognize this work") — show as plain text, skip caching
                     display_answer = parsed.error
@@ -5393,6 +5393,8 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                         -- whole evidence. A parse failure is rare, so the
                         -- bytes cost nothing in normal operation.
                         logger.info("KOAssistant: X-Ray response is not valid JSON - keeping existing X-Ray, skipping cache")
+                        logger.info("KOAssistant: X-Ray parse rejected because:",
+                            tostring(parse_err))
                         logger.info("KOAssistant: unparseable X-Ray response, length",
                             type(answer) == "string" and #answer or "n/a",
                             "head:", type(answer) == "string" and answer:sub(1, 1200) or "n/a")
