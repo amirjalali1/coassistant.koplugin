@@ -2126,31 +2126,17 @@ end
 --- @param owner_title string Name of the entity these belong to
 function XrayBrowser:_showConnectionList(conn_entries, source, owner_title)
     if not self.menu then return end
-    local Font = require("ui/font")
-    local Size = require("ui/size")
     local self_ref = self
-    -- The relationship is free-form model prose and can be a whole clause;
-    -- handing it to Menu raw left the subject column zero width and crashed
-    -- TextWidget ("width must be strictly positive"). Every other list in this
-    -- file goes through the shared measured fitter — so does this one.
-    local content_width = Screen:getWidth() - 2 * (Size.padding.fullscreen or 0)
-    local text_face = Font:getFace("smallinfofont", 18)
-    local mandatory_face = Font:getFace("infont", 14)
-    local padding = Screen:scaleBySize(10)
     local items = {}
     for idx, entry in ipairs(conn_entries) do
         local captured_idx = idx
-        local secondary = fitMandatory(entry.button_text, entry.relationship or "", {
-            content_width = content_width,
-            text_face = text_face,
-            mandatory_face = mandatory_face,
-            padding = padding,
-            min_chars = 5,
-        })
+        -- Show what the model actually wrote, wrapped, rather than the name
+        -- with the relationship truncated into a grey column: the relationship
+        -- IS the content here, and there was nowhere else to read it (device
+        -- 2026-08-18 — "the kid — watches him with apparent intere…").
+        local row_text = entry.raw or entry.button_text
         table.insert(items, {
-            text = entry.button_text,
-            mandatory = secondary ~= "" and secondary or nil,
-            mandatory_dim = true,
+            text = row_text,
             callback = function()
                 self_ref:showItemDetail(entry.item, entry.category_key,
                     entry.name, source, {
@@ -2158,10 +2144,24 @@ function XrayBrowser:_showConnectionList(conn_entries, source, owner_title)
                         source = source,
                     })
             end,
+            -- Some relationships run to several hundred characters — past what
+            -- three wrapped lines hold. Hold shows the whole thing.
+            hold_callback = function()
+                UIManager:show(TextViewer:new{
+                    title = entry.button_text,
+                    text = row_text,
+                    width = Screen:getWidth() * 0.9,
+                    height = Screen:getHeight() * 0.6,
+                })
+            end,
         })
     end
     self:navigateForward(T(_("%1 — connections (%2)"), owner_title or _("Details"),
-        #conn_entries), items)
+        #conn_entries), items, nil, {
+        single_line = false,
+        multilines_forced = true,
+        items_max_lines = 3,
+    })
 end
 
 --- Show detail view for a single item (overlays as TextViewer)
@@ -2524,8 +2524,9 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
                             or resolved.item.event or _("Details"),
                         button_text = resolved.name_portion,
                         -- The annotation is what tells two connections apart;
-                        -- the button drops it for width, the overflow list keeps it
+                        -- the button drops it for width, the list shows it in full
                         relationship = resolved.relationship,
+                        raw = name_str,
                     })
                 end
             end
