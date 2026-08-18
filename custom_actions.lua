@@ -21,6 +21,20 @@
 -- no-op. To show a custom action in a menu, enable it manually on-device:
 -- Settings -> Actions & Prompts -> Manage Actions -> tap the action ->
 -- check "+ Highlight Menu" / "+ Dict. Popup" (one-time, per menu).
+--
+-- RTL/Persian rendering constraint: koassistant_chatgptviewer.lua's HTML bidi
+-- pass (addHtmlBidiAttributes, isPureRTL) only right-aligns/RTL-marks a
+-- paragraph that contains ZERO Latin characters -- this runs regardless of
+-- dictionary_language, as a per-paragraph fallback. Any Farsi block that
+-- mixes in Latin (IPA, headword, English synonyms) renders in scrambled
+-- default-LTR order. So every Farsi section below is written to be 100%
+-- Persian script, no exceptions -- that's a prompt-level workaround for a
+-- rendering-engine limitation, not a stylistic choice. There is a SEPARATE,
+-- unrelated bug this can't fix: the viewer's CSS hardcodes
+-- font-family: 'Noto Sans' with no Arabic-script fallback
+-- (koassistant_chatgptviewer.lua:1105), which can make Farsi glyphs look
+-- disconnected/wrong even once ordering is correct. Fixing that requires
+-- editing a file upstream also owns -- ask before doing it.
 
 return {
     -----------------------------------------------------------------------
@@ -50,16 +64,11 @@ Definition(s), numbered if multiple
 Etymology (brief)
 Synonyms
 
-2. Second entry, written entirely in Persian (Farsi), same structure as above. Only the headword, lemma, and synonyms stay in the word's original language.
-
-**{highlighted_text}** /IPA/ نوع کلمه از **lemma**
-تعریف(ها)، در صورت تعدد شماره‌گذاری شود
-ریشه‌شناسی (مختصر)
-مترادف‌ها
+2. Second entry: a complete Persian (Farsi) dictionary entry for the same word. This entire section must contain ZERO Latin letters -- not the headword, not IPA, not the lemma, not the synonyms. Give the headword as a Persian-script transliteration instead of the Latin spelling (it already appears in Latin in entry 1 above), then part of speech, definition(s), brief etymology, and synonyms, all as Persian words. Do not mix any Latin character into this section under any circumstance, even for names or loanwords -- transliterate everything into Persian script.
 
 {context_section}
 
-Inline bold labels, no headers. Concise. Keep the two entries clearly separated.]],
+Inline bold labels, no headers. Concise. Keep the two entries clearly separated. Entry 2 must be 100% Persian script, no exceptions.]],
         api_params = {
             temperature = 0.3,
         },
@@ -84,7 +93,7 @@ Inline bold labels, no headers. Concise. Keep the two entries clearly separated.
 
 Be clear and precise. Match the text's tone - a philosophy text deserves rigor, a thriller just needs clarity. {conciseness_nudge}
 
-Then provide a second explanation of the same passage, written entirely in Persian (Farsi) -- same clarity, precision, and tone-matching as the first. Keep the two explanations clearly separated.]],
+Then provide a second explanation of the same passage in Persian (Farsi). This second explanation must contain ZERO Latin letters -- transliterate any proper noun or term from the passage into Persian script rather than leaving it in Latin. Keep the two explanations clearly separated.]],
         api_params = {
             temperature = 0.5,  -- matches built-in Explain
         },
