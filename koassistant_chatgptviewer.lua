@@ -1102,7 +1102,7 @@ local function getViewerCSS(text_align)
     return string.format([[
 @page {
     margin: 0;
-    font-family: 'Noto Sans';
+    font-family: 'Noto Sans', 'Noto Naskh Arabic', 'Noto Sans Arabic', sans-serif;
 }
 
 body {
