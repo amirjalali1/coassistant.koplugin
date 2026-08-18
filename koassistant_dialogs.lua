@@ -5502,6 +5502,15 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                       producer = xray_producer,
                       base_timestamp = xray_base_ts,
                       timestamp = xray_fold_ts,
+                      -- The category selection is a LINEAGE stamp, and this
+                      -- generic entry is the one the incremental-update branch
+                      -- reads back (ActionCache.get(cache_file, prompt.id)).
+                      -- Without it here a narrowed X-Ray kept its narrowing for
+                      -- exactly one write: the next attended update found no
+                      -- stamp, skipped the restriction clause, and the generic
+                      -- guidelines re-invited every dropped category. The X-Ray
+                      -- twin, promotions and ring restores already carry it.
+                      xray_categories = message_data._xray_categories_applied,
                       unavailable_data_text = unavailable_text }
                 )
                 if save_success then
