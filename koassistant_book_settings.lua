@@ -2018,12 +2018,12 @@ function BookSettings.showXrayCategoriesPicker(opts)
     end
     buttons[#buttons + 1] = {{ text = _("Done"), id = "close", callback = closeAll }}
 
+    -- Kept SHORT (maintainer 2026-08-18): the explanatory paragraph pushed the
+    -- category rows off the screen, so the picker had to be scrolled to reach
+    -- the thing it exists for.
     local title = (is_global and _("Categories for new X-Rays (global)")
             or _("Categories for new X-Rays (this book)")) .. "\n"
-        .. _("Applies when an X-Ray is created or rebuilt. An existing X-Ray keeps the categories it was built with; adding one later needs a rebuild, since the text is only read once. Fewer categories mean cheaper, faster builds. Academic X-Rays (research mode) use their own structure and ignore this selection.")
-    if is_global then
-        title = title .. "\n" .. _("Books can pick their own categories in Book Settings.")
-    end
+        .. _("Applies to new builds and rebuilds. Fewer categories are faster and cheaper.")
     dialog = ButtonDialog:new{
         title = title,
         buttons = buttons,
