@@ -1820,6 +1820,7 @@ function BookSettings.xrayCategoriesLabel(value)
     local sel = Actions.normalizeXrayCategories(value)
     if not sel then return _("Full") end
     if sel == "people" then return _("Character tracking") end
+    if sel == "people,events" then return _("Light") end
     local n = 0
     for _id in sel:gmatch("[^,]+") do n = n + 1 end
     return T(_("%1 of %2"), n, #Actions.XRAY_CATEGORY_ORDER)
@@ -1928,6 +1929,21 @@ function BookSettings.showXrayCategoriesPicker(opts)
     buttons[#buttons + 1] = {{ text = dot(full_stored) .. _("Full (all categories)"),
         callback = function()
             for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = true end
+            save()
+            reshow()
+        end }}
+    -- Light (maintainer 2026-08-18): who + what happened. people + events =
+    -- cast/key figures and story arc/argument development (the current-state
+    -- singleton always rides regardless of selection). Deliberately NOT
+    -- including places or ideas: ideas is the depth sink with the largest
+    -- model variance, and a reader who wants either is one checkbox away.
+    -- Presets stay meaningfully distinct at 1 / 2 / 5 groups.
+    buttons[#buttons + 1] = {{ text = dot(stored == "people,events")
+            .. _("Light (characters and story arc)"),
+        callback = function()
+            for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = nil end
+            set.people = true
+            set.events = true
             save()
             reshow()
         end }}
