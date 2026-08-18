@@ -360,6 +360,9 @@ local function saveCache(document_path, cache)
             if entry.xray_categories then
                 file:write(string.format("        xray_categories = %q,\n", entry.xray_categories))
             end
+            if entry.edited_at then
+                file:write(string.format("        edited_at = %s,\n", tostring(entry.edited_at)))
+            end
             writeMergedFrom(file, entry.merged_from, "        ")
             -- Quiz state (answers, correct, revealed) — nested table serialization
             if entry.quiz_state and type(entry.quiz_state) == "table" then
@@ -516,6 +519,9 @@ function ActionCache.set(document_path, action_id, result, progress_decimal, met
         -- csv of group ids; nil = full. The LINEAGE truth — updates and rung
         -- builds follow this stamp, never the sidecar preference.
         xray_categories = metadata and metadata.xray_categories,
+        -- Reader-modified marker (entity dedup); rides into the ring via
+        -- CHECKPOINT_COPY_FIELDS so an archived version stays honest too
+        edited_at = metadata and metadata.edited_at,
     }
 
     return saveCache(document_path, cache)
@@ -1461,7 +1467,7 @@ local CHECKPOINT_COPY_FIELDS = {
     "model", "full_document", "flow_visible_pages", "source_mode",
     "chapter_label", "intro",
     "coverage_spans", "producer", "base_timestamp", "merged_from_books",
-    "merged_from", "xray_categories",
+    "merged_from", "xray_categories", "edited_at",
 }
 
 local function buildCheckpointEntry(source)
@@ -1537,6 +1543,13 @@ local function writeCheckpointRing(path, ring)
         end
         if cp.xray_categories then
             file:write(string.format("        xray_categories = %q,\n", cp.xray_categories))
+        end
+        -- A stored version the reader has since altered (entity dedup sweeps
+        -- built-but-uninstalled rungs so a later install cannot resurrect a
+        -- merged split). Without this the rewrite was invisible: a rung still
+        -- read as a pristine build of its checkpoint.
+        if cp.edited_at then
+            file:write(string.format("        edited_at = %s,\n", tostring(cp.edited_at)))
         end
         writeMergedFrom(file, cp.merged_from, "        ")
         local result_text = cp.result or ""

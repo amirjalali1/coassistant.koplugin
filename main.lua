@@ -11974,11 +11974,27 @@ function AskGPT:_xrayCheckpointLabel(cp)
   -- into the word "today" — which is exactly the day you have five of them.
   -- Same day → clock time; older → the relative form, which is what a reader
   -- actually wants at that distance.
+  -- Which time this is was ambiguous (device 2026-08-18: "81, 71, 81 from
+  -- 02:06, 02:05, 2d ago ... even though the archived ones should be older").
+  -- `timestamp` is when the CONTENT was built; the ring is ordered by when it
+  -- was ARCHIVED. Showing only the former while sorting by the latter made the
+  -- list read as out of order, so an archived row now names both.
   local rel = formatRelativeTime(cp.timestamp)
   if cp.timestamp and os.date("%Y-%m-%d", cp.timestamp) == os.date("%Y-%m-%d") then
-    table.insert(parts, os.date("%H:%M", cp.timestamp))
+    table.insert(parts, T(_("built %1"), os.date("%H:%M", cp.timestamp)))
   elseif rel ~= "" then
-    table.insert(parts, rel)
+    table.insert(parts, T(_("built %1"), rel))
+  end
+  if cp.edited_at then
+    table.insert(parts, _("edited"))
+  end
+  if cp.archived_at and cp.timestamp and cp.archived_at > cp.timestamp + 60 then
+    local arel = formatRelativeTime(cp.archived_at)
+    if os.date("%Y-%m-%d", cp.archived_at) == os.date("%Y-%m-%d") then
+      table.insert(parts, T(_("archived %1"), os.date("%H:%M", cp.archived_at)))
+    elseif arel ~= "" then
+      table.insert(parts, T(_("archived %1"), arel))
+    end
   end
   if #parts == 0 then
     return _("Unknown")
@@ -14585,6 +14601,16 @@ function AskGPT:_startXrayLadderBuild(build_opts)
     local state_line
     if chain_rebuild then
       state_line = _("Replaces your current X-Ray from scratch. Nothing is touched until the first new checkpoint arrives; the outgoing version is archived then.")
+      -- The foreground rebuild confirm names the checkpoint deletion; this
+      -- path routes past that ConfirmBox, so it has to say it itself. A
+      -- rebuild clears the whole prepared ladder, and only the installed
+      -- version is archived: without this line a lineage of checkpoints
+      -- disappears with no warning anywhere (device, twice on 2026-08-18).
+      local n_rungs = ActionCache.getXrayLadderCount(file)
+      if n_rungs > 0 then
+        state_line = state_line .. " "
+          .. T(_("Its %1 checkpoints belong to the old version and are deleted then too."), n_rungs)
+      end
     elseif one_shot then
       state_line = (base_progress or 0) > 0.005
         and T(_("Extends your X-Ray from %1% to %2."), base_pct, goal_text or "100%")
