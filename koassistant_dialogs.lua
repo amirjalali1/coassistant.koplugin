@@ -4472,6 +4472,15 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 -- Ladder rung 1 (create from nothing): bound {book_text} extraction at
                 -- the rung boundary instead of the reader's position (§6 slice 1)
                 _ladder_target_ratio = message_data._ladder_target,
+                -- Highlights are position-UNBOUNDED, so an X-Ray covering a
+                -- PREFIX of the book must clip them at its own coverage or a
+                -- later highlight leaks into an earlier version. This replaces
+                -- the blanket drop that rungs used to do — which also removed
+                -- reader_engagement from every checkpoint-built X-Ray, so the
+                -- section only ever existed on attended builds (maintainer
+                -- 2026-08-18: "it should be there for all").
+                highlight_max_page = (prompt and prompt.cache_as_xray)
+                    and tonumber(message_data.progress_page) or nil,
             })
             logger.info("KOAssistant: Extractor settings - enable_book_text_extraction=",
                        config.features and config.features.enable_book_text_extraction and "true" or "false/nil")
@@ -4489,16 +4498,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 local extract_prompt = prompt or {}
                 local prune_book_text = message_data._background_request and extract_prompt.use_book_text
                     and not message_data._background_create
-                -- Ladder rungs: highlights/annotations are position-UNBOUNDED (the whole
-                -- book's), which would leak post-rung material into a prefix version —
-                -- prune them for rung generation. The LIVE X-Ray keeps its highlight
-                -- enrichment through normal updates; rung permission metadata stays
-                -- honest via the sticky-true inheritance from the base.
-                -- Ladder rungs always prune (a rung must not carry annotations
-                -- from past its own coverage). Beyond that, the reader can keep
-                -- highlight sharing on for other actions while keeping their
-                -- highlights OUT of the X-Ray: the categories picker's
-                -- "Include my highlights" row, book over global.
+                -- The reader can keep highlight sharing on for other actions
+                -- while keeping their highlights out of the X-Ray: the
+                -- categories picker's "Reader engagement" row, book over global.
                 local xray_wants_highlights = true
                 if extract_prompt.cache_as_xray then
                     local ds = SafeDocSettings.resolve(
@@ -4507,8 +4509,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                     xray_wants_highlights = BookSettings.resolveXrayHighlights(
                         ds, config.features)
                 end
-                local prune_highlights = (message_data._ladder_build
-                        or not xray_wants_highlights)
+                local prune_highlights = not xray_wants_highlights
                     and (extract_prompt.use_highlights or extract_prompt.use_annotations)
                 if prune_book_text or prune_highlights then
                     local pruned = {}

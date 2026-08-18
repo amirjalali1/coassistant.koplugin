@@ -94,6 +94,9 @@ function ContextExtractor:new(ui, settings)
     instance.settings = settings or {}
     -- document_path: explicit path for sidecar access when ui.document is nil (file browser)
     instance.document_path = settings and settings.document_path or nil
+    -- Clip highlights/annotations at this page (checkpoint rungs cover a
+    -- prefix of the book; see formatHighlights)
+    instance.highlight_max_page = settings and tonumber(settings.highlight_max_page) or nil
     return instance
 end
 
@@ -996,9 +999,23 @@ function ContextExtractor.formatHighlights(annotations, options)
     local lines = {}
     local count = 0
 
+    -- Page ceiling (2026-08-18): a checkpoint rung covers a PREFIX of the
+    -- book, and highlights are position-unbounded, so an unclipped list would
+    -- leak later material into an earlier version. The build used to drop them
+    -- wholesale for that reason, which also killed the reader_engagement
+    -- section on every checkpoint-built X-Ray; clipping keeps the section and
+    -- the prefix guarantee at once. annotation.pageno is already read below.
+    local max_page = tonumber(options.max_page)
     for _, annotation in ipairs(annotations) do
         if count >= max_count then break end
-        if annotation.text and annotation.text ~= "" then
+        -- Fail CLOSED: an annotation we cannot place is excluded from a
+        -- clipped build. The guarantee this protects (an X-Ray covering a
+        -- prefix never sees later material) is worth more than an unplaceable
+        -- highlight, and it is never worse than the blanket drop it replaced.
+        local past_ceiling = max_page ~= nil
+            and (tonumber(annotation.pageno) == nil
+                 or tonumber(annotation.pageno) > max_page)
+        if annotation.text and annotation.text ~= "" and not past_ceiling then
             count = count + 1
             table.insert(result.items, {
                 text = annotation.text,
@@ -1026,6 +1043,10 @@ end
 -- @return table { formatted = "...", count = number, items = array }
 function ContextExtractor:getHighlights(options)
     logger.info("ContextExtractor:getHighlights called")
+    if self.highlight_max_page then
+        options = options or {}
+        if options.max_page == nil then options.max_page = self.highlight_max_page end
+    end
 
     -- Open book: read from annotation module
     if self:isAvailable() and self.ui.annotation and self.ui.annotation.annotations then
@@ -1058,9 +1079,23 @@ function ContextExtractor.formatAnnotations(annotations, options)
     local lines = {}
     local count = 0
 
+    -- Page ceiling (2026-08-18): a checkpoint rung covers a PREFIX of the
+    -- book, and highlights are position-unbounded, so an unclipped list would
+    -- leak later material into an earlier version. The build used to drop them
+    -- wholesale for that reason, which also killed the reader_engagement
+    -- section on every checkpoint-built X-Ray; clipping keeps the section and
+    -- the prefix guarantee at once. annotation.pageno is already read below.
+    local max_page = tonumber(options.max_page)
     for _, annotation in ipairs(annotations) do
         if count >= max_count then break end
-        if annotation.text and annotation.text ~= "" then
+        -- Fail CLOSED: an annotation we cannot place is excluded from a
+        -- clipped build. The guarantee this protects (an X-Ray covering a
+        -- prefix never sees later material) is worth more than an unplaceable
+        -- highlight, and it is never worse than the blanket drop it replaced.
+        local past_ceiling = max_page ~= nil
+            and (tonumber(annotation.pageno) == nil
+                 or tonumber(annotation.pageno) > max_page)
+        if annotation.text and annotation.text ~= "" and not past_ceiling then
             count = count + 1
             table.insert(result.items, {
                 text = annotation.text,
@@ -1091,6 +1126,10 @@ end
 -- @param options table { max_count = 100, include_chapter = true }
 -- @return table { formatted = "...", count = number, items = array }
 function ContextExtractor:getAnnotations(options)
+    if self.highlight_max_page then
+        options = options or {}
+        if options.max_page == nil then options.max_page = self.highlight_max_page end
+    end
     -- Open book: read from annotation module
     if self:isAvailable() and self.ui.annotation and self.ui.annotation.annotations then
         return ContextExtractor.formatAnnotations(self.ui.annotation.annotations, options)
