@@ -966,14 +966,6 @@ local SettingsSchema = {
                             help_text = _("Which category groups a new X-Ray tracks by default: everything, or a narrower pick like character tracking. Applies when an X-Ray is created or rebuilt; individual books can pick their own categories in Book Settings."),
                         },
                         {
-                            id = "xray_update_trim_appends",
-                            type = "toggle",
-                            text = _("Shorter Update Requests"),
-                            path = "features.xray_update_trim_appends",
-                            default = true,
-                            help_text = _("When updating an X-Ray (manually or through checkpoints), send the model only the most recent entries of the ever-growing event lists (timeline, argument development) instead of the whole lists, which makes updates noticeably cheaper on long books. The stored X-Ray always keeps all entries; this only shortens what is sent. In rare cases the model may re-add an old event it can no longer see."),
-                        },
-                        {
                             id = "xray_selection_intercept",
                             type = "toggle",
                             text = _("X-Ray Entry for Matching Selections"),
