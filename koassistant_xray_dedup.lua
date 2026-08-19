@@ -23,7 +23,7 @@ MessageBuilder.build (never action.prompt).
 -- Widget requires stay lazy (inside the UI functions): the pure halves are
 -- unit-tested under mock_koreader, which does not stub the dialog widgets.
 local UIManager = require("ui/uimanager")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local T = require("ffi/util").template
 local _ = require("koassistant_gettext")
 

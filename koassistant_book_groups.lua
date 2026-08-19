@@ -31,7 +31,7 @@ fall out of its series). Index rebuild/prune must NOT touch groups.
 Pure-loadable: UI-free; disk access goes through LuaSettings lazily.
 ]]
 
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local BookGroups = {}
 

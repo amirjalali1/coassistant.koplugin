@@ -30,7 +30,7 @@ passes { style, ui, sboxes, on_full } through `opts`.
 ]]
 
 local UIManager = require("ui/uimanager")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local T = require("ffi/util").template
 local _ = require("koassistant_gettext")
 

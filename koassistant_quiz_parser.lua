@@ -3,7 +3,7 @@
 --- Supports JSON (fenced or raw) with markdown fallback.
 
 local json = require("json")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local QuizParser = {}
 

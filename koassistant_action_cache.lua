@@ -14,7 +14,7 @@ text extraction permission to read).
 
 local DocSettings = require("docsettings")
 local lfs = require("libs/libkoreader-lfs")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local T = require("ffi/util").template
 local _ = require("koassistant_gettext")
 

@@ -3,7 +3,7 @@
 --- Handles JSON parsing, markdown rendering, character search, and chapter matching.
 
 local json = require("json")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local _ = require("koassistant_gettext")
 local T = require("ffi/util").template
 local JsonRepair = require("koassistant_json_repair")

@@ -21,7 +21,7 @@ Contract:
     every launch (not one-time) and needs the plugin instance + ModelLists.
 ]]
 
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local Constants = require("koassistant_constants")
 local _ = require("koassistant_gettext")
 

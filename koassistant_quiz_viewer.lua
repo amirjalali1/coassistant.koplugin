@@ -24,7 +24,7 @@ local T = require("ffi/util").template
 local _ = require("koassistant_gettext")
 local Screen = Device.screen
 local MD = require("apps/filemanager/lib/md")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local QUIZ_CSS = [[
 @page { margin: 0; font-family: 'Noto Sans'; }

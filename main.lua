@@ -14,7 +14,7 @@ local DataStorage = require("datastorage")
 local FileManager = require("apps/filemanager/filemanager")
 local lfs = require("libs/libkoreader-lfs")
 local T = require("ffi/util").template
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local util = require("util")
 local Screen = Device.screen
 
@@ -13919,7 +13919,7 @@ function AskGPT:_fireXrayAutoUpdate(opts)
           logger.dbg("KOAssistant: background X-Ray update skipped -", msg)
         else
           XrayAuto.recordFailure(file, msg)
-          logger.dbg("KOAssistant: background X-Ray update failed:", msg)
+          logger.warn("KOAssistant: background X-Ray update failed:", msg)
           if manual then
             UIManager:show(InfoMessage:new{
               text = T(_("Background X-Ray update failed: %1"), msg), timeout = 4 })

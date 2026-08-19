@@ -24,7 +24,7 @@ local Defaults = require("koassistant_api.defaults")
 local Constants = require("koassistant_constants")
 local ScopeResolver = require("koassistant_scope_resolver")
 local PromptsActions = require("prompts.actions")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 -- ActionService module (for static methods like getActionDisplayText)
 local ActionServiceModule = require("action_service")
@@ -58,7 +58,7 @@ local success, result = pcall(dofile, config_path)
 if success then
     CONFIGURATION = result
 else
-    require("logger").dbg("KOAssistant: no configuration.lua at " .. config_path)
+    require("koassistant_logger").dbg("KOAssistant: no configuration.lua at " .. config_path)
 end
 
 -- Add a global variable to track active chat viewers
@@ -1667,7 +1667,7 @@ local function getAllPrompts(configuration, plugin)
     local has_open_book = plugin and plugin.ui and plugin.ui.document ~= nil
 
     -- Debug logging
-    local logger = require("logger")
+    local logger = require("koassistant_logger")
     logger.dbg("getAllPrompts: context = " .. context .. ", has_open_book = " .. tostring(has_open_book))
 
     -- Use ActionService if available, fallback to PromptService
@@ -5160,7 +5160,7 @@ if prune_book_text then
                     -- AI returned error (e.g., "I don't recognize this work") — show as plain text, skip caching
                     display_answer = parsed.error
                     cache_answer = nil  -- Signal to skip caching below
-                    logger.dbg("KOAssistant: X-Ray returned error response, skipping cache:", parsed.error)
+                    logger.warn("KOAssistant: X-Ray returned error response, skipping cache:", parsed.error)
                 elseif parsed and not using_cache and not XrayParser.hasEntityContent(parsed) then
                     -- Round 28 (#90 field report): a CREATE that parsed but holds no
                     -- entity categories (e.g. a lone current_state — seen from
@@ -5271,7 +5271,7 @@ if prune_book_text then
                         -- display so the user can see what the model produced.
                         xray_unusable = _("the response was missing X-Ray content (no characters or other entries)")
                         cache_answer = nil
-                        logger.dbg("KOAssistant: X-Ray create had only malformed entries after sanitize, skipping cache")
+                        logger.warn("KOAssistant: X-Ray create had only malformed entries after sanitize, skipping cache")
                     else
                         local book_meta = message_data.book_metadata or {}
                         local display_progress = message_data.reading_progress or ""
@@ -5311,7 +5311,7 @@ if prune_book_text then
                         -- few KB of the response, so "not valid JSON" was the
                         -- whole evidence. A parse failure is rare, so the
                         -- bytes cost nothing in normal operation.
-                        logger.dbg("KOAssistant: X-Ray response is not valid JSON - keeping existing X-Ray, skipping cache")
+                        logger.warn("KOAssistant: X-Ray response is not valid JSON - keeping existing X-Ray, skipping cache")
                         logger.dbg("KOAssistant: X-Ray parse rejected because:",
                             tostring(parse_err))
                         logger.dbg("KOAssistant: unparseable X-Ray response, length",
@@ -5492,7 +5492,7 @@ if prune_book_text then
                     logger.dbg("KOAssistant: Saved response to cache for", original_action_id, "at", save_progress, "used_book_text=", book_text_was_provided, "used_highlights=", highlights_were_provided)
                 end
             elseif is_truncated and cache_enabled then
-                logger.dbg("KOAssistant: Skipping cache for", original_action_id, "- response was truncated")
+                logger.warn("KOAssistant: Skipping cache for", original_action_id, "- response was truncated")
             end
 
             -- Save to document caches if action has cache_as_* flags (for reuse by other actions)
@@ -5554,8 +5554,12 @@ if prune_book_text then
                         base_timestamp = xray_base_ts,
                         xray_categories = message_data._xray_categories_applied,
                     })
-                    logger.dbg("KOAssistant: ladder rung", rung_ok and "saved" or "SAVE FAILED",
-                        "at", progress)
+                    if rung_ok then
+                        logger.dbg("KOAssistant: ladder rung saved at", progress)
+                    else
+                        -- A built rung that did not land on disk: paid work lost.
+                        logger.warn("KOAssistant: ladder rung SAVE FAILED at", progress)
+                    end
                 elseif action.cache_as_xray then
                     -- Track what data was used when building this cache
                     -- Reading the cache will only require permissions for data that was actually used
@@ -6729,7 +6733,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
     -- resolved (per-book override > global default) — unless it was restored from a refresh.
 
     -- Log which provider we're using
-    local logger = require("logger")
+    local logger = require("koassistant_logger")
     logger.dbg("Using AI provider: " .. (configuration.provider or "anthropic"))
     
     -- Log configuration structure
@@ -10949,7 +10953,7 @@ end
 -- Handle local X-Ray lookup: search cached X-Ray data for the query
 -- @param override_best table|nil Pre-selected X-Ray result (from selection popup callback)
 local function handleLocalXrayLookup(ui, query, document_path, book_metadata, config, plugin, override_best)
-    local logger = require("logger")
+    local logger = require("koassistant_logger")
     logger.dbg("KOAssistant: Local X-Ray lookup for: " .. tostring(query))
 
     if not document_path then
@@ -11295,7 +11299,7 @@ end
 
 -- Dispatch a local (non-AI) action handler
 local function handleLocalAction(handler_name, ui, highlighted_text, document_path, book_metadata, config, plugin)
-    local logger = require("logger")
+    local logger = require("koassistant_logger")
 
     if handler_name == "xray_lookup" then
         handleLocalXrayLookup(ui, highlighted_text, document_path, book_metadata, config, plugin)
@@ -11368,7 +11372,7 @@ local function attachRerunContext(temp_config, action, ui, plugin)
 end
 
 local function executeDirectAction(ui, action, highlighted_text, configuration, plugin, opts)
-    local logger = require("logger")
+    local logger = require("koassistant_logger")
 
     if not action then
         logger.err("KOAssistant: executeDirectAction called without action")

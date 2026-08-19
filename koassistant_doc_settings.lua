@@ -20,7 +20,7 @@ reached through different spellings (symlinks; Android's /sdcard vs
 the dangerous fresh-instance path.
 ]]
 
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local SafeDocSettings = {}
 

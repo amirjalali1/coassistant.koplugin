@@ -18,7 +18,7 @@ options for scope, depth, and grouping.
 ]]
 
 local DocSettings = require("docsettings")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local lfs = require("libs/libkoreader-lfs")
 
 local LibraryScanner = {}

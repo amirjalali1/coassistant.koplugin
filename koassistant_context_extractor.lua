@@ -12,7 +12,7 @@ This module extracts reading context data from KOReader documents:
 
 local Constants = require("koassistant_constants")
 local lfs = require("libs/libkoreader-lfs")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local ContextExtractor = {}
 ContextExtractor.__index = ContextExtractor

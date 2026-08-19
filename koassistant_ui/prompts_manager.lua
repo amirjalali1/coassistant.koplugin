@@ -1,6 +1,6 @@
 local _ = require("koassistant_gettext")
 local T = require("ffi/util").template
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local DataStorage = require("datastorage")
 local UIManager = require("ui/uimanager")
 local Menu = require("ui/widget/menu")

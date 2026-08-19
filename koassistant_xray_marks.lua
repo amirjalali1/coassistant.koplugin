@@ -41,7 +41,7 @@ Attachments staging list); a different file swaps it wholesale.
 ]]
 
 local UIManager = require("ui/uimanager")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local lfs = require("libs/libkoreader-lfs")
 
 local XrayMarks = {}

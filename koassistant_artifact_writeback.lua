@@ -23,7 +23,7 @@ If slice 3 work touches that path anyway, folding it onto applyXray is the
 recorded cleanup.
 ]]
 
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local WriteBack = {}
 

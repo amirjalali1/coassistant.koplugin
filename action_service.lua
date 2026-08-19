@@ -15,7 +15,7 @@
 --   - Per-action API parameters (temperature, max_tokens, thinking)
 --   - Prompt caching support for Anthropic
 
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local Constants = require("koassistant_constants")
 
 local ActionService = {}

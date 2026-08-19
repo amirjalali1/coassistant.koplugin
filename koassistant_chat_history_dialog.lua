@@ -15,7 +15,7 @@ local isStreamingInProgress = GptQuery.isStreamingInProgress
 local BookToolRunner = require("koassistant_book_tool_runner")
 local ConfigHelper = require("koassistant_config_helper")
 local Constants = require("koassistant_constants")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 -- Helper function for string formatting with translations
 local T = require("ffi/util").template

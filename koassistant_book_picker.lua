@@ -19,7 +19,7 @@ local Menu = require("ui/widget/menu")
 local Screen = require("device").screen
 local T = require("ffi/util").template
 local UIManager = require("ui/uimanager")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local _ = require("koassistant_gettext")
 
 local BookPicker = {}

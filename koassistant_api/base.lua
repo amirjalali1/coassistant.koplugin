@@ -1,5 +1,5 @@
 local json = require("json")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local http = require("socket.http")
 local ltn12 = require("ltn12")
 local socket = require("socket")

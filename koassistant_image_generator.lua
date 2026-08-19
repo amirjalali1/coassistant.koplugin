@@ -32,7 +32,7 @@ Public API:
 local json   = require("json")
 local ffi    = require("ffi")
 local ffiutil = require("ffi/util")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local mime   = require("mime")
 local BaseHandler = require("koassistant_api.base")
 local ModelLists = require("koassistant_model_lists")

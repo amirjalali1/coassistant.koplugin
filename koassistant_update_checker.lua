@@ -1,5 +1,5 @@
 local json = require("json")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local Constants = require("koassistant_constants")
 local Registry = require("koassistant_storage_registry")
 local ffi = require("ffi")

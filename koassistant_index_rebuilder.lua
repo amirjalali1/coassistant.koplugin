@@ -21,7 +21,7 @@ settings flush at the end; prune pass last.
 
 local DocSettings = require("docsettings")
 local lfs = require("libs/libkoreader-lfs")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local IndexRebuilder = {}
 

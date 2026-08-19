@@ -17,7 +17,7 @@ Storage locations:
 local DataStorage = require("datastorage")
 local DocSettings = require("docsettings")
 local lfs = require("libs/libkoreader-lfs")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local PinnedManager = {}
 

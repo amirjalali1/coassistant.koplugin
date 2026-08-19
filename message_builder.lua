@@ -14,7 +14,7 @@ local MessageBuilder = {}
 -- Try to load logger, but make it optional for standalone testing
 local logger
 pcall(function()
-    logger = require("logger")
+    logger = require("koassistant_logger")
 end)
 
 -- Try to load Templates for utility placeholder constants

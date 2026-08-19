@@ -304,7 +304,7 @@ end
 ---   local DebugUtils = require("koassistant_debug_utils")
 ---   parsed = DebugUtils.dumpXrayMerge(message_data._parsed_old_xray, parsed, XrayParser)
 function DebugUtils.dumpXrayMerge(old_xray, delta, XrayParser)
-    local logger = require("logger")
+    local logger = require("koassistant_logger")
     local script_path = require("ffi/util").realpath(debug.getinfo(1, "S").source:sub(2)):match("(.*/)")
     local debug_dir = script_path .. "docs"
 
@@ -347,23 +347,16 @@ function DebugUtils.dumpXrayMerge(old_xray, delta, XrayParser)
     return merged
 end
 
---- Raise (or restore) KOReader's log level so the plugin's `logger.dbg` tracing
---- reaches the console/crash log.
+--- Turn the plugin's own debug tracing on or off.
 ---
---- Routine tracing lives at `logger.dbg`, which KOReader's default level (info)
---- discards — that is what keeps crash.log small (issue #104). Turning on
---- Console Debug brings all of it back, which is what the setting has always
---- promised. The level is global to KOReader, so switching off only restores
---- `info` when the user has not enabled KOReader's own debug logging.
+--- Routine tracing lives at `logger.dbg`, which is off by default so it stays
+--- out of the user's crash.log (issue #104). This switches ONLY the plugin's
+--- lines: KOReader's global level is untouched, so core's ~700 dbg lines
+--- (`blitFrom` on every paint) never flood the log. See koassistant_logger.lua.
 ---
 --- @param enabled boolean value of features.debug
 function DebugUtils.syncLogLevel(enabled)
-    local logger = require("logger")
-    if enabled then
-        logger:setLevel(logger.levels.dbg)
-    elseif not (G_reader_settings and G_reader_settings:isTrue("debug")) then
-        logger:setLevel(logger.levels.info)
-    end
+    require("koassistant_logger").setEnabled(enabled)
 end
 
 return DebugUtils

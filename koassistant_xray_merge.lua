@@ -38,7 +38,7 @@ main coverage also warns. The series axis reuses this input shape later
 -- module (prompt builders, unions, scope, consent gate) are unit-tested under
 -- mock_koreader, which does not stub the dialog widgets.
 local UIManager = require("ui/uimanager")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local T = require("ffi/util").template
 local _ = require("koassistant_gettext")
 
