@@ -22,19 +22,23 @@
 -- Settings -> Actions & Prompts -> Manage Actions -> tap the action ->
 -- check "+ Highlight Menu" / "+ Dict. Popup" (one-time, per menu).
 --
--- RTL/Persian rendering constraint: koassistant_chatgptviewer.lua's HTML bidi
--- pass (addHtmlBidiAttributes, isPureRTL) only right-aligns/RTL-marks a
--- paragraph that contains ZERO Latin characters -- this runs regardless of
--- dictionary_language, as a per-paragraph fallback. Any Farsi block that
--- mixes in Latin (IPA, headword, English synonyms) renders in scrambled
--- default-LTR order. So every Farsi section below is written to be 100%
--- Persian script, no exceptions -- that's a prompt-level workaround for a
--- rendering-engine limitation, not a stylistic choice. There is a SEPARATE,
--- unrelated bug this can't fix: the viewer's CSS hardcodes
--- font-family: 'Noto Sans' with no Arabic-script fallback
--- (koassistant_chatgptviewer.lua:1105), which can make Farsi glyphs look
--- disconnected/wrong even once ordering is correct. Fixing that requires
--- editing a file upstream also owns -- ask before doing it.
+-- RTL/Persian rendering: two layered fixes, both required.
+-- (1) koassistant_dialogs.lua's handlePredefinedPrompt now honors an
+--     explicit render_markdown field on the action (a small addition to a
+--     shared/upstream file -- see its "Per-action Markdown/Plain-Text
+--     override" comment). Every action below sets render_markdown = false,
+--     forcing Plain Text mode (KOReader's native text renderer), which
+--     -- confirmed empirically on-device -- shapes/joins Farsi letterforms
+--     correctly. The Markdown/HTML path (MuPDF) does not: neither its
+--     hardcoded font-family: 'Noto Sans' (koassistant_chatgptviewer.lua:1105,
+--     no Arabic-script fallback) nor its automatic RTL detection (keyed on
+--     the global dictionary_language setting for compact/dictionary views,
+--     or on RTL being the DOMINANT script for standard views -- neither
+--     condition holds for a response that deliberately mixes two
+--     similar-length scripts) reliably renders this content.
+-- (2) Even in Plain Text mode, a Farsi block that mixes in Latin (IPA,
+--     headword, English synonyms) can still order badly -- so every Farsi
+--     section below is written to be 100% Persian script, no exceptions.
 
 return {
     -----------------------------------------------------------------------
@@ -52,6 +56,7 @@ return {
         reasoning_config = "off",
         skip_language_instruction = true,
         skip_domain = true,
+        render_markdown = false,  -- Forces Plain Text mode: MuPDF's HTML renderer mis-shapes/scrambles the Farsi section (see header note); confirmed fixed on-device via the MD/TXT toggle
         -- Enable manually on-device: Manage Actions -> FA Dictionary -> "+ Highlight Menu" / "+ Dict. Popup"
         prompt = [[Dictionary entry for "{highlighted_text}"
 
@@ -86,6 +91,7 @@ Inline bold labels, no headers. Concise. Keep the two entries clearly separated.
         enable_web_search = false,
         accept_quick_answer = true,
         include_book_context = true,  -- matches built-in Explain
+        render_markdown = false,  -- Forces Plain Text mode: hasDominantRTL's auto-detect only fires when RTL is the MAJORITY script, which a half-English/half-Farsi response never is; confirmed fixed on-device via the MD/TXT toggle
         -- Enable manually on-device: Manage Actions -> FA Explain -> "+ Highlight Menu"
         prompt = [[Explain this passage:
 

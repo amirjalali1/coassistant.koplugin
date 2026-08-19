@@ -3826,6 +3826,19 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         end
     end
 
+    -- Per-action Markdown/Plain-Text override. The existing RTL auto-detection
+    -- (ChatGPTViewer: dictionary_language for compact/dictionary views,
+    -- hasDominantRTL for standard views) both key off either a global setting
+    -- or "RTL is the DOMINANT script in the whole response" -- neither fires
+    -- for an action that deliberately mixes two scripts in one response
+    -- (e.g. an English section + a Persian section of similar length). This
+    -- lets such an action force plain-text mode directly, independent of the
+    -- user's dictionary_language and independent of response-length ratios.
+    if prompt.render_markdown ~= nil then
+        temp_config.features = temp_config.features or {}
+        temp_config.features.render_markdown = prompt.render_markdown
+    end
+
     -- Minimal popup routing (Minimal Popup settings), dispatch side: actions
     -- REGISTERED for the minimal popup (features.minimal_popup_actions, defaults
     -- in Constants) open their response in the chrome-less anchored popup. The
