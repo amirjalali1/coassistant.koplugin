@@ -29,8 +29,26 @@ local KoaLogger = setmetatable({}, { __index = logger })
 KoaLogger.dbg = noop
 
 --- Turn the plugin's own debug tracing on or off.
+---
+--- KOReader's own verbose logging counts as on: someone who enabled it has
+--- already accepted a flooded log and is almost certainly collecting a bug
+--- report, so "verbose" reading as "verbose except this plugin" would just
+--- waste the report. Their flag cannot reach us on its own -- `dbg` here is a
+--- real field, so it shadows the __index fallthrough and the global level
+--- never touches it.
+---
+--- Re-read per call rather than cached: the KOReader toggle can flip
+--- mid-session and we do not hook it. Callers re-sync often (every
+--- updateConfigFromSettings), and the result is a plain assignment, so the
+--- ~280 call sites keep the cheapest possible off path -- a noop, no branch,
+--- which matters at the per-page X-Ray marking sites.
+---
 --- @param enabled boolean value of features.debug
 function KoaLogger.setEnabled(enabled)
+    if not enabled then
+        local ok, koreader_dbg = pcall(require, "dbg")
+        enabled = ok and koreader_dbg.is_on or false
+    end
     KoaLogger.dbg = enabled and logger.LvDEBUG or noop
 end
 

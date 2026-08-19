@@ -1053,52 +1053,14 @@ function AskGPT:removeFileDialogButtons()
 end
 
 function AskGPT:checkButtonVisibility()
-  -- Check instance buttons
   if FileManager.instance and FileManager.instance.file_dialog_added_buttons then
     logger.dbg("KOAssistant: FileManager.instance.file_dialog_added_buttons has " ..
                 #FileManager.instance.file_dialog_added_buttons .. " entries")
-    
-    -- List all button generators for debugging (limit to first 10 to avoid spam)
-    local count = math.min(10, #FileManager.instance.file_dialog_added_buttons)
-    for i = 1, count do
-      local entry = FileManager.instance.file_dialog_added_buttons[i]
-      local name = ""
-      if type(entry) == "table" and entry.name then
-        name = entry.name
-      elseif type(entry) == "function" then
-        name = "function"
-      else
-        name = "unknown"
-      end
-      logger.dbg("KOAssistant: Instance button generator " .. i .. ": " .. name)
-    end
   end
-  
-  -- Check static buttons
   if FileManager.file_dialog_added_buttons then
     logger.dbg("KOAssistant: FileManager.file_dialog_added_buttons (static) has " ..
                 #FileManager.file_dialog_added_buttons .. " entries")
-    
-    -- List all button generators for debugging
-    for i, entry in ipairs(FileManager.file_dialog_added_buttons) do
-      local name = ""
-      if type(entry) == "table" and entry.name then
-        name = entry.name
-      elseif type(entry) == "function" then
-        -- Try to identify our functions
-        local info = debug.getinfo(entry)
-        if info and info.source and info.source:find("koassistant.koplugin") then
-          name = "koassistant_function"
-        else
-          name = "function"
-        end
-      else
-        name = tostring(type(entry))
-      end
-      logger.dbg("KOAssistant: Static button generator " .. i .. ": " .. name)
-    end
   end
-  
   -- Note: Cannot check FileManagerHistory/Collection here due to circular dependency
   -- They will be checked when they're actually created
   logger.dbg("KOAssistant: Button registration complete. History/Collection will see buttons when created.")
@@ -1871,11 +1833,10 @@ function AskGPT:updateConfigFromSettings()
   -- tracing prints (issue #104). Applied here rather than only in the schema's
   -- on_change so it survives a restart and reaches the OTHER plugin instance,
   -- which never sees the toggle. Level changes only on transition.
-  local debug_on = features.debug and true or false
-  if debug_on ~= self._logged_debug_level then
-    self._logged_debug_level = debug_on
-    require("koassistant_debug_utils").syncLogLevel(debug_on)
-  end
+  -- Unconditional, not transition-guarded: the sync also picks up KOReader's
+  -- own verbose-logging flag, which can flip mid-session without our setting
+  -- changing. Costs a require plus an assignment.
+  require("koassistant_debug_utils").syncLogLevel(features.debug and true or false)
 
   -- updateConfigFromSettings() runs on every dialog open and file-dialog
   -- rebuild, so log the summary only when it actually changed (issue #104) —
