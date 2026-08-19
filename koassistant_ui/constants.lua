@@ -86,16 +86,22 @@ end
 -- OUT of the expanded setting. Their dismiss gesture IS the tap outside, and a
 -- 60%-tall band with a hairline edge is exactly the geometry where an outside
 -- tap stops reading as one.
+-- Our consumers pass these as the frame's CONTENT size and FrameContainer adds
+-- its border outward (getSize = content + (margin + bordersize)*2, default
+-- bordersize = Size.border.window). DictQuickLookup instead treats its width as
+-- the OUTER rect and subtracts the border inward. Take it off here so expanded
+-- mode lands on exactly Wikipedia's rectangle rather than 2*border larger —
+-- which also kept the window that far into the reserved footer band.
 function UIConstants.CHAT_WIDTH(opts)
     if expanded_windows and not (opts and opts.compact) then
-        return Screen:getWidth() - 2 * Size.margin.default
+        return Screen:getWidth() - 2 * Size.margin.default - 2 * Size.border.window
     end
     return math.floor(Screen:getWidth() * 0.95)
 end
 
 function UIConstants.CHAT_HEIGHT()
     if expanded_windows then
-        return UIConstants.CHAT_REGION().h
+        return UIConstants.CHAT_REGION().h - 2 * Size.border.window
     end
     return math.floor(Screen:getHeight() * 0.95)
 end

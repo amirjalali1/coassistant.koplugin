@@ -5860,8 +5860,9 @@ function ChatGPTViewer:showProvenanceViewer()
 end
 
 -- Internal function to handle rotation/resize recreation
--- Called by both onSetRotationMode and onScreenResize
-function ChatGPTViewer:_handleScreenChange()
+-- Called by both onSetRotationMode and onScreenResize, and by cycleWindowSize
+-- with immediate=true (see the schedule below).
+function ChatGPTViewer:_handleScreenChange(immediate)
   if not self._recreate_func then
     return false
   end
@@ -5882,10 +5883,18 @@ function ChatGPTViewer:_handleScreenChange()
   end
 
   -- Schedule recreation with enough delay for screen dimensions to update
-  -- Use 0.2s to ensure Screen:getWidth()/getHeight() return new values
-  UIManager:scheduleIn(0.2, function()
-    self._recreate_func(state)
-  end)
+  -- Use 0.2s to ensure Screen:getWidth()/getHeight() return new values.
+  -- A window-size toggle has nothing to settle — the screen is unchanged and
+  -- the new geometry is already in the constants — so it recreates at once.
+  if immediate then
+    UIManager:nextTick(function()
+      self._recreate_func(state)
+    end)
+  else
+    UIManager:scheduleIn(0.2, function()
+      self._recreate_func(state)
+    end)
+  end
 
   return true
 end
@@ -6154,7 +6163,7 @@ function ChatGPTViewer:cycleWindowSize()
   -- Push it straight into the constants too: persistFeatureSetting's
   -- settings_callback path does not run updateConfigFromSettings.
   UIConstants.setExpandedWindows(next_value == "expanded")
-  local rebuilt = self:_handleScreenChange()
+  local rebuilt = self:_handleScreenChange(true)
   UIManager:show(Notification:new{
     text = rebuilt and T(_("Window size: %1"), getWindowSizeDisplayName())
       or T(_("Window size: %1 (from the next window)"), getWindowSizeDisplayName()),
