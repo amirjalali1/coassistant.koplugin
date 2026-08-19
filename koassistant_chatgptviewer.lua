@@ -5964,9 +5964,9 @@ end
 -- Helper to get display name for text alignment
 local function getAlignmentDisplayName(align)
   if align == "justify" then return _("Justified")
-  elseif align == "right" then return _("Right (RTL)")
+  elseif align == "right" then return _("Right")
   elseif align == "left" then return _("Left")
-  else return _("Auto (by text direction)")
+  else return _("Auto")
   end
 end
 
