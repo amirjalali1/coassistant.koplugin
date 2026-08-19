@@ -918,6 +918,10 @@ local DISTRIBUTION_EXCLUDED = {
 --- @param ui table|nil KOReader UI instance (nil when book not open)
 --- @param on_delete function|nil Callback to delete this cache
 function XrayBrowser:show(xray_data, metadata, ui, on_delete)
+    require("koassistant_logger").dbg("KOAssistant XrayBrowser: open",
+        (metadata and metadata.book_file) or "?",
+        "scope=", tostring((metadata and metadata.scope and metadata.scope.label) or "main"),
+        "checkpoint=", tostring(metadata and metadata.checkpoint or false))
     self.xray_data = xray_data
     self.metadata = metadata
     self.ui = ui
@@ -1783,6 +1787,7 @@ end
 --- @param file string Book path whose live X-Ray changed
 --- @return boolean refreshed
 function XrayBrowser:reloadLiveMain(file)
+    require("koassistant_logger").dbg("KOAssistant XrayBrowser: reloadLiveMain", file)
     if not (self.menu and self.metadata and self.metadata.book_file == file) then return false end
     if self.scope or self.metadata.checkpoint then return false end
     local ActionCache = require("koassistant_action_cache")
@@ -2183,6 +2188,9 @@ function XrayBrowser:_dismissDetail(viewer)
 end
 
 function XrayBrowser:showItemDetail(item, category_key, title, source, nav_context)
+    require("koassistant_logger").dbg("KOAssistant XrayBrowser: entity",
+        (item and item.name) or "?", "in", tostring(category_key),
+        "source=", tostring(source or "browse"))
     -- Location for the group jump (round 25): the entity's own identity
     -- handles travel, so the next book resolves it even under another name.
     -- Round 26: the detail view is an OVERLAY, not a nav_stack level, so

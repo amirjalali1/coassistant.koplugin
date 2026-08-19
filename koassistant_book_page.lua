@@ -31,6 +31,7 @@ local Screen = require("device").screen
 local Constants = require("koassistant_constants")
 local T = require("ffi/util").template
 local _ = require("koassistant_gettext")
+local logger = require("koassistant_logger")
 
 local BookPage = {}
 
@@ -84,6 +85,16 @@ end
 --- re-open them, and the dispatch must keep covering the full contract.
 local function openArtifactRow(cache, ctx)
     local plugin, file = ctx.plugin, ctx.file
+    logger.dbg("KOAssistant BookHub: row tap —",
+        cache.is_image_group and "images"
+        or cache.is_xray_versions_group and "xray-versions"
+        or cache.is_section_xray_group and "section-xray-group"
+        or cache.is_section_group and "section-group"
+        or cache.is_wiki_group and "wiki-group"
+        or cache.is_pinned_group and "pinned-group"
+        or cache.is_per_action and "per-action"
+        or "cache-viewer",
+        cache.key or cache.name or "?")
     local noop = function() end
     if cache.is_image_group then
         require("koassistant_image_browser").show({
@@ -454,6 +465,7 @@ function BookPage.show(opts)
         enable_emoji = opts.enable_emoji }
     BookPage._ctx = ctx
     BookPage._stale = nil
+    logger.dbg("KOAssistant BookHub: open", file, "open_book=", tostring(is_open_book))
 
     -- Popup-path parity (A4): every popup entry heals the artifact index on
     -- open; artifacts discovered through this read-only view now do too

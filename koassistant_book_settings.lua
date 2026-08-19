@@ -746,6 +746,8 @@ end
 --- Clear every per-book override so this book follows the global defaults again.
 function BookSettings.resetBook(doc_settings)
     if not doc_settings then return end
+    require("koassistant_logger").dbg("KOAssistant BookSettings: clearing all",
+        #BookSettings.SIDECAR_KEYS, "per-book overrides")
     for _i, key in ipairs(BookSettings.SIDECAR_KEYS) do
         doc_settings:saveSetting(key, nil)
     end
@@ -1258,11 +1260,15 @@ function BookSettings.showLayeredPicker(spec, opts)
         if on_close then on_close() end
     end
     local function pickBook(val)
+        require("koassistant_logger").dbg("KOAssistant BookSettings: book override",
+            spec.key, "=", tostring(val))
         doc_settings:saveSetting(spec.key, val)
         doc_settings:flush()
         commit()
     end
     local function pickGlobal(val)
+        require("koassistant_logger").dbg("KOAssistant BookSettings: global",
+            spec.field or spec.key, "=", tostring(val))
         local f = plugin.settings:readSetting("features") or {}
         if spec.set_global then
             spec.set_global(f, val)
