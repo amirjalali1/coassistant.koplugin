@@ -335,6 +335,20 @@ function StreamHandler:createWaitingAnimation()
     }
 end
 
+--- Keep an expanded-mode stream dialog clear of the status bar and aligned with
+--- the viewer that replaces it. InputDialog centres itself in a CenterContainer
+--- sized to the whole screen and re-derives screen_height in its own init, so
+--- the band can only be narrowed afterwards; CenterContainer reads self.dimen at
+--- paintTo, so poking it before the show is enough. Standard mode is a no-op.
+local function clampDialogToChatRegion(dialog)
+    local reserve = UIConstants.FOOTER_RESERVE()
+    if reserve <= 0 then return end
+    local container = dialog and dialog[1]
+    if container and container.dimen then
+        container.dimen.h = container.dimen.h - reserve
+    end
+end
+
 --- Lightweight status dialog for the gather phase of tool workflows: same geometry and
 --- look as the streaming dialog, but with externally-pushed text (no subprocess of its
 --- own). The tool runner updates it per lookup round, closes it, and the phase-2 streamed
@@ -355,7 +369,7 @@ function StreamHandler.showToolStatusDialog(opts)
     -- Mirror the stream dialog's sizing (chrome: title bar + 1 button row + padding)
     local chrome_height = Screen:scaleBySize(120)
     local large_dialog = settings.large_stream_dialog ~= false
-    local width = UIConstants.CHAT_WIDTH()
+    local width = UIConstants.CHAT_WIDTH({ compact = not large_dialog })
     local text_height = (large_dialog and UIConstants.CHAT_HEIGHT()
         or UIConstants.COMPACT_DIALOG_HEIGHT()) - chrome_height
     local font_size = settings.response_font_size or 20
@@ -416,6 +430,7 @@ function StreamHandler.showToolStatusDialog(opts)
     }
     dialog.title_bar.close_callback = stop
     dialog.title_bar:init()
+    if large_dialog then clampDialogToChatRegion(dialog) end
     UIManager:show(dialog)
 
     local handle = {}
@@ -864,7 +879,7 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
     else
         -- Compact streaming dialog (same size as compact chat view)
         local chrome_height = Screen:scaleBySize(120)
-        width = UIConstants.CHAT_WIDTH()
+        width = UIConstants.CHAT_WIDTH({ compact = true })
         text_height = UIConstants.COMPACT_DIALOG_HEIGHT() - chrome_height
         is_movable = true
     end
@@ -1254,6 +1269,7 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
     -- Add close button to title bar
     streamDialog.title_bar.close_callback = _closeStreamDialog
     streamDialog.title_bar:init()
+    if large_dialog then clampDialogToChatRegion(streamDialog) end
     UIManager:show(streamDialog)
 
     -- Hook into scroll callbacks to auto-pause when user scrolls.

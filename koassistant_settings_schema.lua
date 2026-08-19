@@ -328,6 +328,28 @@ local SettingsSchema = {
                     },
                 },
                 {
+                    id = "chat_window_size",
+                    type = "dropdown",
+                    text = _("Window Size"),
+                    path = "features.chat_window_size",
+                    default = "standard",
+                    options = {
+                        { value = "standard", label = _("Standard") },
+                        { value = "expanded", label = _("Expanded") },
+                    },
+                    help_text = _("How much of the screen chat, artifact, translate, dictionary and quiz windows take. Expanded leaves only a hairline around them (and keeps KOReader's status bar visible while a book is open), which fits more text but leaves less room to tap outside. Also on each window's gear menu. Compact dictionary popups are not affected."),
+                    -- Dropdown on_change is (value, plugin, old_value). Push
+                    -- straight into the constants so windows opened before the
+                    -- next updateConfigFromSettings already follow it.
+                    on_change = function(value, plugin)
+                        require("koassistant_ui.constants").setExpandedWindows(value == "expanded")
+                        if plugin and plugin.updateConfigFromSettings then
+                            plugin:updateConfigFromSettings()
+                        end
+                    end,
+                    separator = true,
+                },
+                {
                     id = "plugin_ui_language",
                     type = "dropdown",
                     text = _("Plugin UI Language"),

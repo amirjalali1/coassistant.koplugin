@@ -1859,6 +1859,14 @@ function AskGPT:updateConfigFromSettings()
     table.insert(config_parts, "markdown=off")
   end
 
+  -- Window size (Display Settings) lives in the shared UI constants so the
+  -- viewer, quiz viewer and streaming dialogs all read one truth without
+  -- plumbing features through constructors that never carried it. Pushed here
+  -- like the tier overrides above, so it survives a restart and reaches the
+  -- OTHER plugin instance, which never sees the toggle.
+  require("koassistant_ui.constants").setExpandedWindows(
+    features.chat_window_size == "expanded")
+
   -- Console Debug raises KOReader's log level so the plugin's logger.dbg
   -- tracing prints (issue #104). Applied here rather than only in the schema's
   -- on_change so it survives a restart and reaches the OTHER plugin instance,

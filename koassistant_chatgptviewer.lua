@@ -1331,15 +1331,15 @@ local ChatGPTViewer = InputContainer:extend {
 }
 
 function ChatGPTViewer:init()
-  -- calculate window dimension using shared constants
-  -- Uses Wikipedia-style dimensions: near-100% with tiny margin
+  -- Window dimensions come from the shared constants, which honor the
+  -- "Window Size" setting (standard 95% / expanded near-full). The region is
+  -- what we are centred in: expanded mode shrinks it to keep the status bar
+  -- clear, so even the dynamically-sized views below never sit over the footer.
   self.align = "center"
-  self.region = Geom:new {
-    x = 0, y = 0,
-    w = Screen:getWidth(),
-    h = Screen:getHeight(),
-  }
-  self.width = self.width or UIConstants.CHAT_WIDTH()
+  -- compact_view is deliberately excluded from the expanded setting, region
+  -- included: its dismiss gesture is the tap outside, which needs a real outside.
+  self.region = Geom:new(UIConstants.CHAT_REGION({ compact = self.compact_view }))
+  self.width = self.width or UIConstants.CHAT_WIDTH({ compact = self.compact_view })
 
   -- Height calculation depends on view mode:
   -- - compact_view: fixed compact height (60%)
@@ -5970,6 +5970,11 @@ local function getAlignmentDisplayName(align)
   end
 end
 
+-- Helper to get display name for the chat window size (global setting)
+local function getWindowSizeDisplayName()
+  return UIConstants.expandedWindows() and _("Expanded") or _("Standard")
+end
+
 -- Persist a features.* viewer setting so it survives across viewer opens.
 -- Mirrors koassistant_dialogs.lua's settings_callback, but also handles the many
 -- artifact/cache/X-Ray viewer construction sites that never wire a settings_callback
@@ -6026,6 +6031,25 @@ function ChatGPTViewer:showViewerSettings()
       },
     },
   }
+
+  -- Window Size is the global setting (Display Settings), surfaced here as a
+  -- shortcut because this is where you notice you want the room. It sits BELOW
+  -- Reset to Defaults deliberately: Reset covers the rendering controls above
+  -- it, not this. The empty row renders as ButtonTable's double rule, the same
+  -- group break the action-manager carousel uses.
+  -- Skipped on compact_view, which the setting does not govern.
+  if not self.compact_view then
+    table.insert(buttons, {
+      {
+        text = _("Window Size") .. ": " .. getWindowSizeDisplayName(),
+        callback = function()
+          UIManager:close(dialog)
+          self:cycleWindowSize()
+        end,
+      },
+    })
+    table.insert(buttons, {})
+  end
 
   -- Export on the gear is for chat-style views only: it exports the CONVERSATION
   -- (showExportDialog needs chat history). Artifact (simple_view) viewers have no
@@ -6115,6 +6139,25 @@ function ChatGPTViewer:cycleAlignment()
   self:refreshMarkdownDisplay()
   UIManager:show(Notification:new{
     text = T(_("Alignment: %1"), getAlignmentDisplayName(next_align)),
+    timeout = 2,
+  })
+end
+
+-- Toggle the GLOBAL window size (Display Settings > Window Size) from the gear.
+-- Sticky, not a per-window mode: the next chat, artifact, quiz and streaming
+-- dialog all follow it. The live window is rebuilt where the construction site
+-- wired _recreate_func (the chat viewers); elsewhere the change lands on the
+-- next open, which the notification says.
+function ChatGPTViewer:cycleWindowSize()
+  local next_value = UIConstants.expandedWindows() and "standard" or "expanded"
+  self:persistFeatureSetting("chat_window_size", next_value)
+  -- Push it straight into the constants too: persistFeatureSetting's
+  -- settings_callback path does not run updateConfigFromSettings.
+  UIConstants.setExpandedWindows(next_value == "expanded")
+  local rebuilt = self:_handleScreenChange()
+  UIManager:show(Notification:new{
+    text = rebuilt and T(_("Window size: %1"), getWindowSizeDisplayName())
+      or T(_("Window size: %1 (from the next window)"), getWindowSizeDisplayName()),
     timeout = 2,
   })
 end
