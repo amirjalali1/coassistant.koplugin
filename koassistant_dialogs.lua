@@ -58,7 +58,7 @@ local success, result = pcall(dofile, config_path)
 if success then
     CONFIGURATION = result
 else
-    print("configuration.lua not found at " .. config_path .. ", skipping...")
+    require("logger").dbg("KOAssistant: no configuration.lua at " .. config_path)
 end
 
 -- Add a global variable to track active chat viewers

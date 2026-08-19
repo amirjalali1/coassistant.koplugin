@@ -16,7 +16,7 @@ local success, result = pcall(function() return require("configuration") end)
 if success then
     CONFIGURATION = result
 else
-    logger.warn("KOAssistant: configuration.lua not loaded:", tostring(result))
+    logger.dbg("KOAssistant: no configuration.lua, using settings")
     -- Try legacy api_key as fallback
     success, result = pcall(function() return require("api_key") end)
     if success then
@@ -26,7 +26,7 @@ else
         CONFIGURATION = Defaults.ProviderDefaults[provider]
         CONFIGURATION.api_key = api_key
     else
-        print("No configuration found. Please set up configuration.lua")
+        logger.dbg("KOAssistant: no configuration.lua or api_key.lua, using settings")
     end
 end
 
