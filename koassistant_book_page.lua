@@ -2,9 +2,8 @@
 Book page ("Book Hub" — renamed from "Book Overview" with A4's shape work
 2026-08-11; internal ids/settings keys keep book_overview): one full-screen
 view of everything the plugin holds for ONE book — the TOP-LEVEL artifact rows
-the View Artifacts popup shows (same destinations; the versions group and
-section-scoped groups are filtered off the page — they stay reachable from the
-X-Ray browser, the action popups and the View-Artifacts popups), plus chats,
+the View Artifacts popup shows (same destinations; only the X-Ray versions
+group is pruned — it belongs to the X-Ray browser, which surfaces it), plus chats,
 notebook, group membership and book settings. Strictly a VIEW over existing
 stores: nothing is generated here, nothing is stored here, and the popups stay
 the fast path.
@@ -80,9 +79,9 @@ end
 --- One artifact row's destination — the same surface the View Artifacts popup
 --- opens for that row (main.lua viewCache and dialogs' openArtifact carry this
 --- same chain; the group-flag contract lives on getAvailableArtifactsWithPinned).
---- The versions/section branches are currently unreachable (buildItems filters
---- those groups off the page) but stay: the planned row-visibility settings
---- re-open them, and the dispatch must keep covering the full contract.
+--- The versions branch is currently unreachable (buildItems prunes that group
+--- alone), but the dispatch stays complete: the View-Artifacts popups share
+--- these destinations, and row-visibility settings may restore the row.
 local function openArtifactRow(cache, ctx)
     local plugin, file = ctx.plugin, ctx.file
     logger.dbg("KOAssistant BookHub: row tap —",
@@ -164,14 +163,18 @@ local function buildItems(ctx)
         }
     end
     for _idx, cache in ipairs(caches) do
-        -- Maintainer 2026-08-11: the page lists TOP-LEVEL artifacts only.
-        -- The X-Ray versions group lives in the X-Ray browser, section-scoped
-        -- groups (section X-Rays, section quizzes/summaries/analyses) in their
-        -- action popups and the artifact browser — the View-Artifacts popups
-        -- still list all of them, so nothing orphans. The planned hamburger
-        -- row-visibility settings are where this pruning gets revisited.
-        if not (cache.is_xray_versions_group or cache.is_section_xray_group
-                or cache.is_section_group) then
+        -- Only the X-Ray versions group is pruned: it belongs to the X-Ray
+        -- browser, which owns the up-arrow navigation contract and already
+        -- surfaces it standalone ("Archived X-Ray Versions") when no live
+        -- X-Ray row exists, so nothing orphans.
+        --
+        -- Section-scoped groups (section X-Rays, section quizzes/summaries/
+        -- analyses) were pruned alongside it 2026-08-11, but that contradicted
+        -- the page's purpose — one view of everything held for ONE book — and
+        -- read as artifacts silently missing (maintainer 2026-08-19: section
+        -- quizzes existed on disk and the page showed only the whole-book
+        -- ones). They are rows again; openArtifactRow already dispatched them.
+        if not cache.is_xray_versions_group then
             -- File-browser convention: closed-book viewers need identity stamped
             -- on the row (showCacheViewer prefers explicit over doc_props)
             if not ctx.is_open_book and not cache.is_pinned_group then
@@ -180,7 +183,8 @@ local function buildItems(ctx)
                 cache.file = cache.file or file
             end
             local mandatory
-            if not cache.is_pinned_group and not cache.is_wiki_group then
+            if not cache.is_pinned_group and not cache.is_wiki_group
+                    and not cache.is_section_group then
                 -- ONE formatter with the View-Artifacts popups and the artifact
                 -- browser (A4 parity): percent always when tracked + compact age
                 mandatory = Constants.formatArtifactMeta(cache.data)
