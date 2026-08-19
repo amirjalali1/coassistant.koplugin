@@ -307,7 +307,7 @@ function ContextExtractor:getBookText(options)
     local max_chars = options.max_chars or self.settings.max_book_text_chars or Constants.EXTRACTION_DEFAULTS.MAX_BOOK_TEXT_CHARS
     local max_pages = options.max_pages or self.settings.max_pdf_pages or Constants.EXTRACTION_DEFAULTS.MAX_PDF_PAGES
 
-    logger.info("ContextExtractor:getBookText called, enable_book_text_extraction=",
+    logger.dbg("ContextExtractor:getBookText called, enable_book_text_extraction=",
                self.settings.enable_book_text_extraction and "true" or "false/nil")
 
     local result = {
@@ -321,7 +321,7 @@ function ContextExtractor:getBookText(options)
 
     -- Check global gate - if disabled, return empty
     if not self:isBookTextExtractionEnabled() then
-        logger.info("ContextExtractor:getBookText - extraction disabled by setting, returning empty")
+        logger.dbg("ContextExtractor:getBookText - extraction disabled by setting, returning empty")
         result.disabled = true
         return result
     end
@@ -466,7 +466,7 @@ function ContextExtractor:getBookTextRange(from_progress, to_progress, options)
     local max_chars = options.max_chars or self.settings.max_book_text_chars or Constants.EXTRACTION_DEFAULTS.MAX_BOOK_TEXT_CHARS
     local max_pages = options.max_pages or self.settings.max_pdf_pages or Constants.EXTRACTION_DEFAULTS.MAX_PDF_PAGES
 
-    logger.info("ContextExtractor:getBookTextRange called, from=", from_progress, "to=", to_progress)
+    logger.dbg("ContextExtractor:getBookTextRange called, from=", from_progress, "to=", to_progress)
 
     local result = {
         text = "",
@@ -485,7 +485,7 @@ function ContextExtractor:getBookTextRange(from_progress, to_progress, options)
 
     -- Check global gate
     if not self:isBookTextExtractionEnabled() then
-        logger.info("ContextExtractor:getBookTextRange - extraction disabled by setting")
+        logger.dbg("ContextExtractor:getBookTextRange - extraction disabled by setting")
         result.disabled = true
         return result
     end
@@ -616,7 +616,7 @@ function ContextExtractor:getBookTextRange(from_progress, to_progress, options)
     result.text = book_text
     result.char_count = #book_text
 
-    logger.info("ContextExtractor:getBookTextRange - extracted", result.char_count, "chars")
+    logger.dbg("ContextExtractor:getBookTextRange - extracted", result.char_count, "chars")
     return result
 end
 
@@ -629,7 +629,7 @@ function ContextExtractor:getFullDocumentText(options)
     local max_chars = options.max_chars or self.settings.max_book_text_chars or Constants.EXTRACTION_DEFAULTS.MAX_BOOK_TEXT_CHARS
     local max_pages = options.max_pages or self.settings.max_pdf_pages or Constants.EXTRACTION_DEFAULTS.MAX_PDF_PAGES
 
-    logger.info("ContextExtractor:getFullDocumentText called")
+    logger.dbg("ContextExtractor:getFullDocumentText called")
 
     local result = {
         text = "",
@@ -642,7 +642,7 @@ function ContextExtractor:getFullDocumentText(options)
 
     -- Check global gate
     if not self:isBookTextExtractionEnabled() then
-        logger.info("ContextExtractor:getFullDocumentText - extraction disabled")
+        logger.dbg("ContextExtractor:getFullDocumentText - extraction disabled")
         result.disabled = true
         return result
     end
@@ -759,7 +759,7 @@ function ContextExtractor:getFullDocumentText(options)
     result.text = book_text
     result.char_count = #book_text
 
-    logger.info("ContextExtractor:getFullDocumentText - extracted", result.char_count, "chars")
+    logger.dbg("ContextExtractor:getFullDocumentText - extracted", result.char_count, "chars")
     return result
 end
 
@@ -979,7 +979,7 @@ function ContextExtractor:getVisiblePageText()
     result.text = page_text
     result.char_count = #page_text
 
-    logger.info("ContextExtractor:getVisiblePageText - extracted", result.char_count, "chars")
+    logger.dbg("ContextExtractor:getVisiblePageText - extracted", result.char_count, "chars")
     return result
 end
 
@@ -1025,23 +1025,23 @@ end
 -- @param options table { max_count = 100, include_chapter = true }
 -- @return table { formatted = "...", count = number, items = array }
 function ContextExtractor:getHighlights(options)
-    logger.info("ContextExtractor:getHighlights called")
+    logger.dbg("ContextExtractor:getHighlights called")
 
     -- Open book: read from annotation module
     if self:isAvailable() and self.ui.annotation and self.ui.annotation.annotations then
-        logger.info("ContextExtractor:getHighlights - found", #self.ui.annotation.annotations, "annotations")
+        logger.dbg("ContextExtractor:getHighlights - found", #self.ui.annotation.annotations, "annotations")
         return ContextExtractor.formatHighlights(self.ui.annotation.annotations, options)
     end
 
     -- Sidecar fallback: read from DocSettings on disk
     local doc_path = self:getDocumentPath()
     if doc_path then
-        logger.info("ContextExtractor:getHighlights - sidecar fallback for", doc_path)
+        logger.dbg("ContextExtractor:getHighlights - sidecar fallback for", doc_path)
         local annotations = ContextExtractor.readSidecarAnnotations(doc_path)
         return ContextExtractor.formatHighlights(annotations, options)
     end
 
-    logger.info("ContextExtractor:getHighlights - not available (no document or path)")
+    logger.dbg("ContextExtractor:getHighlights - not available (no document or path)")
     return { formatted = "", count = 0, items = {} }
 end
 

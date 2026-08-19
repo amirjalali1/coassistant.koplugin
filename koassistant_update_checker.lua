@@ -25,12 +25,12 @@ if plugin_dir then
         logger.warn("UpdateChecker: failed to load _meta from plugin dir:", result)
         -- Fallback to require (may load wrong plugin's _meta)
         meta = require("_meta")
-        logger.warn("UpdateChecker: fell back to require('_meta'), got plugin:", meta.name)
+        logger.dbg("UpdateChecker: fell back to require('_meta'), got plugin:", meta.name)
     end
 else
     logger.warn("UpdateChecker: could not determine plugin dir, using require('_meta')")
     meta = require("_meta")
-    logger.warn("UpdateChecker: loaded via require, got plugin:", meta.name)
+    logger.dbg("UpdateChecker: loaded via require, got plugin:", meta.name)
 end
 
 -- Core modules always loaded (needed for subprocess fetch/poll)

@@ -1668,7 +1668,7 @@ local function getAllPrompts(configuration, plugin)
 
     -- Debug logging
     local logger = require("logger")
-    logger.info("getAllPrompts: context = " .. context .. ", has_open_book = " .. tostring(has_open_book))
+    logger.dbg("getAllPrompts: context = " .. context .. ", has_open_book = " .. tostring(has_open_book))
 
     -- Use ActionService if available, fallback to PromptService
     local service = plugin and (plugin.action_service or plugin.prompt_service)
@@ -1678,10 +1678,10 @@ local function getAllPrompts(configuration, plugin)
         -- (users can add/remove actions via Action Manager)
         if context == "general" and service.getGeneralMenuActionObjects then
             service_prompts = service:getGeneralMenuActionObjects()
-            logger.info("getAllPrompts: Got " .. #service_prompts .. " prompts from general menu list")
+            logger.dbg("getAllPrompts: Got " .. #service_prompts .. " prompts from general menu list")
         else
             service_prompts = service:getAllPrompts(context, false, has_open_book)
-            logger.info("getAllPrompts: Got " .. #service_prompts .. " prompts from " ..
+            logger.dbg("getAllPrompts: Got " .. #service_prompts .. " prompts from " ..
                         (plugin.action_service and "ActionService" or "PromptService"))
         end
 
@@ -1759,15 +1759,15 @@ local function createSaveDialog(document_path, history, chat_history_manager, is
                             if book_metadata then
                                 metadata.book_title = book_metadata.title
                                 metadata.book_author = book_metadata.author
-                                logger.info("KOAssistant: Saving chat with metadata - title: " .. (book_metadata.title or "nil") .. ", author: " .. (book_metadata.author or "nil"))
+                                logger.dbg("KOAssistant: Saving chat with metadata - title: " .. (book_metadata.title or "nil") .. ", author: " .. (book_metadata.author or "nil"))
                             else
-                                logger.info("KOAssistant: No book metadata available for save")
+                                logger.dbg("KOAssistant: No book metadata available for save")
                             end
 
                             -- Add launch context if available (for general chats launched from a book)
                             if launch_context then
                                 metadata.launch_context = launch_context
-                                logger.info("KOAssistant: Saving chat with launch context - from: " .. (launch_context.title or "nil"))
+                                logger.dbg("KOAssistant: Saving chat with launch context - from: " .. (launch_context.title or "nil"))
                             end
 
                             -- Store highlighted text for display toggle in continued chats
@@ -2568,7 +2568,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                     -- OPEN/resume paths only.
                     local to_last_question = history and history.getAssistantTurnCount
                         and history:getAssistantTurnCount() > 1
-                    logger.info("KOAssistant: reply landing — to_last_question:",
+                    logger.dbg("KOAssistant: reply landing — to_last_question:",
                         to_last_question and true or false)
                     -- Create a new viewer with updated content
                     local new_viewer = ChatGPTViewer:new {
@@ -2635,7 +2635,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                         target = viewer
                     end
                     if target and target.update then
-                        logger.info("KOAssistant: onAskQuestion fallback render — ActiveChatViewer slot changed under an in-flight reply")
+                        logger.dbg("KOAssistant: onAskQuestion fallback render — ActiveChatViewer slot changed under an in-flight reply")
                         local viewer_cfg = target.configuration or temp_config or CONFIGURATION
                         -- Same A8 landing rule as the main branch: land on the exchange
                         target:update(history:createResultText(highlightedText, viewer_cfg), false)
@@ -2744,7 +2744,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                         if storage_key == "__SKIP__" then
                             -- Don't save this chat
                             should_save = false
-                            logger.info("KOAssistant: Skipping auto-save due to storage_key = __SKIP__")
+                            logger.dbg("KOAssistant: Skipping auto-save due to storage_key = __SKIP__")
                         elseif storage_key then
                             -- Use custom storage location
                             save_path = storage_key
@@ -2758,7 +2758,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
 
                         if not should_save then
                             -- Skip saving, but still consider it successful
-                            logger.info("KOAssistant: Chat not saved (storage_key = __SKIP__)")
+                            logger.dbg("KOAssistant: Chat not saved (storage_key = __SKIP__)")
                         else
                             local save_result
                             -- Check storage version and route to appropriate method
@@ -2839,7 +2839,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                                 if cfg.features then
                                     cfg.features.chat_saved = true
                                 end
-                                logger.info("KOAssistant: Auto-saved chat after follow-up with id: " .. tostring(save_result))
+                                logger.dbg("KOAssistant: Auto-saved chat after follow-up with id: " .. tostring(save_result))
                             else
                                 logger.warn("KOAssistant: Failed to auto-save chat after follow-up")
                             end
@@ -3375,7 +3375,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
             if storage_key == "__SKIP__" then
                 -- Don't save this chat
                 should_save = false
-                logger.info("KOAssistant: Skipping auto-save due to storage_key = __SKIP__")
+                logger.dbg("KOAssistant: Skipping auto-save due to storage_key = __SKIP__")
             elseif storage_key then
                 -- Use custom storage location
                 save_path = storage_key
@@ -3465,12 +3465,12 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                     end
                     -- Mark as saved so auto_save_chats applies to future replies
                     temp_config.features.chat_saved = true
-                    logger.info("KOAssistant: Auto-saved chat with id: " .. tostring(result) .. ", title: " .. suggested_title)
+                    logger.dbg("KOAssistant: Auto-saved chat with id: " .. tostring(result) .. ", title: " .. suggested_title)
                 else
                     logger.warn("KOAssistant: Failed to auto-save chat")
                 end
             else
-                logger.info("KOAssistant: Chat not saved (storage_key = __SKIP__)")
+                logger.dbg("KOAssistant: Chat not saved (storage_key = __SKIP__)")
             end
         end)
     end
@@ -3968,10 +3968,10 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         response_lang_fields.primary_language)
 
     -- Build data for consolidated message
-    logger.info("KOAssistant: buildConsolidatedMessage - highlightedText:", highlightedText and #highlightedText or "nil/empty")
-    logger.info("KOAssistant: config.features.book_metadata=", config.features and config.features.book_metadata and "present" or "nil")
+    logger.dbg("KOAssistant: buildConsolidatedMessage - highlightedText:", highlightedText and #highlightedText or "nil/empty")
+    logger.dbg("KOAssistant: config.features.book_metadata=", config.features and config.features.book_metadata and "present" or "nil")
     if config.features and config.features.book_metadata then
-        logger.info("KOAssistant: book_metadata.title=", config.features.book_metadata.title or "nil")
+        logger.dbg("KOAssistant: book_metadata.title=", config.features.book_metadata.title or "nil")
     end
     -- Consume X-Ray context prefix (transient flag set by action buttons from chatAboutItem)
     local xray_prefix = config.features and config.features._xray_context_prefix
@@ -4024,7 +4024,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         _ladder_fresh = ladder_fresh or nil,
     }
     message_data._merge_payload = merge_payload
-    logger.info("KOAssistant: message_data.book_metadata=", message_data.book_metadata and "present" or "nil")
+    logger.dbg("KOAssistant: message_data.book_metadata=", message_data.book_metadata and "present" or "nil")
 
     -- Build dynamic quiz instructions from settings (for interactive quiz actions).
     -- Per-book quiz overrides (Book Settings ▸ Quiz) take precedence over the globals.
@@ -4213,7 +4213,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 author = authors,
                 author_clause = (authors ~= "") and (" by " .. authors) or "",
             }
-            logger.info("KOAssistant: book_metadata populated from ui.doc_props for book context")
+            logger.dbg("KOAssistant: book_metadata populated from ui.doc_props for book context")
         end
     end
 
@@ -4324,7 +4324,7 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 (config.features and config.features._full_document_xray)
                     and "complete" or "partial")
             message_data._xray_categories_applied = xr_sel
-            logger.info("KOAssistant: X-Ray create narrowed to categories:", xr_sel)
+            logger.dbg("KOAssistant: X-Ray create narrowed to categories:", xr_sel)
         end
     end
 
@@ -4473,11 +4473,11 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
                 -- the rung boundary instead of the reader's position (§6 slice 1)
                 _ladder_target_ratio = message_data._ladder_target,
             })
-            logger.info("KOAssistant: Extractor settings - enable_book_text_extraction=",
+            logger.dbg("KOAssistant: Extractor settings - enable_book_text_extraction=",
                        config.features and config.features.enable_book_text_extraction and "true" or "false/nil")
             if extractor:isAvailable() then
-                logger.info("KOAssistant: Context extraction starting for action:", prompt and prompt.id or "unknown")
-                logger.info("KOAssistant: use_book_text=", prompt and prompt.use_book_text and "true" or "false")
+                logger.dbg("KOAssistant: Context extraction starting for action:", prompt and prompt.id or "unknown")
+                logger.dbg("KOAssistant: use_book_text=", prompt and prompt.use_book_text and "true" or "false")
                 -- Background auto-update: the base prompt's {book_text_section} would trigger
                 -- a full to-position extraction that the update prompt never consumes (it uses
                 -- only the delta, extracted in the cache block below) — and a background run
@@ -4499,9 +4499,9 @@ if prune_book_text then
                 -- Merge extracted data into message_data
                 for key, value in pairs(extracted) do
                     message_data[key] = value
-                    logger.info("KOAssistant: Extracted data key=", key, "value_len=", type(value) == "string" and #value or "non-string")
+                    logger.dbg("KOAssistant: Extracted data key=", key, "value_len=", type(value) == "string" and #value or "non-string")
                 end
-                logger.info("KOAssistant: Context extraction complete")
+                logger.dbg("KOAssistant: Context extraction complete")
 
                 -- Compute flow fingerprint for cache staleness detection
                 message_data.flow_visible_pages = ContextExtractor.getFlowFingerprint(ui.document)
@@ -4530,11 +4530,11 @@ if prune_book_text then
                 enable_basic_stats = config.features and config.features.enable_basic_stats,
                 enable_notebook_sharing = config.features and config.features.enable_notebook_sharing,
             })
-            logger.info("KOAssistant: Sidecar extraction for file browser:", fb_document_path)
+            logger.dbg("KOAssistant: Sidecar extraction for file browser:", fb_document_path)
             local extracted = extractor:extractForAction(prompt or {})
             for key, value in pairs(extracted) do
                 message_data[key] = value
-                logger.info("KOAssistant: Sidecar extracted key=", key, "value_len=", type(value) == "string" and #value or "non-string")
+                logger.dbg("KOAssistant: Sidecar extracted key=", key, "value_len=", type(value) == "string" and #value or "non-string")
             end
         end
     elseif prompt and prompt.use_library then
@@ -4827,7 +4827,7 @@ if prune_book_text then
             local XrayParser = require("koassistant_xray_parser")
             local skip_legacy = prompt.id == "xray" and not XrayParser.isJSON(cached_entry.result)
             if skip_legacy then
-                logger.info("KOAssistant: Legacy markdown X-Ray cache detected, forcing full regeneration for JSON output")
+                logger.dbg("KOAssistant: Legacy markdown X-Ray cache detected, forcing full regeneration for JSON output")
             end
 
             -- AI-knowledge source: skip incremental update_prompt (it expects {incremental_book_text_section})
@@ -4879,7 +4879,7 @@ if prune_book_text then
             end
             local cache_read_allowed = cache_text_ok and cache_highlights_ok
             if not cache_read_allowed then
-                logger.info("KOAssistant: Cached", prompt.id,
+                logger.dbg("KOAssistant: Cached", prompt.id,
                     "result withheld from update - permission revoked since cache build")
             end
 
@@ -4888,7 +4888,7 @@ if prune_book_text then
                     and current_progress > cached_progress + 0.01 and prompt.update_prompt then
                 using_cache = true
                 cached_progress_display = math.floor(cached_progress * 100) .. "%"
-                logger.info("KOAssistant: Using cached response from", cached_progress_display, "for", prompt.id)
+                logger.dbg("KOAssistant: Using cached response from", cached_progress_display, "for", prompt.id)
 
                 -- Switch to update prompt (create a shallow copy to avoid modifying original)
                 local original_prompt = prompt
@@ -4969,7 +4969,7 @@ if prune_book_text then
                     local to_raw = total_pages > 0 and to_page / total_pages or current_progress
                     local range_result = extractor:getBookTextRange(from_raw, to_raw)
                     message_data.incremental_book_text = range_result.text
-                    logger.info("KOAssistant: Extracted incremental book text:", range_result.char_count, "chars")
+                    logger.dbg("KOAssistant: Extracted incremental book text:", range_result.char_count, "chars")
 
                     -- Store truncation metadata for pre-send warning dialog
                     if range_result.truncated and not range_result.disabled then
@@ -5009,9 +5009,9 @@ if prune_book_text then
         -- when no X-Ray exists at all. An existing-but-ineligible artifact
         -- (legacy, ai_knowledge, revoked read gate) stays manual.
         if message_data._background_create and not cache_entry_existed then
-            logger.info("KOAssistant: background X-Ray create - fresh generation engaged")
+            logger.dbg("KOAssistant: background X-Ray create - fresh generation engaged")
         else
-            logger.info("KOAssistant: background X-Ray update aborted - incremental path did not engage")
+            logger.dbg("KOAssistant: background X-Ray update aborted - incremental path did not engage")
             if on_complete then on_complete(nil, "background: incremental update not applicable") end
             return nil
         end
@@ -5032,7 +5032,7 @@ if prune_book_text then
         end)
         if ok_prev and prev then
             message_data.previous_results = prev
-            logger.info("KOAssistant: previous_results injected, len=" .. #prev)
+            logger.dbg("KOAssistant: previous_results injected, len=" .. #prev)
         end
     end
 
@@ -5160,7 +5160,7 @@ if prune_book_text then
                     -- AI returned error (e.g., "I don't recognize this work") — show as plain text, skip caching
                     display_answer = parsed.error
                     cache_answer = nil  -- Signal to skip caching below
-                    logger.info("KOAssistant: X-Ray returned error response, skipping cache:", parsed.error)
+                    logger.dbg("KOAssistant: X-Ray returned error response, skipping cache:", parsed.error)
                 elseif parsed and not using_cache and not XrayParser.hasEntityContent(parsed) then
                     -- Round 28 (#90 field report): a CREATE that parsed but holds no
                     -- entity categories (e.g. a lone current_state — seen from
@@ -5170,7 +5170,7 @@ if prune_book_text then
                     -- current_state is legitimate.
                     xray_unusable = _("the response was missing X-Ray content (no characters or other entries)")
                     cache_answer = nil
-                    logger.info("KOAssistant: X-Ray create had no entity categories, skipping cache")
+                    logger.dbg("KOAssistant: X-Ray create had no entity categories, skipping cache")
                 elseif parsed then
                     -- Carry ledger (item 49): the model never authors the ledger
                     parsed[XrayParser.DORMANT_KEY] = nil
@@ -5192,12 +5192,12 @@ if prune_book_text then
                             and require("koassistant_action_cache").getNeverMergePairs(cache_file)
                         parsed = XrayParser.merge(message_data._parsed_old_xray, parsed,
                             never_pairs and { never_pairs = never_pairs } or nil)
-                        logger.info("KOAssistant: Merged incremental X-Ray update into existing data")
+                        logger.dbg("KOAssistant: Merged incremental X-Ray update into existing data")
                         -- Wake-pass (carry layer 2): entities arriving in this
                         -- slice promote their carried history
                         local woken = XrayParser.wakeDormant(parsed)
                         if #woken > 0 then
-                            logger.info("KOAssistant: X-Ray update woke", #woken, "dormant entit(y/ies)")
+                            logger.dbg("KOAssistant: X-Ray update woke", #woken, "dormant entit(y/ies)")
                         end
                     elseif not (config.features and (config.features._section_scope
                             or config.features._section_xray)) then
@@ -5223,7 +5223,7 @@ if prune_book_text then
                                 and prev_parsed[XrayParser.DORMANT_KEY]
                             if type(prev_ledger) == "table" and #prev_ledger > 0 then
                                 parsed[XrayParser.DORMANT_KEY] = prev_ledger
-                                logger.info("KOAssistant: X-Ray rebuild carried",
+                                logger.dbg("KOAssistant: X-Ray rebuild carried",
                                     #prev_ledger, "dormant entit(y/ies) from the outgoing version")
                             end
                             -- Round 26: the ledger alone was half the promise —
@@ -5235,7 +5235,7 @@ if prune_book_text then
                                 local carried = require("koassistant_xray_merge")
                                     .carryActiveBackground(prev_parsed, parsed)
                                 if carried > 0 then
-                                    logger.info("KOAssistant: X-Ray rebuild carried background of",
+                                    logger.dbg("KOAssistant: X-Ray rebuild carried background of",
                                         carried, "entit(y/ies) from the outgoing version")
                                 end
                             end
@@ -5244,12 +5244,12 @@ if prune_book_text then
                             cache_file, parsed, config.features,
                             temp_config and temp_config.provider, ui)
                         if seeded > 0 then
-                            logger.info("KOAssistant: X-Ray create seeded", seeded,
+                            logger.dbg("KOAssistant: X-Ray create seeded", seeded,
                                 "dormant entit(y/ies) from", seed_src)
                         end
                         local woken = XrayParser.wakeDormant(parsed)
                         if #woken > 0 then
-                            logger.info("KOAssistant: X-Ray create woke", #woken, "dormant entit(y/ies)")
+                            logger.dbg("KOAssistant: X-Ray create woke", #woken, "dormant entit(y/ies)")
                         end
                     end
                     -- Round 28 (#90): reconcile mechanical background against the
@@ -5271,7 +5271,7 @@ if prune_book_text then
                         -- display so the user can see what the model produced.
                         xray_unusable = _("the response was missing X-Ray content (no characters or other entries)")
                         cache_answer = nil
-                        logger.info("KOAssistant: X-Ray create had only malformed entries after sanitize, skipping cache")
+                        logger.dbg("KOAssistant: X-Ray create had only malformed entries after sanitize, skipping cache")
                     else
                         local book_meta = message_data.book_metadata or {}
                         local display_progress = message_data.reading_progress or ""
@@ -5293,7 +5293,7 @@ if prune_book_text then
                         -- Pretty-print cached JSON so future updates receive readable structured data
                         local json_mod = require("json")
                         cache_answer = json_mod.encode(parsed, { pretty = true, indent = true })
-                        logger.info("KOAssistant: X-Ray JSON parsed successfully, rendered to markdown for display")
+                        logger.dbg("KOAssistant: X-Ray JSON parsed successfully, rendered to markdown for display")
                     end
                 else
                     -- Round 28 (#90): junk must never OVERWRITE a real X-Ray. With
@@ -5311,16 +5311,16 @@ if prune_book_text then
                         -- few KB of the response, so "not valid JSON" was the
                         -- whole evidence. A parse failure is rare, so the
                         -- bytes cost nothing in normal operation.
-                        logger.info("KOAssistant: X-Ray response is not valid JSON - keeping existing X-Ray, skipping cache")
-                        logger.info("KOAssistant: X-Ray parse rejected because:",
+                        logger.dbg("KOAssistant: X-Ray response is not valid JSON - keeping existing X-Ray, skipping cache")
+                        logger.dbg("KOAssistant: X-Ray parse rejected because:",
                             tostring(parse_err))
-                        logger.info("KOAssistant: unparseable X-Ray response, length",
+                        logger.dbg("KOAssistant: unparseable X-Ray response, length",
                             type(answer) == "string" and #answer or "n/a",
                             "head:", type(answer) == "string" and answer:sub(1, 1200) or "n/a")
-                        logger.info("KOAssistant: unparseable X-Ray response, tail:",
+                        logger.dbg("KOAssistant: unparseable X-Ray response, tail:",
                             type(answer) == "string" and answer:sub(-1200) or "n/a")
                     else
-                        logger.info("KOAssistant: X-Ray response is not valid JSON, using as-is")
+                        logger.dbg("KOAssistant: X-Ray response is not valid JSON, using as-is")
                     end
                 end
             end
@@ -5489,10 +5489,10 @@ if prune_book_text then
                       unavailable_data_text = unavailable_text }
                 )
                 if save_success then
-                    logger.info("KOAssistant: Saved response to cache for", original_action_id, "at", save_progress, "used_book_text=", book_text_was_provided, "used_highlights=", highlights_were_provided)
+                    logger.dbg("KOAssistant: Saved response to cache for", original_action_id, "at", save_progress, "used_book_text=", book_text_was_provided, "used_highlights=", highlights_were_provided)
                 end
             elseif is_truncated and cache_enabled then
-                logger.info("KOAssistant: Skipping cache for", original_action_id, "- response was truncated")
+                logger.dbg("KOAssistant: Skipping cache for", original_action_id, "- response was truncated")
             end
 
             -- Save to document caches if action has cache_as_* flags (for reuse by other actions)
@@ -5554,7 +5554,7 @@ if prune_book_text then
                         base_timestamp = xray_base_ts,
                         xray_categories = message_data._xray_categories_applied,
                     })
-                    logger.info("KOAssistant: ladder rung", rung_ok and "saved" or "SAVE FAILED",
+                    logger.dbg("KOAssistant: ladder rung", rung_ok and "saved" or "SAVE FAILED",
                         "at", progress)
                 elseif action.cache_as_xray then
                     -- Track what data was used when building this cache
@@ -5625,7 +5625,7 @@ if prune_book_text then
                             ActionCache.clearXrayLadder(cache_file)
                             logger.info("KOAssistant: rebuild committed - old X-Ray archived, old ladder cleared")
                         end
-                        logger.info("KOAssistant: Saved X-Ray to reusable cache at", progress, "used_highlights=", used_highlights, "used_book_text=", book_text_was_provided)
+                        logger.dbg("KOAssistant: Saved X-Ray to reusable cache at", progress, "used_highlights=", used_highlights, "used_book_text=", book_text_was_provided)
                         -- Slice 2 (item 37(c)): fold the manual point into the
                         -- ladder — it is now a timeline point kept like any
                         -- checkpoint, not just live until the ring prunes its
@@ -5686,7 +5686,7 @@ if prune_book_text then
                     }
                     local section_success = ActionCache.set(cache_file, section_scope.cache_key, cache_answer, 1.0, section_metadata)
                     if section_success then
-                        logger.info("KOAssistant: Saved section artifact to", section_scope.cache_key)
+                        logger.dbg("KOAssistant: Saved section artifact to", section_scope.cache_key)
                     end
                 end
 
@@ -5701,7 +5701,7 @@ if prune_book_text then
                     }
                     local analyze_success = ActionCache.setAnalyzeCache(cache_file, answer, 1.0, analyze_metadata)
                     if analyze_success then
-                        logger.info("KOAssistant: Saved document analysis to reusable cache, used_book_text=", book_text_was_provided)
+                        logger.dbg("KOAssistant: Saved document analysis to reusable cache, used_book_text=", book_text_was_provided)
                     end
                 end
 
@@ -5718,7 +5718,7 @@ if prune_book_text then
                     }
                     local summary_success = ActionCache.setSummaryCache(cache_file, answer, 1.0, summary_metadata)
                     if summary_success then
-                        logger.info("KOAssistant: Saved document summary to reusable cache with language:", summary_metadata.language, "used_book_text=", book_text_was_provided)
+                        logger.dbg("KOAssistant: Saved document summary to reusable cache with language:", summary_metadata.language, "used_book_text=", book_text_was_provided)
                     end
                 end
             end
@@ -6024,14 +6024,14 @@ if prune_book_text then
     -- delta would record progress the artifact text doesn't cover.
     if message_data._background_request then
         if message_data.incremental_book_text_truncated then
-            logger.info("KOAssistant: background X-Ray update aborted - delta exceeded extraction limit")
+            logger.dbg("KOAssistant: background X-Ray update aborted - delta exceeded extraction limit")
             if on_complete then on_complete(nil, "background: delta truncated") end
             return nil
         end
         -- Create mode: same honesty rule for the base to-position extraction — a
         -- silently-truncated first X-Ray would record progress its text doesn't cover
         if message_data._background_create and message_data.book_text_truncated then
-            logger.info("KOAssistant: background X-Ray create aborted - extraction exceeded limit")
+            logger.dbg("KOAssistant: background X-Ray create aborted - extraction exceeded limit")
             if on_complete then on_complete(nil, "background: extraction truncated") end
             return nil
         end
@@ -6059,7 +6059,7 @@ if prune_book_text then
                         break
                     end
                 end
-                logger.info("KOAssistant: naming canon injected into background X-Ray create, source:",
+                logger.dbg("KOAssistant: naming canon injected into background X-Ray create, source:",
                     src.title)
             end
         end
@@ -6146,7 +6146,7 @@ if prune_book_text then
             UIManager:show(size_dialog)
             return nil
         elseif not size_ok and xb_build then
-            logger.info("KOAssistant: ladder step paused - oversized request needs review")
+            logger.dbg("KOAssistant: ladder step paused - oversized request needs review")
             if on_complete then on_complete(nil, "size_needs_review") end
             return nil
         end
@@ -6730,20 +6730,20 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
 
     -- Log which provider we're using
     local logger = require("logger")
-    logger.info("Using AI provider: " .. (configuration.provider or "anthropic"))
+    logger.dbg("Using AI provider: " .. (configuration.provider or "anthropic"))
     
     -- Log configuration structure
     if configuration and configuration.features then
-        logger.info("Configuration has features")
+        logger.dbg("Configuration has features")
         if configuration.features.prompts then
             local count = 0
             for k, v in pairs(configuration.features.prompts) do
                 count = count + 1
-                logger.info("  Found configured prompt: " .. k)
+                logger.dbg("  Found configured prompt: " .. k)
             end
-            logger.info("Total configured prompts: " .. count)
+            logger.dbg("Total configured prompts: " .. count)
         else
-            logger.warn("No prompts in configuration.features")
+            logger.dbg("No prompts in configuration.features")
         end
     else
         logger.warn("Configuration missing or no features")
@@ -6781,9 +6781,9 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 author = doc_author,
                 file = doc_file
             }
-            logger.info("KOAssistant: " .. ctx_label .. " chat launched from book - " .. doc_title)
+            logger.dbg("KOAssistant: " .. ctx_label .. " chat launched from book - " .. doc_title)
         else
-            logger.info("KOAssistant: " .. ctx_label .. " chat with no launch context")
+            logger.dbg("KOAssistant: " .. ctx_label .. " chat with no launch context")
         end
     elseif doc_file then
         -- Document is open, use its metadata and path
@@ -6803,7 +6803,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             title = (doc_title and doc_title ~= "") and doc_title or filename_fallback or "Unknown",
             author = (doc_author and doc_author ~= "") and doc_author or ""  -- Empty, not "Unknown"
         }
-        logger.info("KOAssistant: Document context - title: " .. (book_metadata.title or "nil") .. ", author: " .. (book_metadata.author or "nil"))
+        logger.dbg("KOAssistant: Document context - title: " .. (book_metadata.title or "nil") .. ", author: " .. (book_metadata.author or "nil"))
     elseif configuration and configuration.features and configuration.features.book_metadata then
         -- File browser context, use metadata from configuration
         book_metadata = {
@@ -6814,9 +6814,9 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
         if configuration.features.book_metadata.file then
             document_path = configuration.features.book_metadata.file
         end
-        logger.info("KOAssistant: File browser context - title: " .. (book_metadata.title or "nil") .. ", author: " .. (book_metadata.author or "nil"))
+        logger.dbg("KOAssistant: File browser context - title: " .. (book_metadata.title or "nil") .. ", author: " .. (book_metadata.author or "nil"))
     else
-        logger.info("KOAssistant: No metadata available in either context")
+        logger.dbg("KOAssistant: No metadata available in either context")
     end
 
     -- AI-facing copy of the book identity: apply the per-book AI title/author override
@@ -9726,10 +9726,10 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 prompts[key] = action
                 table.insert(prompt_keys, key)
             end
-            logger.info("buildInputDialogButtons: Got " .. #prompt_keys .. " prompts from input context: " .. input_context)
+            logger.dbg("buildInputDialogButtons: Got " .. #prompt_keys .. " prompts from input context: " .. input_context)
         else
             prompts, prompt_keys = getAllPrompts(configuration, plugin)
-            logger.info("buildInputDialogButtons: Got " .. #prompt_keys .. " prompts from getAllPrompts")
+            logger.dbg("buildInputDialogButtons: Got " .. #prompt_keys .. " prompts from getAllPrompts")
         end
     -- Pre-compute availability state for button graying (uses outer-scope library_scan_available)
     local selected_book_count = 0
@@ -9769,9 +9769,9 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 end
             end
             if excluded then
-                logger.info("Skipping excluded prompt: " .. custom_prompt_type)
+                logger.dbg("Skipping excluded prompt: " .. custom_prompt_type)
             else
-                logger.info("Adding button for prompt: " .. custom_prompt_type .. " with text: " .. prompt.text)
+                logger.dbg("Adding button for prompt: " .. custom_prompt_type .. " with text: " .. prompt.text)
                 local available = isActionAvailable(prompt)
                 table.insert(action_buttons, {
                     text = ActionServiceModule.getActionDisplayText(prompt, (configuration or {}).features, indicator_opts),
@@ -10950,7 +10950,7 @@ end
 -- @param override_best table|nil Pre-selected X-Ray result (from selection popup callback)
 local function handleLocalXrayLookup(ui, query, document_path, book_metadata, config, plugin, override_best)
     local logger = require("logger")
-    logger.info("KOAssistant: Local X-Ray lookup for: " .. tostring(query))
+    logger.dbg("KOAssistant: Local X-Ray lookup for: " .. tostring(query))
 
     if not document_path then
         UIManager:show(InfoMessage:new{
@@ -11379,11 +11379,11 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
         return
     end
 
-    logger.info("KOAssistant: Executing quick action - " .. (action.text or action.id))
-    logger.info("KOAssistant: executeDirectAction - configuration.features.book_metadata=",
+    logger.dbg("KOAssistant: Executing quick action - " .. (action.text or action.id))
+    logger.dbg("KOAssistant: executeDirectAction - configuration.features.book_metadata=",
                configuration and configuration.features and configuration.features.book_metadata and "present" or "nil")
     if configuration and configuration.features and configuration.features.book_metadata then
-        logger.info("KOAssistant: executeDirectAction - book_metadata.title=", configuration.features.book_metadata.title or "nil")
+        logger.dbg("KOAssistant: executeDirectAction - book_metadata.title=", configuration.features.book_metadata.title or "nil")
     end
 
     -- Get document info if available
@@ -11887,7 +11887,7 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
 
     -- Call handlePredefinedPrompt with the action object directly
     -- (avoids re-lookup which fails for special actions not in ActionService cache)
-    logger.info("KOAssistant: executeDirectAction calling handlePredefinedPrompt with highlighted_text:", highlighted_text and #highlighted_text or "nil/empty")
+    logger.dbg("KOAssistant: executeDirectAction calling handlePredefinedPrompt with highlighted_text:", highlighted_text and #highlighted_text or "nil/empty")
     handlePredefinedPrompt(action, highlighted_text, ui, configuration, nil, plugin, nil, onComplete, book_metadata)
 end
 

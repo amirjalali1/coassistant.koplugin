@@ -1194,7 +1194,7 @@ function XrayDedup.startFlow(opts)
     else
         showList(false)
     end
-    logger.info("KOAssistant XrayDedup: scan started for", opts.file)
+    logger.dbg("KOAssistant XrayDedup: scan started for", opts.file)
 end
 
 return XrayDedup

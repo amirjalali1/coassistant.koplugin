@@ -418,7 +418,7 @@ local function saveCache(document_path, cache)
     file:write("}\n")
     file:close()
 
-    logger.info("KOAssistant ActionCache: Saved cache for", document_path)
+    logger.dbg("KOAssistant ActionCache: Saved cache for", document_path)
     updateArtifactIndex(document_path, cache)
     return true
 end
@@ -1192,7 +1192,7 @@ function ActionCache.setUserAliases(document_path, aliases_table)
     file:write("}\n")
     file:close()
 
-    logger.info("KOAssistant ActionCache: Saved user aliases for", document_path)
+    logger.dbg("KOAssistant ActionCache: Saved user aliases for", document_path)
     return true
 end
 
@@ -1926,7 +1926,7 @@ function ActionCache.pushXrayLadderRung(document_path, rung)
     end
 
     if not writeCheckpointRing(path, ladder) then return false end
-    logger.info("KOAssistant ActionCache: Saved X-Ray ladder rung at", tostring(p), "for", document_path)
+    logger.dbg("KOAssistant ActionCache: Saved X-Ray ladder rung at", tostring(p), "for", document_path)
     return true
 end
 
@@ -2052,7 +2052,7 @@ function ActionCache.promoteXrayLadderRung(document_path, rung, limit, opts)
         end)
         if ok_carry and type(carried_out) == "string" then
             install_result = carried_out
-            logger.info("KOAssistant ActionCache: promotion carried background of",
+            logger.dbg("KOAssistant ActionCache: promotion carried background of",
                 tostring(carried_n), "entit(y/ies),", tostring(woken_n),
                 "woken, from the outgoing X-Ray")
         end

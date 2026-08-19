@@ -132,10 +132,10 @@ function MessageBuilder.build(params)
     end
 
     if logger then
-        logger.info("MessageBuilder.build: context=", context, "data.highlighted_text=", data.highlighted_text and #data.highlighted_text or "nil/empty")
-        logger.info("MessageBuilder.build: data.book_metadata=", data.book_metadata and "present" or "nil", "data.book_title=", data.book_title or "nil")
+        logger.dbg("MessageBuilder.build: context=", context, "data.highlighted_text=", data.highlighted_text and #data.highlighted_text or "nil/empty")
+        logger.dbg("MessageBuilder.build: data.book_metadata=", data.book_metadata and "present" or "nil", "data.book_title=", data.book_title or "nil")
         if data.book_metadata then
-            logger.info("MessageBuilder.build: book_metadata.title=", data.book_metadata.title or "nil", "author=", data.book_metadata.author or "nil")
+            logger.dbg("MessageBuilder.build: book_metadata.title=", data.book_metadata.title or "nil", "author=", data.book_metadata.author or "nil")
         end
     end
 
@@ -248,7 +248,7 @@ function MessageBuilder.build(params)
         book_text_section = "Book content so far:\n" .. data.book_text
     end
     if logger then
-        logger.info("MessageBuilder: book_text_section len=", #book_text_section)
+        logger.dbg("MessageBuilder: book_text_section len=", #book_text_section)
     end
     user_prompt = replace_placeholder(user_prompt, "{book_text_section}", book_text_section)
 
@@ -258,7 +258,7 @@ function MessageBuilder.build(params)
         highlights_section = "My highlights so far:\n" .. data.highlights
     end
     if logger then
-        logger.info("MessageBuilder: highlights_section len=", #highlights_section)
+        logger.dbg("MessageBuilder: highlights_section len=", #highlights_section)
     end
     user_prompt = replace_placeholder(user_prompt, "{highlights_section}", highlights_section)
 
@@ -520,7 +520,7 @@ function MessageBuilder.build(params)
 
     -- Handle different contexts
     if logger then
-        logger.info("MessageBuilder: Entering context switch, context=", context)
+        logger.dbg("MessageBuilder: Entering context switch, context=", context)
     end
     if context == "library" or context == "multi_file_browser" then
         -- Library (multi-book) context with {count} and {books_list} substitution
@@ -608,7 +608,7 @@ function MessageBuilder.build(params)
             end
             -- Replace template variables in user prompt using replace_placeholder (avoids gsub escaping issues)
             if logger then
-                logger.info("MessageBuilder: BOOK CONTEXT - substituting {title} with:", metadata.title or "Unknown")
+                logger.dbg("MessageBuilder: BOOK CONTEXT - substituting {title} with:", metadata.title or "Unknown")
             end
             user_prompt = replace_placeholder(user_prompt, "{title}", metadata.title or "Unknown")
             user_prompt = replace_placeholder(user_prompt, "{author}", metadata.author or "")

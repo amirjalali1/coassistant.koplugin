@@ -451,7 +451,7 @@ function PromptsManager:loadPrompts()
         end
     end
 
-    logger.info("PromptsManager: Total prompts loaded: " .. #self.prompts)
+    logger.dbg("PromptsManager: Total prompts loaded: " .. #self.prompts)
 end
 
 function PromptsManager:setPromptEnabled(action_id, context, enabled)

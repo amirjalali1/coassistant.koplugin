@@ -1275,7 +1275,7 @@ function XrayMerge.crossBookTransform(source_title, source_parsed, target_title,
             stats.arrived = arrived
             stats.stubbed = stubbed
         end
-        logger.info("KOAssistant XrayMerge: cross-book background —",
+        logger.dbg("KOAssistant XrayMerge: cross-book background —",
             applied, "applied,", unmatched, "unmatched,", dropped, "rewrites dropped,",
             carried_n, "ancestor labels carried,", stubbed, "gone dormant,",
             arrived, "new entities")
@@ -2074,7 +2074,7 @@ function XrayMerge.startFlow(opts)
     -- no-sections/consent-blocked early returns above leave it intact (T11)
     if opts.close_browser then opts.close_browser() end
     showPicker()
-    logger.info("KOAssistant XrayMerge: flow started with", #sections, "sections for", opts.file)
+    logger.dbg("KOAssistant XrayMerge: flow started with", #sections, "sections for", opts.file)
 end
 
 -- ==================== Cross-book merge (item 43, #90 v1) ====================
@@ -2132,7 +2132,7 @@ function XrayMerge.executeCrossBook(opts)
     local source = opts.source
     -- One line per fold at DISPATCH (round 26): a fold could previously only be
     -- traced by reconstructing it from picker and extraction lines
-    logger.info("KOAssistant XrayMerge: folding", (source and source.title) or "?",
+    logger.dbg("KOAssistant XrayMerge: folding", (source and source.title) or "?",
         "into", opts.title or file)
     Dialogs.executeActionForResult(action, config.features.book_context or "", opts.ui, config,
         opts.plugin, bm,
@@ -2360,7 +2360,7 @@ function XrayMerge.runSeriesChain(opts)
             { title = src_c.title, file = src_c.file, timestamp = fresh_src.timestamp })
         if opts.skip_done and (hop_status == "current" or hop_status == "unknown") then
             skipped = skipped + 1
-            logger.info("KOAssistant XrayMerge: chain hop", idx, "skipped -",
+            logger.dbg("KOAssistant XrayMerge: chain hop", idx, "skipped -",
                 src_c.title, "already folded into", tgt_c.title)
             return step(idx + 1)
         end
@@ -2488,7 +2488,7 @@ function XrayMerge.runFanIn(opts)
             { title = src.title, file = src.file, timestamp = fresh_src.timestamp })
         if opts.skip_done and (src_status == "current" or src_status == "unknown") then
             done_n = done_n + 1
-            logger.info("KOAssistant XrayMerge: fan-in skipped", src.title, "- already folded")
+            logger.dbg("KOAssistant XrayMerge: fan-in skipped", src.title, "- already folded")
             return step(idx + 1)
         end
         UIManager:show(Notification:new{
@@ -3233,7 +3233,7 @@ function XrayMerge.startCrossBookFlow(opts)
         buttons = rows,
     }
     UIManager:show(picker)
-    logger.info("KOAssistant XrayMerge: cross-book picker with", #candidates, "candidates for", opts.file)
+    logger.dbg("KOAssistant XrayMerge: cross-book picker with", #candidates, "candidates for", opts.file)
 end
 
 return XrayMerge

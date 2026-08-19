@@ -3132,6 +3132,11 @@ local SettingsSchema = {
                     path = "features.debug",
                     default = false,
                     on_change = function(new_value, plugin)
+                        -- Routine tracing lives at logger.dbg, which KOReader's
+                        -- default level discards (issue #104) — raise the level
+                        -- so this toggle actually delivers the diagnostics it
+                        -- promises above.
+                        require("koassistant_debug_utils").syncLogLevel(new_value)
                         -- Most consumers read the flag per request; the marks
                         -- module caches it at sync — resync so the toggle is
                         -- live there too

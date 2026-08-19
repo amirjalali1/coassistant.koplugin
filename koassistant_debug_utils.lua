@@ -323,9 +323,9 @@ function DebugUtils.dumpXrayMerge(old_xray, delta, XrayParser)
     end
 
     for label, data in pairs({OLD = old_xray, DELTA = delta}) do
-        logger.info("KOAssistant: X-Ray merge debug —", label, "categories:")
+        logger.dbg("KOAssistant: X-Ray merge debug —", label, "categories:")
         for k, v in pairs(countEntries(data)) do
-            logger.info("  ", k, "=", tostring(v))
+            logger.dbg("  ", k, "=", tostring(v))
         end
     end
 
@@ -336,15 +336,34 @@ function DebugUtils.dumpXrayMerge(old_xray, delta, XrayParser)
 
     local merged = XrayParser.merge(old_xray, delta)
 
-    logger.info("KOAssistant: X-Ray merge debug — MERGED categories:")
+    logger.dbg("KOAssistant: X-Ray merge debug — MERGED categories:")
     for k, v in pairs(countEntries(merged)) do
-        logger.info("  ", k, "=", tostring(v))
+        logger.dbg("  ", k, "=", tostring(v))
     end
     f = io.open(debug_dir .. "/debug_xray_merged.json", "w")
     if f then f:write(json.encode(merged)); f:close() end
 
     logger.info("KOAssistant: Debug files written to docs/debug_xray_*.json")
     return merged
+end
+
+--- Raise (or restore) KOReader's log level so the plugin's `logger.dbg` tracing
+--- reaches the console/crash log.
+---
+--- Routine tracing lives at `logger.dbg`, which KOReader's default level (info)
+--- discards — that is what keeps crash.log small (issue #104). Turning on
+--- Console Debug brings all of it back, which is what the setting has always
+--- promised. The level is global to KOReader, so switching off only restores
+--- `info` when the user has not enabled KOReader's own debug logging.
+---
+--- @param enabled boolean value of features.debug
+function DebugUtils.syncLogLevel(enabled)
+    local logger = require("logger")
+    if enabled then
+        logger:setLevel(logger.levels.dbg)
+    elseif not (G_reader_settings and G_reader_settings:isTrue("debug")) then
+        logger:setLevel(logger.levels.info)
+    end
 end
 
 return DebugUtils

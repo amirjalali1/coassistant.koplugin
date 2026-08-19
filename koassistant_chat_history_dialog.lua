@@ -553,10 +553,10 @@ function ChatHistoryDialog:showChatHistoryBrowser(ui, current_document_path, cha
         })
     end
 
-    logger.info("Chat history: Creating menu items for " .. #documents .. " documents")
+    logger.dbg("Chat history: Creating menu items for " .. #documents .. " documents")
 
     for doc_idx, doc in ipairs(documents) do
-        logger.info("Chat history: Document - title: " .. (doc.title or "nil") .. ", author: " .. (doc.author or "nil"))
+        logger.dbg("Chat history: Document - title: " .. (doc.title or "nil") .. ", author: " .. (doc.author or "nil"))
 
         -- Fix S (2026-08-17): count and timestamp come from the documents
         -- array (index-backed) — no per-row sidecar/store parse. v1 documents
@@ -612,7 +612,7 @@ function ChatHistoryDialog:showChatHistoryBrowser(ui, current_document_path, cha
             mandatory_dim = true,
             help_text = help_text,
             callback = function()
-                logger.info("Document selected: " .. captured_doc.title)
+                logger.dbg("Document selected: " .. captured_doc.title)
                 -- Save document list page for back navigation
                 if self_ref.current_menu then
                     nav_context.documents_page = self_ref.current_menu.page
@@ -667,7 +667,7 @@ function ChatHistoryDialog:showChatHistoryBrowser(ui, current_document_path, cha
     end
 
     self.current_menu = document_menu
-    logger.info("KOAssistant: Set current_menu to document_menu " .. tostring(document_menu))
+    logger.dbg("KOAssistant: Set current_menu to document_menu " .. tostring(document_menu))
     UIManager:show(document_menu)
 
     -- Restore page from navigation context (e.g., returning from chat list)
@@ -716,7 +716,7 @@ function ChatHistoryDialog:showChatsForDocument(ui, document, chat_history_manag
     local self_ref = self
 
     for i, chat in ipairs(chats) do
-        logger.info("Chat " .. i .. " ID: " .. (chat.id or "unknown") .. " - " .. (chat.title or "Untitled"))
+        logger.dbg("Chat " .. i .. " ID: " .. (chat.id or "unknown") .. " - " .. (chat.title or "Untitled"))
 
         local date_str = os.date("%Y-%m-%d %H:%M", chat.timestamp or 0)
         local title = chat.title or "Untitled"
@@ -770,7 +770,7 @@ function ChatHistoryDialog:showChatsForDocument(ui, document, chat_history_manag
                     nav_context.select_mode.on_select(entry)
                     return
                 end
-                logger.info("Chat selected: " .. (captured_chat.id or "unknown") .. " - " .. (captured_chat.title or "Untitled"))
+                logger.dbg("Chat selected: " .. (captured_chat.id or "unknown") .. " - " .. (captured_chat.title or "Untitled"))
                 self_ref:showChatOptions(ui, document.path, captured_chat, chat_history_manager, config, document, nav_context, function()
                     self_ref:showChatsForDocument(ui, document, chat_history_manager, config, nav_context)
                 end)
@@ -842,13 +842,13 @@ function ChatHistoryDialog:showChatsForDocument(ui, document, chat_history_manag
     if chat_menu.page_return_arrow then
         chat_menu.page_return_arrow:show()
         chat_menu.page_return_arrow:enableDisable(true)
-        logger.info("Chat history: Return arrow button shown and enabled")
+        logger.dbg("Chat history: Return arrow button shown and enabled")
     else
         logger.warn("Chat history: page_return_arrow not found")
     end
 
     self.current_menu = chat_menu
-    logger.info("KOAssistant: Set current_menu to " .. tostring(chat_menu))
+    logger.dbg("KOAssistant: Set current_menu to " .. tostring(chat_menu))
     UIManager:show(chat_menu)
 end
 
@@ -916,7 +916,7 @@ end
 --- Hold options for level 2 chat items (book documents only — "Open Book")
 function ChatHistoryDialog:showChatOptions(ui, document_path, chat, chat_history_manager, config, document, nav_context, on_list_changed)
     local Notification = require("ui/widget/notification")
-    logger.info("KOAssistant: showChatOptions - self.current_menu = " .. tostring(self.current_menu))
+    logger.dbg("KOAssistant: showChatOptions - self.current_menu = " .. tostring(self.current_menu))
     -- Close any existing options dialog first
     safeClose(self.current_options_dialog)
     self.current_options_dialog = nil
@@ -933,7 +933,7 @@ function ChatHistoryDialog:showChatOptions(ui, document_path, chat, chat_history
     -- This prevents using stale cached data if the chat was modified elsewhere
     local fresh_chat = chat_history_manager:getChatById(document_path, chat.id)
     if fresh_chat then
-        logger.info("ChatHistoryDialog: Reloaded fresh chat data for id: " .. chat.id)
+        logger.dbg("ChatHistoryDialog: Reloaded fresh chat data for id: " .. chat.id)
         chat = fresh_chat
     else
         logger.warn("ChatHistoryDialog: Could not reload chat, using cached version")
@@ -1652,7 +1652,7 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
     -- This is critical to prevent data loss from stale cached data
     local fresh_chat = chat_history_manager:getChatById(document_path, chat.id)
     if fresh_chat then
-        logger.info("continueChat: Using fresh chat data with " .. #(fresh_chat.messages or {}) .. " messages")
+        logger.dbg("continueChat: Using fresh chat data with " .. #(fresh_chat.messages or {}) .. " messages")
         chat = fresh_chat
     else
         logger.warn("continueChat: Could not reload chat from disk, using provided data")
@@ -1869,11 +1869,11 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
             return nil
         end
 
-        logger.info("KOAssistant: Adding user message to history, length: " .. #message)
+        logger.dbg("KOAssistant: Adding user message to history, length: " .. #message)
         history:addUserMessage(message, is_context)
 
         -- Use callback pattern for streaming support
-        logger.info("KOAssistant: Calling queryChatGPT with " .. #history:getMessages() .. " messages")
+        logger.dbg("KOAssistant: Calling queryChatGPT with " .. #history:getMessages() .. " messages")
         -- Pass plugin settings so GUI-entered API keys take priority over apikeys.lua.
         -- Without settings, getApiKey() skips the GUI keys and falls back to apikeys.lua,
         -- which can return an unfilled sample placeholder (e.g. YOUR_DEEPSEEK_API_KEY) and
@@ -1883,7 +1883,7 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
         -- A continued chat opened from the file browser may run against a different (or no) ui.document.
         local tool_ui = (ui and ui.document and ui.document.file == document_path) and ui or nil
         local answer_result = BookToolRunner.queryWith(queryChatGPT, history:getMessages(), config, function(success, answer, err, reasoning, web_search_used)
-            logger.info("KOAssistant: queryChatGPT callback - success: " .. tostring(success) .. ", answer length: " .. tostring(answer and #answer or 0) .. ", err: " .. tostring(err))
+            logger.dbg("KOAssistant: queryChatGPT callback - success: " .. tostring(success) .. ", answer length: " .. tostring(answer and #answer or 0) .. ", err: " .. tostring(err))
             -- Only save if we got a non-empty answer
             if success and answer and answer ~= "" then
                 -- Reasoning only passed for non-streaming responses when model actually used it

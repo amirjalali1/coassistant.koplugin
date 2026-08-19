@@ -277,7 +277,7 @@ local function ensureIndex(plugin, pageno)
         or math.floor((tonumber(art.progress_decimal) or 0) * 100 + 0.5)
     src = (art == st.live and "live@" or "checkpoint@") .. pct .. "%"
   end
-  logger.info("KOAssistant marks: index rebuilt from " .. src
+  logger.dbg("KOAssistant marks: index rebuilt from " .. src
     .. " +" .. tostring(#(st.sections or {})) .. " sections"
     .. (st.ahead and (" +ahead@" .. math.floor(st.ahead.p * 100 + 0.5) .. "%") or "")
     .. ": " .. tally(included)

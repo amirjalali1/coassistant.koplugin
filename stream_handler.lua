@@ -834,7 +834,7 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
         if read_pos_snippet then
             StreamHandler.pending_read_position = { snippet = read_pos_snippet,
                 occurrence = read_pos_occurrence, ts = os.time() }
-            logger.info("KOAssistant: stream read-position captured,", #read_pos_snippet,
+            logger.dbg("KOAssistant: stream read-position captured,", #read_pos_snippet,
                 "bytes, occurrence:", read_pos_occurrence or 1)
         end
         if on_complete then on_complete(true, result, nil, reasoning_content, search_used, usage_data) end
@@ -1104,7 +1104,7 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
     turnOffAutoScroll = function(cause)
         if auto_scroll_active then
             auto_scroll_active = false
-            logger.info("KOAssistant: stream autoscroll paused —", cause or "toggle")
+            logger.dbg("KOAssistant: stream autoscroll paused —", cause or "toggle")
             -- Update button to show current state (OFF)
             local btn = streamDialog.button_table:getButtonById("scroll_control")
             if btn then
@@ -1117,7 +1117,7 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
 
     turnOnAutoScroll = function()
         auto_scroll_active = true
-        logger.info("KOAssistant: stream autoscroll resumed — toggle")
+        logger.dbg("KOAssistant: stream autoscroll resumed — toggle")
         local iw = streamDialog._input_widget
         if iw then
             if page_scroll then

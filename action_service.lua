@@ -60,7 +60,7 @@ function ActionService:init()
     local ok, SystemPrompts = pcall(require, "prompts.system_prompts")
     if ok then
         self.SystemPrompts = SystemPrompts
-        logger.info("ActionService: Loaded system_prompts module")
+        logger.dbg("ActionService: Loaded system_prompts module")
     else
         logger.err("ActionService: Failed to load prompts/system_prompts.lua: " .. tostring(SystemPrompts))
     end
@@ -68,7 +68,7 @@ function ActionService:init()
     local ok2, Actions = pcall(require, "prompts.actions")
     if ok2 then
         self.Actions = Actions
-        logger.info("ActionService: Loaded actions module")
+        logger.dbg("ActionService: Loaded actions module")
     else
         logger.err("ActionService: Failed to load prompts/actions.lua: " .. tostring(Actions))
     end
@@ -76,7 +76,7 @@ function ActionService:init()
     local ok3, Templates = pcall(require, "prompts.templates")
     if ok3 then
         self.Templates = Templates
-        logger.info("ActionService: Loaded templates module")
+        logger.dbg("ActionService: Loaded templates module")
     else
         logger.err("ActionService: Failed to load prompts/templates.lua: " .. tostring(Templates))
     end
@@ -146,7 +146,7 @@ end
 
 -- Load all actions into cache
 function ActionService:loadActions()
-    logger.info("ActionService: Loading all actions")
+    logger.dbg("ActionService: Loading all actions")
 
     self.actions_cache = {
         highlight = {},
@@ -304,7 +304,7 @@ function ActionService:loadActions()
     if custom_actions_path then
         local ok, custom_actions = pcall(dofile, custom_actions_path)
         if ok and custom_actions then
-            logger.info("ActionService: Loading custom actions from custom_actions.lua")
+            logger.dbg("ActionService: Loading custom actions from custom_actions.lua")
             for i, action in ipairs(custom_actions) do
                 local id = "config_" .. i
                 self:addCustomAction(id, action, "config", disabled_actions)
@@ -318,7 +318,7 @@ function ActionService:loadActions()
 
     -- 3. Load UI-created actions from settings
     local ui_actions = self.settings:readSetting("custom_actions") or {}
-    logger.info("ActionService: Loading " .. #ui_actions .. " UI-created actions")
+    logger.dbg("ActionService: Loading " .. #ui_actions .. " UI-created actions")
     for i, action in ipairs(ui_actions) do
         local id = "ui_" .. i
         self:addCustomAction(id, action, "ui", disabled_actions)
@@ -373,7 +373,7 @@ function ActionService:logLoadSummary()
     for context, actions in pairs(self.actions_cache) do
         counts[context] = #actions
     end
-    logger.info(string.format(
+    logger.dbg(string.format(
         "ActionService: Loaded %d highlight, %d book, %d library, %d general actions",
         counts.highlight or 0,
         counts.book or 0,
