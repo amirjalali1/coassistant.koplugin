@@ -304,7 +304,7 @@ end
 ---   local DebugUtils = require("koassistant_debug_utils")
 ---   parsed = DebugUtils.dumpXrayMerge(message_data._parsed_old_xray, parsed, XrayParser)
 function DebugUtils.dumpXrayMerge(old_xray, delta, XrayParser)
-    local logger = require("logger")
+    local logger = require("koassistant_logger")
     local script_path = require("ffi/util").realpath(debug.getinfo(1, "S").source:sub(2)):match("(.*/)")
     local debug_dir = script_path .. "docs"
 
@@ -323,9 +323,9 @@ function DebugUtils.dumpXrayMerge(old_xray, delta, XrayParser)
     end
 
     for label, data in pairs({OLD = old_xray, DELTA = delta}) do
-        logger.info("KOAssistant: X-Ray merge debug —", label, "categories:")
+        logger.dbg("KOAssistant: X-Ray merge debug —", label, "categories:")
         for k, v in pairs(countEntries(data)) do
-            logger.info("  ", k, "=", tostring(v))
+            logger.dbg("  ", k, "=", tostring(v))
         end
     end
 
@@ -336,15 +336,27 @@ function DebugUtils.dumpXrayMerge(old_xray, delta, XrayParser)
 
     local merged = XrayParser.merge(old_xray, delta)
 
-    logger.info("KOAssistant: X-Ray merge debug — MERGED categories:")
+    logger.dbg("KOAssistant: X-Ray merge debug — MERGED categories:")
     for k, v in pairs(countEntries(merged)) do
-        logger.info("  ", k, "=", tostring(v))
+        logger.dbg("  ", k, "=", tostring(v))
     end
     f = io.open(debug_dir .. "/debug_xray_merged.json", "w")
     if f then f:write(json.encode(merged)); f:close() end
 
     logger.info("KOAssistant: Debug files written to docs/debug_xray_*.json")
     return merged
+end
+
+--- Turn the plugin's own debug tracing on or off.
+---
+--- Routine tracing lives at `logger.dbg`, which is off by default so it stays
+--- out of the user's crash.log (issue #104). This switches ONLY the plugin's
+--- lines: KOReader's global level is untouched, so core's ~700 dbg lines
+--- (`blitFrom` on every paint) never flood the log. See koassistant_logger.lua.
+---
+--- @param enabled boolean value of features.debug
+function DebugUtils.syncLogLevel(enabled)
+    require("koassistant_logger").setEnabled(enabled)
 end
 
 return DebugUtils

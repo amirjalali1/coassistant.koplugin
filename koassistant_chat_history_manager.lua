@@ -1,7 +1,7 @@
 local DataStorage = require("datastorage")
 local LuaSettings = require("luasettings")
 local SafeDocSettings = require("koassistant_doc_settings")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local util = require("util")
 local lfs = require("libs/libkoreader-lfs")
 local md5 = require("ffi/sha2").md5
@@ -169,7 +169,7 @@ function ChatHistoryManager:ensureChatDirectory()
     end
     local dir = self.CHAT_DIR
     if not lfs.attributes(dir, "mode") then
-        logger.info("Creating chat history directory: " .. dir)
+        logger.dbg("Creating chat history directory: " .. dir)
         lfs.mkdir(dir)
     end
 end
@@ -257,13 +257,13 @@ function ChatHistoryManager:getAllDocuments()
                                 -- Try to get book metadata from one of the chats
                                 local book_title_found = nil
                                 local book_author_found = nil
-                                logger.info("ChatHistoryManager: Looking for metadata in " .. doc_dir)
+                                logger.dbg("ChatHistoryManager: Looking for metadata in " .. doc_dir)
                                 for filename in lfs.dir(doc_dir) do
                                     if filename ~= "." and filename ~= ".." and not filename:match("%.old$") then
                                         local chat_path = doc_dir .. "/" .. filename
                                         local chat = self:loadChat(chat_path)
                                         if chat then
-                                            logger.info("ChatHistoryManager: Loaded chat - book_title: " .. (chat.book_title or "nil") .. ", book_author: " .. (chat.book_author or "nil"))
+                                            logger.dbg("ChatHistoryManager: Loaded chat - book_title: " .. (chat.book_title or "nil") .. ", book_author: " .. (chat.book_author or "nil"))
                                             if chat.book_title or chat.book_author then
                                                 book_title_found = chat.book_title
                                                 book_author_found = chat.book_author
@@ -277,11 +277,11 @@ function ChatHistoryManager:getAllDocuments()
                                 if book_title_found then
                                     document_title = book_title_found
                                     book_author = book_author_found
-                                    logger.info("ChatHistoryManager: Using metadata - title: " .. document_title .. ", author: " .. (book_author or "nil"))
+                                    logger.dbg("ChatHistoryManager: Using metadata - title: " .. document_title .. ", author: " .. (book_author or "nil"))
                                 else
                                     -- Get the document title (just the filename without path)
                                     document_title = document_path:match("([^/]+)$") or document_path
-                                    logger.info("ChatHistoryManager: No metadata found, using filename: " .. document_title)
+                                    logger.dbg("ChatHistoryManager: No metadata found, using filename: " .. document_title)
                                 end
                             end
                             
@@ -436,7 +436,7 @@ function ChatHistoryManager:saveChat(document_path, chat_title, message_history,
     local chat_path = doc_dir .. "/" .. chat_id .. ".lua"
     local existing_chat = nil
     if lfs.attributes(chat_path, "mode") then
-        logger.info("Updating existing chat: " .. chat_id)
+        logger.dbg("Updating existing chat: " .. chat_id)
         existing_chat = self:loadChat(chat_path)
         
         -- Remove any old backup file that might exist
@@ -470,7 +470,7 @@ function ChatHistoryManager:saveChat(document_path, chat_title, message_history,
     local message_count = #chat_data.messages
     self:setLastOpenedChat(document_path, chat_id, message_count)
 
-    logger.info("Saved chat history: " .. chat_id .. " for document: " .. document_path)
+    logger.dbg("Saved chat history: " .. chat_id .. " for document: " .. document_path)
     return chat_id
 end
 
@@ -483,7 +483,7 @@ function ChatHistoryManager:getChatsForDocument(document_path)
     
     local doc_dir = self:getDocumentChatDir(document_path)
     if not doc_dir or not lfs.attributes(doc_dir, "mode") then
-        logger.info("No chat directory found for document: " .. document_path)
+        logger.dbg("No chat directory found for document: " .. document_path)
         return {}
     end
     
@@ -492,10 +492,10 @@ function ChatHistoryManager:getChatsForDocument(document_path)
         -- Skip . and .. and backup files ending with .old
         if filename ~= "." and filename ~= ".." and not filename:match("%.old$") then
             local chat_path = doc_dir .. "/" .. filename
-            logger.info("Loading chat file: " .. chat_path)
+            logger.dbg("Loading chat file: " .. chat_path)
             local chat = self:loadChat(chat_path)
             if chat then
-                logger.info("Loaded chat: " .. (chat.id or "unknown") .. " - " .. (chat.title or "Untitled"))
+                logger.dbg("Loaded chat: " .. (chat.id or "unknown") .. " - " .. (chat.title or "Untitled"))
                 table.insert(chats, chat)
             end
         end
@@ -506,7 +506,7 @@ function ChatHistoryManager:getChatsForDocument(document_path)
         return (a.timestamp or 0) > (b.timestamp or 0)
     end)
     
-    logger.info("Found " .. #chats .. " chats for document: " .. document_path)
+    logger.dbg("Found " .. #chats .. " chats for document: " .. document_path)
     return chats
 end
 
@@ -657,7 +657,7 @@ function ChatHistoryManager:deleteAllChatsForDocument(document_path)
                 if attr == "file" then
                     os.remove(file_path)
                     deleted_count = deleted_count + 1
-                    logger.info("Deleted chat file: " .. filename)
+                    logger.dbg("Deleted chat file: " .. filename)
                 end
             end
         end
@@ -796,7 +796,7 @@ function ChatHistoryManager:renameChat(document_path, chat_id, new_title)
             return false
         end
 
-        logger.info("Renamed chat: " .. chat_id .. " to: " .. new_title)
+        logger.dbg("Renamed chat: " .. chat_id .. " to: " .. new_title)
         return true
     end
 end
@@ -975,7 +975,7 @@ function ChatHistoryManager:getMostRecentChat()
     end
 
     if most_recent_chat and most_recent_doc_path then
-        logger.info("Found most recent chat: " .. (most_recent_chat.title or "Untitled") ..
+        logger.dbg("Found most recent chat: " .. (most_recent_chat.title or "Untitled") ..
                    " with timestamp: " .. most_recent_timestamp)
         return most_recent_chat, most_recent_doc_path
     end
@@ -1004,7 +1004,7 @@ function ChatHistoryManager:setLastOpenedChat(document_path, chat_id, message_co
         message_count = message_count or 0,
     })
     settings:flush()
-    logger.info("Saved last opened chat: " .. chat_id .. " for document: " .. document_path ..
+    logger.dbg("Saved last opened chat: " .. chat_id .. " for document: " .. document_path ..
                 (message_count and (" with " .. message_count .. " messages") or ""))
     return true
 end
@@ -1015,7 +1015,7 @@ function ChatHistoryManager:getLastOpenedChat()
     local last_opened = settings:readSetting("last_opened")
 
     if not last_opened or not last_opened.document_path or not last_opened.chat_id then
-        logger.info("No last opened chat found")
+        logger.dbg("No last opened chat found")
         return nil, nil
     end
 
@@ -1236,7 +1236,7 @@ function ChatHistoryManager:addTagToChat(document_path, chat_id, tag)
         -- Check if tag already exists
         for _idx, existing_tag in ipairs(chat.tags) do
             if existing_tag == tag then
-                logger.info("Tag already exists: " .. tag)
+                logger.dbg("Tag already exists: " .. tag)
                 return true  -- Already has this tag
             end
         end
@@ -1943,7 +1943,7 @@ function ChatHistoryManager:saveChatToDocSettings(ui, chat_data)
     -- Track as last opened chat
     self:setLastOpenedChat(chat_data.document_path, chat_data.id)
 
-    logger.info("Saved chat to metadata.lua: " .. chat_data.id .. " (" .. chat_data.document_path .. ")")
+    logger.dbg("Saved chat to metadata.lua: " .. chat_data.id .. " (" .. chat_data.document_path .. ")")
     return chat_data.id
 end
 
@@ -1983,7 +1983,7 @@ function ChatHistoryManager:getChatsFromDocSettings(ui)
         return (a.timestamp or 0) > (b.timestamp or 0)
     end)
 
-    logger.info("Loaded " .. #chats .. " chats from metadata.lua")
+    logger.dbg("Loaded " .. #chats .. " chats from metadata.lua")
     return chats
 end
 
@@ -2077,7 +2077,7 @@ function ChatHistoryManager:deleteChatFromDocSettings(ui, chat_id, document_path
         self:updateChatIndex(stored_path, "delete", chat_id, chats)
     end
 
-    logger.info("Deleted chat from metadata.lua: " .. chat_id)
+    logger.dbg("Deleted chat from metadata.lua: " .. chat_id)
     return true
 end
 
@@ -2139,7 +2139,7 @@ function ChatHistoryManager:updateChatInDocSettings(ui, chat_id, updates, docume
     -- indexed changed.
     self:updateChatIndex(actual_doc_path, "refresh", nil, chats)
 
-    logger.info("Updated chat in metadata.lua: " .. chat_id)
+    logger.dbg("Updated chat in metadata.lua: " .. chat_id)
     return true
 end
 
@@ -2173,7 +2173,7 @@ function ChatHistoryManager:saveGeneralChat(chat_data)
     -- Track as last opened chat
     self:setLastOpenedChat("__GENERAL_CHATS__", chat_data.id)
 
-    logger.info("Saved general chat: " .. chat_data.id)
+    logger.dbg("Saved general chat: " .. chat_data.id)
     return chat_data.id
 end
 
@@ -2197,7 +2197,7 @@ function ChatHistoryManager:getGeneralChats()
         return (a.timestamp or 0) > (b.timestamp or 0)
     end)
 
-    logger.info("Loaded " .. #chats .. " general chats")
+    logger.dbg("Loaded " .. #chats .. " general chats")
     return chats
 end
 
@@ -2248,7 +2248,7 @@ function ChatHistoryManager:deleteGeneralChat(chat_id)
         return false
     end
 
-    logger.info("Deleted general chat: " .. chat_id)
+    logger.dbg("Deleted general chat: " .. chat_id)
     return true
 end
 
@@ -2284,7 +2284,7 @@ function ChatHistoryManager:updateGeneralChat(chat_id, updates)
         return false
     end
 
-    logger.info("Updated general chat: " .. chat_id)
+    logger.dbg("Updated general chat: " .. chat_id)
     return true
 end
 
@@ -2319,7 +2319,7 @@ function ChatHistoryManager:saveLibraryChat(chat_data)
     -- Track as last opened chat
     self:setLastOpenedChat("__LIBRARY_CHATS__", chat_data.id)
 
-    logger.info("Saved library chat: " .. chat_data.id)
+    logger.dbg("Saved library chat: " .. chat_data.id)
     return chat_data.id
 end
 
@@ -2343,7 +2343,7 @@ function ChatHistoryManager:getLibraryChats()
         return (a.timestamp or 0) > (b.timestamp or 0)
     end)
 
-    logger.info("Loaded " .. #chats .. " library chats")
+    logger.dbg("Loaded " .. #chats .. " library chats")
     return chats
 end
 
@@ -2394,7 +2394,7 @@ function ChatHistoryManager:deleteLibraryChat(chat_id)
         return false
     end
 
-    logger.info("Deleted library chat: " .. chat_id)
+    logger.dbg("Deleted library chat: " .. chat_id)
     return true
 end
 
@@ -2430,7 +2430,7 @@ function ChatHistoryManager:updateLibraryChat(chat_id, updates)
         return false
     end
 
-    logger.info("Updated library chat: " .. chat_id)
+    logger.dbg("Updated library chat: " .. chat_id)
     return true
 end
 
@@ -2566,7 +2566,7 @@ function ChatHistoryManager:updateChatIndex(document_path, operation, chat_id, c
     -- Clear mutex flag
     index_operation_pending = false
 
-    logger.info("Updated chat index for: " .. document_path .. " (operation: " .. operation .. ", count: " .. count .. ")")
+    logger.dbg("Updated chat index for: " .. document_path .. " (operation: " .. operation .. ", count: " .. count .. ")")
 end
 
 -- Refresh the chat index entry for one document by reading its sidecar.
@@ -2621,7 +2621,7 @@ function ChatHistoryManager:validateChatIndex()
             end
 
             if actual_count ~= entry.count then
-                logger.info("KOAssistant: Fixing index count mismatch for: " .. doc_path ..
+                logger.dbg("KOAssistant: Fixing index count mismatch for: " .. doc_path ..
                            " (index=" .. entry.count .. ", actual=" .. actual_count .. ")")
                 if actual_count == 0 then
                     index[doc_path] = nil
@@ -2638,7 +2638,7 @@ function ChatHistoryManager:validateChatIndex()
     if needs_update then
         G_reader_settings:saveSetting("koassistant_chat_index", index)
         G_reader_settings:flush()
-        logger.info("KOAssistant: Chat index validated and updated")
+        logger.dbg("KOAssistant: Chat index validated and updated")
     else
         logger.dbg("KOAssistant: Chat index validation complete - no changes needed")
     end
@@ -2679,7 +2679,7 @@ function ChatHistoryManager:rebuildChatIndex()
                 chat_ids = chat_ids,
             }
             doc_count = doc_count + 1
-            logger.info("KOAssistant: Indexed:", book_path, "(" .. count .. " chats)")
+            logger.dbg("KOAssistant: Indexed:", book_path, "(" .. count .. " chats)")
         end
     end
 

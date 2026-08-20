@@ -14,7 +14,7 @@ text extraction permission to read).
 
 local DocSettings = require("docsettings")
 local lfs = require("libs/libkoreader-lfs")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local T = require("ffi/util").template
 local _ = require("koassistant_gettext")
 
@@ -360,6 +360,9 @@ local function saveCache(document_path, cache)
             if entry.xray_categories then
                 file:write(string.format("        xray_categories = %q,\n", entry.xray_categories))
             end
+            if entry.edited_at then
+                file:write(string.format("        edited_at = %s,\n", tostring(entry.edited_at)))
+            end
             writeMergedFrom(file, entry.merged_from, "        ")
             -- Quiz state (answers, correct, revealed) — nested table serialization
             if entry.quiz_state and type(entry.quiz_state) == "table" then
@@ -415,7 +418,7 @@ local function saveCache(document_path, cache)
     file:write("}\n")
     file:close()
 
-    logger.info("KOAssistant ActionCache: Saved cache for", document_path)
+    logger.dbg("KOAssistant ActionCache: Saved cache for", document_path)
     updateArtifactIndex(document_path, cache)
     return true
 end
@@ -516,6 +519,9 @@ function ActionCache.set(document_path, action_id, result, progress_decimal, met
         -- csv of group ids; nil = full. The LINEAGE truth — updates and rung
         -- builds follow this stamp, never the sidecar preference.
         xray_categories = metadata and metadata.xray_categories,
+        -- Reader-modified marker (entity dedup); rides into the ring via
+        -- CHECKPOINT_COPY_FIELDS so an archived version stays honest too
+        edited_at = metadata and metadata.edited_at,
     }
 
     return saveCache(document_path, cache)
@@ -1186,7 +1192,7 @@ function ActionCache.setUserAliases(document_path, aliases_table)
     file:write("}\n")
     file:close()
 
-    logger.info("KOAssistant ActionCache: Saved user aliases for", document_path)
+    logger.dbg("KOAssistant ActionCache: Saved user aliases for", document_path)
     return true
 end
 
@@ -1461,7 +1467,7 @@ local CHECKPOINT_COPY_FIELDS = {
     "model", "full_document", "flow_visible_pages", "source_mode",
     "chapter_label", "intro",
     "coverage_spans", "producer", "base_timestamp", "merged_from_books",
-    "merged_from", "xray_categories",
+    "merged_from", "xray_categories", "edited_at",
 }
 
 local function buildCheckpointEntry(source)
@@ -1538,6 +1544,13 @@ local function writeCheckpointRing(path, ring)
         if cp.xray_categories then
             file:write(string.format("        xray_categories = %q,\n", cp.xray_categories))
         end
+        -- A stored version the reader has since altered (entity dedup sweeps
+        -- built-but-uninstalled rungs so a later install cannot resurrect a
+        -- merged split). Without this the rewrite was invisible: a rung still
+        -- read as a pristine build of its checkpoint.
+        if cp.edited_at then
+            file:write(string.format("        edited_at = %s,\n", tostring(cp.edited_at)))
+        end
         writeMergedFrom(file, cp.merged_from, "        ")
         local result_text = cp.result or ""
         local eq_str = string.rep("=", findSafeDelimiter(result_text))
@@ -1564,14 +1577,40 @@ function ActionCache.getXrayCheckpointsPath(document_path)
     return sidecar_dir .. "/" .. ActionCache.XRAY_CHECKPOINTS_FILE
 end
 
+--- How much of the book an archived version covers. A whole-document build is
+--- worth 1 even when its progress stamp says otherwise (a complete install is
+--- not always stamped 1.0 -- see the posture notes on full_document).
+local function checkpointCoverage(entry)
+    if type(entry) ~= "table" then return 0 end
+    if entry.full_document then return 1 end
+    return tonumber(entry.progress_decimal) or 0
+end
+
 --- Trim a newest-first checkpoint list to the ring limit (pure helper, unit-tested).
+--- Eviction is by VALUE, not by age (2026-08-18): the entries dropped are the
+--- ones covering the least of the book, oldest first among equal coverage. The
+--- ring used to truncate its tail, which spent its five slots on whatever
+--- happened to overwrite something most recently -- one real ring held 40.9%,
+--- 9.7%, 17.8%, 80.8% and 49.7%, where four were abandoned experiments and the
+--- one worth keeping was a single rebuild from eviction. Surviving entries keep
+--- their newest-first order, so display and index semantics are unchanged.
 --- @param list table Array of checkpoint entries, newest first
 --- @param limit number|nil Max entries (default XRAY_CHECKPOINT_LIMIT)
---- @return table The same list, truncated in place
+--- @return table The same list, trimmed in place
 function ActionCache.trimCheckpoints(list, limit)
     limit = limit or ActionCache.XRAY_CHECKPOINT_LIMIT
-    for i = #list, limit + 1, -1 do
-        table.remove(list, i)
+    if #list <= limit then return list end
+    local order = {}
+    for i = 1, #list do order[i] = i end
+    table.sort(order, function(a, b)
+        local ca, cb = checkpointCoverage(list[a]), checkpointCoverage(list[b])
+        if ca ~= cb then return ca > cb end
+        return a < b
+    end)
+    local keep = {}
+    for i = 1, limit do keep[order[i]] = true end
+    for i = #list, 1, -1 do
+        if not keep[i] then table.remove(list, i) end
     end
     return list
 end
@@ -1887,7 +1926,7 @@ function ActionCache.pushXrayLadderRung(document_path, rung)
     end
 
     if not writeCheckpointRing(path, ladder) then return false end
-    logger.info("KOAssistant ActionCache: Saved X-Ray ladder rung at", tostring(p), "for", document_path)
+    logger.dbg("KOAssistant ActionCache: Saved X-Ray ladder rung at", tostring(p), "for", document_path)
     return true
 end
 
@@ -2013,7 +2052,7 @@ function ActionCache.promoteXrayLadderRung(document_path, rung, limit, opts)
         end)
         if ok_carry and type(carried_out) == "string" then
             install_result = carried_out
-            logger.info("KOAssistant ActionCache: promotion carried background of",
+            logger.dbg("KOAssistant ActionCache: promotion carried background of",
                 tostring(carried_n), "entit(y/ies),", tostring(woken_n),
                 "woken, from the outgoing X-Ray")
         end

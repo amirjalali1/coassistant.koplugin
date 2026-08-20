@@ -17,7 +17,7 @@ local T = require("ffi/util").template
 local DocSettings = require("docsettings")
 local SafeDocSettings = require("koassistant_doc_settings")
 local lfs = require("libs/libkoreader-lfs")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local Notebook = {}
 

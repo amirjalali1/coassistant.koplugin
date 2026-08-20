@@ -3,7 +3,7 @@
 --- Supports JSON (fenced or raw) with markdown fallback.
 
 local json = require("json")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local QuizParser = {}
 
@@ -302,6 +302,23 @@ function QuizParser.parse(text)
     if data then
         logger.dbg("QuizParser: parsed via unescaped-quote repair")
         return data, nil
+    end
+
+    -- Attempt 3.6: drop stray closing braces/brackets — the other LLM defect
+    -- class (2026-08-18, root-caused on the X-Ray path, same bundled decoder):
+    -- one extra `}`/`]` crashes LuaJSON with the state.lua:81 'active' error
+    -- instead of a syntax message. Same layering as the X-Ray parser's
+    -- Attempt 5: only after strict parsing fails, quote repair on top.
+    local rebalanced = JsonRepair.dropExtraClosers(candidate)
+    if rebalanced == candidate then
+        rebalanced = JsonRepair.closeUnclosed(candidate)
+    end
+    if rebalanced ~= candidate then
+        data = tryDecode(rebalanced) or tryDecode(JsonRepair.escapeInnerQuotes(rebalanced))
+        if data then
+            logger.dbg("QuizParser: parsed via bracket-balance repair")
+            return data, nil
+        end
     end
 
     -- Attempt 4: markdown fallback

@@ -1,6 +1,6 @@
 local DataStorage = require("datastorage")
 local LuaSettings = require("luasettings")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local lfs = require("libs/libkoreader-lfs")
 local _ = require("koassistant_gettext")
 local DocSettings = require("docsettings")

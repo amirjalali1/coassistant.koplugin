@@ -208,7 +208,6 @@ BookSettings.KEY_XRAY_CARD = "koassistant_book_xray_card"                       
 -- follows its cache STAMP (xray_categories on the entry), never this key —
 -- categories cannot be added incrementally (the text is only read once).
 BookSettings.KEY_XRAY_CATEGORIES = "koassistant_book_xray_categories"
-
 --- Effective X-Ray marking & lookup config for a book: book override > global
 --- > default. Pure. Read pattern must match the schema defaults (marking ON,
 --- tap ON, density "10", families "all", ahead ON, intercept ON, card
@@ -747,6 +746,8 @@ end
 --- Clear every per-book override so this book follows the global defaults again.
 function BookSettings.resetBook(doc_settings)
     if not doc_settings then return end
+    require("koassistant_logger").dbg("KOAssistant BookSettings: clearing all",
+        #BookSettings.SIDECAR_KEYS, "per-book overrides")
     for _i, key in ipairs(BookSettings.SIDECAR_KEYS) do
         doc_settings:saveSetting(key, nil)
     end
@@ -1259,11 +1260,15 @@ function BookSettings.showLayeredPicker(spec, opts)
         if on_close then on_close() end
     end
     local function pickBook(val)
+        require("koassistant_logger").dbg("KOAssistant BookSettings: book override",
+            spec.key, "=", tostring(val))
         doc_settings:saveSetting(spec.key, val)
         doc_settings:flush()
         commit()
     end
     local function pickGlobal(val)
+        require("koassistant_logger").dbg("KOAssistant BookSettings: global",
+            spec.field or spec.key, "=", tostring(val))
         local f = plugin.settings:readSetting("features") or {}
         if spec.set_global then
             spec.set_global(f, val)
@@ -1821,13 +1826,12 @@ function BookSettings.xrayCategoriesLabel(value)
     local sel = Actions.normalizeXrayCategories(value)
     if not sel then return _("Full") end
     if sel == "people" then return _("Character tracking") end
+    if sel == "people,events" then return _("Light") end
     local n = 0
     for _id in sel:gmatch("[^,]+") do n = n + 1 end
     return T(_("%1 of %2"), n, #Actions.XRAY_CATEGORY_ORDER)
 end
 
---- Category picker for NEW X-Rays (presets v0.21): two preset rows (Full /
---- Character tracking) over per-group checkboxes; any manual mix is "custom"
 --- implicitly. Book mode (default) writes KEY_XRAY_CATEGORIES on the spot
 --- (sticky, per-book): the "Follow global" row deletes the key, and explicit
 --- Full writes the "full" sentinel so the book resists a narrowed global (the
@@ -1934,6 +1938,21 @@ function BookSettings.showXrayCategoriesPicker(opts)
             save()
             reshow()
         end }}
+    -- Light (maintainer 2026-08-18): who + what happened. people + events =
+    -- cast/key figures and story arc/argument development (the current-state
+    -- singleton always rides regardless of selection). Deliberately NOT
+    -- including places or ideas: ideas is the depth sink with the largest
+    -- model variance, and a reader who wants either is one checkbox away.
+    -- Presets stay meaningfully distinct at 1 / 2 / 5 groups.
+    buttons[#buttons + 1] = {{ text = dot(stored == "people,events")
+            .. _("Light (characters and story arc)"),
+        callback = function()
+            for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = nil end
+            set.people = true
+            set.events = true
+            save()
+            reshow()
+        end }}
     buttons[#buttons + 1] = {{ text = dot(stored == "people")
             .. _("Character tracking (people only)"),
         callback = function()
@@ -1958,12 +1977,12 @@ function BookSettings.showXrayCategoriesPicker(opts)
     end
     buttons[#buttons + 1] = {{ text = _("Done"), id = "close", callback = closeAll }}
 
+    -- Kept SHORT (maintainer 2026-08-18): the explanatory paragraph pushed the
+    -- category rows off the screen, so the picker had to be scrolled to reach
+    -- the thing it exists for.
     local title = (is_global and _("Categories for new X-Rays (global)")
             or _("Categories for new X-Rays (this book)")) .. "\n"
-        .. _("Applies when an X-Ray is created or rebuilt. An existing X-Ray keeps the categories it was built with; adding one later needs a rebuild, since the text is only read once. Fewer categories mean cheaper, faster builds. Academic X-Rays (research mode) use their own structure and ignore this selection.")
-    if is_global then
-        title = title .. "\n" .. _("Books can pick their own categories in Book Settings.")
-    end
+        .. _("Applies to new builds and rebuilds. Fewer categories are faster and cheaper.")
     dialog = ButtonDialog:new{
         title = title,
         buttons = buttons,

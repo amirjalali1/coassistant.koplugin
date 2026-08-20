@@ -28,7 +28,7 @@ _wizard_gesture_writes — registered in the storage registry's internal
 bucket): the full-reset audit item.
 ]]
 
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local _ = require("koassistant_gettext")
 local T = require("ffi/util").template
 

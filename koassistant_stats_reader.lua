@@ -9,7 +9,7 @@
 -- Groups are the core abstraction: each is a filter (status + stats thresholds) producing a book list.
 -- Groups become placeholders ({deep_reads_section}, {stalled_section}, etc.) that actions compose.
 
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local lfs = require("libs/libkoreader-lfs")
 
 local StatsReader = {}

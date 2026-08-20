@@ -16,7 +16,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local Menu = require("ui/widget/menu")
 local Screen = require("device").screen
 local UIManager = require("ui/uimanager")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local Constants = require("koassistant_constants")
 local _ = require("koassistant_gettext")
 

@@ -23,7 +23,7 @@ If slice 3 work touches that path anyway, folding it onto applyXray is the
 recorded cleanup.
 ]]
 
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local WriteBack = {}
 
@@ -343,7 +343,7 @@ function WriteBack.parseXrayAnswer(answer, base, transform, never_pairs)
     -- wakes its carried history
     local woken = XrayParser.wakeDormant(parsed)
     if #woken > 0 then
-        logger.info("KOAssistant WriteBack: woke", #woken, "dormant entit(y/ies)")
+        logger.dbg("KOAssistant WriteBack: woke", #woken, "dormant entit(y/ies)")
     end
     local json = require("json")
     local ok, cache_json = pcall(json.encode, parsed, { pretty = true, indent = true })

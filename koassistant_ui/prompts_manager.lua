@@ -1,6 +1,6 @@
 local _ = require("koassistant_gettext")
 local T = require("ffi/util").template
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local DataStorage = require("datastorage")
 local UIManager = require("ui/uimanager")
 local Menu = require("ui/widget/menu")
@@ -338,7 +338,14 @@ function PromptsManager:loadPrompts()
                 end
                 if override.behavior_variant then entry.behavior_variant = override.behavior_variant end
                 if override.behavior_override then entry.behavior_override = override.behavior_override end
-                if override.reasoning_config then entry.reasoning_config = override.reasoning_config end
+                -- "global" sentinel clears a built-in's pin (see action_service)
+                if override.reasoning_config ~= nil then
+                    if override.reasoning_config == "global" then
+                        entry.reasoning_config = nil
+                    else
+                        entry.reasoning_config = override.reasoning_config
+                    end
+                end
                 if override.skip_language_instruction ~= nil then entry.skip_language_instruction = override.skip_language_instruction end
                 if override.skip_domain ~= nil then entry.skip_domain = override.skip_domain end
                 -- Tri-state: "domain" sentinel means "follow skip_domain" (nil). Written
@@ -444,7 +451,7 @@ function PromptsManager:loadPrompts()
         end
     end
 
-    logger.info("PromptsManager: Total prompts loaded: " .. #self.prompts)
+    logger.dbg("PromptsManager: Total prompts loaded: " .. #self.prompts)
 end
 
 function PromptsManager:setPromptEnabled(action_id, context, enabled)
@@ -4245,10 +4252,19 @@ function PromptsManager:saveBuiltinOverride(prompt, state)
         override.temperature = state.temperature
         has_any = true
     end
-    -- New format: reasoning_config
+    -- New format: reasoning_config. A built-in may PIN reasoning; nil cannot be
+    -- stored, so an explicit "Global (use setting)" over a pin rides the
+    -- "global" sentinel or the pin would be unclearable. Read the RAW built-in,
+    -- not `prompt` (which already has overrides applied), so re-saving keeps it.
     if state.reasoning_config then
         override.reasoning_config = state.reasoning_config
         has_any = true
+    else
+        local builtin = Actions.getById(prompt.id)
+        if builtin and builtin.reasoning_config ~= nil then
+            override.reasoning_config = "global"
+            has_any = true
+        end
     end
     -- Legacy format (backward compatibility)
     if state.extended_thinking then

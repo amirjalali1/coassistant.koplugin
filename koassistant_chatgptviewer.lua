@@ -15,7 +15,7 @@ local ButtonTable = require("ui/widget/buttontable")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local CheckButton = require("ui/widget/checkbutton")
 local Device = require("device")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local Geom = require("ui/geometry")
 local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
@@ -361,7 +361,7 @@ local function applyCarryPageBreak(html_body, carry_anchor, carry_occurrence)
     end
   end
   if not anchor_pos then
-    logger.info("KOAssistant: carry page break — anchor not in html")
+    logger.dbg("KOAssistant: carry page break — anchor not in html")
     return html_body
   end
   -- Nearest block-open tag before the anchor
@@ -381,14 +381,14 @@ local function applyCarryPageBreak(html_body, carry_anchor, carry_occurrence)
     i = s + 1
   end
   if not best then
-    logger.info("KOAssistant: carry page break — no block open before anchor")
+    logger.dbg("KOAssistant: carry page break — no block open before anchor")
     return html_body
   end
   -- Nothing-above guard: whitespace-collapsed visible text before the spot
   -- under ~40 CHARS means at most a bare marker line would fill the page
   local visible_prefix = html_body:sub(1, anchor_pos - 1):gsub("<[^>]*>", ""):gsub("%s+", "")
   if ulen(visible_prefix) < 40 then
-    logger.info("KOAssistant: carry page break — skipped, nothing above the spot")
+    logger.dbg("KOAssistant: carry page break — skipped, nothing above the spot")
     return html_body
   end
   -- Marker-less text (artifact views): the composed prefix is viewer-only
@@ -404,7 +404,7 @@ local function applyCarryPageBreak(html_body, carry_anchor, carry_occurrence)
       :gsub("<[^>]*>", ""):gsub("\226\128\143", "")
       :gsub("\226\129[\167\169]", ""):gsub("%s+", "")
     if ulen(residue) < 40 then
-      logger.info("KOAssistant: carry page break — skipped, only notice lines above the spot")
+      logger.dbg("KOAssistant: carry page break — skipped, only notice lines above the spot")
       return html_body
     end
   end
@@ -417,7 +417,7 @@ local function applyCarryPageBreak(html_body, carry_anchor, carry_occurrence)
     local between = html_body:sub(mpos + #marker, anchor_pos - 1):gsub("<[^>]*>", "")
       :gsub(RLM, ""):gsub("\226\129[\167\169]", "")
     if between:match("^%s*$") then
-      logger.info("KOAssistant: carry page break — spot is the reply start, marker break suffices")
+      logger.dbg("KOAssistant: carry page break — spot is the reply start, marker break suffices")
       return html_body
     end
   end
@@ -437,7 +437,7 @@ local function applyCarryPageBreak(html_body, carry_anchor, carry_occurrence)
       -- RLI-isolated paragraph (bullet conversion): a mid-split would strand
       -- the isolate unbalanced across the break — fall through to the
       -- before-block break below (bullets are short; near-exact anyway)
-      logger.info("KOAssistant: carry page break — isolate paragraph, breaking before block")
+      logger.dbg("KOAssistant: carry page break — isolate paragraph, breaking before block")
     elseif not before_in_block:match("^%s*$") then
       -- Mid-paragraph spot: split at the anchor. Balance walk over inline tags
       -- between the paragraph's start and the anchor — depth 0 at the anchor
@@ -467,14 +467,14 @@ local function applyCarryPageBreak(html_body, carry_anchor, carry_occurrence)
         -- Keep the original base-direction mark on the landed half
         reopen = reopen .. RLM
       end
-      logger.info("KOAssistant: carry page break — paragraph split at reader's line",
+      logger.dbg("KOAssistant: carry page break — paragraph split at reader's line",
         depth > 0 and "(backed to tag-balanced point)" or "(exact)",
         "anchor chars:", ulen(carry_anchor), "occurrence:", tonumber(carry_occurrence) or 1)
       return html_body:sub(1, split_at - 1) .. "</p>" .. DIV .. reopen .. html_body:sub(split_at)
     end
     -- Spot at the paragraph's first words: plain break before the block
   end
-  logger.info("KOAssistant: carry page break before reader's block: yes")
+  logger.dbg("KOAssistant: carry page break before reader's block: yes")
   return html_body:sub(1, best - 1) .. DIV .. html_body:sub(best)
 end
 
@@ -508,7 +508,7 @@ local function applyExchangePageBreaks(html_body, configuration, carry_anchor, c
     search_start = s + 1
   end
   if not last_pos then
-    logger.info("KOAssistant: exchange page break — no marker")
+    logger.dbg("KOAssistant: exchange page break — no marker")
     return html_body
   end
   -- Smart skip (maintainer 2026-08-12): when everything BEFORE the reply is
@@ -518,10 +518,10 @@ local function applyExchangePageBreaks(html_body, configuration, carry_anchor, c
   -- the first page"; a long first question still gets its break.
   local visible_prefix = html_body:sub(1, last_pos - 1):gsub("<[^>]*>", "")
   if #visible_prefix < 500 then
-    logger.info("KOAssistant: exchange page break — skipped, short prefix", #visible_prefix)
+    logger.dbg("KOAssistant: exchange page break — skipped, short prefix", #visible_prefix)
     return html_body
   end
-  logger.info("KOAssistant: exchange page break before last reply: yes")
+  logger.dbg("KOAssistant: exchange page break before last reply: yes")
   return html_body:sub(1, last_pos - 1)
     .. '<div class="koa-exchange-break"></div>'
     .. html_body:sub(last_pos)
@@ -1331,15 +1331,15 @@ local ChatGPTViewer = InputContainer:extend {
 }
 
 function ChatGPTViewer:init()
-  -- calculate window dimension using shared constants
-  -- Uses Wikipedia-style dimensions: near-100% with tiny margin
+  -- Window dimensions come from the shared constants, which honor the
+  -- "Window Size" setting (standard 95% / expanded near-full). The region is
+  -- what we are centred in: expanded mode shrinks it to keep the status bar
+  -- clear, so even the dynamically-sized views below never sit over the footer.
   self.align = "center"
-  self.region = Geom:new {
-    x = 0, y = 0,
-    w = Screen:getWidth(),
-    h = Screen:getHeight(),
-  }
-  self.width = self.width or UIConstants.CHAT_WIDTH()
+  -- compact_view is deliberately excluded from the expanded setting, region
+  -- included: its dismiss gesture is the tap outside, which needs a real outside.
+  self.region = Geom:new(UIConstants.CHAT_REGION({ compact = self.compact_view }))
+  self.width = self.width or UIConstants.CHAT_WIDTH({ compact = self.compact_view })
 
   -- Height calculation depends on view mode:
   -- - compact_view: fixed compact height (60%)
@@ -1701,7 +1701,7 @@ function ChatGPTViewer:init()
   -- that alias was the "toggle reverts on reply" device bug (2026-08-12).
   if self.render_markdown_override ~= nil then
     self.render_markdown = self.render_markdown_override
-    logger.info("KOAssistant: viewer init — per-chat mode override:",
+    logger.dbg("KOAssistant: viewer init — per-chat mode override:",
       self.render_markdown and "markdown" or "plain text")
   elseif self.configuration.features and self.configuration.features.render_markdown ~= nil then
     self.render_markdown = self.configuration.features.render_markdown
@@ -1736,11 +1736,11 @@ function ChatGPTViewer:init()
       if type(pending.snippet) == "string" and os.time() - (pending.ts or 0) <= 15 then
         self._stream_carry_anchor = extractCarryAnchor(pending.snippet)
         self._stream_carry_occurrence = pending.occurrence
-        logger.info("KOAssistant: stream carry anchor:",
+        logger.dbg("KOAssistant: stream carry anchor:",
           self._stream_carry_anchor or "none (no usable text in snippet)",
           "occurrence:", pending.occurrence or 1)
       else
-        logger.info("KOAssistant: stream carry — stale slot dropped")
+        logger.dbg("KOAssistant: stream carry — stale slot dropped")
       end
     end
   end
@@ -3736,7 +3736,7 @@ function ChatGPTViewer:landOnStreamPosition()
     end
     anchor = extractCarryAnchor(pending.snippet)
     if not anchor then
-      logger.info("KOAssistant: stream-position carry — no usable anchor in snippet")
+      logger.dbg("KOAssistant: stream-position carry — no usable anchor in snippet")
       return false
     end
   end
@@ -3800,13 +3800,13 @@ function ChatGPTViewer:landOnStreamPosition()
       box.highlight_rects, box.highlight_text = nil, nil
     end
     box.page_number = painted_page
-    logger.info("KOAssistant: stream-position carry md — target:", target or "none",
+    logger.dbg("KOAssistant: stream-position carry md — target:", target or "none",
       "of", box.page_count, "needle chars:", needle_used and ulen(needle_used) or "none",
       "anchor:", anchor)
     if not target then return false end
     if target ~= painted_page then
       self.scroll_text_w:scrollToRatio((target - 0.5) / math.max(1, box.page_count or 1))
-      logger.info("KOAssistant: stream-position carry md — landed page", box.page_number)
+      logger.dbg("KOAssistant: stream-position carry md — landed page", box.page_number)
     end
     return true
   elseif self.scroll_text_w.moveCursorToCharPos and self.text then
@@ -3840,7 +3840,7 @@ function ChatGPTViewer:landOnStreamPosition()
       end
     end
     if not last_byte then
-      logger.info("KOAssistant: stream-position carry txt — anchor not found")
+      logger.dbg("KOAssistant: stream-position carry txt — anchor not found")
       return false
     end
     local _stripped, nchars = self.text:sub(1, last_byte - 1):gsub("[^\128-\191]", "")
@@ -3856,7 +3856,7 @@ function ChatGPTViewer:landOnStreamPosition()
           break
         end
       end
-      logger.info("KOAssistant: stream-position carry txt — line", L, "of", #lines, "to top")
+      logger.dbg("KOAssistant: stream-position carry txt — line", L, "of", #lines, "to top")
       if L > tw.lines_per_page then
         self.scroll_text_w:scrollToRatio(
           (L - 1 + tw.lines_per_page / 2 + 0.5) / #lines, false)
@@ -3865,7 +3865,7 @@ function ChatGPTViewer:landOnStreamPosition()
       end
       self.scroll_text_w:moveCursorToCharPos(target_pos)
     else
-      logger.info("KOAssistant: stream-position carry txt — cursor to char", target_pos)
+      logger.dbg("KOAssistant: stream-position carry txt — cursor to char", target_pos)
       self.scroll_text_w:moveCursorToCharPos(target_pos, 5)
     end
     return true
@@ -3914,19 +3914,19 @@ function ChatGPTViewer:scrollToLastQuestion()
         box.page_number = painted_page
         if target then break end
       end
-      logger.info("KOAssistant: scrollToLastQuestion md — painted page", painted_page,
+      logger.dbg("KOAssistant: scrollToLastQuestion md — painted page", painted_page,
         "of", box.page_count, "target:", target or "none")
       if target then
         if target ~= painted_page then
           -- Mid-page ratio keeps the integer→ratio→integer round-trip off
           -- the float edge: 1 + floor(count * (target-0.5)/count) == target
           self.scroll_text_w:scrollToRatio((target - 0.5) / math.max(1, box.page_count or 1))
-          logger.info("KOAssistant: scrollToLastQuestion md — landed page", box.page_number)
+          logger.dbg("KOAssistant: scrollToLastQuestion md — landed page", box.page_number)
         end
         return
       end
     else
-      logger.info("KOAssistant: scrollToLastQuestion md — findText/scrollToRatio unavailable, using ratio fallback")
+      logger.dbg("KOAssistant: scrollToLastQuestion md — findText/scrollToRatio unavailable, using ratio fallback")
     end
   elseif self.scroll_text_w.moveCursorToCharPos then
     local last_byte
@@ -3970,13 +3970,13 @@ function ChatGPTViewer:scrollToLastQuestion()
           -- Content before the reply exceeds the first screen — top-align it.
           -- (The widget clamps near the end: it never scrolls past a full
           -- last screen, which is the correct floor for short tails.)
-          logger.info("KOAssistant: scrollToLastQuestion txt — line", L, "of", #lines, "to top")
+          logger.dbg("KOAssistant: scrollToLastQuestion txt — line", L, "of", #lines, "to top")
           self.scroll_text_w:scrollToRatio(
             (L - 1 + tw.lines_per_page / 2 + 0.5) / #lines, false)
         else
           -- Everything fits from the top (fresh chat, short exchanges):
           -- stay at the top, the reply sits right under the question
-          logger.info("KOAssistant: scrollToLastQuestion txt — line", L, "within first screen, staying top")
+          logger.dbg("KOAssistant: scrollToLastQuestion txt — line", L, "within first screen, staying top")
           self.scroll_text_w:scrollToRatio(0, false)
         end
         -- Cursor placement on the freshly rendered view (cursor-only paint)
@@ -3985,14 +3985,14 @@ function ChatGPTViewer:scrollToLastQuestion()
         -- Centered variant (count 5, TextViewer's find pattern) — the bare
         -- call scrolls MINIMALLY and parks the target on the BOTTOM line
         -- (device round 2026-08-12)
-        logger.info("KOAssistant: scrollToLastQuestion txt — cursor to char", target_pos)
+        logger.dbg("KOAssistant: scrollToLastQuestion txt — cursor to char", target_pos)
         self.scroll_text_w:moveCursorToCharPos(target_pos, 5)
       end
       return
     end
   end
   local ratio = self:calculateLastQuestionRatio()
-  logger.info("KOAssistant: scrollToLastQuestion — ratio fallback", ratio)
+  logger.dbg("KOAssistant: scrollToLastQuestion — ratio fallback", ratio)
   if self.scroll_text_w.scrollToRatio then
     self.scroll_text_w:scrollToRatio(ratio)
   elseif self.scroll_text_w.scrollToBottom and ratio >= 0.9 then
@@ -4809,7 +4809,7 @@ function ChatGPTViewer:toggleMarkdown()
     self.configuration.features._chat_view_mode = self.render_markdown
   end
 
-  logger.info("KOAssistant: toggleMarkdown — this chat now",
+  logger.dbg("KOAssistant: toggleMarkdown — this chat now",
     self.render_markdown and "markdown" or "plain text")
 
   -- Write-through to the SAVED chat (device round 2026-08-12: tap → close →
@@ -4834,11 +4834,11 @@ function ChatGPTViewer:toggleMarkdown()
       if ok_m and CHM and CHM.new then
         local ok_w = CHM:new():updateChatControlState(store_path, chat_id,
           { render_markdown = self.render_markdown })
-        logger.info("KOAssistant: toggleMarkdown — write-through",
+        logger.dbg("KOAssistant: toggleMarkdown — write-through",
           ok_w and "ok" or "FAILED", store_path)
       end
     else
-      logger.info("KOAssistant: toggleMarkdown — no store path; transient only")
+      logger.dbg("KOAssistant: toggleMarkdown — no store path; transient only")
     end
   end
 
@@ -5860,8 +5860,9 @@ function ChatGPTViewer:showProvenanceViewer()
 end
 
 -- Internal function to handle rotation/resize recreation
--- Called by both onSetRotationMode and onScreenResize
-function ChatGPTViewer:_handleScreenChange()
+-- Called by both onSetRotationMode and onScreenResize, and by cycleWindowSize
+-- with immediate=true (see the schedule below).
+function ChatGPTViewer:_handleScreenChange(immediate)
   if not self._recreate_func then
     return false
   end
@@ -5882,10 +5883,18 @@ function ChatGPTViewer:_handleScreenChange()
   end
 
   -- Schedule recreation with enough delay for screen dimensions to update
-  -- Use 0.2s to ensure Screen:getWidth()/getHeight() return new values
-  UIManager:scheduleIn(0.2, function()
-    self._recreate_func(state)
-  end)
+  -- Use 0.2s to ensure Screen:getWidth()/getHeight() return new values.
+  -- A window-size toggle has nothing to settle — the screen is unchanged and
+  -- the new geometry is already in the constants — so it recreates at once.
+  if immediate then
+    UIManager:nextTick(function()
+      self._recreate_func(state)
+    end)
+  else
+    UIManager:scheduleIn(0.2, function()
+      self._recreate_func(state)
+    end)
+  end
 
   return true
 end
@@ -5964,10 +5973,15 @@ end
 -- Helper to get display name for text alignment
 local function getAlignmentDisplayName(align)
   if align == "justify" then return _("Justified")
-  elseif align == "right" then return _("Right (RTL)")
+  elseif align == "right" then return _("Right")
   elseif align == "left" then return _("Left")
-  else return _("Auto (by text direction)")
+  else return _("Auto")
   end
+end
+
+-- Helper to get display name for the chat window size (global setting)
+local function getWindowSizeDisplayName()
+  return UIConstants.expandedWindows() and _("Expanded") or _("Standard")
 end
 
 -- Persist a features.* viewer setting so it survives across viewer opens.
@@ -6026,6 +6040,25 @@ function ChatGPTViewer:showViewerSettings()
       },
     },
   }
+
+  -- Window Size is the global setting (Display Settings), surfaced here as a
+  -- shortcut because this is where you notice you want the room. It sits BELOW
+  -- Reset to Defaults deliberately: Reset covers the rendering controls above
+  -- it, not this. The empty row renders as ButtonTable's double rule, the same
+  -- group break the action-manager carousel uses.
+  -- Skipped on compact_view, which the setting does not govern.
+  if not self.compact_view then
+    table.insert(buttons, {
+      {
+        text = _("Window Size") .. ": " .. getWindowSizeDisplayName(),
+        callback = function()
+          UIManager:close(dialog)
+          self:cycleWindowSize()
+        end,
+      },
+    })
+    table.insert(buttons, {})
+  end
 
   -- Export on the gear is for chat-style views only: it exports the CONVERSATION
   -- (showExportDialog needs chat history). Artifact (simple_view) viewers have no
@@ -6115,6 +6148,25 @@ function ChatGPTViewer:cycleAlignment()
   self:refreshMarkdownDisplay()
   UIManager:show(Notification:new{
     text = T(_("Alignment: %1"), getAlignmentDisplayName(next_align)),
+    timeout = 2,
+  })
+end
+
+-- Toggle the GLOBAL window size (Display Settings > Window Size) from the gear.
+-- Sticky, not a per-window mode: the next chat, artifact, quiz and streaming
+-- dialog all follow it. The live window is rebuilt where the construction site
+-- wired _recreate_func (the chat viewers); elsewhere the change lands on the
+-- next open, which the notification says.
+function ChatGPTViewer:cycleWindowSize()
+  local next_value = UIConstants.expandedWindows() and "standard" or "expanded"
+  self:persistFeatureSetting("chat_window_size", next_value)
+  -- Push it straight into the constants too: persistFeatureSetting's
+  -- settings_callback path does not run updateConfigFromSettings.
+  UIConstants.setExpandedWindows(next_value == "expanded")
+  local rebuilt = self:_handleScreenChange(true)
+  UIManager:show(Notification:new{
+    text = rebuilt and T(_("Window size: %1"), getWindowSizeDisplayName())
+      or T(_("Window size: %1 (from the next window)"), getWindowSizeDisplayName()),
     timeout = 2,
   })
 end

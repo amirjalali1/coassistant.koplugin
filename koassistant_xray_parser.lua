@@ -3,7 +3,7 @@
 --- Handles JSON parsing, markdown rendering, character search, and chapter matching.
 
 local json = require("json")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local _ = require("koassistant_gettext")
 local T = require("ffi/util").template
 local JsonRepair = require("koassistant_json_repair")
@@ -203,9 +203,9 @@ function XrayParser.isJSON(result)
 end
 
 -- Known category keys for validating parsed X-Ray data
-local FICTION_KEYS = { "characters", "locations", "themes", "lexicon", "timeline", "reader_engagement", "current_state", "conclusion" }
-local NONFICTION_KEYS = { "key_figures", "locations", "core_concepts", "arguments", "terminology", "argument_development", "reader_engagement", "current_position", "conclusion" }
-local ACADEMIC_KEYS = { "key_concepts", "foundations", "methodology", "findings", "referenced_works", "technical_terms", "figures_data", "reader_engagement", "current_position", "conclusion" }
+local FICTION_KEYS = { "characters", "locations", "themes", "lexicon", "timeline", "current_state", "conclusion" }
+local NONFICTION_KEYS = { "key_figures", "locations", "core_concepts", "arguments", "terminology", "argument_development", "current_position", "conclusion" }
+local ACADEMIC_KEYS = { "key_concepts", "foundations", "methodology", "findings", "referenced_works", "technical_terms", "figures_data", "current_position", "conclusion" }
 
 -- Build normalized key → canonical key map for fuzzy matching.
 -- Normalizing = lowercase + strip separators (_, -, spaces).
@@ -365,6 +365,11 @@ end
 --- @param data table Parsed X-Ray data (mutated)
 local function normalizeShapes(data)
     if type(data) ~= "table" then return end
+    -- reader_engagement is REMOVED as a feature (maintainer 2026-08-18): the
+    -- X-Ray no longer requests, stores, or shows the section. Legacy artifacts
+    -- still carry it; stripping at the parse chokepoint makes every consumer
+    -- blind to it at once, and the next write persists the removal.
+    data.reader_engagement = nil
     local seen = {}
     for _i, list in ipairs({ FICTION_KEYS, NONFICTION_KEYS, ACADEMIC_KEYS }) do
         for _j, key in ipairs(list) do
@@ -382,35 +387,6 @@ local function normalizeShapes(data)
                         end
                         for _k, f in ipairs(SINGLETON_ARRAY_FIELDS) do
                             if val[f] ~= nil then val[f] = coerceStringArray(val[f]) end
-                        end
-                    end
-                elseif key == "reader_engagement" then
-                    if type(val) == "table" then
-                        if val.patterns ~= nil and type(val.patterns) ~= "string" then
-                            val.patterns = coerceText(val.patterns)
-                        end
-                        if val.connections ~= nil and type(val.connections) ~= "string" then
-                            val.connections = coerceText(val.connections)
-                        end
-                        -- notable_highlights: strings AND {passage, why_notable}
-                        -- objects are both legal shapes — coerce fields, drop junk
-                        if val.notable_highlights ~= nil then
-                            local out
-                            if type(val.notable_highlights) == "table" then
-                                out = {}
-                                for _n, h in ipairs(val.notable_highlights) do
-                                    if type(h) == "string" then
-                                        if h ~= "" then out[#out + 1] = h end
-                                    elseif type(h) == "table" then
-                                        local passage = coerceText(h.passage)
-                                        if passage and passage ~= "" then
-                                            out[#out + 1] = { passage = passage,
-                                                why_notable = coerceText(h.why_notable) }
-                                        end
-                                    end
-                                end
-                            end
-                            val.notable_highlights = out and #out > 0 and out or nil
                         end
                     end
                 elseif type(val) == "table" then
@@ -514,12 +490,20 @@ function XrayParser.parse(text)
         return nil, "empty input"
     end
 
-    -- Attempt 1: direct decode
+    -- Attempt 1: direct decode.
+    -- `decode_err` carries the LAST decode failure so callers can say WHY a
+    -- response was rejected. Three checkpoint builds died on "not valid JSON"
+    -- with no further detail on 2026-08-18, and the message conflates two very
+    -- different failures: a genuine syntax error, and a decode that SUCCEEDED
+    -- whose object carried no recognized X-Ray key (isValidXrayData).
+    local decode_err
     local ok, data = pcall(json.decode, text)
     if ok and isValidXrayData(data) then
         normalizeShapes(data)
         return data, nil
     end
+    decode_err = (not ok) and tostring(data)
+        or "decoded, but no recognized X-Ray key (isValidXrayData)"
 
     -- Attempt 2: strip markdown code fences (find-based to cross newlines)
     local fence_open = text:find("```json%s*\n") or text:find("```%s*\n")
@@ -545,6 +529,8 @@ function XrayParser.parse(text)
                 normalizeShapes(data)
                 return data, nil
             end
+            decode_err = (not ok) and ("fenced: " .. tostring(data))
+                or "fenced: decoded, but no recognized X-Ray key"
         end
     end
 
@@ -580,7 +566,31 @@ function XrayParser.parse(text)
         return data, nil
     end
 
-    return nil, "failed to parse JSON from response"
+    -- Attempt 5: drop stray closing braces/brackets (2026-08-18, from a live
+    -- rejected checkpoint rung): one extra `}`/`]` in an otherwise-valid
+    -- response crashes the bundled decoder with the state.lua:81 'active'
+    -- error rather than a syntax message. Same only-after-strict-failure rule
+    -- as attempt 4; the quote repair is layered on top for responses carrying
+    -- both defects.
+    local rebalanced = JsonRepair.dropExtraClosers(candidate)
+    if rebalanced == candidate then
+        -- Not over-closed; try the mirror defect (complete document, closers
+        -- missing at the end — the "Unclosed elements present" class).
+        rebalanced = JsonRepair.closeUnclosed(candidate)
+    end
+    if rebalanced ~= candidate then
+        ok, data = pcall(json.decode, rebalanced)
+        if not (ok and isValidXrayData(data)) then
+            ok, data = pcall(json.decode, JsonRepair.escapeInnerQuotes(rebalanced))
+        end
+        if ok and isValidXrayData(data) then
+            logger.dbg("XrayParser: parsed via bracket-balance repair")
+            normalizeShapes(data)
+            return data, nil
+        end
+    end
+
+    return nil, decode_err or "failed to parse JSON from response"
 end
 
 --- True when a model response is well-formed JSON that carries NO X-Ray
@@ -790,18 +800,51 @@ XrayParser.TEXT_MATCH_EXCLUDED = TEXT_MATCH_EXCLUDED
 function XrayParser.resolveConnection(data, connection_string)
     if not connection_string or connection_string == "" then return nil end
 
-    -- Extract name portion: everything before the last " (" or the whole string
-    local name_portion = connection_string:match("^(.-)%s*%(") or connection_string
-    name_portion = name_portion:match("^%s*(.-)%s*$")  -- trim
+    -- A connection is written "Name (relationship)", but a NAME may itself
+    -- carry a disambiguating parenthetical: one artifact holds both
+    -- "John Jackson (the black)" and "John Jackson (the white)", another both
+    -- "Ayesha (of Titlipur)" and "Ayesha (wife of Mahound)". So the string is
+    -- ambiguous on its face and we try three readings, longest first, each as
+    -- a (handle, annotation) pair:
+    --   1. the WHOLE string is the name          -- "John Jackson (the black)"
+    --   2. all but the LAST group is the name    -- "John Jackson (the black)" + "killed by Yumas"
+    --   3. up to the FIRST group is the name     -- "John Jackson" + "the black"
+    -- Reading 3 alone (the original) reduced every such connection to the
+    -- shared handle, which the exact pass missed and the substring pass then
+    -- resolved to whichever entry sorted first — so half the buttons opened
+    -- the wrong character, and the name's own qualifier was displayed as if it
+    -- were the relationship.
+    local function trim(v) return v and (v:match("^%s*(.-)%s*$")) or v end
+    local last_group = connection_string:match("(%b())%s*$")
+    local candidates = {
+        { handle = trim(connection_string) },
+    }
+    if last_group then
+        local without_last = trim(connection_string:match("^(.*)%s*%b()%s*$"))
+        if without_last and without_last ~= "" then
+            candidates[#candidates + 1] = {
+                handle = without_last, relationship = last_group:sub(2, -2),
+            }
+        end
+    end
+    local first_group = connection_string:match("%((.-)%)")
+    local short_handle = trim(connection_string:match("^(.-)%s*%("))
+    if short_handle and short_handle ~= "" then
+        candidates[#candidates + 1] = { handle = short_handle, relationship = first_group }
+    end
 
-    -- Extract relationship if present
-    local relationship = connection_string:match("%((.-)%)")
-
-    if not name_portion or name_portion == "" then return nil end
+    -- De-duplicate identical handles, keeping the FIRST (longest) reading
+    local seen_handle, ordered = {}, {}
+    for _idx, c in ipairs(candidates) do
+        if c.handle and c.handle ~= "" and not seen_handle[c.handle] then
+            seen_handle[c.handle] = true
+            ordered[#ordered + 1] = c
+        end
+    end
+    if #ordered == 0 then return nil end
 
     local categories = XrayParser.getCategories(data)
     local normalize = XrayParser.normalizeArabic
-    local name_lower = normalize(name_portion:lower())
 
     -- Build flat list of searchable items with their category keys
     -- Skip singleton categories (current_state, current_position, reader_engagement)
@@ -815,6 +858,27 @@ function XrayParser.resolveConnection(data, connection_string)
     end
 
     if #searchable == 0 then return nil end
+
+    local function hit(entry, c)
+        return { item = entry.item, category_key = entry.category_key,
+                 name_portion = c.handle, relationship = c.relationship }
+    end
+
+    -- Pass 0: exact name match, longest reading first — a name carrying its own
+    -- parenthetical beats the ambiguous shared handle
+    for _ci, c in ipairs(ordered) do
+        local c_lower = normalize(c.handle:lower())
+        for _idx, entry in ipairs(searchable) do
+            local item_name = getItemSearchName(entry.item)
+            if item_name and normalize(item_name:lower()) == c_lower then
+                return hit(entry, c)
+            end
+        end
+    end
+
+    local name_portion = ordered[#ordered].handle
+    local relationship = ordered[#ordered].relationship
+    local name_lower = normalize(name_portion:lower())
 
     -- Pass 1: exact name match (name, term, or event)
     for _idx, entry in ipairs(searchable) do
@@ -864,9 +928,6 @@ function XrayParser.getCategories(data)
             { key = "technical_terms",  label = _("Technical Terms"),  items = data.technical_terms or {} },
             { key = "figures_data",     label = _("Figures & Data"),   items = data.figures_data or {} },
         }
-        if data.reader_engagement then
-            table.insert(cats, { key = "reader_engagement", label = _("Reader Engagement"), items = { data.reader_engagement } })
-        end
         if data.conclusion then
             table.insert(cats, { key = "conclusion", label = _("Conclusion"), items = { data.conclusion } })
         elseif data.current_position then
@@ -881,9 +942,6 @@ function XrayParser.getCategories(data)
             { key = "lexicon",       label = _("Lexicon"),       items = data.lexicon or {} },
             { key = "timeline",      label = _("Story Arc"),     items = data.timeline or {} },
         }
-        if data.reader_engagement then
-            table.insert(cats, { key = "reader_engagement", label = _("Reader Engagement"), items = { data.reader_engagement } })
-        end
         -- Complete X-Ray uses conclusion; incremental uses current_state
         if data.conclusion then
             table.insert(cats, { key = "conclusion", label = _("Conclusion"), items = { data.conclusion } })
@@ -900,9 +958,6 @@ function XrayParser.getCategories(data)
             { key = "terminology",          label = _("Terminology"),          items = data.terminology or {} },
             { key = "argument_development", label = _("Argument Development"), items = data.argument_development or {} },
         }
-        if data.reader_engagement then
-            table.insert(cats, { key = "reader_engagement", label = _("Reader Engagement"), items = { data.reader_engagement } })
-        end
         -- Complete X-Ray uses conclusion; incremental uses current_position
         if data.conclusion then
             table.insert(cats, { key = "conclusion", label = _("Conclusion"), items = { data.conclusion } })
@@ -1040,9 +1095,6 @@ function XrayParser.getItemName(item, category_key)
     if category_key == "timeline" or category_key == "argument_development" then
         return item.event or _("Unknown")
     end
-    if category_key == "reader_engagement" then
-        return _("Reader Engagement")
-    end
     if category_key == "conclusion" then
         return _("Conclusion")
     end
@@ -1135,9 +1187,6 @@ function XrayParser.getItemSecondary(item, category_key)
     if category_key == "lexicon" or category_key == "terminology" or category_key == "technical_terms" then
         return ""
     end
-    if category_key == "reader_engagement" then
-        return ""
-    end
     return ""
 end
 
@@ -1145,8 +1194,15 @@ end
 --- @param item table The item entry
 --- @param category_key string The category key
 --- @return string detail Formatted detail text
-function XrayParser.formatItemDetail(item, category_key)
+--- @param opts table|nil { omit_connections = true } — the browser's entity
+---   page renders connections as tappable buttons plus a list, so repeating
+---   them as a comma-joined wall of prose (one real entity ran past 1500
+---   characters) pushed the description off the screen. Model-facing callers
+---   (AI Wiki context) and the card's full-detail view, which have no buttons,
+---   pass nothing and keep them.
+function XrayParser.formatItemDetail(item, category_key, opts)
     local parts = {}
+    local omit_connections = opts and opts.omit_connections
 
     if category_key == "characters" or category_key == "key_figures" or category_key == "referenced_works" then
         local name = item.name or _("Unknown")
@@ -1169,7 +1225,7 @@ function XrayParser.formatItemDetail(item, category_key)
             table.insert(parts, "")
         end
 
-        local connections = ensure_array(item.connections)
+        local connections = not omit_connections and ensure_array(item.connections)
         if connections and #connections > 0 then
             table.insert(parts, _("Connections:") .. " " .. table.concat(connections, ", "))
         end
@@ -1192,7 +1248,7 @@ function XrayParser.formatItemDetail(item, category_key)
             table.insert(parts, _("Significance:") .. " " .. sig)
             table.insert(parts, "")
         end
-        local refs = ensure_array(item.references)
+        local refs = not omit_connections and ensure_array(item.references)
         if refs and #refs > 0 then
             table.insert(parts, _("References:") .. " " .. table.concat(refs, ", "))
         end
@@ -1212,7 +1268,7 @@ function XrayParser.formatItemDetail(item, category_key)
             table.insert(parts, _("Significance:") .. " " .. item.significance)
             table.insert(parts, "")
         end
-        local refs = ensure_array(item.references)
+        local refs = not omit_connections and ensure_array(item.references)
         if refs and #refs > 0 then
             table.insert(parts, _("References:") .. " " .. table.concat(refs, ", "))
         end
@@ -1240,34 +1296,6 @@ function XrayParser.formatItemDetail(item, category_key)
         local characters = ensure_array(item.characters) or ensure_array(item.references)
         if characters and #characters > 0 then
             table.insert(parts, _("Characters:") .. " " .. table.concat(characters, ", "))
-        end
-
-    elseif category_key == "reader_engagement" then
-        if item.patterns and item.patterns ~= "" then
-            table.insert(parts, _("Patterns:") .. " " .. item.patterns)
-            table.insert(parts, "")
-        end
-        local notable = ensure_array(item.notable_highlights)
-        if notable then
-            table.insert(parts, _("Notable highlights:"))
-            for _idx, h in ipairs(notable) do
-                if type(h) == "table" then
-                    local passage = h.passage or ""
-                    local why = h.why_notable or ""
-                    if passage ~= "" then
-                        table.insert(parts, "- \"" .. passage .. "\"")
-                        if why ~= "" then
-                            table.insert(parts, "  " .. why)
-                        end
-                    end
-                elseif type(h) == "string" and h ~= "" then
-                    table.insert(parts, "- " .. h)
-                end
-            end
-            table.insert(parts, "")
-        end
-        if item.connections and item.connections ~= "" then
-            table.insert(parts, _("Connections:") .. " " .. item.connections)
         end
 
     elseif category_key == "current_state" or category_key == "current_position" then
@@ -1572,34 +1600,6 @@ function XrayParser.renderToMarkdown(data, title, progress)
                     table.insert(lines, "- " .. entry)
                 end
                 table.insert(lines, "")
-            elseif cat.key == "reader_engagement" then
-                local engagement = cat.items[1]
-                if engagement.patterns and engagement.patterns ~= "" then
-                    table.insert(lines, engagement.patterns)
-                    table.insert(lines, "")
-                end
-                local r_notable = ensure_array(engagement.notable_highlights)
-                if r_notable and #r_notable > 0 then
-                    for _idx2, h in ipairs(r_notable) do
-                        if type(h) == "table" then
-                            local passage = h.passage or ""
-                            local why = h.why_notable or ""
-                            if passage ~= "" then
-                                table.insert(lines, "- \"" .. passage .. "\"")
-                                if why ~= "" then
-                                    table.insert(lines, "  " .. why)
-                                end
-                            end
-                        elseif type(h) == "string" and h ~= "" then
-                            table.insert(lines, "- " .. h)
-                        end
-                    end
-                    table.insert(lines, "")
-                end
-                if engagement.connections and engagement.connections ~= "" then
-                    table.insert(lines, "*" .. engagement.connections .. "*")
-                    table.insert(lines, "")
-                end
             end
         end
     end
@@ -2159,13 +2159,24 @@ end
 --- Used in update prompts so the AI uses exact matching strings for existing entities.
 --- @param data table Parsed X-Ray data
 --- @return string index Multi-line string: "category: Name1 (alias1, alias2); Name2\n..."
+--- Append-only categories carry EVENTS, not named entities: the merge routes
+--- them to appendCategory (no name matching at all), and getItemSearchName
+--- falls through to item.event, so indexing them emitted every event's full
+--- sentence as an "existing entity name" -- 80-87% of the index on a real
+--- book.
+local INDEX_EXCLUDED_CATEGORIES = {
+    timeline = true,
+    argument_development = true,
+}
+
 function XrayParser.buildEntityIndex(data)
     local categories = XrayParser.getCategories(data)
     if not categories or #categories == 0 then return "" end
 
     local lines = {}
     for _idx, cat in ipairs(categories) do
-        if not SINGLETON_CATEGORIES[cat.key] and cat.items and #cat.items > 0 then
+        if not SINGLETON_CATEGORIES[cat.key] and not INDEX_EXCLUDED_CATEGORIES[cat.key]
+            and cat.items and #cat.items > 0 then
             local names = {}
             for _idx2, item in ipairs(cat.items) do
                 local name = getItemSearchName(item)
@@ -2336,13 +2347,22 @@ local function unionStringArrays(new_list, keep_list)
     local function baseKey(s)
         return (s:gsub("%s*%b()%s*$", ""):lower():gsub("^%s+", ""):gsub("%s+$", ""))
     end
+    -- ONE survivor per TARGET (2026-08-18). A revision re-states a
+    -- relationship by extending its own annotation -- "Tobin (a)" becomes
+    -- "Tobin (a; b)" -- so keeping every distinct parenthetical accumulated a
+    -- fresh copy of the same link at every update, compounding down a ladder
+    -- (device: 47 connections resolving to 23 people). Annotated still beats
+    -- bare; among annotated the earliest in `out` wins, and `out` leads with
+    -- the new side, so the freshest phrasing is the one kept.
     local annotated = {}
     for _i, s in ipairs(out) do
         if s:match("%b()%s*$") then annotated[baseKey(s)] = true end
     end
-    local filtered = {}
+    local filtered, taken = {}, {}
     for _i, s in ipairs(out) do
-        if s:match("%b()%s*$") or not annotated[baseKey(s)] then
+        local key = baseKey(s)
+        if not taken[key] and (s:match("%b()%s*$") or not annotated[key]) then
+            taken[key] = true
             filtered[#filtered + 1] = s
         end
     end
@@ -2558,59 +2578,6 @@ function XrayParser.stripForPromptJSON(json_str)
     local ok, out = pcall(json.encode, data, { pretty = true, indent = true })
     if ok and type(out) == "string" then return out end
     return json_str
-end
-
---- Append-only categories in a stable order (the SET lives in
---- APPEND_CATEGORIES above; this list pairs it with a canonical order for
---- prompt notes and tests).
-local APPEND_ORDER = { "timeline", "argument_development" }
-
---- Request-size trim for UPDATE prompts (presets session 2026-08-17,
---- maintainer-approved): the append-only lists are the largest category share
---- of every measured artifact (28-36%) and the model only ever APPENDS to
---- them — it never edits old entries — so the re-sent copy keeps only the
---- most recent ones. PROMPT-SIDE ONLY: the stored artifact is untouched;
---- callers pair the trimmed copy with a prompt note stating that earlier
---- entries exist (never re-emit). The entity index callers build stays FULL,
---- so all names remain known — only old events go dark. Same never-fail
---- contract as the strip helpers: any parse/encode trouble returns the input
---- unchanged. Trims only past `threshold` so a note never rides for a
---- one-entry saving.
---- @param json_str string|nil Prompt-ready artifact JSON (post-strip; fenced ok)
---- @param opts table|nil { keep = 15, threshold = 20 }
---- @return string|nil trimmed JSON (or the input unchanged)
---- @return table|nil info array of { category, kept, total }, nil when untouched
-function XrayParser.trimAppendsForPrompt(json_str, opts)
-    if type(json_str) ~= "string" then return json_str, nil end
-    opts = opts or {}
-    local keep = opts.keep or 15
-    local threshold = opts.threshold or 20
-    local any = false
-    for _idx, cat in ipairs(APPEND_ORDER) do
-        if json_str:find('"' .. cat .. '"', 1, true) then
-            any = true
-            break
-        end
-    end
-    if not any then return json_str, nil end
-    local data = XrayParser.parse(json_str)
-    if type(data) ~= "table" or data.error then return json_str, nil end
-    local info = {}
-    for _idx, cat in ipairs(APPEND_ORDER) do
-        local arr = data[cat]
-        if type(arr) == "table" and #arr > threshold then
-            local tail = {}
-            for i = #arr - keep + 1, #arr do
-                tail[#tail + 1] = arr[i]
-            end
-            data[cat] = tail
-            info[#info + 1] = { category = cat, kept = keep, total = #arr }
-        end
-    end
-    if #info == 0 then return json_str, nil end
-    local ok, encoded = pcall(json.encode, data, { pretty = true, indent = true })
-    if ok and type(encoded) == "string" then return encoded, info end
-    return json_str, nil
 end
 
 --- Background lines a stub contributes to an entity that doesn't already

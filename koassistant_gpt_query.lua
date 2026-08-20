@@ -4,7 +4,7 @@ local CONFIGURATION = nil
 local Defaults = require("koassistant_api.defaults")
 local ConfigHelper = require("koassistant_config_helper")
 local Constants = require("koassistant_constants")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local ffi = require("ffi")
 local ffiutil = require("ffi/util")
 local json = require("json")
@@ -16,7 +16,7 @@ local success, result = pcall(function() return require("configuration") end)
 if success then
     CONFIGURATION = result
 else
-    logger.warn("KOAssistant: configuration.lua not loaded:", tostring(result))
+    logger.dbg("KOAssistant: no configuration.lua, using settings")
     -- Try legacy api_key as fallback
     success, result = pcall(function() return require("api_key") end)
     if success then
@@ -26,7 +26,7 @@ else
         CONFIGURATION = Defaults.ProviderDefaults[provider]
         CONFIGURATION.api_key = api_key
     else
-        print("No configuration found. Please set up configuration.lua")
+        logger.dbg("KOAssistant: no configuration.lua or api_key.lua, using settings")
     end
 end
 
@@ -315,7 +315,10 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
         -- Parse JSON response
         local ok, parsed = pcall(json.decode, full_response)
         if not ok then
-            logger.warn("Failed to parse non-streaming response:", full_response:sub(1, 200))
+            -- 200 chars stopped inside the HTTP headers, so a 200-with-unparseable-body
+            -- (the 2026-08-18 X-Ray case) could not be diagnosed at all. This is a
+            -- rare failure path; 2000 buys the start of the body without spamming.
+            logger.warn("Failed to parse non-streaming response:", full_response:sub(1, 2000))
             finish(false, nil, "Failed to parse response from " .. provider)
             return
         end

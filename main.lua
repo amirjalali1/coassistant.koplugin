@@ -14,7 +14,7 @@ local DataStorage = require("datastorage")
 local FileManager = require("apps/filemanager/filemanager")
 local lfs = require("libs/libkoreader-lfs")
 local T = require("ffi/util").template
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local util = require("util")
 local Screen = Device.screen
 
@@ -67,7 +67,7 @@ local ok, loaded_config = pcall(dofile, config_path)
 if ok and loaded_config then
     configuration = loaded_config
     user_config_loaded = true
-    logger.info("Loaded configuration from configuration.lua")
+    logger.dbg("Loaded configuration from configuration.lua")
 else
     -- Distinguish "file doesn't exist" from "file exists but has errors"
     if lfs.attributes(config_path, "mode") then
@@ -75,7 +75,7 @@ else
         config_load_error = tostring(loaded_config or "unknown error")
         logger.warn("configuration.lua has errors:", config_load_error)
     else
-        logger.info("No configuration.lua found, using defaults")
+        logger.dbg("No configuration.lua found, using defaults")
     end
 end
 
@@ -197,7 +197,7 @@ local AskGPT = WidgetContainer:extend{
 }
 
 function AskGPT:init()
-  logger.info("KOAssistant plugin: init() called")
+  logger.dbg("KOAssistant plugin: init() called")
 
   -- Store configuration on the instance (single source of truth)
   self.configuration = configuration
@@ -345,12 +345,12 @@ function AskGPT:init()
     -- (requires_image_provider), dispatch through handleLocalAction. The old
     -- "Show Generate Image button" toggle is migrated in initSettings.
 
-    logger.info("KOAssistant: highlight-menu buttons registered (visibility resolved per menu open)")
+    logger.dbg("KOAssistant: highlight-menu buttons registered (visibility resolved per menu open)")
 
     -- Register quick-action shortcut slots (own toggle; resolved per menu open)
     self:registerHighlightMenuActions()
   else
-    logger.warn("Highlight feature not available, skipping highlight dialog integration")
+    logger.dbg("Highlight feature not available, skipping highlight dialog integration")
   end
 
   -- Sync dictionary bypass setting (override Translator if enabled)
@@ -489,19 +489,19 @@ function AskGPT:init()
   -- Register file dialog buttons with delays to ensure they appear at the bottom
   -- First attempt after a short delay to let core plugins register
   UIManager:scheduleIn(0.5, function()
-    logger.info("KOAssistant: First file dialog button registration (0.5s delay)")
+    logger.dbg("KOAssistant: First file dialog button registration (0.5s delay)")
     self:addFileDialogButtons()
   end)
 
   -- Second attempt after other plugins should be loaded
   UIManager:scheduleIn(2, function()
-    logger.info("KOAssistant: Second file dialog button registration (2s delay)")
+    logger.dbg("KOAssistant: Second file dialog button registration (2s delay)")
     self:addFileDialogButtons()
   end)
 
   -- Final attempt to ensure registration in all contexts
   UIManager:scheduleIn(5, function()
-    logger.info("KOAssistant: Final file dialog button registration (5s delay)")
+    logger.dbg("KOAssistant: Final file dialog button registration (5s delay)")
     self:addFileDialogButtons()
   end)
   
@@ -559,7 +559,7 @@ end
 -- Button generator for all KOA file dialog buttons (utilities + main)
 -- Returns array of rows (max 4 buttons per row, equally distributed)
 function AskGPT:generateFileDialogRows(file, is_file, book_props)
-  logger.info("KOAssistant: generateFileDialogRows called with file=" .. tostring(file))
+  logger.dbg("KOAssistant: generateFileDialogRows called with file=" .. tostring(file))
 
   -- Only show buttons for document files
   if not is_file or not self:isDocumentFile(file) then
@@ -829,7 +829,7 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
   end
 
   -- Split into rows of max 4, equally distributed
-  logger.info("KOAssistant: Returning " .. #buttons .. " button(s) in rows")
+  logger.dbg("KOAssistant: Returning " .. #buttons .. " button(s) in rows")
   return splitIntoRows(buttons, 4)
 end
 
@@ -838,7 +838,7 @@ function AskGPT:generateMultiSelectButtons(file, is_file, book_props)
   -- Check if we have multiple files selected
   if FileManager.instance and FileManager.instance.selected_files and
      next(FileManager.instance.selected_files) then
-    logger.info("KOAssistant: Multiple files selected")
+    logger.dbg("KOAssistant: Multiple files selected")
     return {
       {
         text = _("Compare with KOAssistant"),
@@ -859,18 +859,18 @@ end
 function AskGPT:addFileDialogButtons()
   -- Prevent multiple registrations
   if self.file_dialog_buttons_added then
-    logger.info("KOAssistant: File dialog buttons already registered, skipping")
+    logger.dbg("KOAssistant: File dialog buttons already registered, skipping")
     return true
   end
 
   -- Check if file browser integration is disabled
   local f = self.settings:readSetting("features") or {}
   if f.show_in_file_browser == false then
-    logger.info("KOAssistant: File browser integration disabled")
+    logger.dbg("KOAssistant: File browser integration disabled")
     return true  -- Return true to prevent retry attempts
   end
 
-  logger.info("KOAssistant: Attempting to add file dialog buttons")
+  logger.dbg("KOAssistant: Attempting to add file dialog buttons")
 
   -- Load other managers carefully to avoid circular dependencies
   local FileManagerHistory, FileManagerCollection, FileManagerFileSearcher
@@ -945,7 +945,7 @@ function AskGPT:addFileDialogButtons()
     end)
 
     if success then
-      logger.info("KOAssistant: File dialog buttons registered via instance method")
+      logger.dbg("KOAssistant: File dialog buttons registered via instance method")
       success_count = success_count + 1
     end
   end
@@ -961,7 +961,7 @@ function AskGPT:addFileDialogButtons()
 
   for widget_name, widget_class in pairs(widgets_to_register) do
     if widget_class and FileManager.addFileDialogButtons then
-      logger.info("KOAssistant: Attempting to register buttons on " .. widget_name .. " class")
+      logger.dbg("KOAssistant: Attempting to register buttons on " .. widget_name .. " class")
       local success, err = pcall(function()
         FileManager.addFileDialogButtons(widget_class, "zzz_koassistant_0_sep", separator_generator)
         for slot = 1, 3 do
@@ -971,16 +971,16 @@ function AskGPT:addFileDialogButtons()
       end)
 
       if success then
-        logger.info("KOAssistant: File dialog buttons registered on " .. widget_name)
+        logger.dbg("KOAssistant: File dialog buttons registered on " .. widget_name)
         success_count = success_count + 1
       else
         logger.warn("KOAssistant: Failed to register buttons on " .. widget_name .. ": " .. tostring(err))
       end
     else
       if not widget_class then
-        logger.warn("KOAssistant: Widget class " .. widget_name .. " not loaded")
+        logger.dbg("KOAssistant: Widget class " .. widget_name .. " not loaded")
       else
-        logger.warn("KOAssistant: FileManager.addFileDialogButtons not available")
+        logger.dbg("KOAssistant: FileManager.addFileDialogButtons not available")
       end
     end
   end
@@ -993,7 +993,7 @@ function AskGPT:addFileDialogButtons()
     self:checkButtonVisibility()
     return true
   else
-    logger.error("KOAssistant: Failed to register file dialog buttons with any method")
+    logger.err("KOAssistant: Failed to register file dialog buttons with any method")
     return false
   end
 end
@@ -1005,7 +1005,7 @@ function AskGPT:removeFileDialogButtons()
   -- instance that never registered — the old early-return made that a silent
   -- no-op. Removal is id-keyed and safe to attempt regardless; a follow-up
   -- addFileDialogButtons from THIS instance then re-registers live closures.
-  logger.info("KOAssistant: Removing file dialog buttons")
+  logger.dbg("KOAssistant: Removing file dialog buttons")
 
   local FileManagerHistory = require("apps/filemanager/filemanagerhistory")
   local FileManagerCollection = require("apps/filemanager/filemanagercollection")
@@ -1049,59 +1049,21 @@ function AskGPT:removeFileDialogButtons()
   end
 
   self.file_dialog_buttons_added = false
-  logger.info("KOAssistant: File dialog buttons removed")
+  logger.dbg("KOAssistant: File dialog buttons removed")
 end
 
 function AskGPT:checkButtonVisibility()
-  -- Check instance buttons
   if FileManager.instance and FileManager.instance.file_dialog_added_buttons then
-    logger.info("KOAssistant: FileManager.instance.file_dialog_added_buttons has " ..
+    logger.dbg("KOAssistant: FileManager.instance.file_dialog_added_buttons has " ..
                 #FileManager.instance.file_dialog_added_buttons .. " entries")
-    
-    -- List all button generators for debugging (limit to first 10 to avoid spam)
-    local count = math.min(10, #FileManager.instance.file_dialog_added_buttons)
-    for i = 1, count do
-      local entry = FileManager.instance.file_dialog_added_buttons[i]
-      local name = ""
-      if type(entry) == "table" and entry.name then
-        name = entry.name
-      elseif type(entry) == "function" then
-        name = "function"
-      else
-        name = "unknown"
-      end
-      logger.info("KOAssistant: Instance button generator " .. i .. ": " .. name)
-    end
   end
-  
-  -- Check static buttons
   if FileManager.file_dialog_added_buttons then
-    logger.info("KOAssistant: FileManager.file_dialog_added_buttons (static) has " ..
+    logger.dbg("KOAssistant: FileManager.file_dialog_added_buttons (static) has " ..
                 #FileManager.file_dialog_added_buttons .. " entries")
-    
-    -- List all button generators for debugging
-    for i, entry in ipairs(FileManager.file_dialog_added_buttons) do
-      local name = ""
-      if type(entry) == "table" and entry.name then
-        name = entry.name
-      elseif type(entry) == "function" then
-        -- Try to identify our functions
-        local info = debug.getinfo(entry)
-        if info and info.source and info.source:find("koassistant.koplugin") then
-          name = "koassistant_function"
-        else
-          name = "function"
-        end
-      else
-        name = tostring(type(entry))
-      end
-      logger.info("KOAssistant: Static button generator " .. i .. ": " .. name)
-    end
   end
-  
   -- Note: Cannot check FileManagerHistory/Collection here due to circular dependency
   -- They will be checked when they're actually created
-  logger.info("KOAssistant: Button registration complete. History/Collection will see buttons when created.")
+  logger.dbg("KOAssistant: Button registration complete. History/Collection will see buttons when created.")
 end
 
 function AskGPT:showKOAssistantDialogForFile(file, title, authors, book_props)
@@ -1117,7 +1079,7 @@ function AskGPT:showKOAssistantDialogForFile(file, title, authors, book_props)
     prompts = {}
   }
 
-  logger.info("Book context has " ..
+  logger.dbg("Book context has " ..
     (book_context_config.prompts and tostring(table_count(book_context_config.prompts)) or "0") ..
     " prompts defined")
 
@@ -1178,7 +1140,7 @@ end
 function AskGPT:compareSelectedBooks(selected_files)
   -- Check if we have selected files
   if not selected_files then
-    logger.error("KOAssistant: compareSelectedBooks called with nil selected_files")
+    logger.err("KOAssistant: compareSelectedBooks called with nil selected_files")
     UIManager:show(InfoMessage:new{
       text = _("No files selected for comparison"),
     })
@@ -1198,9 +1160,9 @@ function AskGPT:compareSelectedBooks(selected_files)
   local file_count = 0
   for file, _ in pairs(selected_files) do
     file_count = file_count + 1
-    logger.info("KOAssistant: Selected file " .. file_count .. ": " .. tostring(file))
+    logger.dbg("KOAssistant: Selected file " .. file_count .. ": " .. tostring(file))
   end
-  logger.info("KOAssistant: Processing " .. file_count .. " selected files")
+  logger.dbg("KOAssistant: Processing " .. file_count .. " selected files")
   
   -- Gather info about each selected book
   for file, _ in pairs(selected_files) do
@@ -1251,7 +1213,7 @@ function AskGPT:compareSelectedBooks(selected_files)
         authors = authors:gsub("\n", ", ")
       end
 
-      logger.info("KOAssistant: Book info - Title: " .. tostring(title) .. ", Authors: " .. tostring(authors))
+      logger.dbg("KOAssistant: Book info - Title: " .. tostring(title) .. ", Authors: " .. tostring(authors))
 
       table.insert(books_info, {
         title = title,
@@ -1263,7 +1225,7 @@ function AskGPT:compareSelectedBooks(selected_files)
     end
   end
 
-  logger.info("KOAssistant: Collected info for " .. #books_info .. " books")
+  logger.dbg("KOAssistant: Collected info for " .. #books_info .. " books")
   
   -- Create comparison prompt
   if #books_info < 2 then
@@ -1282,9 +1244,9 @@ function AskGPT:compareSelectedBooks(selected_files)
     end
   end
   
-  logger.info("KOAssistant: Books list for comparison:")
+  logger.dbg("KOAssistant: Books list for comparison:")
   for i, book_str in ipairs(books_list) do
-    logger.info("  " .. book_str)
+    logger.dbg("  " .. book_str)
   end
   
   -- Build the book context that will be used by the multi_file_browser prompts
@@ -1292,7 +1254,7 @@ function AskGPT:compareSelectedBooks(selected_files)
                                     #books_info,
                                     table.concat(books_list, "\n"))
 
-  logger.info("KOAssistant: Book context for comparison: " .. prompt_text)
+  logger.dbg("KOAssistant: Book context for comparison: " .. prompt_text)
 
   -- Ensure features exists
   configuration.features = configuration.features or {}
@@ -1351,7 +1313,7 @@ function AskGPT:genMultipleKOAssistantButton(close_dialog_toggle_select_mode_cal
             self:compareSelectedBooks(files_copy)
           end)
         else
-          logger.error("KOAssistant: No selected files found for comparison")
+          logger.err("KOAssistant: No selected files found for comparison")
           UIManager:show(InfoMessage:new{
             text = _("No files selected for comparison"),
           })
@@ -1362,7 +1324,7 @@ function AskGPT:genMultipleKOAssistantButton(close_dialog_toggle_select_mode_cal
 end
 
 function AskGPT:onDispatcherRegisterActions()
-  logger.info("KOAssistant: onDispatcherRegisterActions called")
+  logger.dbg("KOAssistant: onDispatcherRegisterActions called")
 
   if not Dispatcher then
     logger.warn("KOAssistant: Dispatcher module not available!")
@@ -1516,14 +1478,14 @@ function AskGPT:onDispatcherRegisterActions()
     end
   end
 
-  logger.info("KOAssistant: Dispatcher actions registered successfully")
+  logger.dbg("KOAssistant: Dispatcher actions registered successfully")
 end
 
 function AskGPT:registerToMainMenu()
   -- Add to KOReader's main menu
   if not self.menu_item and self.ui and self.ui.menu then
     self.menu_item = self.ui.menu:registerToMainMenu(self)
-    logger.info("Registered KOAssistant to main menu")
+    logger.dbg("Registered KOAssistant to main menu")
   else
     if not self.ui then
       logger.warn("Cannot register to main menu: UI not available")
@@ -1859,7 +1821,32 @@ function AskGPT:updateConfigFromSettings()
     table.insert(config_parts, "markdown=off")
   end
 
-  logger.info("KOAssistant config: " .. table.concat(config_parts, ", "))
+  -- Window size (Display Settings) lives in the shared UI constants so the
+  -- viewer, quiz viewer and streaming dialogs all read one truth without
+  -- plumbing features through constructors that never carried it. Pushed here
+  -- like the tier overrides above, so it survives a restart and reaches the
+  -- OTHER plugin instance, which never sees the toggle.
+  require("koassistant_ui.constants").setExpandedWindows(
+    features.chat_window_size == "expanded")
+
+  -- Console Debug raises KOReader's log level so the plugin's logger.dbg
+  -- tracing prints (issue #104). Applied here rather than only in the schema's
+  -- on_change so it survives a restart and reaches the OTHER plugin instance,
+  -- which never sees the toggle. Level changes only on transition.
+  -- Unconditional, not transition-guarded: the sync also picks up KOReader's
+  -- own verbose-logging flag, which can flip mid-session without our setting
+  -- changing. Costs a require plus an assignment.
+  require("koassistant_debug_utils").syncLogLevel(features.debug and true or false)
+
+  -- updateConfigFromSettings() runs on every dialog open and file-dialog
+  -- rebuild, so log the summary only when it actually changed (issue #104) —
+  -- one line at startup plus one per settings change, which is what makes it
+  -- worth having in a user's crash.log at all.
+  local config_line = table.concat(config_parts, ", ")
+  if config_line ~= self._logged_config_line then
+    self._logged_config_line = config_line
+    logger.info("KOAssistant config: " .. config_line)
+  end
 end
 
 -- Helper: Get current provider name
@@ -6236,9 +6223,9 @@ function AskGPT:executeDictAction(action, word, dict_popup, non_reader_lookup, l
     end
 
     if context ~= "" then
-      logger.info("KOAssistant DICT: Got context (" .. #context .. " chars)")
+      logger.dbg("KOAssistant DICT: Got context (" .. #context .. " chars)")
     else
-      logger.info("KOAssistant DICT: No context available (word tap, not selection)")
+      logger.dbg("KOAssistant DICT: No context available (word tap, not selection)")
     end
   end
 
@@ -6598,7 +6585,7 @@ function AskGPT:onKOAssistantContinueLast()
     return true
   end
 
-  logger.info("Continue last saved chat: found chat ID " .. (most_recent_chat.id or "nil") ..
+  logger.dbg("Continue last saved chat: found chat ID " .. (most_recent_chat.id or "nil") ..
               " for document: " .. (document_path or "nil"))
 
   -- Continue the most recent chat
@@ -6623,7 +6610,7 @@ function AskGPT:onKOAssistantContinueLastOpened()
     return true
   end
 
-  logger.info("Continue last opened chat: found chat ID " .. (last_opened_chat.id or "nil") ..
+  logger.dbg("Continue last opened chat: found chat ID " .. (last_opened_chat.id or "nil") ..
               " for document: " .. (document_path or "nil"))
 
   -- Continue the last opened chat
@@ -11974,11 +11961,27 @@ function AskGPT:_xrayCheckpointLabel(cp)
   -- into the word "today" — which is exactly the day you have five of them.
   -- Same day → clock time; older → the relative form, which is what a reader
   -- actually wants at that distance.
+  -- Which time this is was ambiguous (device 2026-08-18: "81, 71, 81 from
+  -- 02:06, 02:05, 2d ago ... even though the archived ones should be older").
+  -- `timestamp` is when the CONTENT was built; the ring is ordered by when it
+  -- was ARCHIVED. Showing only the former while sorting by the latter made the
+  -- list read as out of order, so an archived row now names both.
   local rel = formatRelativeTime(cp.timestamp)
   if cp.timestamp and os.date("%Y-%m-%d", cp.timestamp) == os.date("%Y-%m-%d") then
-    table.insert(parts, os.date("%H:%M", cp.timestamp))
+    table.insert(parts, T(_("built %1"), os.date("%H:%M", cp.timestamp)))
   elseif rel ~= "" then
-    table.insert(parts, rel)
+    table.insert(parts, T(_("built %1"), rel))
+  end
+  if cp.edited_at then
+    table.insert(parts, _("edited"))
+  end
+  if cp.archived_at and cp.timestamp and cp.archived_at > cp.timestamp + 60 then
+    local arel = formatRelativeTime(cp.archived_at)
+    if os.date("%Y-%m-%d", cp.archived_at) == os.date("%Y-%m-%d") then
+      table.insert(parts, T(_("archived %1"), os.date("%H:%M", cp.archived_at)))
+    elseif arel ~= "" then
+      table.insert(parts, T(_("archived %1"), arel))
+    end
   end
   if #parts == 0 then
     return _("Unknown")
@@ -13478,7 +13481,7 @@ function AskGPT:_xrayAutoOnPageUpdate(pageno)
   -- Jump guard: no prev_page (first turn after open/refresh) or a big hop is
   -- not sequential reading — never chase a TOC peek with background builds
   if not prev_page or math.abs(pageno - prev_page) > XrayAuto.JUMP_GUARD_PAGES then
-    if state.debug then logger.info("KOAssistant: automatic X-Ray declined: page jump") end
+    if state.debug then logger.dbg("KOAssistant: automatic X-Ray declined: page jump") end
     return
   end
   if XrayAuto.isInFlight() then return end
@@ -13705,7 +13708,7 @@ function AskGPT:_fireXrayAutoCheckpoints(opts)
   local action = self.action_service and self.action_service:getAction("book", "xray")
   if not action or not action.update_prompt then return end
   if not self:_xrayBackgroundConsentOk(action, features) then
-    logger.info("KOAssistant: automatic X-Ray declined: text extraction consent off")
+    logger.dbg("KOAssistant: automatic X-Ray declined: text extraction consent off")
     return
   end
 
@@ -13759,7 +13762,7 @@ function AskGPT:_fireXrayAutoCheckpoints(opts)
   if #rungs == 0 then return end
   local plan_intro = not chain_rebuild and work.plan_intro
   XrayAuto.markScheduled(os.time())
-  logger.info("KOAssistant: automatic X-Ray building", #rungs + (plan_intro and 1 or 0),
+  logger.dbg("KOAssistant: automatic X-Ray building", #rungs + (plan_intro and 1 or 0),
     "checkpoint(s) to", rungs[#rungs], chain_rebuild and "(rebuild)" or "")
   XrayAuto.beginLadderBuild(file, rungs, labels,
     { intro = plan_intro, silent = not (opts and opts.notify), rebuild = chain_rebuild })
@@ -13824,7 +13827,7 @@ function AskGPT:_fireXrayAutoUpdate(opts)
   -- never runs that UI pre-flight): revoking text extraction after a book was opted
   -- in must stop background fires. Trusted providers bypass, same as everywhere.
   if not self:_xrayBackgroundConsentOk(action, features) then
-    logger.info("KOAssistant: background X-Ray update declined: text extraction consent off")
+    logger.dbg("KOAssistant: background X-Ray update declined: text extraction consent off")
     return
   end
 
@@ -13855,7 +13858,7 @@ function AskGPT:_fireXrayAutoUpdate(opts)
   -- tap-to-cancel row on the in-progress state.
   local self_ref = self
 
-  logger.info("KOAssistant: background X-Ray update firing, delta", decimal - cached_progress)
+  logger.dbg("KOAssistant: background X-Ray update firing, delta", decimal - cached_progress)
   -- Manual runs always notify: the user just asked for this
   UIManager:show(Notification:new{
     text = T(_("Updating X-Ray in background (%1% → %2%)…"),
@@ -13869,11 +13872,11 @@ function AskGPT:_fireXrayAutoUpdate(opts)
       if was_cancelled or was_discarded then
         -- Guard-discard (a manual run won the race / X-Ray deleted) or book-close
         -- cancel: a skip — neither a success (nothing written) nor a failure
-        logger.info("KOAssistant: background X-Ray update skipped -",
+        logger.dbg("KOAssistant: background X-Ray update skipped -",
           was_discarded and "discarded (cache changed mid-flight)" or "cancelled")
       elseif result then
         XrayAuto.recordSuccess(file)
-        logger.info("KOAssistant: background X-Ray update completed (session total:",
+        logger.dbg("KOAssistant: background X-Ray update completed (session total:",
           XrayAuto.sessionUpdateCount(), ")")
         UIManager:show(Notification:new{
           text = T(_("X-Ray updated to %1%"), math.floor(decimal * 100 + 0.5)),
@@ -13882,10 +13885,10 @@ function AskGPT:_fireXrayAutoUpdate(opts)
         local msg = tostring(meta_or_err or "unknown error")
         if msg:find("^background:") then
           -- Deliberate abort (path not applicable / truncated delta) — a skip, not a failure
-          logger.info("KOAssistant: background X-Ray update skipped -", msg)
+          logger.dbg("KOAssistant: background X-Ray update skipped -", msg)
         else
           XrayAuto.recordFailure(file, msg)
-          logger.info("KOAssistant: background X-Ray update failed:", msg)
+          logger.warn("KOAssistant: background X-Ray update failed:", msg)
           if manual then
             UIManager:show(InfoMessage:new{
               text = T(_("Background X-Ray update failed: %1"), msg), timeout = 4 })
@@ -13978,7 +13981,7 @@ function AskGPT:_fireXrayLadderPromotion(opts)
     and require("koassistant_book_settings").xrayPromotionHold(self.ui.doc_settings)
   if opts and opts.capped and (posture ~= "full" or hold)
       and decimal - live_p > XrayAuto.dialsFromFeatures(features).max_gap then
-    logger.info("KOAssistant: ladder promotion declined - position swing above the max-gap dial")
+    logger.dbg("KOAssistant: ladder promotion declined - position swing above the max-gap dial")
     return false
   end
   -- 50(f) revert: a FULL-posture promotion may have installed a version ahead
@@ -14585,6 +14588,16 @@ function AskGPT:_startXrayLadderBuild(build_opts)
     local state_line
     if chain_rebuild then
       state_line = _("Replaces your current X-Ray from scratch. Nothing is touched until the first new checkpoint arrives; the outgoing version is archived then.")
+      -- The foreground rebuild confirm names the checkpoint deletion; this
+      -- path routes past that ConfirmBox, so it has to say it itself. A
+      -- rebuild clears the whole prepared ladder, and only the installed
+      -- version is archived: without this line a lineage of checkpoints
+      -- disappears with no warning anywhere (device, twice on 2026-08-18).
+      local n_rungs = ActionCache.getXrayLadderCount(file)
+      if n_rungs > 0 then
+        state_line = state_line .. " "
+          .. T(_("Its %1 checkpoints belong to the old version and are deleted then too."), n_rungs)
+      end
     elseif one_shot then
       state_line = (base_progress or 0) > 0.005
         and T(_("Extends your X-Ray from %1% to %2."), base_pct, goal_text or "100%")
@@ -14852,9 +14865,9 @@ function AskGPT:_fireXrayLadderRung()
 
   local step_no = build.step or build.idx
   if is_intro then
-    logger.info("KOAssistant: ladder step", step_no, "of", build.total, "firing (introduction)")
+    logger.dbg("KOAssistant: ladder step", step_no, "of", build.total, "firing (introduction)")
   else
-    logger.info("KOAssistant: ladder step", step_no, "of", build.total, "firing (to", target, ")")
+    logger.dbg("KOAssistant: ladder step", step_no, "of", build.total, "firing (to", target, ")")
   end
   -- Silent chains (round 21: the auto scheduler) toast only on the
   -- xray_auto_notify opt-in; failures below stay visible regardless
@@ -14902,7 +14915,14 @@ function AskGPT:_fireXrayLadderRung()
         rung_written = result and on_disk and on_disk >= target - XrayAuto.LADDER_TOLERANCE
       end
       if not rung_written then
-        local err_text = tostring(meta_or_err or "rung not saved")
+        -- The completion callback is (history, temp_config) on SUCCESS and
+        -- (nil, err_string) on failure, so a request that SUCCEEDED but whose
+        -- rung failed to write arrives here with a TABLE in the error slot —
+        -- tostring gave "table: 0x…" as the stop reason, which is what the
+        -- device log showed when a rung was rejected as invalid JSON.
+        local err_text = type(meta_or_err) == "string" and meta_or_err
+            or (result and "rung not written (response rejected or save failed)")
+            or "rung not saved"
         -- Item 50 follow-up: declining the size warning is a clean user
         -- cancel, not a failure — no stop record, no resume nudge
         if err_text == "size_warning_declined" then
@@ -14944,7 +14964,7 @@ function AskGPT:_fireXrayLadderRung()
         -- later. The build state stays ALIVE through the wait so cancel works.
         if transient and (cur.retried or 0) < 1 and not cur.cancel_requested then
           cur.retried = 1
-          logger.info("KOAssistant: ladder step", cur.step or cur.idx, "transient failure (",
+          logger.dbg("KOAssistant: ladder step", cur.step or cur.idx, "transient failure (",
             kind, ") - retrying in", XrayAuto.RETRY_DELAY_S, "s:", err_text)
           if not cur.silent or features.xray_auto_notify == true then
             UIManager:show(Notification:new{
@@ -14972,7 +14992,7 @@ function AskGPT:_fireXrayLadderRung()
         XrayAuto.recordLadderStop(file, { step = cur.step or cur.idx, total = cur.total,
           kind = kind,
           rebuild = (cur.rebuild and not cur.rebuild_swapped) or nil })
-        logger.info("KOAssistant: ladder build stopped at step", cur.step or cur.idx, "-",
+        logger.dbg("KOAssistant: ladder build stopped at step", cur.step or cur.idx, "-",
           err_text)
         local reason = self_ref:_xrayStopReasonLabel(kind)
         UIManager:show(InfoMessage:new{
@@ -17970,7 +17990,7 @@ function AskGPT:translateCurrentPage()
   config_copy.features._selection_context_window = nil
 
   -- Execute translation
-  logger.info("KOAssistant: translateCurrentPage calling executeDirectAction with page_text:", page_text and #page_text or "nil/empty")
+  logger.dbg("KOAssistant: translateCurrentPage calling executeDirectAction with page_text:", page_text and #page_text or "nil/empty")
   Dialogs.executeDirectAction(
     self.ui,
     translate_action,
@@ -18407,7 +18427,7 @@ function AskGPT:syncDictionaryBypass()
 
   -- Check if we have access to the reader's dictionary module
   if not self.ui or not self.ui.dictionary then
-    logger.warn("KOAssistant: Cannot sync dictionary bypass - reader dictionary not available")
+    logger.dbg("KOAssistant: Cannot sync dictionary bypass - reader dictionary not available")
     return
   end
 
@@ -18417,7 +18437,7 @@ function AskGPT:syncDictionaryBypass()
     -- Store original method if not already stored
     if not dictionary._koassistant_original_onLookupWord then
       dictionary._koassistant_original_onLookupWord = dictionary.onLookupWord
-      logger.info("KOAssistant: Storing original ReaderDictionary:onLookupWord")
+      logger.dbg("KOAssistant: Storing original ReaderDictionary:onLookupWord")
     end
 
     local self_ref = self
@@ -18436,7 +18456,7 @@ function AskGPT:syncDictionaryBypass()
         if i_file and self_ref:_xrayInterceptEnabled(i_file)
             and ActionCache.matchAnyXrayExact(i_file, word,
               { include_ahead = self_ref:_xrayAheadEnabled(i_file) }) then
-          logger.info("KOAssistant: X-Ray intercept - word matches entity, opening X-Ray")
+          logger.dbg("KOAssistant: X-Ray intercept - word matches entity, opening X-Ray")
           local lookup_book = dict_self._koassistant_lookup_book
           dict_self._koassistant_non_reader_lookup = nil
           dict_self._koassistant_lookup_book = nil
@@ -18511,7 +18531,7 @@ function AskGPT:syncDictionaryBypass()
         local file = dict_self._koassistant_lookup_book
             or (self_ref.ui and self_ref.ui.document and self_ref.ui.document.file)
         if not file or not ActionCache.hasAnyXray(file) then
-          logger.info("KOAssistant: Dictionary bypass - action requires X-Ray cache, falling through to dictionary")
+          logger.dbg("KOAssistant: Dictionary bypass - action requires X-Ray cache, falling through to dictionary")
           if dictionary._koassistant_original_onLookupWord then
             return dictionary._koassistant_original_onLookupWord(dict_self, word, is_sane, boxes, highlight, link, dict_close_callback)
           end
@@ -18532,7 +18552,7 @@ function AskGPT:syncDictionaryBypass()
           local hits = ActionCache.searchAllXrays(file, word,
             doc, { skip_description = true })
           if #hits == 0 then
-            logger.info("KOAssistant: Dictionary bypass - no X-Ray entry for word, falling through to dictionary")
+            logger.dbg("KOAssistant: Dictionary bypass - no X-Ray entry for word, falling through to dictionary")
             if dictionary._koassistant_original_onLookupWord then
               return dictionary._koassistant_original_onLookupWord(dict_self, word, is_sane, boxes, highlight, link, dict_close_callback)
             end
@@ -18570,9 +18590,9 @@ function AskGPT:syncDictionaryBypass()
         -- (highlight:clear() below kills it; handlePredefinedPrompt trims per mode)
         sc_window = Dialogs.fetchSelectionContextWindow(self_ref.ui, word)
         if context and context ~= "" then
-          logger.info("KOAssistant BYPASS: Got context (" .. #context .. " chars)")
+          logger.dbg("KOAssistant BYPASS: Got context (" .. #context .. " chars)")
         else
-          logger.info("KOAssistant BYPASS: No context available")
+          logger.dbg("KOAssistant BYPASS: No context available")
         end
       end
 
@@ -18699,7 +18719,7 @@ function AskGPT:syncDictionaryBypass()
             local Event = require("ui/event")
             self_ref.ui:handleEvent(Event:new("WordLookedUp", word, book_title, false))
             dict_config.features.vocab_word_auto_added = true
-            logger.info("KOAssistant: Auto-added word to vocabulary builder (bypass): " .. word)
+            logger.dbg("KOAssistant: Auto-added word to vocabulary builder (bypass): " .. word)
           end
 
           -- Execute the action
@@ -18713,13 +18733,13 @@ function AskGPT:syncDictionaryBypass()
         end)
       end
     end
-    logger.info("KOAssistant: Dictionary bypass enabled")
+    logger.dbg("KOAssistant: Dictionary bypass enabled")
   else
     -- Restore original method
     if dictionary._koassistant_original_onLookupWord then
       dictionary.onLookupWord = dictionary._koassistant_original_onLookupWord
       dictionary._koassistant_original_onLookupWord = nil
-      logger.info("KOAssistant: Dictionary bypass disabled, restored original dictionary lookup")
+      logger.dbg("KOAssistant: Dictionary bypass disabled, restored original dictionary lookup")
     end
   end
 end
@@ -18727,7 +18747,7 @@ end
 -- Highlight Bypass: immediately trigger an action when text is selected
 function AskGPT:syncHighlightBypass()
   if not self.ui or not self.ui.highlight then
-    logger.info("KOAssistant: Cannot sync highlight bypass - highlight not available")
+    logger.dbg("KOAssistant: Cannot sync highlight bypass - highlight not available")
     return
   end
 
@@ -18820,7 +18840,7 @@ function AskGPT:syncHighlightBypass()
         if i_file and self_ref:_xrayInterceptEnabled(i_file)
             and ActionCache.matchAnyXrayExact(i_file, sel,
               { include_ahead = self_ref:_xrayAheadEnabled(i_file) }) then
-          logger.info("KOAssistant: X-Ray intercept - selection matches entity, opening X-Ray")
+          logger.dbg("KOAssistant: X-Ray intercept - selection matches entity, opening X-Ray")
           -- Selection geometry anchors the floating-popup card style —
           -- captured as fresh copies BEFORE clear() releases the selection
           local sel_boxes
@@ -18859,11 +18879,11 @@ function AskGPT:syncHighlightBypass()
           local ActionCache = require("koassistant_action_cache")
           local file = self_ref.ui and self_ref.ui.document and self_ref.ui.document.file
           if not file or not ActionCache.hasAnyXray(file) then
-            logger.info("KOAssistant: Highlight bypass - action requires X-Ray cache, falling through to menu")
+            logger.dbg("KOAssistant: Highlight bypass - action requires X-Ray cache, falling through to menu")
             return highlight._koassistant_original_onShowHighlightMenu(hl_self, ...)
           end
         end
-        logger.info("KOAssistant: Highlight bypass active, executing action: " .. action_id)
+        logger.dbg("KOAssistant: Highlight bypass active, executing action: " .. action_id)
         -- Execute our action
         self_ref:executeHighlightBypassAction(action, hl_self.selected_text.text, hl_self)
         -- Clear selection without showing menu
@@ -18878,7 +18898,7 @@ function AskGPT:syncHighlightBypass()
     return highlight._koassistant_original_onShowHighlightMenu(hl_self, ...)
   end
 
-  logger.info("KOAssistant: Highlight bypass synced")
+  logger.dbg("KOAssistant: Highlight bypass synced")
 end
 
 --- Ambient X-Ray marks (slice 2): install/refresh/remove the paint layer per
@@ -19020,7 +19040,7 @@ function AskGPT:syncXrayMarks()
         name, box = require("koassistant_xray_marks").tapTarget(self_ref, ges)
       end
       if name then
-        logger.info("KOAssistant: X-Ray mark tap - opening entity: " .. name)
+        logger.dbg("KOAssistant: X-Ray mark tap - opening entity: " .. name)
         -- The word box anchors the floating-popup card style
         self_ref:openXrayCard(name, box and { sboxes = { box } } or nil)
         return true
@@ -19568,14 +19588,14 @@ end
 
 -- Event handlers for registering buttons with different FileManager views
 function AskGPT:onFileManagerReady(filemanager)
-  logger.info("KOAssistant: onFileManagerReady event received")
+  logger.dbg("KOAssistant: onFileManagerReady event received")
   
   -- Register immediately since FileManager should be ready
   self:addFileDialogButtons()
   
   -- Also register with a delay as a fallback
   UIManager:scheduleIn(0.1, function()
-    logger.info("KOAssistant: Late registration of file dialog buttons (onFileManagerReady)")
+    logger.dbg("KOAssistant: Late registration of file dialog buttons (onFileManagerReady)")
     self:addFileDialogButtons()
   end)
 end
@@ -19627,7 +19647,7 @@ function AskGPT:patchFileManagerForMultiSelect()
           if koassistant_button then
             -- Append at the very end
             table.insert(o.buttons, koassistant_button)
-            logger.info("KOAssistant: Added multi-select button to dialog at end position " .. #o.buttons)
+            logger.dbg("KOAssistant: Added multi-select button to dialog at end position " .. #o.buttons)
           end
         end
       end
@@ -19636,7 +19656,7 @@ function AskGPT:patchFileManagerForMultiSelect()
       return ButtonDialog._orig_new_koassistant(self, o)
     end
 
-    logger.info("KOAssistant: Patched ButtonDialog.new for multi-select support")
+    logger.dbg("KOAssistant: Patched ButtonDialog.new for multi-select support")
   end
 end
 
@@ -22593,7 +22613,7 @@ function AskGPT:patchDocSettingsForChatIndex()
   end
 
   DocSettings._koassistant_patched = true
-  logger.info("KOAssistant: DocSettings.updateLocation() patched for sidecar file tracking")
+  logger.dbg("KOAssistant: DocSettings.updateLocation() patched for sidecar file tracking")
 end
 
 --- Update notebook index for a document

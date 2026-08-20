@@ -10,7 +10,7 @@
 
 local DataStorage = require("datastorage")
 local lfs = require("libs/libkoreader-lfs")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local DebugUtils = require("koassistant_debug_utils")
 
 local Export = {}

@@ -32,7 +32,7 @@ Public API:
 local json   = require("json")
 local ffi    = require("ffi")
 local ffiutil = require("ffi/util")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local mime   = require("mime")
 local BaseHandler = require("koassistant_api.base")
 local ModelLists = require("koassistant_model_lists")
@@ -711,7 +711,7 @@ function ImageGenerator._generateImpl(word, config_table, settings, book_info, o
     end
 
     -- Launch subprocess
-    logger.info("KOAssistant: image gen request:", provider, resolved_model)
+    logger.dbg("KOAssistant: image gen request:", provider, resolved_model)
     local bg_fn = makeBackgroundFn(request_url, api_key, request_body_str, endpoint)
     local pid, parent_read_fd = ffiutil.runInSubProcess(bg_fn, true)
 
@@ -733,7 +733,7 @@ function ImageGenerator._generateImpl(word, config_table, settings, book_info, o
     -- Poll for result
     pollSubprocess(pid, parent_read_fd, guarded(function(raw)
         stopTicker()
-        logger.info("KOAssistant: image gen result:", raw and #raw or 0, "bytes; head:", raw and raw:sub(1, 120) or "<empty>")
+        logger.dbg("KOAssistant: image gen result:", raw and #raw or 0, "bytes; head:", raw and raw:sub(1, 120) or "<empty>")
         if cancelled then return end
 
         if not raw or raw == "" then

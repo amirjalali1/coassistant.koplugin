@@ -328,6 +328,28 @@ local SettingsSchema = {
                     },
                 },
                 {
+                    id = "chat_window_size",
+                    type = "dropdown",
+                    text = _("Window Size"),
+                    path = "features.chat_window_size",
+                    default = "standard",
+                    options = {
+                        { value = "standard", label = _("Standard") },
+                        { value = "expanded", label = _("Expanded") },
+                    },
+                    help_text = _("How much of the screen chat, artifact, translate, dictionary and quiz windows take. Expanded leaves only a hairline around them (and keeps KOReader's status bar visible while a book is open), which fits more text but leaves less room to tap outside. Also on each window's gear menu. Compact dictionary popups are not affected."),
+                    -- Dropdown on_change is (value, plugin, old_value). Push
+                    -- straight into the constants so windows opened before the
+                    -- next updateConfigFromSettings already follow it.
+                    on_change = function(value, plugin)
+                        require("koassistant_ui.constants").setExpandedWindows(value == "expanded")
+                        if plugin and plugin.updateConfigFromSettings then
+                            plugin:updateConfigFromSettings()
+                        end
+                    end,
+                    separator = true,
+                },
+                {
                     id = "plugin_ui_language",
                     type = "dropdown",
                     text = _("Plugin UI Language"),
@@ -966,14 +988,6 @@ local SettingsSchema = {
                             help_text = _("Which category groups a new X-Ray tracks by default: everything, or a narrower pick like character tracking. Applies when an X-Ray is created or rebuilt; individual books can pick their own categories in Book Settings."),
                         },
                         {
-                            id = "xray_update_trim_appends",
-                            type = "toggle",
-                            text = _("Shorter Update Requests"),
-                            path = "features.xray_update_trim_appends",
-                            default = true,
-                            help_text = _("When updating an X-Ray (manually or through checkpoints), send the model only the most recent entries of the ever-growing event lists (timeline, argument development) instead of the whole lists, which makes updates noticeably cheaper on long books. The stored X-Ray always keeps all entries; this only shortens what is sent. In rare cases the model may re-add an old event it can no longer see."),
-                        },
-                        {
                             id = "xray_selection_intercept",
                             type = "toggle",
                             text = _("X-Ray Entry for Matching Selections"),
@@ -1168,6 +1182,19 @@ local SettingsSchema = {
                             step = 1,
                             precision = "%d",
                             help_text = _("Whenever an update or redo overwrites the X-Ray, the outgoing version is archived: browse, view, or restore them via \"All versions\" in the X-Ray popup and browser menu. This sets how many are kept per book (oldest dropped first). 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself. Checkpoints are stored separately and are never trimmed by this."),
+                            separator = true,
+                        },
+                        {
+                            id = "xray_connection_buttons",
+                            type = "spinner",
+                            text = _("Connection Buttons per Entry"),
+                            path = "features.xray_connection_buttons",
+                            default = 9,
+                            min = 0,
+                            max = 30,
+                            step = 1,
+                            precision = "%d",
+                            help_text = _("An entity page turns each of its connections into a tappable button. A richly connected character can carry dozens, which crowd the description off the screen. This caps how many BOXES the connection block may use: past it the last box becomes an overflow row opening the full list. At or under it every connection is drawn and the list lives in the entry's More menu. Repeated links to the same entity are always collapsed, whatever this is set to. 0 draws no buttons and lists every connection instead."),
                             separator = true,
                         },
                         {
@@ -3127,6 +3154,11 @@ local SettingsSchema = {
                     path = "features.debug",
                     default = false,
                     on_change = function(new_value, plugin)
+                        -- Routine tracing lives at logger.dbg, which KOReader's
+                        -- default level discards (issue #104) — raise the level
+                        -- so this toggle actually delivers the diagnostics it
+                        -- promises above.
+                        require("koassistant_debug_utils").syncLogLevel(new_value)
                         -- Most consumers read the flag per request; the marks
                         -- module caches it at sync — resync so the toggle is
                         -- live there too

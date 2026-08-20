@@ -142,6 +142,8 @@ local function createWithKind(name, after)
         if kind ~= BookGroups.KIND_SERIES then
             BookGroups.setKind(group.id, kind)
         end
+        require("koassistant_logger").dbg("KOAssistant Groups: created",
+            group.id, "kind=", tostring(kind))
         after(group)
     end)
 end
@@ -416,6 +418,7 @@ end
 --- reopen-relocate-press. "Move to position…" jumps directly.
 --- opts: same table showGroup received ({ plugin, ui, on_close }).
 function GroupsUI.showMoveDialog(group_id, path, opts)
+    require("koassistant_logger").dbg("KOAssistant Groups: move dialog", group_id, path)
     opts = opts or {}
     local ButtonDialog = require("ui/widget/buttondialog")
     local BookGroups = groups()
@@ -504,6 +507,7 @@ end
 --- Per-group screen. opts: { plugin, ui, on_close }
 function GroupsUI.showGroup(group_id, opts)
     opts = opts or {}
+    require("koassistant_logger").dbg("KOAssistant Groups: open group", group_id)
     local ButtonDialog = require("ui/widget/buttondialog")
     local BookGroups = groups()
     local group = BookGroups.byId(group_id)

@@ -23,7 +23,7 @@ MessageBuilder.build (never action.prompt).
 -- Widget requires stay lazy (inside the UI functions): the pure halves are
 -- unit-tested under mock_koreader, which does not stub the dialog widgets.
 local UIManager = require("ui/uimanager")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local T = require("ffi/util").template
 local _ = require("koassistant_gettext")
 
@@ -488,6 +488,12 @@ function XrayDedup.applyMergeToRungs(rungs, cat_key, keep_name, drop_name)
                         local okj, encoded = pcall(json.encode, data, { pretty = true, indent = true })
                         if okj and type(encoded) == "string" then
                             rung.result = encoded
+                            -- Mark the rung as reader-modified. The sweep is
+                            -- text-lossless (keepBothText carries both
+                            -- descriptions) but it is not the build any more,
+                            -- and it is not reversible — so it must at least
+                            -- be visible in "All versions".
+                            rung.edited_at = os.time()
                             changed = changed + 1
                         end
                     end
@@ -1188,7 +1194,7 @@ function XrayDedup.startFlow(opts)
     else
         showList(false)
     end
-    logger.info("KOAssistant XrayDedup: scan started for", opts.file)
+    logger.dbg("KOAssistant XrayDedup: scan started for", opts.file)
 end
 
 return XrayDedup

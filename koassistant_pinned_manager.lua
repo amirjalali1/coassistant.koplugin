@@ -17,7 +17,7 @@ Storage locations:
 local DataStorage = require("datastorage")
 local DocSettings = require("docsettings")
 local lfs = require("libs/libkoreader-lfs")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local PinnedManager = {}
 
@@ -215,7 +215,7 @@ local function savePinned(document_path, pinned)
     file:write("}\n")
     file:close()
 
-    logger.info("KOAssistant PinnedManager: Saved pinned for", document_path)
+    logger.dbg("KOAssistant PinnedManager: Saved pinned for", document_path)
     return true
 end
 

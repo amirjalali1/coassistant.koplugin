@@ -48,4 +48,110 @@ function JsonRepair.escapeInnerQuotes(text)
     return table.concat(out)
 end
 
+--- Drop closing braces/brackets that close more than was opened — the other
+--- common LLM JSON defect (2026-08-18, root-caused from a live checkpoint
+--- build): one stray `}` or `]` in a 16 KB response makes KOReader's bundled
+--- LuaJSON die with "decode/state.lua:81: attempt to index field 'active'
+--- (a nil value)" instead of a syntax error, which surfaced as the
+--- intermittent "X-Ray response is not valid JSON" build failures. Reproduced
+--- against the bundled decoder: every unbalanced-close shape crashes there.
+---
+--- String-aware single pass (escapes honored): a closer is dropped when
+--- nothing is open or when it does not match the innermost open bracket;
+--- everything else passes through untouched. Balanced input is returned
+--- byte-identical, and a MISSING closer is left alone (that failure decodes
+--- to a clean syntax error and truncation must not be papered over).
+--- @param text string
+--- @return string
+function JsonRepair.dropExtraClosers(text)
+    if type(text) ~= "string" or text == "" then return text end
+    local out = {}
+    local stack = {}
+    local in_string = false
+    local i, n = 1, #text
+    while i <= n do
+        local c = text:sub(i, i)
+        if in_string then
+            if c == "\\" then
+                out[#out + 1] = text:sub(i, i + 1)
+                i = i + 2
+            else
+                if c == '"' then in_string = false end
+                out[#out + 1] = c
+                i = i + 1
+            end
+        else
+            if c == '"' then
+                in_string = true
+                out[#out + 1] = c
+            elseif c == "{" or c == "[" then
+                stack[#stack + 1] = c
+                out[#out + 1] = c
+            elseif c == "}" or c == "]" then
+                local want = (c == "}") and "{" or "["
+                if stack[#stack] == want then
+                    stack[#stack] = nil
+                    out[#out + 1] = c
+                end
+                -- stray (nothing open, or mismatched): dropped
+            else
+                out[#out + 1] = c
+            end
+            i = i + 1
+        end
+    end
+    return table.concat(out)
+end
+
+--- Close unclosed braces/brackets on a COMPLETE-looking document — the mirror
+--- of dropExtraClosers (2026-08-18, from a live rejected rung the same
+--- evening): a response can end on end_turn with full content and one `}` too
+--- few, which the bundled decoder reports as "Unclosed elements present".
+---
+--- The gate is deliberately conservative so real truncation keeps failing
+--- visibly: the string-aware scan must end OUTSIDE any string, and the last
+--- non-whitespace character must be a COMPLETED value (`}`, `]`, or `"`).
+--- A cut mid-string fails the in-string check; a cut after `,` or `:` fails
+--- the last-character check; a number cut short (12 of 123) is excluded
+--- because digits never pass the gate. Only then are the missing closers
+--- appended, innermost first.
+--- @param text string
+--- @return string
+function JsonRepair.closeUnclosed(text)
+    if type(text) ~= "string" or text == "" then return text end
+    local stack = {}
+    local in_string = false
+    local i, n = 1, #text
+    while i <= n do
+        local c = text:sub(i, i)
+        if in_string then
+            if c == "\\" then
+                i = i + 2
+            else
+                if c == '"' then in_string = false end
+                i = i + 1
+            end
+        else
+            if c == '"' then
+                in_string = true
+            elseif c == "{" or c == "[" then
+                stack[#stack + 1] = c
+            elseif c == "}" or c == "]" then
+                local want = (c == "}") and "{" or "["
+                if stack[#stack] == want then stack[#stack] = nil end
+            end
+            i = i + 1
+        end
+    end
+    if #stack == 0 or in_string then return text end
+    local trimmed = text:gsub("%s+$", "")
+    local last = trimmed:sub(-1)
+    if last ~= "}" and last ~= "]" and last ~= '"' then return text end
+    local closers = {}
+    for j = #stack, 1, -1 do
+        closers[#closers + 1] = (stack[j] == "{") and "}" or "]"
+    end
+    return trimmed .. table.concat(closers)
+end
+
 return JsonRepair

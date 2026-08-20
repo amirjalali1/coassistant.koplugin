@@ -24,7 +24,7 @@ local T = require("ffi/util").template
 local _ = require("koassistant_gettext")
 local Screen = Device.screen
 local MD = require("apps/filemanager/lib/md")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local QUIZ_CSS = [[
 @page { margin: 0; font-family: 'Noto Sans'; }
@@ -78,12 +78,11 @@ function QuizViewer:init()
         require("koassistant_quiz_parser").balanceAnswers(self.quiz_data)
     end
 
+    -- Follows the global "Window Size" setting through the shared constants
+    -- (there is no gear here to toggle it from; the setting is global anyway).
     self.align = "center"
-    self.region = Geom:new{
-        w = Screen:getWidth(),
-        h = Screen:getHeight(),
-    }
     local UIConstants = require("koassistant_ui.constants")
+    self.region = Geom:new(UIConstants.CHAT_REGION())
     self.width = self.width or UIConstants.CHAT_WIDTH()
     self.height = self.height or UIConstants.CHAT_HEIGHT()
 

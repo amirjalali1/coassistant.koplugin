@@ -273,10 +273,10 @@ function TestActions:runAll()
         self:assertEquals(xray.use_book_text, true)
     end)
 
-    self:test("X-Ray action has use_highlights (not use_annotations)", function()
+    self:test("X-Ray action reads no highlights (reader engagement removed 2026-08-18)", function()
         local xray = Actions.book.xray
-        self:assertEquals(xray.use_highlights, true)
-        self:assertEquals(xray.use_annotations, nil, "X-Ray should not use annotations")
+        self:assertEquals(xray.use_highlights, nil, "X-Ray must not extract highlights")
+        self:assertEquals(xray.use_annotations, nil, "X-Ray must not extract annotations")
     end)
 
     self:test("X-Ray action has cache_as_xray", function()

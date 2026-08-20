@@ -477,71 +477,6 @@ TestRunner:test("singletons and the dormant ledger are untouched", function()
     TestRunner:eq(#d[XrayParser.DORMANT_KEY], 1, "dormant ledger intact")
 end)
 
-TestRunner:suite("XrayParser.trimAppendsForPrompt — update request-size trim")
-local function appendListJSON(n_timeline, n_argdev)
-    local parts = { '{ "type": "fiction", "characters": [ { "name": "Jack", "description": "a man" } ]' }
-    local function list(key, n)
-        if not n then return end
-        local items = {}
-        for i = 1, n do items[#items + 1] = string.format('{ "event": "event %d" }', i) end
-        parts[#parts + 1] = string.format(', "%s": [ %s ]', key, table.concat(items, ", "))
-    end
-    list("timeline", n_timeline)
-    list("argument_development", n_argdev)
-    parts[#parts + 1] = " }"
-    return table.concat(parts)
-end
-TestRunner:test("over threshold keeps the last N entries, reports counts", function()
-    local out, info = XrayParser.trimAppendsForPrompt(appendListJSON(30))
-    TestRunner:ok(info, "should trim")
-    TestRunner:eq(#info, 1, "one category trimmed")
-    TestRunner:eq(info[1].category, "timeline", "category")
-    TestRunner:eq(info[1].kept, 15, "kept")
-    TestRunner:eq(info[1].total, 30, "total")
-    local d = XrayParser.parse(out)
-    TestRunner:eq(#d.timeline, 15, "output holds 15")
-    TestRunner:eq(d.timeline[1].event, "event 16", "kept tail starts at 16")
-    TestRunner:eq(d.timeline[15].event, "event 30", "kept tail ends at 30")
-    TestRunner:eq(d.characters[1].name, "Jack", "other categories intact")
-end)
-TestRunner:test("at/under threshold returns the input unchanged", function()
-    local src = appendListJSON(20)
-    local out, info = XrayParser.trimAppendsForPrompt(src)
-    TestRunner:eq(out, src, "identity")
-    TestRunner:eq(info, nil, "no info")
-end)
-TestRunner:test("both append lists trim independently, stable order", function()
-    local out, info = XrayParser.trimAppendsForPrompt(appendListJSON(25, 22))
-    TestRunner:eq(#info, 2, "both trimmed")
-    TestRunner:eq(info[1].category, "timeline", "timeline first")
-    TestRunner:eq(info[2].category, "argument_development", "argdev second")
-    TestRunner:eq(info[2].total, 22, "argdev total")
-    local d = XrayParser.parse(out)
-    TestRunner:eq(#d.timeline, 15, "timeline 15")
-    TestRunner:eq(#d.argument_development, 15, "argdev 15")
-end)
-TestRunner:test("fenced input trims (raw stored results may pass through the strip unfenced)", function()
-    local out, info = XrayParser.trimAppendsForPrompt("```json\n" .. appendListJSON(30) .. "\n```")
-    TestRunner:ok(info, "should trim through the fence")
-    local d = XrayParser.parse(out)
-    TestRunner:eq(#d.timeline, 15, "output holds 15")
-end)
-TestRunner:test("prose and nil inputs pass through untouched", function()
-    local out, info = XrayParser.trimAppendsForPrompt("Just a prose recap, no lists.")
-    TestRunner:eq(out, "Just a prose recap, no lists.", "prose identity")
-    TestRunner:eq(info, nil, "no info")
-    local out2 = XrayParser.trimAppendsForPrompt(nil)
-    TestRunner:eq(out2, nil, "nil identity")
-end)
-TestRunner:test("opts override keep and threshold", function()
-    local out, info = XrayParser.trimAppendsForPrompt(appendListJSON(5), { keep = 2, threshold = 3 })
-    TestRunner:eq(info[1].kept, 2, "kept 2")
-    TestRunner:eq(info[1].total, 5, "total 5")
-    local d = XrayParser.parse(out)
-    TestRunner:eq(#d.timeline, 2, "output holds 2")
-    TestRunner:eq(d.timeline[1].event, "event 4", "tail starts at 4")
-end)
-
 TestRunner:suite("merge — direct-name-match relational union (staleness F2a)")
 TestRunner:test("re-emit under the SAME name unions connections and keeps references", function()
     local old = XrayParser.parse('{"characters":[{"name":"Mara Cole","description":"old text","connections":["Tomas Cole (husband)"],"references":["Doc 1"]}]}')
@@ -570,6 +505,72 @@ TestRunner:test("delta omitting connections leaves the old array intact", functi
 end)
 
 print("")
+print("\n  [dropExtraClosers - stray-closer repair (state.lua:81 class)]")
+
+TestRunner:test("doubled final closer is dropped and the result parses", function()
+    local JR = require("koassistant_json_repair")
+    TestRunner:eq(JR.dropExtraClosers('{"characters":[{"name":"A","description":"d"}]}}'),
+        '{"characters":[{"name":"A","description":"d"}]}', "final stray } dropped")
+    local parsed = XrayParser.parse('```json\n{"characters":[{"name":"A","description":"d"}]}}\n```')
+    TestRunner:eq(parsed ~= nil, true, "parse recovers via the stray-closer repair")
+    TestRunner:eq(parsed.characters[1].name, "A", "content intact")
+end)
+
+TestRunner:test("stray closer mid-document is dropped", function()
+    local JR = require("koassistant_json_repair")
+    local fixed = JR.dropExtraClosers('{"a":[{"x":1}]],"b":[2]}')
+    TestRunner:eq(fixed, '{"a":[{"x":1}],"b":[2]}', "mismatched ] dropped where it appears")
+end)
+
+TestRunner:test("closers inside strings and escapes are untouched", function()
+    local JR = require("koassistant_json_repair")
+    local text = '{"name":"A }] \\" x","d":"]] }"}'
+    TestRunner:eq(JR.dropExtraClosers(text), text, "string content never counts as structure")
+end)
+
+TestRunner:test("balanced input is byte-identical; missing closers are not papered over", function()
+    local JR = require("koassistant_json_repair")
+    local good = '{"characters":[{"name":"A"}]}'
+    TestRunner:eq(JR.dropExtraClosers(good), good, "no-op on balanced input")
+    local truncated = '{"characters":[{"name":"A"}]'
+    TestRunner:eq(JR.dropExtraClosers(truncated), truncated, "truncation left for the caller to see")
+end)
+
+
+print("\n  [closeUnclosed - under-closed complete document]")
+
+TestRunner:test("complete document missing its final brace recovers", function()
+    local JR = require("koassistant_json_repair")
+    local txt = '{"type":"fiction","characters":[{"name":"A","description":"d"}],"current_state":{"summary":"s","questions":["q?"]}'
+    TestRunner:eq(JR.closeUnclosed(txt), txt .. "}", "one missing } appended")
+    local parsed = XrayParser.parse(txt)
+    TestRunner:eq(parsed ~= nil, true, "parse recovers the under-closed response")
+    TestRunner:eq(parsed.characters[1].name, "A", "content intact")
+end)
+
+TestRunner:test("several missing closers append innermost first", function()
+    local JR = require("koassistant_json_repair")
+    TestRunner:eq(JR.closeUnclosed('{"a":[{"x":"y"}'), '{"a":[{"x":"y"}]}', "]} appended in order")
+end)
+
+TestRunner:test("true truncation still fails: mid-string, after comma, after colon, mid-number", function()
+    local JR = require("koassistant_json_repair")
+    for _i, cut in ipairs({
+        '{"characters":[{"name":"A","description":"cut mid sent',
+        '{"characters":[{"name":"A"},',
+        '{"characters":[{"name":',
+        '{"count": 12',
+    }) do
+        TestRunner:eq(JR.closeUnclosed(cut), cut, "not papered over: " .. cut:sub(1, 30))
+    end
+end)
+
+TestRunner:test("balanced input untouched", function()
+    local JR = require("koassistant_json_repair")
+    local good = '{"characters":[{"name":"A"}]}'
+    TestRunner:eq(JR.closeUnclosed(good), good, "no-op when nothing is open")
+end)
+
 print(string.rep("-", 50))
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))
 print(string.rep("-", 50))

@@ -1,6 +1,6 @@
 local _ = require("koassistant_gettext")
 local Constants = require("koassistant_constants")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 local T = require("ffi/util").template
 
 local SettingsManager = {}

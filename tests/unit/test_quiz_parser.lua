@@ -65,6 +65,26 @@ TestRunner:test("repair does not corrupt already-valid clean JSON", function()
     TestRunner:ok(d); TestRunner:eq(#d.questions[1].key_points, 3)
 end)
 
+TestRunner:suite("QuizParser.parse — stray closing braces (repair)")
+
+TestRunner:test("doubled final closer recovers", function()
+    local d, e = QP.parse('```json\n{"questions":[{"type":"essay","question":"Q?","key_points":["a"]}]}}\n```')
+    TestRunner:ok(d, "should recover via stray-closer repair: " .. tostring(e))
+    TestRunner:eq(#d.questions, 1)
+end)
+TestRunner:test("stray closer mid-document recovers", function()
+    local d = QP.parse('{"questions":[{"type":"essay","question":"Q?","key_points":["a"]}]],"extra":[1]}')
+    TestRunner:ok(d)
+end)
+TestRunner:test("under-closed but complete document recovers; mid-string truncation fails", function()
+    -- Ends on a completed value: the closeUnclosed mirror repair finishes it.
+    local d = QP.parse('{"questions":[{"type":"essay","question":"Q?","key_points":["a"]}')
+    TestRunner:ok(d, "complete-but-under-closed recovers")
+    -- Genuine truncation (cut mid-string) still fails visibly.
+    local t = QP.parse('{"questions":[{"type":"essay","question":"Q?","key_points":["cut mid')
+    TestRunner:eq(t, nil, "mid-string truncation is not papered over")
+end)
+
 TestRunner:suite("QuizParser.parse — correct-letter normalization")
 
 local function correctOf(raw)

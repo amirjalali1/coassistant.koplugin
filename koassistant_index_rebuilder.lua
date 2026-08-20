@@ -21,7 +21,7 @@ settings flush at the end; prune pass last.
 
 local DocSettings = require("docsettings")
 local lfs = require("libs/libkoreader-lfs")
-local logger = require("logger")
+local logger = require("koassistant_logger")
 
 local IndexRebuilder = {}
 
@@ -218,7 +218,7 @@ function IndexRebuilder.run(ui, features)
         report.added[key] = report.totals[key] - before[key]
     end
 
-    logger.info("KOAssistant IndexRebuilder: candidates a/b/c:",
+    logger.dbg("KOAssistant IndexRebuilder: candidates a/b/c:",
         report.candidates.a, report.candidates.b, report.candidates.c,
         "with_data:", report.with_data,
         "skipped_missing:", report.skipped_missing,
