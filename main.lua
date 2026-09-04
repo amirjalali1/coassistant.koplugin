@@ -154,6 +154,8 @@ local DOIResolver = require("doi_resolver")
 
 --- Get raw doc_props (with identifiers) from DocSettings for a file.
 --- Raw props include the identifiers field that extendProps() filters out.
+--- RAW = the original metadata: a title edited in Book information is NOT in
+--- here (SafeDocSettings.overlayCustomProps for anything user-facing).
 --- @param file string Document file path
 --- @return table|nil Raw document properties, or nil
 local function getRawDocProps(file)
@@ -161,7 +163,7 @@ local function getRawDocProps(file)
     local DocSettings = require("docsettings")
     local ok, doc_settings = pcall(DocSettings.open, DocSettings, file)
     if ok and doc_settings then
-        return doc_settings:readSetting("doc_props")
+        return doc_settings:readSetting("doc_props") -- raw-props: DOI identifiers, callers overlay for display
     end
     return nil
 end
@@ -209,11 +211,20 @@ function AskGPT:init()
   self.action_service = ActionService:new(self.settings)
   self.action_service:initialize()
 
+  -- Track 37: move per-book plugin data out of KOReader's metadata.lua
+  -- (one-shot, runs before any read; see _runBookStoreMigration)
+  self:_runBookStoreMigration()
+
   -- Register dispatcher actions
   self:onDispatcherRegisterActions()
 
   -- Patch DocSettings for chat index tracking on file moves
   self:patchDocSettingsForChatIndex()
+
+  -- Cross-book X-Ray knowledge (S4, ref #90): the lookup direction follows
+  -- the current book's spoiler protection; group edits and live X-Ray writes
+  -- re-seed the members' carried lists (deferred, zero tokens)
+  self:_installGroupSeedingHooks()
 
   -- Chat index validation deferred to first chat history browser open
   -- (see ChatHistoryDialog:showChatHistoryBrowser for lazy validation)
@@ -365,6 +376,15 @@ function AskGPT:init()
   
   -- Also register when reader is ready as a backup
   self.onReaderReady = function()
+    -- Track 37 straggler net: anything an older build (or an unmigrated
+    -- sidecar synced from another device) left in this book's metadata.lua
+    -- is folded into our files before any read. A table scan when clean.
+    if self.ui and self.ui.document and self.ui.doc_settings then
+      local ok_m, err_m = pcall(function()
+        require("koassistant_book_store").ensureMigrated(self.ui.document.file, self.ui.doc_settings)
+      end)
+      if not ok_m then logger.warn("KOAssistant: book store straggler check failed:", err_m) end
+    end
     self:registerToMainMenu()
     -- Sync highlight bypass (needs ui.highlight to be available)
     self:syncHighlightBypass()
@@ -426,8 +446,6 @@ function AskGPT:init()
     end
     -- Check if recap reminder should be shown
     self:checkRecapReminder()
-    -- One-shot Automatic X-Ray offer (§7 P4, opt-in; gates inside)
-    self:checkXrayOffer()
     -- Initialize chapter quiz state (reset on each book open). The chapter boundary list is
     -- recomputed lazily on the first page turn (and whenever the level setting changes), since
     -- the TOC may not be filled yet here.
@@ -582,7 +600,7 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
   if not title or title == "" then
     local DocSettings = require("docsettings")
     local doc_settings = DocSettings:open(file)
-    local doc_props = doc_settings:readSetting("doc_props")
+    local doc_props = require("koassistant_doc_settings").overlayCustomProps(doc_settings:readSetting("doc_props"), file)
     title = doc_props and (doc_props.display_title or doc_props.title) or nil
   end
   if not title or title == "" then
@@ -1561,6 +1579,13 @@ function AskGPT:initSettings()
     -- not one-time (re-evaluates every launch) and needs self + ModelLists.
     local needs_save = require("koassistant_migrations").run(features)
 
+    -- Orphan global key from an early 2026 build, never read since (registry
+    -- entry legacy_chat_storage_version; storage sweep 2026-09-03)
+    if G_reader_settings:has("koassistant_chat_storage_version") then
+      G_reader_settings:delSetting("koassistant_chat_storage_version")
+      G_reader_settings:flush()
+    end
+
     -- Image gen became the image_gen ACTION (2026-08-13). One-time here, not in
     -- the pure migrations module: an explicit old "Show Generate Image button"
     -- OFF must seed a highlight-menu DISMISSAL — a top-level settings list the
@@ -2036,6 +2061,60 @@ function AskGPT:getOllamaCachedModels()
   if type(cache) ~= "table" or type(cache.models) ~= "table" then return nil end
   if cache.url ~= self:ollamaRootUrl() then return nil end
   return cache.models
+end
+
+-- Context-window policy for ollama requests (features.ollama_num_ctx, read in
+-- koassistant_api/ollama.lua). nil (the default) = send no num_ctx, so the
+-- server's own Modelfile / OLLAMA_CONTEXT_LENGTH decides: the window is memory
+-- on the machine running ollama, and a request num_ctx overrides a Modelfile
+-- PARAMETER, so choosing one for the reader would overrule a deliberately tuned
+-- server. A NUMBER = fit num_ctx to each request, never above that many tokens.
+-- Either way the stream handler reports a prompt that came back truncated.
+AskGPT.OLLAMA_CONTEXT_CHOICES = { 131072, 65536, 32768, 16384, 8192 }
+
+function AskGPT:getOllamaContextPref()
+  local features = self.settings:readSetting("features") or {}
+  local pref = features.ollama_num_ctx
+  if type(pref) == "number" then return pref end
+  return nil
+end
+
+function AskGPT:ollamaContextLabel()
+  local pref = self:getOllamaContextPref()
+  if pref then return T(_("fit, max %1K"), math.floor(pref / 1024)) end
+  return _("server decides")
+end
+
+function AskGPT:setOllamaContextPref(value)
+  local features = self.settings:readSetting("features") or {}
+  features.ollama_num_ctx = value
+  self.settings:saveSetting("features", features)
+  self.settings:flush()
+  self:updateConfigFromSettings()
+end
+
+-- Radio submenu for the row above.
+function AskGPT:buildOllamaContextMenu()
+  local self_ref = self
+  local items = {
+    {
+      text = _("Server decides (default)"),
+      help_text = _("Send no context size, so your Modelfile setting or OLLAMA_CONTEXT_LENGTH is in charge. Ollama's own default is 4096 tokens; if a request comes back cut, KOAssistant says so."),
+      checked_func = function() return self_ref:getOllamaContextPref() == nil end,
+      radio = true,
+      callback = function() self_ref:setOllamaContextPref(nil) end,
+    },
+  }
+  for _idx, cap in ipairs(self.OLLAMA_CONTEXT_CHOICES) do
+    table.insert(items, {
+      text = T(_("Fit to request, max %1K"), math.floor(cap / 1024)),
+      help_text = _("KOAssistant asks for a window sized to each request, never larger than this. Ollama reserves the memory for whatever it is given, so on a large model a large window can push it onto the CPU or stop it loading."),
+      checked_func = function() return self_ref:getOllamaContextPref() == cap end,
+      radio = true,
+      callback = function() self_ref:setOllamaContextPref(cap) end,
+    })
+  end
+  return items
 end
 
 -- Per-server model memory: remember the last deliberate model pick for each
@@ -2684,9 +2763,19 @@ function AskGPT:testProvider(provider_id)
       ["Content-Length"] = tostring(#payload),
     }
     if auth then hdrs["Authorization"] = auth end
-    return BaseHandler.fetchInSubprocess(url, {
+    local code, body, resp_headers = BaseHandler.fetchInSubprocess(url, {
       method = "POST", headers = hdrs, body = payload, timeout = 20,
     })
+    -- Per-minute admission limits (docs/tpm_admission_plan.md): the probe's
+    -- response headers name the plan's tokens-per-minute allowance, so the
+    -- first real request is already sized to fit (Groq free: 8K/min against
+    -- a 32K default budget refused every request until this was learned).
+    local RL = require("koassistant_rate_limits")
+    if RL.record(provider_id, model, RL.fromHeaders(resp_headers), "probe") then
+      logger.dbg("KOAssistant: test probe learned per-minute allowance",
+        RL.known(provider_id, model).limit_tokens, "for", provider_id, model)
+    end
+    return code, body
   end
 
   local probe_tools = { { type = "function",
@@ -2706,6 +2795,21 @@ function AskGPT:testProvider(provider_id)
           return false, T(_("auth failed (HTTP %1) - check the API key"), n)
         end
         if not n then return false, T(_("network error: %1"), tostring(body)) end
+        -- Surface the server's own explanation when it gives one: NVIDIA
+        -- retires models with a 410 whose body names the end-of-life date,
+        -- which "check base URL" would hide.
+        local detail
+        if type(body) == "string" then
+          local ok, parsed = pcall(json.decode, body)
+          if ok and type(parsed) == "table" then
+            local err = parsed.error
+            detail = parsed.detail or parsed.message
+                or (type(err) == "table" and err.message) or (type(err) == "string" and err)
+          end
+        end
+        if type(detail) == "string" and detail ~= "" then
+          return false, T(_("HTTP %1 - %2"), n, detail:sub(1, 200))
+        end
         return false, T(_("HTTP %1 - check base URL and model id"), n)
       end },
     { label = _("Streaming (SSE)"), run = function()
@@ -2872,6 +2976,7 @@ function AskGPT:getProviderDisplayName(provider_id)
   end
   -- Community-set ids whose display casing isn't first-letter-capitalize
   local special = {
+    nvidia = "NVIDIA",
     minimax = "MiniMax",
     deepinfra = "DeepInfra",
     novita = "Novita AI",
@@ -4129,6 +4234,17 @@ function AskGPT:buildModelMenu(simplified, provider_override)
           self_ref:showOllamaServerManager(menuRefresher(touchmenu_instance))
         end,
       })
+      -- Ollama sizes its context window PER REQUEST and truncates anything
+      -- longer without a word, so the plugin sends a fitted num_ctx. The cap
+      -- is the VRAM dial for that (and the way out for a tuned local setup).
+      table.insert(items, {
+        text_func = function()
+          return T(_("Context window: %1"), self_ref:ollamaContextLabel())
+        end,
+        help_text = _("Ollama gives each request a context window and quietly cuts anything longer. By default your server decides how big it is; KOAssistant can instead fit one to each request, up to a limit you set here."),
+        keep_menu_open = true,
+        sub_item_table_func = function() return self_ref:buildOllamaContextMenu() end,
+      })
     end
 
     -- Per-provider auth, right where you're looking at the provider (round 3;
@@ -4993,11 +5109,13 @@ function AskGPT:showApiKeyDialog(provider, display_name, key_optional, on_change
           text = _("Save"),
           is_enter_default = true,
           callback = function()
-            local new_key = input_dialog:getInputText()
-            -- Trim whitespace (Kindle clipboard often adds trailing spaces/newlines)
-            if new_key then
-              new_key = new_key:match("^%s*(.-)%s*$")
-            end
+            local raw_key = input_dialog:getInputText() or ""
+            -- Strip everything an auth header cannot carry: whitespace ANYWHERE
+            -- (not just the ends) plus NBSP / zero-width / BOM. On Kindle the key
+            -- is usually copied out of a text file opened in KOReader, and a key
+            -- long enough to wrap arrives with the line break inside it.
+            local new_key = require("koassistant_api.base").sanitizeKey(raw_key)
+            local removed = #(raw_key:gsub("^%s*(.-)%s*$", "%1")) - #new_key
             if new_key and new_key ~= "" then
               local f = self_ref.settings:readSetting("features") or {}
               f.api_keys = f.api_keys or {}
@@ -5022,6 +5140,11 @@ function AskGPT:showApiKeyDialog(provider, display_name, key_optional, on_change
                 f.api_keys[provider] = new_key
               end
               local message = T(_("%1 API key saved"), display_name)
+              if removed > 0 then
+                -- Never silent: the user typed/pasted something we changed.
+                message = T(_("%1 API key saved (%2 stray character(s) removed)"),
+                  display_name, removed)
+              end
               -- Auto-select provider if this is the first API key
               if is_first_key then
                 f.provider = provider
@@ -5081,7 +5204,7 @@ function AskGPT:showApiKeyManager(provider, display_name, key_optional, on_chang
     for idx, entry in ipairs(list) do
       local key = type(entry) == "string" and entry or entry.key
       if type(key) == "string"
-          and Base.keyFingerprint(key:match("^%s*(.-)%s*$")) == fp then
+          and Base.keyFingerprint(Base.sanitizeKey(key)) == fp then
         -- Normalize the touched entry to table shape so fn can set fields
         if type(entry) == "string" then
           entry = { key = entry }
@@ -6733,6 +6856,13 @@ local function buildInfoPopupText(cached_entry, progress_str)
   if cached_entry.web_search_used then
     table.insert(info_lines, _("Web search:") .. " " .. _("Yes"))
   end
+  if cached_entry.tokens_in or cached_entry.tokens_out then
+    local tok = T(_("%1 in, %2 out"), cached_entry.tokens_in or 0, cached_entry.tokens_out or 0)
+    if cached_entry.tokens_reasoning and cached_entry.tokens_reasoning > 0 then
+      tok = tok .. " " .. T(_("(%1 thinking)"), cached_entry.tokens_reasoning)
+    end
+    table.insert(info_lines, _("Tokens:") .. " " .. tok)
+  end
   return table.concat(info_lines, "\n")
 end
 
@@ -6977,6 +7107,76 @@ end
 ---   mode only) — where the reader is in THIS book's X-Ray, so the member's
 ---   opens at the same entity/category (XrayBrowser:_applyPendingLocation
 ---   falls back one level at a time when it has neither)
+--- S4 (ref #90): the three module hooks behind cross-book X-Ray knowledge.
+--- Single slots, so the most recently created plugin instance (the reader's,
+--- when a book is open) owns them; the direction resolver reads the live
+--- DocSettings only while that instance still has a document.
+function AskGPT:_installGroupSeedingHooks()
+  local self_ref = self
+  local ActionCache = require("koassistant_action_cache")
+  local BookGroups = require("koassistant_book_groups")
+  -- Earlier books only while the current book is under spoiler protection;
+  -- both directions once the reader's OWN switch turns it off (global off,
+  -- book override off, research mode). S5 (ref #90): Finished does NOT
+  -- count here — inside one book it means nothing is left to protect, for
+  -- the series it only means the reader moved on to the next volume, and
+  -- the later volumes retell this one's ending. Held-back later books stay
+  -- one confirm away on the lookup lists (Dialogs.confirmLaterBooksSweep).
+  ActionCache.setLookupDirectionResolver(function(file)
+    local features = configuration and configuration.features
+    if not features then return false end
+    local ui = (self_ref.ui and self_ref.ui.document) and self_ref.ui or nil
+    local ds = require("koassistant_doc_settings").resolve(file, ui)
+    return require("koassistant_book_settings").resolveSpoilerPosture(ds, features,
+      { layer = "mechanical", ignore_finished = true }).protected == false
+  end)
+  BookGroups.on_change = function(group_id)
+    self_ref:_scheduleGroupReseed(group_id)
+  end
+  ActionCache.on_live_xray_written = function(file)
+    for _idx, group in ipairs(BookGroups.groupsFor(file)) do
+      self_ref:_scheduleGroupReseed(group.id)
+    end
+  end
+end
+
+--- Debounced automatic seeding of a group's carried lists (S4): every
+--- trigger within 2 s folds into one run; the run suppresses the write hook
+--- for its own writes and re-syncs the marks when it wrote anything.
+function AskGPT:_scheduleGroupReseed(group_id)
+  if type(group_id) ~= "string" or group_id == "" then return end
+  self._reseed_pending = self._reseed_pending or {}
+  self._reseed_pending[group_id] = true
+  if self._reseed_fn then UIManager:unschedule(self._reseed_fn) end
+  local self_ref = self
+  self._reseed_fn = function()
+    local pending = self_ref._reseed_pending or {}
+    self_ref._reseed_pending = {}
+    local ActionCache = require("koassistant_action_cache")
+    local BookGroups = require("koassistant_book_groups")
+    local XrayMerge = require("koassistant_xray_merge")
+    local ui = (self_ref.ui and self_ref.ui.document) and self_ref.ui or nil
+    ActionCache.suppress_write_hook = true
+    for id in pairs(pending) do
+      local group = BookGroups.byId(id)
+      if group then
+        local ok, written, checked = pcall(XrayMerge.reseedGroup, group,
+          (configuration and configuration.features) or {},
+          configuration and configuration.provider, ui)
+        if not ok then
+          logger.warn("KOAssistant: group seeding failed:", tostring(written))
+        elseif (written or 0) > 0 then
+          logger.info("KOAssistant: group seeding wrote", written, "carried list(s) of",
+            checked, "checked")
+          if self_ref.syncXrayMarks then pcall(function() self_ref:syncXrayMarks() end) end
+        end
+      end
+    end
+    ActionCache.suppress_write_hook = false
+  end
+  UIManager:scheduleIn(2, self._reseed_fn)
+end
+
 function AskGPT:_showGroupMembersPopup(file, mode, opts)
   local BookGroups = require("koassistant_book_groups")
   local GroupsUI = require("koassistant_book_groups_ui")
@@ -7039,6 +7239,14 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
                   book_file = captured,
                   fallback = true,
                 }
+              end
+              -- Q16: the jumped-to browser's up-arrow at root returns to the
+              -- X-Ray this popup was opened from (browser callers pass it)
+              if opts and opts.return_to then
+                local rt = {}
+                for k, v in pairs(opts.return_to) do rt[k] = v end
+                rt.target = captured
+                require("koassistant_xray_browser")._pending_return_to = rt
               end
               self_ref:showCacheViewer({ name = _("X-Ray"), key = "_xray_cache",
                 data = entry, book_title = title, file = captured })
@@ -7193,17 +7401,12 @@ function AskGPT:showCacheViewer(cache_info)
         -- prepared rung would resurrect the X-Ray), the archived versions only
         -- when the reader said so (delete_options below)
         ActionCache.deleteXray(file, { keep_versions = keep_versions })
-        -- Round 22 (D4): the coverage-ask stamp dies with the X-Ray — a
-        -- future from-nothing build should ask again. Round 5: so does the
-        -- promotion hold — it described the deleted timeline.
-        local BookSettings = require("koassistant_book_settings")
-        local ds = require("koassistant_doc_settings").resolve(file, self.ui)
-        if ds and (ds:readSetting(BookSettings.KEY_XRAY_COVERAGE_ASKED) ~= nil
-            or ds:readSetting(BookSettings.KEY_XRAY_PROMOTION) ~= nil) then
-          ds:delSetting(BookSettings.KEY_XRAY_COVERAGE_ASKED)
-          ds:delSetting(BookSettings.KEY_XRAY_PROMOTION)
-          ds:flush()
-        end
+        -- The per-book state describing the deleted lineage dies with it
+        -- (coverage-ask stamp, promotion hold, automatic override — and a
+        -- global auto-create is pinned off for this book, B272)
+        require("koassistant_book_settings").clearXrayLineageState(
+          require("koassistant_doc_settings").resolve(file, self.ui),
+          self.settings:readSetting("features") or {})
       elseif cache_key == "_analyze_cache" then
         ActionCache.clearAnalyzeCache(file)
         ActionCache.clear(file, "analyze_full_document")
@@ -9216,7 +9419,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
             -- A5 — the cancel path records the stop now, and this row must
             -- honor it like the checkpoint-resume row below)
             local nc_stop = nc_xa.lastLadderStop(nc_file)
-            self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true,
+            self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true,
               rebuild = (nc_stop and nc_stop.rebuild) or nil })
           end,
         }})
@@ -9530,7 +9733,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       local c_auto_on = c_flowing and self.ui.doc_settings
         and require("koassistant_book_settings")
           .resolveXrayAuto(self.ui.doc_settings, c_features)
-      local ext_goal = self.ui.doc_settings and tonumber(self.ui.doc_settings:readSetting(
+      local ext_goal = self.ui.doc_settings and tonumber(self:_openBookDS():readSetting(
         require("koassistant_book_settings").KEY_XRAY_GOAL)) or nil
       if c_auto_on and XrayAuto.isAutoSuppressed(sx_file) then
         table.insert(buttons, {{
@@ -9540,7 +9743,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
             XrayAuto.clearAutoSuppression(sx_file)
             -- A cancelled PRE-SWAP rebuild resumes as a rebuild (2026-08-15 A5)
             local sx_paused_stop = XrayAuto.lastLadderStop(sx_file)
-            self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true,
+            self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true,
               rebuild = (sx_paused_stop and sx_paused_stop.rebuild) or nil })
           end,
         }})
@@ -9592,14 +9795,19 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
           })
         else
           -- Fully covered incremental (100%): "Extend" would be a lie; the row
-          -- reads "Rebuild X-Ray…" and the form's picks all rebuild from scratch
+          -- reads "Rebuild X-Ray…" and the form's picks all rebuild from scratch.
+          -- The 100% extend base rides the FORCED-rebuild form (2026-08-25):
+          -- unforced, the position row gated on "position past the base" and
+          -- vanished behind a complete X-Ray, so a short book at 34% could not
+          -- rebuild to position without deleting first
           local a_label = (a_mode == "rebuild" or a_mode == "extend")
             and _("Rebuild X-Ray…") or _("Create X-Ray…")
           table.insert(buttons, {{
             text = a_label,
             callback = function()
               UIManager:close(dialog)
-              self_ref:_showXrayCreationChooser(action, action_id, on_update, opts)
+              self_ref:_showXrayCreationChooser(action, action_id, on_update, opts,
+                a_mode == "extend" or nil)
             end,
           }})
         end
@@ -10409,6 +10617,10 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
   local function planIntroStep()
     if pickIsRebuild() then return false end
     if mode == "extend" then return false end
+    -- To-position plans build no intro (2026-08-25): the chain ends AT the
+    -- reader's position whatever the spacing, and a premise-only step ahead of
+    -- a bounded plan the reader asked for is a spend they did not ask for
+    if cr.coverage == "position" then return false end
     return not has_intro_rung
   end
 
@@ -10448,7 +10660,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
     if cr.delivery == "follow" and cr.coverage == "position" then
       cr.delivery = "one"
     end
-    if cr.delivery == "checkpoints" and stepsFor() <= 1 then
+    if cr.delivery == "checkpoints" and stepsFor() < 1 then
       cr.delivery = "one"
     end
     -- one_bg needs the ladder machinery (flowing); target coverage's "one"
@@ -10490,7 +10702,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
       -- is a snapshot: untouched). Round 23: written here, AFTER the rebuild
       -- confirm — a cancelled rebuild must not have touched the goal.
       if self_ref.ui and self_ref.ui.doc_settings and cr.coverage ~= "position" then
-        self_ref.ui.doc_settings:saveSetting(
+        self_ref:_openBookDS():saveSetting(
           require("koassistant_book_settings").KEY_XRAY_GOAL,
           cr.coverage == "target" and cr.target or nil)
       end
@@ -10513,7 +10725,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
       elseif cr.delivery == "checkpoints" then
         local bo = { rebuild = rebuild_pick or nil }
         if cr.coverage == "position" then
-          bo.target = decimal
+          bo.target, bo.to_position = decimal, true
         elseif cr.coverage == "target" then
           bo.target, bo.target_label = cr.target, cr.target_label
         end
@@ -10779,10 +10991,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
       one_label = cr.coverage == "whole" and _("In one request now (update to 100%)")
         or _("In one request now (update to your position)")
     else
-      one_label = (cr.coverage == "whole" and not pick_rebuild)
-          and _("In one request now (analyzed as a whole)")
-        or cr.coverage == "whole" and _("In one request now (analyzed as a whole, fresh)")
-        or _("In one request now")
+      one_label = _("In one request now")
     end
     local del_rows = {
       { { text = one_label,
@@ -10802,12 +11011,16 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
         provider = "one_bg", checked = cr.delivery == "one_bg" } }
     end
     local n_steps = stepsFor()
-    if n_steps > 1 then
+    if n_steps >= 1 then
       -- From-nothing/rebuild checkpoint builds start with the introductory
       -- step (round 20); extend picks never do (rounds 23/24) — the shown
-      -- count must match the build confirm's plan
-      del_rows[#del_rows + 1] = { { text = T(_("In checkpoints, now (%1 background steps)"),
-          n_steps + (planIntroStep() and 1 or 0)),
+      -- count must match the build confirm's plan. A ONE-step plan stays
+      -- pickable (2026-08-25, maintainer): wide spacing on a short range is
+      -- still the ladder path, the count says so
+      local shown = n_steps + (planIntroStep() and 1 or 0)
+      del_rows[#del_rows + 1] = { { text = shown == 1
+          and _("In checkpoints, now (1 background step)")
+          or T(_("In checkpoints, now (%1 background steps)"), shown),
         provider = "checkpoints", checked = cr.delivery == "checkpoints" } }
     end
     if flowing and (cr.coverage == "whole" or cr.coverage == "target") then
@@ -10838,116 +11051,15 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
     }
     table.insert(vgroup, del_table)
 
-    -- Spacing slice (2026-08-14): the up-front spacing ask lives HERE — a
-    -- checkpoint-family delivery pick shows the sticky per-book spacing with
-    -- its change affordance (picker writes KEY_XRAY_SPACING; step counts and
-    -- the auto engine re-resolve through _xrayLadderSpacing, and a change
-    -- only affects rungs planned from now on — plans start at the ladder top)
-    if flowing and (cr.delivery == "checkpoints" or cr.delivery == "follow") then
-      local sp_now = self_ref:_xrayLadderSpacing()
-      local ButtonTableS = require("ui/widget/buttontable")
-      local sp_table = ButtonTableS:new{
-        width = content_width,
-        buttons = {{
-          {
-            -- Verb-first so it reads as a BUTTON, not a state line (device
-            -- round 2: "not clear that it is a button"; no dashes in UI text)
-            text = T(_("Change checkpoint spacing (every %1%)…"),
-              self_ref:_xraySpacingPctLabel(sp_now)),
-            callback = function()
-              UIManager:close(current_dialog)
-              self_ref:_showXraySpacingPicker{
-                current = sp_now,
-                override = self_ref.ui and self_ref.ui.doc_settings
-                  and require("koassistant_book_settings").xraySpacingOverride(
-                    self_ref.ui.doc_settings) or nil,
-                title = _("Checkpoint spacing for this book:"),
-                count_for = function(s)
-                  local rungs = XrayAuto.planBuildRungs(
-                    (mode == "extend" and not pickIsRebuild()) and base_progress or 0,
-                    s, goalFor(), decimal)
-                  return #rungs
-                end,
-                on_pick = function(s)
-                  if self_ref.ui and self_ref.ui.doc_settings then
-                    self_ref.ui.doc_settings:saveSetting(
-                      require("koassistant_book_settings").KEY_XRAY_SPACING, s)
-                    self_ref.ui.doc_settings:flush()
-                    -- A sticky per-book write must never be silent — a stray
-                    -- tap on "Every 50%" here is how the 2026-08-14 device
-                    -- round ended up planning one giant rung to 100%
-                    UIManager:show(Notification:new{
-                      text = T(_("Checkpoint spacing for this book: every %1%"),
-                        self_ref:_xraySpacingPctLabel(s)),
-                    })
-                  end
-                  fixDelivery()
-                  buildAndShow()
-                end,
-                on_reset = function()
-                  if self_ref.ui and self_ref.ui.doc_settings then
-                    self_ref.ui.doc_settings:saveSetting(
-                      require("koassistant_book_settings").KEY_XRAY_SPACING, nil)
-                    self_ref.ui.doc_settings:flush()
-                    UIManager:show(Notification:new{
-                      text = T(_("Checkpoint spacing for this book: recommended (every %1%)"),
-                        self_ref:_xraySpacingPctLabel(self_ref:_xrayLadderSpacing())),
-                    })
-                  end
-                  fixDelivery()
-                  buildAndShow()
-                end,
-                on_back = function() buildAndShow() end,
-              }
-            end,
-          },
-        }},
-        zero_sep = true,
-        show_parent = self_ref,
-      }
-      table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
-      table.insert(vgroup, sp_table)
-    end
-
-    -- Categories (presets v0.21): only on picks that START a lineage — a
-    -- plain extend continues the artifact's own category stamp and offers no
-    -- pick (categories cannot be added incrementally). Sticky per-book write
-    -- via the shared picker; the row label re-reads it on return.
-    if force_rebuild or mode ~= "extend" or pickIsRebuild() then
-      local cat_value = BookSettings.resolveXrayCategories(self.ui.doc_settings,
-        self.settings and self.settings:readSetting("features"))
-      local ButtonTableC = require("ui/widget/buttontable")
-      local cat_table = ButtonTableC:new{
-        width = content_width,
-        buttons = {{
-          {
-            text = T(_("Change X-Ray categories (%1)…"),
-              BookSettings.xrayCategoriesLabel(cat_value)),
-            callback = function()
-              UIManager:close(current_dialog)
-              BookSettings.showXrayCategoriesPicker({
-                ui = self_ref.ui, plugin = self_ref,
-                on_close = function() buildAndShow() end,
-              })
-            end,
-          },
-        }},
-        zero_sep = true,
-        show_parent = self_ref,
-      }
-      table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
-      table.insert(vgroup, cat_table)
-    end
-
     -- Gray hint under the Build group — every pick explains itself up front
     -- (round 22, §25(f); previously only the follow pick had one)
     local hint
     -- Item 50(c): the forward story every extendable one-request pick carries
     local later_line = _("You can update it manually anytime, or turn on automatic updates later; both build on top of what you have.")
     if cr.delivery == "follow" and followIdle() then
-      hint = _("Automatic building is already on and caught up — there is nothing to start right now. The next checkpoint builds by itself as you read on.")
+      hint = _("Automatic building is on and caught up. The next checkpoint builds by itself as you read on.")
     elseif cr.delivery == "follow" then
-      hint = _("Builds checkpoints in the background as you read, always keeping the next one ready ahead of you. Each checkpoint is one small request. Missing checkpoints up to your position build right away.")
+      hint = _("Builds checkpoints in the background as you read, keeping the next one ready ahead of you. Missing checkpoints up to your position build right away.")
       if cr.coverage == "whole" then
         hint = hint .. " " .. _("Coverage reaches 100% when you finish the book.")
       elseif cr.coverage == "target" and cr.target_label then
@@ -10959,10 +11071,10 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
       -- INDIVIDUAL-requests-stay-small fact, plainly (the total text read is
       -- the same; only each request shrinks).
       hint = (mode == "extend" and not pick_rebuild)
-        and _("Continues from your current coverage in background steps. Each step reads only a bounded slice of text, though steps grow somewhat as the X-Ray they build on grows, and each yields a spoiler-safe version. You can keep reading, cancel anytime, and resume later.")
-        or _("Covers the range in background steps. Each step reads only a bounded slice of text, though steps grow somewhat as the X-Ray they build on grows, and each yields a spoiler-safe version up to its position. A usable X-Ray installs after the first step; you can keep reading, cancel anytime, and resume later.")
+        and _("Continues from your current coverage in bounded background steps, each a spoiler-safe version. Keep reading, cancel anytime, resume later.")
+        or _("Covers the range in bounded background steps, each a spoiler-safe version up to its position. A usable X-Ray installs after the first step; keep reading, cancel anytime, resume later.")
     elseif cr.delivery == "one_bg" then
-      hint = _("The same single request, run in the background: you can keep reading, and a notification arrives when the X-Ray is ready. The book must stay open.")
+      hint = _("The same single request in the background; a notification arrives when it is ready. The book must stay open.")
       if cr.coverage ~= "whole" then
         hint = hint .. " " .. later_line
       end
@@ -10973,22 +11085,22 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
         hint = _("Updates your existing X-Ray up to your position in a single request.")
           .. " " .. later_line
       else
-        hint = _("Updates your existing X-Ray to the end of the chosen section in one background request. You can keep reading; a notification arrives when it is ready.")
+        hint = _("Updates your existing X-Ray to the end of the chosen section in one background request; a notification arrives when it is ready.")
       end
     elseif cr.coverage == "whole" then
-      hint = _("Analyzes the whole book in a single request, shown as it streams in. Large for long books, with no spoiler-safe intermediate versions.")
+      hint = _("Analyzes the whole book in a single request, shown as it streams in. Large for long books, no spoiler-safe intermediate versions.")
     elseif cr.coverage == "position" then
       hint = _("Reads the book up to your position in a single request, shown as it streams in.")
         .. " " .. later_line
     else
-      hint = _("Reads the book up to the end of the chosen section in one background request. You can keep reading; a notification arrives when it is ready.")
+      hint = _("Reads the book up to the end of the chosen section in one background request; a notification arrives when it is ready.")
         .. " " .. later_line
     end
     -- Round 24: rebuild picks carry the replacement fact in the hint too
     -- (forced rebuilds skip it — "already covered" would be wrong for a
     -- whole-book force, and the state line above already names replacement)
     if pick_rebuild and mode == "extend" and not force_rebuild then
-      hint = hint .. " " .. _("This range is already covered, so the X-Ray is rebuilt from scratch and replaces the current one (the outgoing version is archived).")
+      hint = hint .. " " .. _("Rebuilds from scratch and replaces the current X-Ray (the outgoing version is archived).")
     end
     -- With a checkpoint already built ahead, "update to where I am" can read
     -- as the mechanical/free install (device 2026-08-14) — say plainly that
@@ -10996,7 +11108,7 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
     if mode == "extend" and not pick_rebuild and cr.coverage == "position"
         and (base_progress or 0) > decimal + 0.005 then
       hint = (hint and (hint .. " ") or "")
-        .. T(_("Note: this runs a fresh AI request — it does not use the checkpoint already built to %1%, which still installs for free as you read past it."),
+        .. T(_("Note: this is a fresh AI request; the checkpoint already built to %1% still installs for free as you read past it."),
           math.floor((base_progress or 0) * 100 + 0.5))
     end
     if hint then
@@ -11006,6 +11118,116 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
         fgcolor = Blitbuffer.COLOR_DARK_GRAY,
       })
     end
+
+    -- Options row (2026-08-25 redesign, ref #90): the two sticky per-book
+    -- settings the form can change sit on ONE small-font row right above
+    -- the action buttons, always visible, grayed when the current pick
+    -- cannot use them. Checkpoint spacing (spacing slice 2026-08-14: picker
+    -- writes KEY_XRAY_SPACING; step counts and the auto engine re-resolve
+    -- through _xrayLadderSpacing, a change only affects rungs planned from
+    -- now on) applies to checkpoint-family picks; categories (presets
+    -- v0.21) to picks that START a lineage — a plain extend continues the
+    -- artifact's own stamp (categories cannot be added incrementally).
+    local sp_now = self_ref:_xrayLadderSpacing()
+    local spacing_on = flowing and (cr.delivery == "checkpoints" or cr.delivery == "follow")
+    local categories_on = force_rebuild or mode ~= "extend" or pickIsRebuild()
+    local cat_value = BookSettings.resolveXrayCategories(self.ui.doc_settings,
+      self.settings and self.settings:readSetting("features"))
+    local depth_value = BookSettings.resolveXrayDepth(self.ui.doc_settings,
+      self.settings and self.settings:readSetting("features"))
+    local ButtonTableO = require("ui/widget/buttontable")
+    -- The row's header is its FIRST ROW inside the same table (maintainer
+    -- 2026-08-25: a floating label above the frame read as part of the hint
+    -- text); the buttons below show VALUES only, and every dial stays in place
+    -- grayed when the current pick cannot use it (the form's standing rule).
+    local option_buttons = {}
+    option_buttons[#option_buttons + 1] = {
+          text = T(_("Every %1%…"), self_ref:_xraySpacingPctLabel(sp_now)),
+          font_size = 16, font_bold = false,
+          enabled = spacing_on,
+          callback = function()
+            UIManager:close(current_dialog)
+            self_ref:_showXraySpacingPicker{
+              current = sp_now,
+              override = self_ref.ui and self_ref.ui.doc_settings
+                and require("koassistant_book_settings").xraySpacingOverride(
+                  self_ref.ui.doc_settings) or nil,
+              title = _("Checkpoint spacing for this book:"),
+              count_for = function(s)
+                local rungs = XrayAuto.planBuildRungs(
+                  (mode == "extend" and not pickIsRebuild()) and base_progress or 0,
+                  s, goalFor(), decimal)
+                return #rungs
+              end,
+              on_pick = function(s)
+                if self_ref.ui and self_ref.ui.doc_settings then
+                  self_ref:_openBookDS():saveSetting(
+                    require("koassistant_book_settings").KEY_XRAY_SPACING, s)
+                  self_ref:_openBookDS():flush()
+                  -- A sticky per-book write must never be silent — a stray
+                  -- tap on "Every 50%" here is how the 2026-08-14 device
+                  -- round ended up planning one giant rung to 100%
+                  UIManager:show(Notification:new{
+                    text = T(_("Checkpoint spacing for this book: every %1%"),
+                      self_ref:_xraySpacingPctLabel(s)),
+                  })
+                end
+                fixDelivery()
+                buildAndShow()
+              end,
+              on_reset = function()
+                if self_ref.ui and self_ref.ui.doc_settings then
+                  self_ref:_openBookDS():saveSetting(
+                    require("koassistant_book_settings").KEY_XRAY_SPACING, nil)
+                  self_ref:_openBookDS():flush()
+                  UIManager:show(Notification:new{
+                    text = T(_("Checkpoint spacing for this book: recommended (every %1%)"),
+                      self_ref:_xraySpacingPctLabel(self_ref:_xrayLadderSpacing())),
+                  })
+                end
+                fixDelivery()
+                buildAndShow()
+              end,
+              on_back = function() buildAndShow() end,
+            }
+          end,
+      }
+    option_buttons[#option_buttons + 1] = {
+      text = BookSettings.xrayCategoriesLabel(cat_value) .. "…",
+      font_size = 16, font_bold = false,
+      enabled = categories_on,
+      callback = function()
+        UIManager:close(current_dialog)
+        BookSettings.showXrayCategoriesPicker({
+          ui = self_ref.ui, plugin = self_ref,
+          on_close = function() buildAndShow() end,
+        })
+      end,
+    }
+    option_buttons[#option_buttons + 1] = {
+      text = BookSettings.xrayDepthLabel(depth_value) .. "…",
+      font_size = 16, font_bold = false,
+      enabled = categories_on,
+      callback = function()
+        UIManager:close(current_dialog)
+        BookSettings.showXrayDepthPicker({
+          ui = self_ref.ui, plugin = self_ref, target_override = "book",
+          on_close = function() buildAndShow() end,
+        })
+      end,
+    }
+    local options_row = ButtonTableO:new{
+      width = content_width,
+      buttons = {
+        {{ text = _("Checkpoint spacing, categories, depth:"),
+           font_size = 16, font_bold = false, enabled = false }},
+        option_buttons,
+      },
+      zero_sep = true,
+      show_parent = self_ref,
+    }
+    table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
+    table.insert(vgroup, options_row)
 
     table.insert(vgroup, VerticalSpan:new{ width = Size.padding.default })
     local action_buttons = ButtonTable:new{
@@ -11113,10 +11335,22 @@ function AskGPT:_enableXrayFollowForBook(decimal, opts)
   -- "on" string, NOT boolean true (round-19 bug fix): the P1 tri-state resolver
   -- honors a legacy boolean only for migrated users (_xray_auto_legacy_optin),
   -- so a boolean write here was INERT for everyone else
-  self.ui.doc_settings:saveSetting(BookSettings.KEY_XRAY_AUTO, "on")
-  self.ui.doc_settings:flush()
+  local prev = self:_openBookDS():readSetting(BookSettings.KEY_XRAY_AUTO)
+  self:_openBookDS():saveSetting(BookSettings.KEY_XRAY_AUTO, "on")
+  self:_openBookDS():flush()
   self:_refreshXrayAutoState()
-  self:_xrayFollowCatchUp(decimal, opts)
+  -- 2026-09-04 (maintainer): the catch-up confirm's Cancel puts the key back
+  -- the way it was, so a cancelled pick leaves nothing running and nothing
+  -- resuming on the next open
+  local self_ref = self
+  local o = {}
+  for k, v in pairs(opts or {}) do o[k] = v end
+  o.revert = function()
+    self_ref:_openBookDS():saveSetting(BookSettings.KEY_XRAY_AUTO, prev)
+    self_ref:_openBookDS():flush()
+    self_ref:_refreshXrayAutoState()
+  end
+  self:_xrayFollowCatchUp(decimal, o)
 end
 
 --- Size of the establishment chain the engine would run right now: intro +
@@ -11144,7 +11378,7 @@ function AskGPT:_xrayEstablishmentSteps(opts)
     ladder = ladder,
     base_progress = ActionCache.highestXrayLadderProgress(ladder),
     position = decimal,
-    goal = tonumber(self.ui.doc_settings:readSetting(BookSettings.KEY_XRAY_GOAL)),
+    goal = tonumber(self:_openBookDS():readSetting(BookSettings.KEY_XRAY_GOAL)),
     is_json = XrayParser.isJSON,
   }
   if not rebuild and (work.lineage_blocked or not work.build) then return nil end
@@ -11174,60 +11408,95 @@ end
 --- seed ceiling): a catch-up of more than a few requests names its cost
 --- before the chain starts; declining pauses automatic building for this
 --- book this session (the setting stays on).
+--- Start the engine for a follow pick behind ONE confirm that names the
+--- spend (2026-09-04, maintainer: the request count must never decide whether
+--- the reader sees what is about to happen; a 50% spacing set by accident on a
+--- thousand-page book is few requests and a huge one). Start = the engine
+--- entry as before. Cancel (or tapping outside) = opts.revert when the caller
+--- just wrote the per-book key (the pick is put back, nothing runs, nothing
+--- resumes on reopen), plain close when the book was already automatic.
+--- opts.after runs once the confirm resolved either way (the picker defers
+--- its surface reopen to it). Nothing to build = no confirm, just the toast.
 function AskGPT:_xrayFollowCatchUp(_decimal, opts)
-  -- An explicit follow choice answers the coverage ask — never re-ask this book
-  if self.ui and self.ui.doc_settings then
-    self.ui.doc_settings:saveSetting(
-      require("koassistant_book_settings").KEY_XRAY_COVERAGE_ASKED, true)
-    self.ui.doc_settings:flush()
-  end
-  local XrayAuto = require("koassistant_xray_auto")
-  local file = self.ui and self.ui.document and self.ui.document.file
   local rebuild = opts and opts.rebuild or nil
   local self_ref = self
+  local function after()
+    if opts and opts.after then opts.after() end
+  end
   local function start()
     UIManager:show(Notification:new{
       text = rebuild and _("Automatic X-Ray on: rebuilding as you read.")
         or _("Automatic X-Ray on: building as you read."),
     })
-    self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true,
-      rebuild = rebuild })
+    self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, rebuild = rebuild })
+    after()
   end
   local n = self:_xrayEstablishmentSteps(rebuild and { rebuild = true } or nil)
-  if n and n > 3 then
-    local confirm
-    confirm = ButtonDialog:new{
-      title = T(_("Automatic X-Ray needs to catch up first: %1 background requests build checkpoints up to your position, plus one ahead. Each covers a bounded slice of the text. Start now?"), n),
-      buttons = {
-        {{ text = _("Start"), callback = function()
-          UIManager:close(confirm)
-          start()
-        end }},
-        {{ text = _("Later (resumes when you reopen this book)"), callback = function()
-          UIManager:close(confirm)
-          if file then XrayAuto.suppressAuto(file) end
-          UIManager:show(InfoMessage:new{
-            text = _("Automatic X-Ray stays on. Resume from the X-Ray popup, or it continues next time you open this book."),
-            timeout = 4,
-          })
-        end }},
-      },
-    }
-    UIManager:show(confirm)
+  if n == 0 then
+    start()
     return
   end
-  start()
+  local lines = {}
+  if rebuild then
+    lines[1] = _("Automatic X-Ray on: the X-Ray is rebuilt from the start in background requests, the introduction and checkpoints up to your position, plus one ahead.")
+  else
+    lines[1] = _("Automatic X-Ray on: background requests build the introduction and checkpoints up to your position, plus one ahead.")
+  end
+  if n then
+    lines[2] = T(_("Requests needed now: %1. Each covers a bounded slice of the text."), n)
+  else
+    lines[2] = _("Each covers a bounded slice of the text.")
+  end
+  lines[3] = _("Start now?")
+  local revert = opts and opts.revert
+  local function cancel()
+    if revert then revert() end
+    after()
+  end
+  local confirm
+  confirm = ButtonDialog:new{
+    title = table.concat(lines, "\n"),
+    buttons = {
+      {{ text = _("Start"), callback = function()
+        UIManager:close(confirm)
+        start()
+      end }},
+      {{ text = revert and _("Cancel (leave Automatic X-Ray off)") or _("Cancel"),
+        callback = function()
+          UIManager:close(confirm)
+          cancel()
+        end }},
+    },
+    tap_close_callback = cancel,
+  }
+  UIManager:show(confirm)
 end
 
 --- Round 19/21 ("auto-toggle entry"): turning per-book Automatic X-Ray ON from
 --- the tri-state picker starts the engine like the Create form's follow pick —
 --- first-ever books get intro + catch-up + one ahead; books with an X-Ray just
---- get their next checkpoint ahead.
-function AskGPT:_onXrayAutoTurnedOn()
-  if not self.ui or not self.ui.document or not self.ui.document.file then return end
+--- get their next checkpoint ahead. 2026-09-04: behind the catch-up confirm;
+--- `prev` = the key's value before the pick (Cancel restores it unless the
+--- book was already "on"), `after` = the picker's deferred surface reopen.
+--- Returns true when it took the pick over (the caller must not reopen its
+--- surface itself), false when there is nothing to run here (no open book,
+--- page-based book).
+function AskGPT:_onXrayAutoTurnedOn(prev, after)
+  if not self.ui or not self.ui.document or not self.ui.document.file then return false end
   local doc_info = self.ui.document.info
-  if not doc_info or doc_info.has_pages then return end
-  self:_xrayFollowCatchUp()
+  if not doc_info or doc_info.has_pages then return false end
+  local self_ref = self
+  local o = { after = after }
+  if prev ~= "on" then
+    o.revert = function()
+      local BookSettings = require("koassistant_book_settings")
+      self_ref:_openBookDS():saveSetting(BookSettings.KEY_XRAY_AUTO, prev)
+      self_ref:_openBookDS():flush()
+      self_ref:_refreshXrayAutoState()
+    end
+  end
+  self:_xrayFollowCatchUp(nil, o)
+  return true
 end
 
 --- Show name input for a Section X-Ray, then trigger generation.
@@ -12973,66 +13242,6 @@ end
 
 --- Check if we should show a recap reminder for the current book.
 --- Called from onReaderReady when the user opens a book they haven't read in a while.
---- One-shot "turn on Automatic X-Ray?" offer on book open (§7 P4, recap-reminder
---- pattern; opt-in via xray_offer_auto). Fires only when accepting can act
---- immediately: flowing doc, no X-Ray at all, inside the auto-create window,
---- consent already satisfied. Declining sets the per-book tri-state to "off"
---- (the offer only fires while it is unset, so it never re-asks); tapping
---- outside decides nothing and may ask again next open. A ButtonDialog, NOT a
---- ConfirmBox — ConfirmBox fires cancel_callback on ANY close incl. dismiss.
-function AskGPT:checkXrayOffer()
-  local features = self.settings:readSetting("features") or {}
-  if features.xray_offer_auto ~= true then return end
-  if not self.ui or not self.ui.document or not self.ui.doc_settings then return end
-  local doc_info = self.ui.document.info
-  if not doc_info or doc_info.has_pages then return end
-  local file = self.ui.document.file
-  if not file then return end
-  local BookSettings = require("koassistant_book_settings")
-  if BookSettings.xrayAutoOverride(self.ui.doc_settings, features) ~= nil then return end
-  if BookSettings.resolveXrayAuto(self.ui.doc_settings, features) then return end
-  local ActionCache = require("koassistant_action_cache")
-  local entry = ActionCache.get(file, "xray")
-  if entry and entry.result then return end
-  local doc_entry = ActionCache.getXrayCache(file)
-  if doc_entry and doc_entry.result then return end
-  -- Round 21: no window gate — the engine can act at any position (intro +
-  -- catch-up checkpoints), so the offer is valid whenever consent is in place
-  local action = self.action_service and self.action_service:getAction("book", "xray")
-  if not action then return end
-  if not self:_xrayBackgroundConsentOk(action, features) then return end
-  local self_ref = self
-  local offer
-  offer = ButtonDialog:new{
-    title = _("This book has no X-Ray yet.") .. "\n"
-      .. _("Turn on Automatic X-Ray for this book? It will be created in the background now and kept updated as you read."),
-    buttons = {
-      {{ text = _("Turn on"), callback = function()
-        UIManager:close(offer)
-        self_ref.ui.doc_settings:saveSetting(
-          require("koassistant_book_settings").KEY_XRAY_AUTO, "on")
-        -- The offer promised a quiet background create — that IS the coverage
-        -- answer, so the round-19 ask must not interject a second question
-        self_ref.ui.doc_settings:saveSetting(
-          require("koassistant_book_settings").KEY_XRAY_COVERAGE_ASKED, true)
-        self_ref.ui.doc_settings:flush()
-        self_ref:_refreshXrayAutoState()
-        -- Act now — the deferred fire re-checks every gate from disk truth
-        UIManager:scheduleIn(2, function()
-          self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, asked = true })
-        end)
-      end }},
-      {{ text = _("Not for this book"), callback = function()
-        UIManager:close(offer)
-        self_ref.ui.doc_settings:saveSetting(
-          require("koassistant_book_settings").KEY_XRAY_AUTO, "off")
-        self_ref.ui.doc_settings:flush()
-      end }},
-    },
-  }
-  UIManager:show(offer)
-end
-
 function AskGPT:checkRecapReminder()
   local features = self.settings:readSetting("features") or {}
   if features.enable_recap_reminder ~= true then return end
@@ -13040,7 +13249,7 @@ function AskGPT:checkRecapReminder()
   if not self.ui or not self.ui.document or not self.ui.doc_settings then return end
 
   local now = os.time()
-  local last_opened = self.ui.doc_settings:readSetting("koassistant_last_opened")
+  local last_opened = self:_openBookDS():readSetting("koassistant_last_opened")
 
   -- Retroactive fallback: use sidecar directory mod time for books opened
   -- before this feature existed (sidecar is written on book close)
@@ -13054,7 +13263,7 @@ function AskGPT:checkRecapReminder()
   end
 
   -- Always update timestamp for next session
-  self.ui.doc_settings:saveSetting("koassistant_last_opened", now)
+  self:_openBookDS():saveSetting("koassistant_last_opened", now)
 
   if not last_opened then return end
 
@@ -13063,7 +13272,7 @@ function AskGPT:checkRecapReminder()
   if days_since < threshold then return end
 
   -- Skip if not started or nearly finished
-  local percent = self.ui.doc_settings:readSetting("percent_finished") or 0
+  local percent = self:_openBookDS():readSetting("percent_finished") or 0
   if percent <= 0 or percent > 0.95 then return end
 
   local days_display = math.floor(days_since)
@@ -13087,7 +13296,7 @@ function AskGPT:_maybeOfferLastChapterQuiz(features)
   if not self.ui or not self.ui.document or not self.ui.toc then return false end
   local toc = self.ui.toc
   if not toc.toc or #toc.toc == 0 then return false end
-  local book_quiz = self.ui.doc_settings and self.ui.doc_settings:readSetting("koassistant_book_quiz")
+  local book_quiz = self.ui.doc_settings and self:_openBookDS():readSetting("koassistant_book_quiz")
   self._book_quiz = book_quiz
   if book_quiz and book_quiz.enabled == false then return false end
   self:_ensureQuizChapters(features)
@@ -13200,7 +13409,7 @@ function AskGPT:_currentChapterInfo()
   end
   local features = self.settings:readSetting("features") or {}
   -- Fresh per-book override read, same as onPageUpdate (consumed by _ensureQuizChapters)
-  self._book_quiz = self.ui.doc_settings and self.ui.doc_settings:readSetting("koassistant_book_quiz")
+  self._book_quiz = self.ui.doc_settings and self:_openBookDS():readSetting("koassistant_book_quiz")
   self:_ensureQuizChapters(features)
   local indices = self._quiz_chapter_indices
   if not indices or #indices == 0 then return nil end
@@ -13260,7 +13469,7 @@ function AskGPT:_quizOnPageUpdate(pageno)
   -- Per-book quiz overrides, read from the live in-memory doc_settings (a hash lookup, fresh
   -- every page turn). `enabled` is suppress-only (the global gate above already returned for a
   -- globally-disabled quiz). (Key: BookSettings.KEY_QUIZ.)
-  local book_quiz = self.ui.doc_settings and self.ui.doc_settings:readSetting("koassistant_book_quiz")
+  local book_quiz = self.ui.doc_settings and self:_openBookDS():readSetting("koassistant_book_quiz")
   self._book_quiz = book_quiz
   if book_quiz and book_quiz.enabled == false then return end
 
@@ -13344,7 +13553,7 @@ function AskGPT:_refreshXrayAutoState()
     end
     local dials = XrayAuto.dialsFromFeatures(features)
     state.cooldown_s = dials.cooldown_s
-    state.goal = tonumber(self.ui.doc_settings:readSetting(
+    state.goal = tonumber(self:_openBookDS():readSetting(
       require("koassistant_book_settings").KEY_XRAY_GOAL)) or nil
     -- Console visibility while testing: log per-turn gate declines when debug is on
     state.debug = features.debug and true or nil
@@ -13432,7 +13641,7 @@ function AskGPT:_xrayAutoOnPageUpdate(pageno)
       elseif prev_page and math.abs(pageno - prev_page) <= XrayAuto.JUMP_GUARD_PAGES then
         for _idx, rp in ipairs(state.rung_progress) do
           if rp > state.live_progress + XrayAuto.LADDER_TOLERANCE
-              and rp <= pos + XrayAuto.LADDER_TOLERANCE then
+              and rp <= pos + XrayAuto.PROMOTE_TOLERANCE then
             self:_scheduleXrayLadderPromotion()
             break
           end
@@ -13471,10 +13680,12 @@ function AskGPT:_xrayAutoOnPageUpdate(pageno)
   local pos = pageno / total
   local goal_bound = state.goal or 1.0
   if pos >= goal_bound - 0.01 then return end
-  local ahead = (state.live_progress or 0) > pos + XrayAuto.LADDER_TOLERANCE
+  -- BUILD_LAG: the next build waits until the newest checkpoint has installed
+  -- and the reader is a few pages past it (edits made meanwhile ride along)
+  local ahead = (state.live_progress or 0) + XrayAuto.BUILD_LAG > pos
   if not ahead and state.rung_progress then
     for _idx, rp in ipairs(state.rung_progress) do
-      if rp > pos + XrayAuto.LADDER_TOLERANCE then ahead = true break end
+      if rp + XrayAuto.BUILD_LAG > pos then ahead = true break end
     end
   end
   if ahead then return end
@@ -13486,7 +13697,7 @@ function AskGPT:_xrayAutoOnPageUpdate(pageno)
   end
   if XrayAuto.isInFlight() then return end
   if not XrayAuto.cooldownElapsed(state.cooldown_s, os.time()) then
-    if state.debug then logger.info("KOAssistant: automatic X-Ray declined: cooldown") end
+    logger.dbg("KOAssistant: automatic X-Ray declined: cooldown")
     return
   end
   -- No-request-in-flight gate (plan §3 #9): don't contend with a user's streamed
@@ -13525,132 +13736,6 @@ function AskGPT:_scheduleXrayAutoFire()
   UIManager:scheduleIn(XrayAuto.SCHEDULE_DELAY_S, fire)
 end
 
---- Round 19 (item-16 "first-auto-fire coverage-ask"), reworked round 22 (D4):
---- the first time auto-create is about to fire on a book (every gate has
---- already passed), ask HOW coverage should happen instead of silently
---- creating — once per book (sidecar stamp). features.xray_coverage_mode
---- remembers a global answer: "follow" = never ask, create silently; "build" =
---- offer the (always-confirmed) checkpoint build once per book; nil/"ask" =
---- ask. The decline row is a REAL decline (R4 "Not for this book"): it sets
---- the per-book tri-state to "off" — reversible via the Automatic X-Ray
---- picker, no stamp needed on that branch. Dismissing the dialog decides
---- nothing and may ask again at the next fire. Explicit follow opt-ins (picker
---- On, Create-form follow pick, the book-open offer) pre-stamp — the user
---- already answered this question. Button counts are the real establishment
---- plans (D6): catch-up = grid to position + one ahead; build-all = the full
---- grid; both count the intro when one is still needed.
---- @return boolean true when this fire was consumed (ask shown / build offered)
-function AskGPT:_xrayCoverageAskBeforeCreate(file, features, decimal, has_intro)
-  if not self.ui or not self.ui.doc_settings then return false end
-  local BookSettings = require("koassistant_book_settings")
-  if features.xray_coverage_mode == "follow" then return false end
-  if self.ui.doc_settings:readSetting(BookSettings.KEY_XRAY_COVERAGE_ASKED) then return false end
-  local self_ref = self
-  local function stamp()
-    self_ref.ui.doc_settings:saveSetting(BookSettings.KEY_XRAY_COVERAGE_ASKED, true)
-    self_ref.ui.doc_settings:flush()
-  end
-  if features.xray_coverage_mode == "build" then
-    stamp()
-    self:_startXrayLadderBuild()
-    return true
-  end
-  local XrayAuto = require("koassistant_xray_auto")
-  local boundaries = features.xray_ladder_chapter_snap ~= false
-    and self:_ladderChapterBoundaries() or nil
-  -- The ask only fires for from-nothing books: base nil. Counts mirror the
-  -- plans each button dispatches (goal bounds the follow path; build-all is
-  -- the whole book, matching _startXrayLadderBuild without opts).
-  local goal = tonumber(self.ui.doc_settings:readSetting(BookSettings.KEY_XRAY_GOAL))
-  if goal and (goal <= 0.01 or goal >= 0.995) then goal = nil end
-  local intro_extra = has_intro and 0 or 1
-  local remember = false
-  local ask
-  local function showAsk()
-    -- Counts recompute per show — the spacing row below changes them
-    -- (spacing slice: the ask IS the once-per-book up-front spacing moment)
-    local spacing = self_ref:_xrayLadderSpacing()
-    local follow_rungs, follow_labels = self_ref:_planXrayGrid(nil, spacing, goal, decimal, boundaries)
-    local n_follow = #(XrayAuto.truncateToOneAhead(follow_rungs, decimal, follow_labels)) + intro_extra
-    local n_all = #(self_ref:_planXrayGrid(nil, spacing, nil, decimal, boundaries)) + intro_extra
-    ask = ButtonDialog:new{
-      title = _("This book has no X-Ray yet. How should it be created?"),
-      buttons = {
-        {{ text = T(_("Catch up to here now, then keep one ahead (%1 requests)"), n_follow),
-          callback = function()
-            UIManager:close(ask)
-            stamp()
-            if remember then self_ref:_setXrayCoverageMode("follow") end
-            self_ref:_fireXrayAutoCheckpoints({ asked = true, notify = true })
-          end }},
-        {{ text = T(_("Build all checkpoints now (%1 background requests)…"), n_all),
-          callback = function()
-            UIManager:close(ask)
-            stamp()
-            if remember then self_ref:_setXrayCoverageMode("build") end
-            self_ref:_startXrayLadderBuild()
-          end }},
-        {{ text = T(_("Change checkpoint spacing (every %1%)…"),
-            self_ref:_xraySpacingPctLabel(spacing)),
-          callback = function()
-            UIManager:close(ask)
-            self_ref:_showXraySpacingPicker{
-              current = spacing,
-              override = BookSettings.xraySpacingOverride(self_ref.ui.doc_settings),
-              title = _("Checkpoint spacing for this book:"),
-              count_for = function(s)
-                return #(self_ref:_planXrayGrid(nil, s, nil, decimal, boundaries)) + intro_extra
-              end,
-              on_pick = function(s)
-                self_ref.ui.doc_settings:saveSetting(
-                  BookSettings.KEY_XRAY_SPACING, s)
-                self_ref.ui.doc_settings:flush()
-                UIManager:show(Notification:new{
-                  text = T(_("Checkpoint spacing for this book: every %1%"),
-                    self_ref:_xraySpacingPctLabel(s)),
-                })
-                showAsk()
-              end,
-              on_reset = function()
-                self_ref.ui.doc_settings:saveSetting(
-                  BookSettings.KEY_XRAY_SPACING, nil)
-                self_ref.ui.doc_settings:flush()
-                UIManager:show(Notification:new{
-                  text = T(_("Checkpoint spacing for this book: recommended (every %1%)"),
-                    self_ref:_xraySpacingPctLabel(self_ref:_xrayLadderSpacing())),
-                })
-                showAsk()
-              end,
-              on_back = function() showAsk() end,
-            }
-          end }},
-        {{ text = (remember and "● " or "○ ") .. _("Always do this, for every book"),
-          callback = function()
-            UIManager:close(ask)
-            remember = not remember
-            showAsk()
-          end }},
-        {{ text = _("Not for this book"), callback = function()
-          UIManager:close(ask)
-          self_ref.ui.doc_settings:saveSetting(BookSettings.KEY_XRAY_AUTO, "off")
-          self_ref.ui.doc_settings:flush()
-          self_ref:_refreshXrayAutoState()
-        end }},
-      },
-    }
-    UIManager:show(ask)
-  end
-  showAsk()
-  return true
-end
-
-function AskGPT:_setXrayCoverageMode(mode)
-  local f = self.settings:readSetting("features") or {}
-  f.xray_coverage_mode = mode
-  self.settings:saveSetting("features", f)
-  self.settings:flush()
-end
-
 --- Silent consent check shared by every unattended X-Ray fire (background update,
 --- auto-create, ladder rungs): the book_text gate incl. trusted-provider bypass,
 --- without _checkRequirements' UI.
@@ -13674,11 +13759,12 @@ end
 --- every missing grid point up to ONE past the reader, through the same chain
 --- the front-load build uses (same grid, same store, same promotion). Replaces
 --- the retired to-position auto-update/auto-create path. Disk truth derived
---- here; the chain re-verifies per step. First-ever spend for a book routes
---- through the coverage ask. opts: { notify = true } → announce chain progress
---- (explicit enables); { asked = true } → the coverage ask was just answered;
---- { explicit = true } → fired by an explicit enable (skip the posture
---- re-check — the key may have just been written).
+--- here; the chain re-verifies per step. A first-ever build for a book runs
+--- only under a per-book On (the reader's own pick, confirmed at pick time)
+--- — first-build automation is retired (2026-09-04). opts: { notify = true }
+--- → announce chain progress (explicit enables); { explicit = true } → fired
+--- by an explicit enable (skip the posture re-check — the key may have just
+--- been written).
 function AskGPT:_fireXrayAutoCheckpoints(opts)
   local XrayAuto = require("koassistant_xray_auto")
   if XrayAuto.ladderBuild() or XrayAuto.isInFlight() then return end
@@ -13691,6 +13777,7 @@ function AskGPT:_fireXrayAutoCheckpoints(opts)
   -- book this session; any explicit engine start clears the pause
   if opts and opts.explicit then
     XrayAuto.clearAutoSuppression(file)
+    XrayAuto.clearScheduled()
   elseif XrayAuto.isAutoSuppressed(file) then
     return
   end
@@ -13727,7 +13814,7 @@ function AskGPT:_fireXrayAutoCheckpoints(opts)
     ladder = ladder,
     base_progress = ActionCache.highestXrayLadderProgress(ladder),
     position = decimal,
-    goal = tonumber(self.ui.doc_settings:readSetting(BookSettings.KEY_XRAY_GOAL)),
+    goal = tonumber(self:_openBookDS():readSetting(BookSettings.KEY_XRAY_GOAL)),
     is_json = XrayParser.isJSON,
   }
   -- Deferred rebuild catch-up (2026-08-14): an explicit rebuild-follow pick
@@ -13738,14 +13825,10 @@ function AskGPT:_fireXrayAutoCheckpoints(opts)
   local chain_rebuild = opts and opts.rebuild or nil
   if not chain_rebuild then
     if work.lineage_blocked or not work.build then return end
-    -- Follow-global books keep the separate create guard (P1): the FIRST build
-    -- for a book needs create_allowed unless the enable was explicit
+    -- The FIRST build for a book needs a per-book On (create_allowed) unless
+    -- the enable was explicit: a follow-global book with no X-Ray is left
+    -- alone (first-build automation retired 2026-09-04, maintainer)
     if not work.has_any and not create_allowed and not (opts and opts.explicit) then return end
-    -- First-ever spend goes through the coverage ask (round 19; once per book)
-    if not work.has_any and not (opts and opts.asked)
-        and self:_xrayCoverageAskBeforeCreate(file, features, decimal, work.has_intro) then
-      return
-    end
   end
 
   local spacing = self:_xrayLadderSpacing()
@@ -14550,7 +14633,10 @@ function AskGPT:_startXrayLadderBuild(build_opts)
   if chain_rebuild then
     resume, has_intro = false, true
   end
+  -- To-position chains (form, 2026-08-25) skip the intro too: the plan ends
+  -- at the reader's position, and the form's step count assumes no intro
   local plan_intro = base_progress == nil and not has_intro and not one_shot
+    and not (build_opts and build_opts.to_position)
   -- Round 19: a from-nothing build seeds its first checkpoint AT the reading
   -- position, so the reader gets a promotable (openable) X-Ray from the very
   -- first finished rung instead of waiting to cross the first spacing boundary
@@ -14786,7 +14872,10 @@ function AskGPT:_fireXrayLadderRung()
   if entry and entry.result and not entry.full_document and not entry.intro
       and entry.source_mode ~= "ai_knowledge" and XrayParser.isJSON(entry.result) then
     local p = tonumber(entry.progress_decimal)
-    if p and (base_progress == nil or p > base_progress) then
+    -- Tie goes to LIVE (2026-08-25): after an install live is the rung's copy
+    -- plus whatever the reader renamed, linked or merged since; basing the
+    -- next rung on it carries those edits into every later checkpoint
+    if p and (base_progress == nil or p >= base_progress) then
       base, base_progress = entry, p
     end
   end
@@ -15068,6 +15157,9 @@ function AskGPT:_fireXrayLadderRung()
           })
         end
         self_ref:_refreshXrayAutoState()
+        -- B261: a completed chain lifts the cooldown — the next due
+        -- checkpoint may fire on the next page turn
+        XrayAuto.clearScheduled()
         if not installed_pct then
           -- Bring the live X-Ray up to the reader's position for free
           self_ref:_fireXrayLadderPromotion()
@@ -15261,7 +15353,7 @@ function AskGPT:_offerChapterQuiz(chapter_index)
                 local feats = self_ref.settings:readSetting("features") or {}
                 if feats.enable_chapter_quiz ~= true then return end
                 local bq = self_ref.ui and self_ref.ui.doc_settings
-                    and self_ref.ui.doc_settings:readSetting("koassistant_book_quiz")
+                    and self_ref:_openBookDS():readSetting("koassistant_book_quiz")
                 if bq and bq.enabled == false then return end
                 UIManager:show(ConfirmBox:new{
                   text = T(_("End of: %1\n\nStart the quiz now?"), display_title),
@@ -18421,7 +18513,7 @@ function AskGPT:syncDictionaryBypass()
   -- reach by design (no wrapper installed).
   local intercept_on = features.xray_selection_intercept ~= false
   if not intercept_on and self.ui and self.ui.doc_settings then
-    intercept_on = self.ui.doc_settings:readSetting(
+    intercept_on = self:_openBookDS():readSetting(
       require("koassistant_book_settings").KEY_XRAY_INTERCEPT) == true
   end
 
@@ -18455,7 +18547,8 @@ function AskGPT:syncDictionaryBypass()
         -- full cache parse per tap — the #63 one-parse-per-tap cost is gone
         if i_file and self_ref:_xrayInterceptEnabled(i_file)
             and ActionCache.matchAnyXrayExact(i_file, word,
-              { include_ahead = self_ref:_xrayAheadEnabled(i_file) }) then
+              { include_ahead = self_ref:_xrayAheadEnabled(i_file),
+                position = self_ref:_xrayReaderPosition(i_file) }) then
           logger.dbg("KOAssistant: X-Ray intercept - word matches entity, opening X-Ray")
           local lookup_book = dict_self._koassistant_lookup_book
           dict_self._koassistant_non_reader_lookup = nil
@@ -18839,7 +18932,8 @@ function AskGPT:syncHighlightBypass()
         -- old full cache parse
         if i_file and self_ref:_xrayInterceptEnabled(i_file)
             and ActionCache.matchAnyXrayExact(i_file, sel,
-              { include_ahead = self_ref:_xrayAheadEnabled(i_file) }) then
+              { include_ahead = self_ref:_xrayAheadEnabled(i_file),
+                position = self_ref:_xrayReaderPosition(i_file) }) then
           logger.dbg("KOAssistant: X-Ray intercept - selection matches entity, opening X-Ray")
           -- Selection geometry anchors the floating-popup card style —
           -- captured as fresh copies BEFORE clear() releases the selection
@@ -18941,6 +19035,24 @@ function AskGPT:_xrayAheadEnabled(file)
   return require("koassistant_book_settings").resolveXrayMarking(ds, features).ahead
 end
 
+--- Reading position (0..1) for the ahead peek's rung pick (B269): the open
+--- book's live progress, else the sidecar's; nil = no peek possible.
+function AskGPT:_xrayReaderPosition(file)
+  if self.ui and self.ui.document and (not file or self.ui.document.file == file) then
+    local ok, prog = pcall(function()
+      return require("koassistant_context_extractor"):new(self.ui):getReadingProgress()
+    end)
+    if ok and type(prog) == "table" and type(prog.decimal) == "number" then
+      return prog.decimal
+    end
+  end
+  if file then
+    local sidecar = require("koassistant_context_extractor").readSidecarProgress(file)
+    if sidecar and type(sidecar.decimal) == "number" then return sidecar.decimal end
+  end
+  return nil
+end
+
 --- Effective selection-intercept toggle for a book (round 5, per book):
 --- book override > global, default ON. Both intercept sites read this per
 --- call; the install-time gates only decide whether the wrappers exist.
@@ -18964,7 +19076,8 @@ function AskGPT:openXrayCard(query, opts)
     or (self.ui and self.ui.document and self.ui.document.file)
   local XrayCard = require("koassistant_xray_card")
   local ok, hit = pcall(XrayCard.resolve, file, query,
-    { include_ahead = self:_xrayAheadEnabled(file) })
+    { include_ahead = self:_xrayAheadEnabled(file),
+      position = self:_xrayReaderPosition(file) })
   if not ok or not hit then
     -- The exact gate said yes but the resolver disagreed (disk moved,
     -- parse hiccup): the old path handles it — incl. its no-result flows
@@ -18972,6 +19085,30 @@ function AskGPT:openXrayCard(query, opts)
   end
   local self_ref = self
   local function openFull(h)
+    if h.source == "carried" then
+      -- Carried stub (S1, ref #90): its full page is the browser's
+      -- carried-entity detail — threaded through the lookup the way live
+      -- card targets are (consume-once transient, stale target re-searches)
+      self_ref:_openXrayEntityDirect(h.query, {
+        document_path = opts and opts.document_path or nil,
+        target = { carried = true, name = h.name },
+      })
+      return
+    end
+    if h.source == "predecessor" then
+      -- Earlier book's entry (S2, ref #90): the read-only predecessor view
+      -- (provenance, "Open in <title>'s X-Ray", "Carry into this book").
+      -- No book_metadata here, so a carry just toasts; the lookup paths land
+      Dialogs.showPredecessorEntity{
+        ui = self_ref.ui,
+        plugin = self_ref,
+        config = configuration,
+        document_path = (opts and opts.document_path)
+          or (self_ref.ui and self_ref.ui.document and self_ref.ui.document.file),
+        hit = h,
+      }
+      return
+    end
     if h.source ~= "ahead" then
       -- Live-main hits carry the resolved identity so "full entry" opens the
       -- entity the CARD showed — two entries sharing a handle used to dump
@@ -18995,7 +19132,7 @@ function AskGPT:openXrayCard(query, opts)
     if protected then
       local ConfirmBox = require("ui/widget/confirmbox")
       UIManager:show(ConfirmBox:new{
-        text = T(_("This entry comes from a checkpoint ahead of your reading position (%1%) and may contain spoilers.\n\nReveal the full entry?"),
+        text = T(_("This entry comes from the next checkpoint (to %1%), ahead of your reading position, and may contain spoilers.\n\nReveal the full entry?"),
           math.floor((h.ahead_progress or 0) * 100 + 0.5)),
         ok_text = _("Reveal"),
         ok_callback = reveal,
@@ -19004,8 +19141,11 @@ function AskGPT:openXrayCard(query, opts)
       reveal()
     end
   end
-  -- Round 5: landing + style resolve per book (book three-way > global pair)
-  local card_mode = self:_xrayCardMode(file)
+  -- Round 5: landing + style resolve per book (book three-way > global pair).
+  -- B269: the card-content dials ride the same resolver.
+  local ds_m = file and require("koassistant_doc_settings").resolve(file, self.ui) or nil
+  local marking = require("koassistant_book_settings").resolveXrayMarking(ds_m, features)
+  local card_mode = marking.card
   if card_mode == "full" then
     -- Full-entry landing (round 16): an AHEAD-ONLY entity still needs the
     -- reveal flow — the direct lookup searches the position tier and would
@@ -19019,6 +19159,8 @@ function AskGPT:openXrayCard(query, opts)
     ui = self.ui,
     sboxes = opts and opts.sboxes or nil,
     on_full = openFull,
+    card_length = marking.card_length,
+    ahead_card = marking.ahead_card,
   })
 end
 
@@ -19040,7 +19182,7 @@ function AskGPT:syncXrayMarks()
         name, box = require("koassistant_xray_marks").tapTarget(self_ref, ges)
       end
       if name then
-        logger.dbg("KOAssistant: X-Ray mark tap - opening entity: " .. name)
+        logger.dbg("KOAssistant: X-Ray mark tap - opening card for tapped text: " .. name)
         -- The word box anchors the floating-popup card style
         self_ref:openXrayCard(name, box and { sboxes = { box } } or nil)
         return true
@@ -19161,6 +19303,13 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
     T(_("Upcoming entities: %1 (%2)"),
       marking.ahead and _("On") or _("Off"),
       scopeTag(BookSettings.KEY_XRAY_AHEAD)), "ahead"))
+  -- B269: what upcoming-entity cards show (sub-dial of the peek)
+  if marking.ahead then
+    table.insert(buttons, pickerRow(
+      T(_("Upcoming entity cards: %1 (%2)"),
+        BookSettings.xrayAheadCardLabel(marking.ahead_card),
+        scopeTag(BookSettings.KEY_XRAY_AHEAD_CARD)), "ahead_card"))
+  end
   -- The long-press layer (independent of marking): a held selection that
   -- exactly matches an entity opens it, everything else falls through.
   -- Round 5 (maintainer: "yes per book"): canonical two-layer picker like
@@ -19177,6 +19326,13 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
     T(_("Exact hits open: %1 (%2)"),
       BookSettings.xrayCardModeLabel(marking.card),
       scopeTag(BookSettings.KEY_XRAY_CARD)), "card"))
+  -- B269: how much of an installed entry the card shows
+  if marking.card ~= "full" then
+    table.insert(buttons, pickerRow(
+      T(_("Card shows: %1 (%2)"),
+        BookSettings.xrayCardLengthLabel(marking.card_length),
+        scopeTag(BookSettings.KEY_XRAY_CARD_LENGTH)), "card_length"))
+  end
   if ds and marking.has_override then
     table.insert(buttons, row(
       _("Use global marking settings for this book"),
@@ -19188,6 +19344,8 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
         ds:delSetting(BookSettings.KEY_XRAY_AHEAD)
         ds:delSetting(BookSettings.KEY_XRAY_INTERCEPT)
         ds:delSetting(BookSettings.KEY_XRAY_CARD)
+        ds:delSetting(BookSettings.KEY_XRAY_CARD_LENGTH)
+        ds:delSetting(BookSettings.KEY_XRAY_AHEAD_CARD)
         if ds.flush then ds:flush() end
       end,
       function()
@@ -19935,6 +20093,13 @@ function AskGPT:showXrayDefaultCategoriesPicker()
   BookSettings.showXrayCategoriesPicker({ target = "global", plugin = self })
 end
 
+-- Settings ▸ X-Ray ▸ "Depth of New X-Rays": the global depth rung (depth axis
+-- 2026-08-25; the shared two-layer picker opened on its Global tab).
+function AskGPT:showXrayDefaultDepthPicker()
+  local BookSettings = require("koassistant_book_settings")
+  BookSettings.showXrayDepthPicker({ plugin = self, ui = self.ui, target_override = "global" })
+end
+
 function AskGPT:showSetupWizardDev()
   require("koassistant_setup_wizard").showDevMenu(self)
 end
@@ -19984,6 +20149,24 @@ function AskGPT:quickResetFreshStart()
 
   self.settings:flush()
   self:updateConfigFromSettings()
+
+  -- Registry-declared cruft a fresh start removes (storage sweep 2026-09-03,
+  -- flags audit I3): today only the v1->v2 import's own copy of the chats it
+  -- already imported, and only once that import is complete. Chat history
+  -- itself stays, as the confirm text promises.
+  if G_reader_settings:readSetting("chat_storage_version", 1) >= 2 then
+    for _idx, entry in ipairs(StorageRegistry.resetEntries("fresh_start")) do
+      local path = StorageRegistry.resolvePath(entry)
+      if path and lfs.attributes(path, "mode") == "directory" then
+        local ok_p, err_p = pcall(require("ffi/util").purgeDir, path)
+        if ok_p then
+          logger.info("KOAssistant: fresh start removed", entry.id, path)
+        else
+          logger.warn("KOAssistant: fresh start could not remove", path, ":", err_p)
+        end
+      end
+    end
+  end
 
   UIManager:show(Notification:new{
     text = _("Fresh start complete - API keys preserved"),
@@ -21180,6 +21363,12 @@ function AskGPT:_performRestore(backup_manager, backup, options)
       UIManager:close(progress_msg)
 
       if result.success then
+        if result.v1_chats_restored then
+          -- The backup predates chat storage v2: its chats came back in the
+          -- old hash-folder layout, which nothing reads any more. Import them
+          -- into the books' chats files now (the importer merges by chat id).
+          self:migrateChatsToDocSettings()
+        end
         -- Show success with restart option
         local ButtonDialog = require("ui/widget/buttondialog")
         local success_text = _("Restore completed successfully!\n\nIt's recommended to restart KOReader for all changes to take effect.")
@@ -21388,6 +21577,59 @@ end
     7. Mark migration complete (version = 2)
 --]]
 
+--- The open book's settings object for plugin keys (Track 37): a BookStore
+--- facade over the live DocSettings, so koassistant_* keys read/write the
+--- plugin's own per-book file while KOReader keys still read KOReader's.
+--- nil when no book is open. Replaces every direct DocSettings call on the
+--- open book in this file (grep gate in tests/unit/test_book_store.lua).
+function AskGPT:_openBookDS()
+  local ds = self.ui and self.ui.doc_settings
+  if not ds then return nil end
+  local file = self.ui.document and self.ui.document.file
+  return require("koassistant_book_store").wrap(ds, file)
+end
+
+--- Track 37 one-shot: move chats + per-book keys out of metadata.lua into the
+--- plugin's own sidecar files for every book the plugin can find. Runs at
+--- plugin init while chat_storage_version == 2 (v1 installs go through the
+--- v1 import, which now writes straight into the new files and stamps 3).
+--- Per book: copy, verify, then delete + flush — idempotent, so an
+--- interrupted pass simply re-runs on the next start; the version stamp is
+--- written only after a pass with zero failures. Once per process.
+function AskGPT:_runBookStoreMigration()
+  local version = G_reader_settings:readSetting("chat_storage_version", 1)
+  if version ~= 2 then return end
+  local BookStore = require("koassistant_book_store")
+  if BookStore._bulk_ran then return end
+  BookStore._bulk_ran = true
+  local features = self.settings:readSetting("features") or {}
+  logger.info("KOAssistant: moving per-book data out of metadata.lua (chat storage v2 -> v3)")
+  local ok, report = pcall(BookStore.migrateAll, self.ui, features)
+  if not ok then
+    logger.warn("KOAssistant: book store migration crashed:", report)
+    return
+  end
+  logger.info("KOAssistant: book store migration:", report.candidates, "candidates,",
+    report.moved, "moved (" .. report.chats .. " chats, " .. report.keys .. " keys),",
+    report.clean, "clean,", report.skipped, "skipped,", report.failed, "failed")
+  for _idx, f in ipairs(report.failures) do
+    logger.info("KOAssistant: book store migration failure:", f)
+  end
+  if report.failed == 0 then
+    G_reader_settings:saveSetting("chat_storage_version", 3)
+  end
+  G_reader_settings:flush()
+  if report.moved > 0 then
+    local moved = report.moved
+    UIManager:scheduleIn(2, function()
+      UIManager:show(InfoMessage:new{
+        text = T(_("KOAssistant moved its data out of KOReader's metadata files for %1 books."), moved),
+        timeout = 6,
+      })
+    end)
+  end
+end
+
 -- Check if chat history migration is needed
 function AskGPT:checkChatMigrationStatus()
   local version = G_reader_settings:readSetting("chat_storage_version", 1)
@@ -21406,9 +21648,9 @@ function AskGPT:checkChatMigrationStatus()
       logger.info("Chat storage needs migration from v1 to v2")
       self:showMigrationDialog()
     else
-      -- No old chats to migrate, just mark as v2
-      logger.info("No old chats found, marking storage as v2")
-      G_reader_settings:saveSetting("chat_storage_version", 2)
+      -- No old chats to migrate, just mark as v3 (the current sidecar-file layout)
+      logger.info("No old chats found, marking storage as v3")
+      G_reader_settings:saveSetting("chat_storage_version", 3)
       G_reader_settings:flush()
     end
   end
@@ -21465,7 +21707,7 @@ function AskGPT:migrateChatsToDocSettings()
   local old_dir = ChatHistoryManager.CHAT_DIR
   if not lfs.attributes(old_dir, "mode") then
     -- No old chats to migrate
-    G_reader_settings:saveSetting("chat_storage_version", 2)
+    G_reader_settings:saveSetting("chat_storage_version", 3)
     G_reader_settings:delSetting("chat_migration_in_progress")
     G_reader_settings:flush()
     UIManager:close(progress)
@@ -21520,24 +21762,22 @@ function AskGPT:migrateChatsToDocSettings()
       else
         -- Check if document still exists
         if lfs.attributes(doc_path, "mode") then
-          -- Read existing chats from metadata.lua (if any).
-          -- SafeDocSettings: use the live doc_settings if this book is open —
-          -- a fresh instance would clobber metadata.lua on flush (issue #72)
-          local doc_settings = require("koassistant_doc_settings").resolve(doc_path)
-          local existing_chats = doc_settings:readSetting("koassistant_chats", {})
-
-          -- Add all chats (keyed by ID)
+          -- Read existing chats from the book's chats file (if any) and add
+          -- the v1 chats (keyed by ID). Track 37: v1 imports straight into the
+          -- sidecar chats file, never through metadata.lua.
+          local BookStore = require("koassistant_book_store")
+          local existing_chats = BookStore.readChats(doc_path)
           for _idx, chat in ipairs(chats) do
             existing_chats[chat.id] = chat
             stats.migrated = stats.migrated + 1
           end
+          local ok_w, err_w = BookStore.writeChats(doc_path, existing_chats)
+          if not ok_w then error(err_w or "chats write failed") end
 
-          -- Save to metadata.lua
-          doc_settings:saveSetting("koassistant_chats", existing_chats)
-          doc_settings:flush()
-
-          -- Update chat index
-          ChatHistoryManager:updateChatIndex(doc_path, "save", nil, existing_chats)
+          -- Update chat index (title/author from KOReader's DocSettings)
+          local doc_settings = require("koassistant_doc_settings").resolve(doc_path)
+          ChatHistoryManager:updateChatIndex(doc_path, "save", nil, existing_chats,
+            { doc_props = doc_settings:readSetting("doc_props"), has_props = true })
 
           logger.info("Migrated " .. #chats .. " chats for: " .. doc_path)
         else
@@ -21575,9 +21815,9 @@ function AskGPT:migrateChatsToDocSettings()
       stats.failed = 1  -- Force retry
     else
       -- Mark migration complete only after successful backup
-      -- v2 = chats stored in metadata.lua for automatic move tracking
-      G_reader_settings:saveSetting("chat_storage_version", 2)
-      logger.info("Migration successful, marked as v2 storage (metadata.lua)")
+      -- v3 = chats in the plugin's own koassistant_chats.lua sidecar file
+      G_reader_settings:saveSetting("chat_storage_version", 3)
+      logger.info("Migration successful, marked as v3 storage (sidecar chats file)")
     end
   else
     logger.warn("Migration had " .. stats.failed .. " failures, keeping v1 storage for retry")
@@ -22573,6 +22813,11 @@ function AskGPT:patchDocSettingsForChatIndex()
     -- Call KOReader's original function (passes through copy parameter)
     DocSettings._original_updateLocation(old_path, new_path, copy)
 
+    -- Per-book store cache (Track 37): the files just moved/copied/died
+    local BookStore = require("koassistant_book_store")
+    BookStore.invalidate(old_path)
+    if new_path then BookStore.invalidate(new_path) end
+
     -- Update indices: move replaces old→new, copy adds new (keeps old), delete removes old
     local needs_flush = false
 
@@ -22719,6 +22964,20 @@ function AskGPT:offerNotebookMigration(old_location, new_location)
     end,
     -- cancel: setting stays at old_location (already reverted by on_change)
   })
+end
+
+--- KOReader broadcasts this after a Book information edit (title/authors/
+--- cover) for `file`, from the reader or the file browser. The chat index
+--- carries the effective title/author (Fix M), so refresh that one entry
+--- right away; the refresh no-ops when nothing indexed changed.
+function AskGPT:onInvalidateMetadataCache(file)
+  if type(file) ~= "string" or not self:documentHasChats(file) then return end
+  local ok, err = pcall(function()
+    require("koassistant_chat_history_manager"):refreshChatIndexEntry(file, self.ui)
+  end)
+  if not ok then
+    logger.warn("KOAssistant: chat index refresh after metadata edit failed:", err)
+  end
 end
 
 --- Check if document has saved chats
@@ -22903,7 +23162,7 @@ function AskGPT:openNotebookInChatViewer(notebook_path, document_path)
     book_title = props and (props.display_title or props.title)
     book_author = props and props.authors
   else
-    local props = getRawDocProps(document_path)
+    local props = require("koassistant_doc_settings").overlayCustomProps(getRawDocProps(document_path), document_path)
     book_title = props and (props.display_title or props.title)
     book_author = props and props.authors
   end

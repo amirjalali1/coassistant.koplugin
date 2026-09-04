@@ -633,10 +633,27 @@ end
 ---   back via the wake-pass)
 --- @param target_file string|nil The target book's file path (robust self-filter)
 --- @return number stubs newly added
+--- Case-insensitive alias union, first list's order first; nil when empty.
+local function unionAliases(a, b)
+    local out, seen = {}, {}
+    for _idx, list in ipairs({ a, b }) do
+        for _i, alias in ipairs(type(list) == "table" and list or {}) do
+            if type(alias) == "string" and alias ~= "" and not seen[alias:lower()] then
+                seen[alias:lower()] = true
+                out[#out + 1] = alias
+            end
+        end
+    end
+    return #out > 0 and out or nil
+end
+
+--- @param skip table|nil Lowercased-name set of carried entries the reader
+---   removed (S4 tombstones): never stashed
+--- @return number added, number refreshed (existing stubs whose copy changed)
 function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_title,
-        source_file, target_title, target_file)
+        source_file, target_title, target_file, skip)
     local XrayParser = require("koassistant_xray_parser")
-    if type(base_parsed) ~= "table" or type(source_parsed) ~= "table" then return 0 end
+    if type(base_parsed) ~= "table" or type(source_parsed) ~= "table" then return 0, 0 end
     local DK = XrayParser.DORMANT_KEY
     local target_norm = normTitle(target_title)
     -- Carried lines a stub may bring along: cleanly attributable, never the
@@ -691,15 +708,27 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
             by_name[stub.name:lower()] = i
         end
     end
-    local added = 0
+    local added, refreshed = 0, 0
     local function stash(stub)
         local key = type(stub.name) == "string" and stub.name ~= ""
             and stub.name:lower() or nil
         if not key then return end
+        -- S4 tombstones: an entry the reader removed never comes back
+        if skip and skip[key] then return end
         local at = by_name[key]
         if at then
-            -- Newer source refreshes the stub; carried lines are unioned
-            stub.background = XrayParser.mergeBackground(ledger[at].background, stub.background)
+            -- Newer source refreshes the stub; carried lines AND aliases are
+            -- unioned (S4: an alias the reader added onto the stub survives
+            -- an automatic re-seed) and the role fills in from the old copy
+            local old = ledger[at]
+            stub.background = XrayParser.mergeBackground(old.background, stub.background)
+            stub.aliases = unionAliases(old.aliases, stub.aliases)
+            stub.role = stub.role or old.role
+            if stub.description ~= old.description or stub.role ~= old.role
+                or #(stub.aliases or {}) ~= #(old.aliases or {})
+                or #(stub.background or {}) ~= #(old.background or {}) then
+                refreshed = refreshed + 1
+            end
             ledger[at] = stub
         else
             ledger[#ledger + 1] = stub
@@ -742,6 +771,10 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
                             name = name,
                             aliases = aliases,
                             category = cat.key,
+                            -- S3 parity: the role rides so a carried card reads
+                            -- like a live one ("Cast (Innkeeper)")
+                            role = type(item.role) == "string" and item.role ~= ""
+                                and item.role or nil,
                             description = type(item.description) == "string"
                                 and item.description ~= "" and item.description or nil,
                             source = source_title,
@@ -772,6 +805,7 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
                     name = stub.name,
                     aliases = stub.aliases,
                     category = stub.category,
+                    role = stub.role,
                     description = stub.description,
                     source = stub.source or source_title,
                     file = stub.file,
@@ -781,7 +815,7 @@ function XrayMerge.populateDormant(base_parsed, delta, source_parsed, source_tit
         end
     end
     if #ledger > 0 then base_parsed[DK] = ledger end
-    return added
+    return added, refreshed
 end
 
 --- Round 26 (device audit — the round-25 rebuild carry was half a fix): a
@@ -844,6 +878,81 @@ function XrayMerge.carryActiveBackground(prev_parsed, parsed)
     end
     if #ledger > 0 then parsed[DK] = ledger end
     return added
+end
+
+--- F1 (B278, 2026-08-30, docs/xray_cross_book_lookup_plan.md §2.4): the
+--- promotion doorway carried only ACTIVE background carriers (above), so a
+--- stub that lived ONLY in the outgoing artifact's ledger — a fold made after
+--- the rung was built, a late seed, an alias the reader edited onto a stub —
+--- died with the swap, while the rebuild path has copied the outgoing ledger
+--- across first since round 25. Union the outgoing ledger into the incoming
+--- one BY NAME: a stub present in both takes the outgoing (newer) version —
+--- category/source/file/description where set, the rung's as fallback — with
+--- aliases and background lines unioned; a stub the incoming lacks is
+--- appended. Runs BEFORE carryActiveBackground and the wake-pass, which
+--- re-wakes anything the rung already named (fill-gaps-only background, so
+--- nothing duplicates): idempotent. A stub the reader REMOVED from the
+--- outgoing ledger is absent here and cannot return through this union; the
+--- rung's own copy still brings it back (tombstones out of scope, documented).
+--- @param prev_parsed table The outgoing X-Ray
+--- @param parsed table The incoming rung (mutated: ledger unioned)
+--- @return number added, number refreshed
+--- @param skip table|nil S4 tombstones (lowercased-name set): never unioned
+function XrayMerge.unionLedger(prev_parsed, parsed, skip)
+    local XrayParser = require("koassistant_xray_parser")
+    if type(prev_parsed) ~= "table" or type(parsed) ~= "table" then return 0, 0 end
+    local DK = XrayParser.DORMANT_KEY
+    local prev_ledger = prev_parsed[DK]
+    if type(prev_ledger) ~= "table" or #prev_ledger == 0 then return 0, 0 end
+    local ledger = type(parsed[DK]) == "table" and parsed[DK] or {}
+    local by_name = {}
+    for i, stub in ipairs(ledger) do
+        if type(stub) == "table" and type(stub.name) == "string" then
+            by_name[stub.name:lower()] = i
+        end
+    end
+    local added, refreshed = 0, 0
+    for _idx, stub in ipairs(prev_ledger) do
+        if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= ""
+                and not (skip and skip[stub.name:lower()]) then
+            local key = stub.name:lower()
+            local at = by_name[key]
+            if at then
+                local old = ledger[at]
+                local merged = {
+                    name = stub.name,
+                    category = stub.category or old.category,
+                    source = stub.source or old.source,
+                    file = stub.file or old.file,
+                    description = stub.description or old.description,
+                    role = stub.role or old.role,
+                    background = XrayParser.mergeBackground(old.background, stub.background),
+                }
+                -- Aliases: the outgoing list first (the reader's edits live
+                -- there), then whatever the rung's copy had that it lacks
+                local aliases, seen = {}, {}
+                local function fold(list)
+                    for _idx2, a in ipairs(type(list) == "table" and list or {}) do
+                        if type(a) == "string" and a ~= "" and not seen[a:lower()] then
+                            seen[a:lower()] = true
+                            aliases[#aliases + 1] = a
+                        end
+                    end
+                end
+                fold(stub.aliases)
+                fold(old.aliases)
+                if #aliases > 0 then merged.aliases = aliases end
+                ledger[at] = merged
+                refreshed = refreshed + 1
+            else
+                ledger[#ledger + 1] = stub
+                by_name[key] = #ledger
+                added = added + 1
+            end
+        end
+    end
+    if #ledger > 0 then parsed[DK] = ledger end
+    return added, refreshed
 end
 
 --- Round 28 (#90 device report: doubled self-labeled Vol-4 lines, background
@@ -917,7 +1026,7 @@ function XrayMerge.reconcileBackground(parsed, file, ui)
             return require("koassistant_doc_settings").resolve(member, ui)
         end)
         if ok_ds and ds then
-            local props = ds:readSetting("doc_props") or {}
+            local props = require("koassistant_doc_settings").overlayCustomProps(ds:readSetting("doc_props"), member) or {}
             local names = { props.title, props.display_title }
             local ok_ov, ov_title = pcall(function()
                 return require("koassistant_book_settings").getMetadataOverride(ds)
@@ -1077,13 +1186,198 @@ end
 --- @param provider string|nil Provider id (trusted-provider consent)
 --- @param ui table|nil
 --- @return number added, string|nil source_title
+--- Books this X-Ray's carried list is seeded from (S4, ref #90): an ordered
+--- group gives the nearest consented X-Rayed EARLIER book (its own carried
+--- list brings the rest along transitively); an unordered knowledge-sharing
+--- group (project) gives EVERY other consented X-Rayed member; a plain group
+--- none. Fresh parses — safe to mutate downstream.
+--- @return table sources { { file, title, entry, parsed }, ... }
+function XrayMerge.seedSources(file, features, provider, ui)
+    local out = {}
+    if type(file) ~= "string" or file == "" then return out end
+    local one = XrayMerge.seedSource(file, features, provider, ui)
+    if one then
+        out[1] = one
+        return out
+    end
+    local BookGroups = require("koassistant_book_groups")
+    local group = type(BookGroups.groupsFor) == "function" and BookGroups.groupsFor(file)[1] or nil
+    if not group or BookGroups.isOrdered(group) or not BookGroups.sharesKnowledge(group) then
+        return out
+    end
+    local ActionCache = require("koassistant_action_cache")
+    local XrayParser = require("koassistant_xray_parser")
+    for _idx, p in ipairs(group.books) do
+        if p ~= file then
+            local entry = ActionCache.getXrayCache(p)
+            if entry and entry.result and entry.source_mode ~= "ai_knowledge"
+                and XrayParser.isJSON(entry.result)
+                and XrayMerge.consentOk({ entry }, features, provider, p, ui) then
+                local parsed = XrayParser.parse(entry.result)
+                if parsed and not parsed.error then
+                    out[#out + 1] = { file = p, title = BookGroups.displayTitle(p, ui),
+                        entry = entry, parsed = parsed }
+                end
+            end
+        end
+    end
+    return out
+end
+
+--- The reader's removals for a book, or nil when unreadable (tests without
+--- a sidecar shim, and nothing else, land here).
+local function removedStubsFor(file)
+    local ok, skip = pcall(function()
+        return require("koassistant_action_cache").getRemovedStubs(file)
+    end)
+    return ok and skip or nil
+end
+
 function XrayMerge.seedDormant(file, parsed, features, provider, ui)
     if type(parsed) ~= "table" then return 0, nil end
-    local src = XrayMerge.seedSource(file, features, provider, ui)
-    if not src then return 0, nil end
-    local added = XrayMerge.populateDormant(parsed, nil, src.parsed, src.title,
-        src.file, nil, file)
-    return added, src.title
+    local sources = XrayMerge.seedSources(file, features, provider, ui)
+    if #sources == 0 then return 0, nil end
+    local skip = removedStubsFor(file)
+    local added, titles = 0, {}
+    for _idx, src in ipairs(sources) do
+        local n = XrayMerge.populateDormant(parsed, nil, src.parsed, src.title,
+            src.file, nil, file, skip)
+        added = added + n
+        titles[#titles + 1] = src.title
+    end
+    return added, table.concat(titles, ", ")
+end
+
+-- Files whose pre-seed version was already ring-archived this session (the
+-- browser's once-per-session rule for carried-list edits)
+local reseed_archived = {}
+
+--- Automatic seeding of EXISTING X-Rays (S4, maintainer 2026-09-02): every
+--- member with a live text-based X-Ray gets its carried list refreshed from
+--- its seed sources, in list order (an ordered chain completes front to back
+--- within one run — a member's fresh list feeds the next member's seed).
+--- Zero tokens. A member is written only when the seed actually adds or
+--- changes something (dry run on a throwaway parse first), through
+--- editLiveXray (pre-op version archived once per session). Removed entries
+--- stay removed (tombstones). Idempotent.
+--- @param group table The group record
+--- @param features table Settings features (consent)
+--- @param provider string|nil Active provider id (trusted-provider consent)
+--- @param ui table|nil
+--- @return number written, number checked
+function XrayMerge.reseedGroup(group, features, provider, ui)
+    if type(group) ~= "table" or type(group.books) ~= "table" then return 0, 0 end
+    local BookGroups = require("koassistant_book_groups")
+    if not BookGroups.sharesKnowledge(group) then return 0, 0 end
+    local ActionCache = require("koassistant_action_cache")
+    local XrayParser = require("koassistant_xray_parser")
+    local WriteBack = require("koassistant_artifact_writeback")
+    local written, checked = 0, 0
+    for _idx, file in ipairs(group.books) do
+        local entry = ActionCache.getXrayCache(file)
+        if entry and entry.result and entry.source_mode ~= "ai_knowledge"
+                and XrayParser.isJSON(entry.result) then
+            local sources = XrayMerge.seedSources(file, features, provider, ui)
+            if #sources > 0 then
+                checked = checked + 1
+                local skip = removedStubsFor(file)
+                local function seed(data)
+                    local added, refreshed = 0, 0
+                    for _s, src in ipairs(sources) do
+                        local a, r = XrayMerge.populateDormant(data, nil, src.parsed,
+                            src.title, src.file, nil, file, skip)
+                        added, refreshed = added + a, refreshed + (r or 0)
+                    end
+                    return added > 0 or refreshed > 0
+                end
+                local probe = XrayParser.parse(entry.result)
+                if probe and not probe.error and seed(probe) then
+                    local ok = WriteBack.editLiveXray(file, seed, {
+                        features = features,
+                        limit = reseed_archived[file] and 0 or nil,
+                    })
+                    if ok then
+                        written = written + 1
+                        reseed_archived[file] = true
+                    end
+                end
+            end
+        end
+    end
+    return written, checked
+end
+
+--- Carry ONE entry from an earlier book's X-Ray into a book's carried
+--- list (S2 Q2, ref #90): the reader-asserted single-entity form of the
+--- create-time seed — the same stub shape populateDormant builds, appended
+--- (or refreshed) by name. Pure on parsed data; the caller writes via
+--- WriteBack.editLiveXray and checks consent (same rule as the seed). A
+--- transitive pick (the predecessor's own stub) keeps its ORIGINAL
+--- provenance through `prov`. Reached only after a full local miss, so no
+--- already-active self-filter is needed here.
+--- @param parsed table Current book's parsed live X-Ray (mutated)
+--- @param item table The predecessor entry (active item or stub)
+--- @param category_key string
+--- @param prov table|nil { source, file } Provenance for the stub
+--- @return boolean ok
+function XrayMerge.carryOne(parsed, item, category_key, prov)
+    local XrayParser = require("koassistant_xray_parser")
+    if type(parsed) ~= "table" or type(item) ~= "table" then return false end
+    local name = XrayParser.getItemName(item, category_key)
+    if type(name) ~= "string" or name == "" then return false end
+    if name ~= item.name and name ~= item.term and name ~= item.event then
+        -- getItemName's translated "Unknown" fallback: nothing real to carry
+        return false
+    end
+    local aliases
+    if type(item.aliases) == "table" and #item.aliases > 0 then
+        aliases = {}
+        for _idx, a in ipairs(item.aliases) do aliases[#aliases + 1] = a end
+    end
+    local desc
+    for _idx, f in ipairs({ "description", "definition", "significance", "summary" }) do
+        if type(item[f]) == "string" and item[f] ~= "" then
+            desc = item[f]
+            break
+        end
+    end
+    local background
+    if type(item.background) == "table" then
+        for _idx, b in ipairs(item.background) do
+            if type(b) == "table" and type(b.text) == "string" and b.text ~= ""
+                and type(b.source) == "string" and b.source ~= "" then
+                background = background or {}
+                background[#background + 1] = { source = b.source, text = b.text,
+                    file = type(b.file) == "string" and b.file or nil }
+            end
+        end
+    end
+    local DK = XrayParser.DORMANT_KEY
+    local ledger = parsed[DK]
+    if type(ledger) ~= "table" then
+        ledger = {}
+        parsed[DK] = ledger
+    end
+    local stub = {
+        name = name,
+        aliases = aliases,
+        category = category_key,
+        role = type(item.role) == "string" and item.role ~= "" and item.role or nil,
+        description = desc,
+        source = prov and prov.source or nil,
+        file = prov and prov.file or nil,
+        background = background,
+    }
+    local key = name:lower()
+    for i, s in ipairs(ledger) do
+        if type(s) == "table" and type(s.name) == "string" and s.name:lower() == key then
+            stub.background = XrayParser.mergeBackground(s.background, stub.background)
+            ledger[i] = stub
+            return true
+        end
+    end
+    ledger[#ledger + 1] = stub
+    return true
 end
 
 --- Alias bridge for the CREATE request (carry layer 3(iii), 2026-08-06;
@@ -1453,7 +1747,7 @@ function XrayMerge.buildHeadlessConfig(opts, payload)
             return require("koassistant_doc_settings").resolve(opts.file, opts.ui)
         end)
         if ok and ds then
-            local props = ds:readSetting("doc_props") or {}
+            local props = require("koassistant_doc_settings").overlayCustomProps(ds:readSetting("doc_props"), opts.file) or {}
             local ok_ov, ov_t, ov_a = pcall(function()
                 return require("koassistant_book_settings").getMetadataOverride(ds)
             end)
@@ -2808,7 +3102,7 @@ function XrayMerge.startCrossBookFlow(opts)
                     return require("koassistant_doc_settings").resolve(path, opts.ui)
                 end)
                 if ok_ds and ds then
-                    local props = ds:readSetting("doc_props") or {}
+                    local props = require("koassistant_doc_settings").overlayCustomProps(ds:readSetting("doc_props"), path) or {}
                     title = props.display_title or props.title
                     author = props.authors
                     if type(author) == "string" and author:find("\n") then

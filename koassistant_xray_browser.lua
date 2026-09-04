@@ -264,8 +264,11 @@ end
 --- not data shown). Cap: 5000 hits per term (very common terms clip there).
 --- Context: 10 words per side (round 9 — the 3-line snippet rows can afford
 --- more than the search dialog's default).
+--- exclude = XrayParser.containingHandles output (B266): a hit whose context
+--- spells another entity's longer handle around it is that entity's mention
+--- and is dropped here, so counts, tree and lists agree by construction.
 --- @return table hits Array of {page?, xp?, display_page, row_text, term, order}
-local function gatherMentionHits(ui, terms)
+local function gatherMentionHits(ui, terms, exclude)
     local TextBoxWidget = require("ui/widget/textboxwidget")
     local is_pages = ui.document.info and ui.document.info.has_pages
     local hits, seen = {}, {}
@@ -295,7 +298,13 @@ local function gatherMentionHits(ui, terms)
                     page = ui.document:getPageFromXPointer(r.start)
                     key = tostring(r.start)
                 end
-                if page and not seen[key] then
+                if page and not seen[key] and exclude
+                    and XrayParser.hitInsideHandle(r.prev_text,
+                        (r.matched_word_prefix or "") .. (r.matched_text or term.text)
+                            .. (r.matched_word_suffix or ""),
+                        r.next_text, exclude) then
+                    seen[key] = true -- inside a longer entity's name: not this entity
+                elseif page and not seen[key] then
                     seen[key] = true
                     -- Bold-match snippet (readersearch.lua idiom);
                     -- ellipsized both ends — rows are mid-text fragments
@@ -1102,6 +1111,21 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
     else
         self._level_up = nil
     end
+    -- Cross-book jump way back (S4 Q16, device round 4): a browser opened
+    -- from ANOTHER book's X-Ray (→ Group, "Open in <title>'s X-Ray") returns
+    -- there on the up-arrow at root — the Book Hub convention, one level up
+    -- = where you came from; X just closes. Consumed once; `target` guards
+    -- a stale descriptor (a jump whose browser never opened) from attaching
+    -- to an unrelated browser later.
+    local rt = XrayBrowser._pending_return_to
+    XrayBrowser._pending_return_to = nil
+    if rt and rt.book_file and rt.target == metadata.book_file
+            and rt.book_file ~= metadata.book_file
+            and self._level_up then
+        self._return_to = rt
+    else
+        self._return_to = nil
+    end
     UIManager:show(self.menu)
 
     -- Auto-navigate to saved position (from file browser reopen or search return flow)
@@ -1517,7 +1541,13 @@ end
 --- @param nav_context table|nil { stubs, index } for ◀/▶ within the list
 function XrayBrowser:showDormantDetail(stub_idx, stub, nav_context)
     local self_ref = self
-    local parts = { stub.name, "" }
+    -- S3 parity (ref #90): the role on line 1, as formatItemDetail renders
+    -- a live entry (stubs store it since S3; older stubs simply have none)
+    local head = stub.name
+    if type(stub.role) == "string" and stub.role ~= "" then
+        head = head .. " (" .. stub.role .. ")"
+    end
+    local parts = { head, "" }
     if type(stub.aliases) == "table" and #stub.aliases > 0 then
         parts[#parts + 1] = _("Also known as:") .. " " .. table.concat(stub.aliases, ", ")
     end
@@ -1547,10 +1577,59 @@ function XrayBrowser:showDormantDetail(stub_idx, stub, nav_context)
             fn()
         end
     end
+    -- S3 parity (maintainer 2026-09-02): the stub knows its source book, so
+    -- when that book's X-Ray still holds the entity, open it there — the
+    -- "→ Group" jump recipe (retire this browser, _pending_navigate_to,
+    -- showCacheViewer). One memoized parse per source book.
+    local open_row
+    if type(stub.file) == "string" and stub.file ~= "" and self.metadata.plugin then
+        local src = require("koassistant_action_cache").parsedXrayFor(stub.file)
+        if src then
+            local names = { stub.name }
+            if type(stub.aliases) == "table" then
+                for _idx, a in ipairs(stub.aliases) do
+                    if type(a) == "string" and a ~= "" then names[#names + 1] = a end
+                end
+            end
+            local item, cat_key = XrayParser.findByIdentity(src.data, names, stub.category)
+            if item then
+                local src_title = src.title or stub.source
+                local aliases = {}
+                if type(item.aliases) == "table" then
+                    for _idx, a in ipairs(item.aliases) do
+                        if type(a) == "string" then aliases[#aliases + 1] = a end
+                    end
+                end
+                open_row = { {
+                    text = T(_("Open in %1's X-Ray"), src_title),
+                    callback = afterClose(function()
+                        if self_ref.menu then UIManager:close(self_ref.menu) end
+                        XrayBrowser._pending_navigate_to = {
+                            category_key = cat_key,
+                            item_name = XrayParser.getItemName(item, cat_key),
+                            item_aliases = aliases,
+                            book_file = stub.file,
+                            fallback = true,
+                        }
+                        -- Q16: the up-arrow at the other X-Ray's root comes
+                        -- back to this book's X-Ray
+                        XrayBrowser._pending_return_to = {
+                            target = stub.file,
+                            book_file = self_ref.metadata.book_file,
+                            title = self_ref.metadata.title,
+                        }
+                        self_ref.metadata.plugin:showCacheViewer({ name = _("X-Ray"),
+                            key = "_xray_cache", data = src.entry,
+                            book_title = src_title, file = stub.file })
+                    end),
+                } }
+            end
+        end
+    end
     local buttons_rows = {
         {
             {
-                text = _("This is an existing entry…"),
+                text = _("Merge into an existing entry…"),
                 callback = afterClose(function()
                     self_ref:showDormantLinkPicker(stub_idx, stub)
                 end),
@@ -1558,14 +1637,14 @@ function XrayBrowser:showDormantDetail(stub_idx, stub, nav_context)
         },
         {
             {
-                text = _("Add as its own entry"),
+                text = _("Add as a new entry"),
                 callback = afterClose(function()
                     -- Round 27 (maintainer: "could easily be done by accident
                     -- and there is no way back"): confirm, and name the way
                     -- back so it is not a one-way door
                     local ConfirmBox = require("ui/widget/confirmbox")
                     UIManager:show(ConfirmBox:new{
-                        text = T(_("Add \"%1\" to this book's X-Ray as its own entry?\nIt stops being listed as carried. Its entry page offers \"Move back to carried list\"."), stub.name),
+                        text = T(_("Add \"%1\" to this book's X-Ray as a new entry?\nIt stops being listed as carried. Its entry page offers \"Move back to carried list\"."), stub.name),
                         ok_text = _("Add"),
                         ok_callback = function()
                             if self_ref:_commitDormantOp(
@@ -1583,12 +1662,17 @@ function XrayBrowser:showDormantDetail(stub_idx, stub, nav_context)
                     if self_ref:_commitDormantOp(
                         function(data) return XrayParser.removeStub(data, stub_idx, stub.name) ~= nil end,
                         T(_("\"%1\" removed from the carried list."), stub.name)) then
+                        -- S4 tombstone: the automatic seed and checkpoint
+                        -- installs must not bring it back
+                        require("koassistant_action_cache").addRemovedStub(
+                            self_ref.metadata.book_file, stub.name)
                         self_ref:_refreshDormantPage()
                     end
                 end),
             },
         },
     }
+    if open_row then table.insert(buttons_rows, 1, open_row) end
     -- Prev/next within the carried list, mirroring showItemDetail's nav row
     local rows = nav_context and nav_context.rows
     if rows and #rows > 1 then
@@ -1815,40 +1899,13 @@ end
 --- fresh parse → apply → re-encode → commitXray (pre-op version ring-archived
 --- once per browser session) → refresh the open root menu.
 function XrayBrowser:_commitDormantOp(apply_fn, success_text)
-    local ActionCache = require("koassistant_action_cache")
+    -- S1 (ref #90): the parse/apply/serialize/commit middle now lives in
+    -- WriteBack.editLiveXray (shared with the alias-on-stub write from the
+    -- lookup surfaces); this wrapper keeps the browser's UI messages and
+    -- session state.
     local WriteBack = require("koassistant_artifact_writeback")
-    local file = self.metadata.book_file
-    local entry = ActionCache.getXrayCache(file)
-    if not (entry and entry.result) then
-        UIManager:show(InfoMessage:new{ text = _("No main X-Ray found on disk."), timeout = 4 })
-        return false
-    end
-    local data = XrayParser.parse(entry.result)
-    if not data or data.error then
-        UIManager:show(InfoMessage:new{ text = _("The stored X-Ray could not be parsed."), timeout = 4 })
-        return false
-    end
-    if not apply_fn(data) then
-        UIManager:show(InfoMessage:new{
-            text = _("The carried list changed on disk. Reopen it and try again."),
-            timeout = 4,
-        })
-        return false
-    end
-    local json = require("json")
-    local okj, cache_json = pcall(json.encode, data, { pretty = true, indent = true })
-    if not okj or type(cache_json) ~= "string" then
-        UIManager:show(InfoMessage:new{ text = _("Failed to serialize the updated X-Ray."), timeout = 4 })
-        return false
-    end
-    local meta = {}
-    for k, v in pairs(entry) do meta[k] = v end
-    meta.result = nil
-    meta.timestamp = nil
-    meta.progress_decimal = nil
     local plugin_ref = self.metadata.plugin
-    local ok = WriteBack.commitXray(file, cache_json, entry.progress_decimal or 0, meta, {
-        prev = entry,
+    local ok, err, data = WriteBack.editLiveXray(self.metadata.book_file, apply_fn, {
         limit = self._dormant_archived and 0 or nil,
         features = (self.metadata.configuration and self.metadata.configuration.features) or {},
         refresh_fn = function()
@@ -1858,7 +1915,14 @@ function XrayBrowser:_commitDormantOp(apply_fn, success_text)
         end,
     })
     if not ok then
-        UIManager:show(InfoMessage:new{ text = _("Could not save the X-Ray."), timeout = 4 })
+        local msgs = {
+            no_xray = _("No main X-Ray found on disk."),
+            parse = _("The stored X-Ray could not be parsed."),
+            stale = _("The carried list changed on disk. Reopen it and try again."),
+            serialize = _("Failed to serialize the updated X-Ray."),
+            commit = _("Could not save the X-Ray."),
+        }
+        UIManager:show(InfoMessage:new{ text = msgs[err] or msgs.commit, timeout = 4 })
         return false
     end
     self._dormant_archived = true
@@ -1960,6 +2024,24 @@ function XrayBrowser:navigateBack()
         local meta = self.metadata
         local ui = self.ui
         UIManager:close(self.menu)
+        if self._return_to and meta and meta.plugin then
+            local rt = self._return_to
+            local entry = require("koassistant_action_cache").getXrayCache(rt.book_file)
+            if entry and entry.result then
+                if rt.location and (rt.location.category_key or rt.location.item_name) then
+                    XrayBrowser._pending_navigate_to = {
+                        category_key = rt.location.category_key,
+                        item_name = rt.location.item_name,
+                        item_aliases = rt.location.item_aliases,
+                        book_file = rt.book_file,
+                        fallback = true,
+                    }
+                end
+                meta.plugin:showCacheViewer({ name = _("X-Ray"), key = "_xray_cache",
+                    data = entry, book_title = rt.title, file = rt.book_file })
+                return
+            end
+        end
         if self._level_up and meta then
             require("koassistant_book_page").show({
                 file = meta.book_file,
@@ -2404,6 +2486,9 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
                 local jump_location = self_ref.location
                 plugin_ref:_showGroupMembersPopup(group_file, "xray", {
                     location = jump_location,
+                    -- Q16: the other X-Ray's up-arrow at root returns here
+                    return_to = { book_file = group_file, title = self_ref.metadata.title,
+                        location = jump_location },
                     before_open = function()
                         self_ref:_dismissDetail(viewer)
                         if self_ref.menu then UIManager:close(self_ref.menu) end
@@ -4634,9 +4719,21 @@ function XrayBrowser:showMentions(chapter)
         return
     end
 
-    -- Section X-Rays: default to entire scope instead of current chapter
+    -- Section X-Rays: default to entire scope instead of current chapter.
+    -- A book marked Finished likewise defaults to the whole book (B030):
+    -- the gate already stands down for it, so the chapter default would
+    -- only hide the rest behind one more tap.
     if chapter == nil and self.scope then
         chapter = "all"
+    elseif chapter == nil then
+        local BookSettings = require("koassistant_book_settings")
+        local SafeDocSettings = require("koassistant_doc_settings")
+        local ds = SafeDocSettings.resolve(self.metadata and self.metadata.book_file, self.ui)
+        local features = self.metadata and self.metadata.configuration
+            and self.metadata.configuration.features
+        if BookSettings.resolveSpoilerPosture(ds, features).reason == "finished" then
+            chapter = "all"
+        end
     end
 
     -- Determine notification text
@@ -5390,6 +5487,7 @@ function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapte
     local terms = collectSearchTerms(item, item_title)
     if #terms == 0 then return end
     local pre_hits = opts and opts.hits
+    local exclude = XrayParser.containingHandles(self.xray_data, item)
     if not pre_hits and not ui.document.findAllText then return end
     local no_clip = opts and opts.no_clip
 
@@ -5491,7 +5589,7 @@ function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapte
     else
         UIManager:show(Notification:new{ text = _("Finding mentions…") })
         UIManager:scheduleIn(0.1, function()
-            render(gatherMentionHits(ui, terms))
+            render(gatherMentionHits(ui, terms, exclude))
         end)
     end
 end
@@ -5621,7 +5719,8 @@ function XrayBrowser:showItemDistribution(item, category_key, item_title, detail
         end
 
         -- ONE native pass: every hit, whole book (display gating comes later)
-        local hits = gatherMentionHits(ui, terms)
+        local hits = gatherMentionHits(ui, terms,
+            XrayParser.containingHandles(self.xray_data, item))
 
         -- Per-page prefix sums → a node's count is one subtraction, at any depth
         local total_pages = ui.document.info.number_of_pages or 0
@@ -5940,6 +6039,19 @@ function XrayBrowser:showSearchResults(query, skip_cross_search)
                     data = self_ref.xray_data,
                     query = captured_query,
                     document_path = self_ref.metadata.book_file,
+                    on_stub_committed = function(stub)
+                        -- Alias landed on a carried stub (S1): reload the
+                        -- artifact from disk, land on the stub's page
+                        self_ref:reloadLiveMain(self_ref.metadata.book_file)
+                        local d_rows = self_ref:_dormantRows()
+                        for ri, r in ipairs(d_rows) do
+                            if r.stub.name == stub.name then
+                                self_ref:showDormantDetail(r.idx, r.stub,
+                                    { rows = d_rows, index = ri })
+                                return
+                            end
+                        end
+                    end,
                     on_committed = function(target_item, target_cat_key, target_name)
                         self_ref:showItemDetail(target_item, target_cat_key, target_name)
                     end,
@@ -6011,12 +6123,141 @@ function XrayBrowser:showSearchResults(query, skip_cross_search)
         end
     end
 
+    -- Carried tier (S1, ref #90): ledger stubs matching the query join the
+    -- results as their own group; a row opens the stub's carried-detail page.
+    -- Section-scoped browsers hold no ledger, so the group appears only on
+    -- the main artifact's list — by construction, not by gate.
+    local stub_hits = XrayParser.searchLedger(self.xray_data, query)
+    if #stub_hits > 0 then
+        table.insert(items, {
+            text = _("Carried from earlier books"),
+            bold = true,
+            separator = true,
+            callback = function() end,
+        })
+        local dormant_rows = self:_dormantRows()
+        for _idx, sh in ipairs(stub_hits) do
+            local captured = sh
+            local mand = captured.source_title or ""
+            if captured.match_field == "alias" then
+                mand = mand ~= "" and (mand .. " (" .. _("alias") .. ")")
+                    or ("(" .. _("alias") .. ")")
+            end
+            table.insert(items, {
+                text = captured.stub.name,
+                mandatory = mand,
+                mandatory_dim = true,
+                callback = function()
+                    local display_i
+                    for ri, r in ipairs(dormant_rows) do
+                        if r.idx == captured.stub_idx then
+                            display_i = ri
+                            break
+                        end
+                    end
+                    self_ref:showDormantDetail(captured.stub_idx, captured.stub,
+                        display_i and { rows = dormant_rows, index = display_i } or nil)
+                end,
+            })
+        end
+    end
+
+    -- Other books in the group (S2, ref #90; FOLDED IN 2026-09-04, maintainer:
+    -- one list, no second tap): every X-Rayed group book the direction rule
+    -- allows (earlier books; later ones only while this book is unprotected;
+    -- every member of a project) contributes its hits right here, one
+    -- "From <title>" group per book with hits — the same rows the lookup's
+    -- grouped list shows, a tap opening the read-only entry. A held-back
+    -- later book contributes nothing: it stays behind the confirm row below.
+    local sweep_file = self.metadata and self.metadata.book_file
+    local sweep_list = sweep_file and not self.scope
+        and require("koassistant_action_cache").groupXrays(sweep_file) or {}
+    if #sweep_list > 0 then
+        local Dialogs = require("koassistant_dialogs")
+        local groups = Dialogs.collectPredGroups(sweep_list, query, false)
+        if #groups == 0 and #results == 0 and #stub_hits == 0 then
+            -- S4 wording follows the direction rule
+            local wide = false
+            for _idx, g in ipairs(sweep_list) do
+                if g.direction ~= "earlier" then wide = true end
+            end
+            local none
+            if wide then
+                none = _("Nothing in the other books of the group either")
+            elseif #sweep_list == 1 then
+                none = _("Nothing in the earlier book either")
+            else
+                none = _("Nothing in the earlier books either")
+            end
+            table.insert(items, { text = none, dim = true, callback = function() end })
+        end
+        for _g, g in ipairs(groups) do
+            table.insert(items, {
+                text = g.direction == "later" and T(_("From %1 (later in the series)"), g.title)
+                    or T(_("From %1"), g.title),
+                bold = true,
+                separator = true,
+                callback = function() end,
+            })
+            for _r, ghit in ipairs(g.rows) do
+                local captured = ghit
+                local match_label = captured.category_label or ""
+                if captured.match_field == "alias" then
+                    match_label = match_label .. " (" .. _("alias") .. ")"
+                end
+                table.insert(items, {
+                    text = "  " .. captured.name,
+                    mandatory = match_label,
+                    mandatory_dim = true,
+                    callback = function()
+                        Dialogs.showPredecessorEntity{
+                            ui = self_ref.metadata.plugin and self_ref.metadata.plugin.ui,
+                            config = self_ref.metadata.configuration,
+                            plugin = self_ref.metadata.plugin,
+                            book_metadata = { title = self_ref.metadata.title },
+                            document_path = sweep_file,
+                            hit = captured,
+                        }
+                    end,
+                })
+            end
+        end
+    end
+    -- S5 (ref #90): later books held back by this book's spoiler protection
+    -- are one confirm away — offered regardless of hits (so the row itself
+    -- reveals nothing); the reveal lists the later books only, the earlier
+    -- ones are folded in above
+    if sweep_file and not self.scope
+            and require("koassistant_action_cache").heldBackLaterXrays(sweep_file) > 0 then
+        table.insert(items, {
+            text = _("Search later books too (may contain spoilers)…"),
+            bold = true,
+            separator = true,
+            callback = function()
+                require("koassistant_dialogs").confirmLaterBooksSweep{
+                    ui = self_ref.metadata.plugin and self_ref.metadata.plugin.ui,
+                    config = self_ref.metadata.configuration,
+                    plugin = self_ref.metadata.plugin,
+                    book_metadata = { title = self_ref.metadata.title },
+                    document_path = sweep_file,
+                    query = query,
+                }
+            end,
+        })
+    end
+
     -- "Search other X-Rays" button when others exist
     -- Skip when caller already performed cross-section search (e.g., "Look up in X-Ray")
     if not skip_cross_search and other_count > 0 then
         local captured_query = query
         table.insert(items, {
-            text = T(_("Search other X-Rays (%1)"), other_count),
+            -- Q15 (device round 4): name what this searches — this book's
+            -- OTHER X-Rays: the section X-Rays from the main view, the main
+            -- one (plus other sections) from inside a section
+            text = self_ref.scope
+                and (other_count == 1 and _("Search the main X-Ray")
+                    or T(_("Search the main X-Ray and other sections (%1)"), other_count))
+                or T(_("Search this book's section X-Rays (%1)"), other_count),
             bold = true,
             separator = true,
             callback = function()
@@ -6025,7 +6266,7 @@ function XrayBrowser:showSearchResults(query, skip_cross_search)
         })
     end
 
-    local title = T(_("Results for \"%1\" (%2)"), query, #results)
+    local title = T(_("Results for \"%1\" (%2)"), query, #results + #stub_hits)
     self:navigateForward(title, items)
 end
 
@@ -6397,6 +6638,9 @@ function XrayBrowser:showOptions()
                         -- volume opens at the same entity/category when it has
                         -- one (see _applyPendingLocation's fallback ladder)
                         location = self_ref.location,
+                        -- Q16: the other X-Ray's up-arrow at root returns here
+                        return_to = { book_file = group_file, title = self_ref.metadata.title,
+                            location = self_ref.location },
                         before_open = function()
                             if self_ref.menu then UIManager:close(self_ref.menu) end
                         end,

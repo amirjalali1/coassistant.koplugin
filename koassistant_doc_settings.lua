@@ -36,12 +36,14 @@ function SafeDocSettings.samePath(a, b)
     return ra ~= nil and ra == ffiutil.realpath(b)
 end
 
---- Resolve the DocSettings instance for a document.
+--- Resolve the RAW DocSettings instance for a document (KOReader's object,
+--- no plugin-key routing). Only the migration and the facade itself need
+--- this; every other caller wants resolve().
 --- @param document_path string|nil target book (nil = the caller's own open book)
 --- @param ui table|nil optional ReaderUI-like instance the caller has in hand
 --- @return doc_settings|nil (nil only when document_path is nil and ui has no open book)
 --- @return is_live boolean true when the returned instance is the live one
-function SafeDocSettings.resolve(document_path, ui)
+function SafeDocSettings.resolveRaw(document_path, ui)
     if not document_path then
         if ui and ui.document and ui.doc_settings then
             return ui.doc_settings, true
@@ -65,6 +67,50 @@ function SafeDocSettings.resolve(document_path, ui)
     -- Book not open anywhere: a fresh instance is the only copy — safe
     local DocSettings = require("docsettings")
     return DocSettings:open(document_path), false
+end
+
+--- Resolve a book's settings object for plugin use. Since Track 37
+--- (2026-09-02) this is a BookStore FACADE: koassistant_* keys live in the
+--- plugin's own koassistant_book_settings.lua sidecar file, every other key
+--- still reads KOReader's DocSettings (same instance rules as resolveRaw, so
+--- the live object is used for the open book). Same signature and returns.
+function SafeDocSettings.resolve(document_path, ui)
+    local ds, is_live = SafeDocSettings.resolveRaw(document_path, ui)
+    if not ds then return nil, is_live end
+    local path = document_path
+    if not path and ui and ui.document then path = ui.document.file end
+    return require("koassistant_book_store").wrap(ds, path), is_live
+end
+
+--- Effective book props: KOReader keeps metadata edited in Book information
+--- (title, authors, series, ...) in the sidecar's custom_metadata.lua and
+--- NEVER rewrites metadata.lua's doc_props, which stays the original. ReaderUI's
+--- own `ui.doc_props` carries that overlay already; a doc_props read off any
+--- DocSettings (live or fresh) does NOT. Every plugin site that turns doc_props
+--- into a title/author must pass it through here (tests/unit/test_effective_props.lua
+--- greps for it). Applies KOReader's own BookInfo.extendProps when a custom
+--- metadata file exists; returns the raw table untouched otherwise, so callers
+--- keep their `if props then` semantics (nil in, no custom file = nil out).
+--- Note: the overlay result carries only BookInfo.props + display_title + pages —
+--- DOI identifiers must be read from the RAW props (main.lua getRawDocProps).
+--- @param raw_props table|nil doc_props as read from DocSettings
+--- @param document_path string|nil the book (nil = no overlay possible)
+--- @return table|nil
+function SafeDocSettings.overlayCustomProps(raw_props, document_path)
+    if not document_path then return raw_props end
+    local ok_ds, DocSettings = pcall(require, "docsettings")
+    if not ok_ds or type(DocSettings) ~= "table" or not DocSettings.findCustomMetadataFile then
+        return raw_props
+    end
+    local ok_find, custom_file = pcall(DocSettings.findCustomMetadataFile, DocSettings, document_path)
+    if not ok_find or not custom_file then return raw_props end
+    local ok_bi, BookInfo = pcall(require, "apps/filemanager/filemanagerbookinfo")
+    if not ok_bi or type(BookInfo) ~= "table" or not BookInfo.extendProps then
+        return raw_props
+    end
+    local ok_ext, props = pcall(BookInfo.extendProps, raw_props, document_path)
+    if ok_ext and type(props) == "table" then return props end
+    return raw_props
 end
 
 return SafeDocSettings

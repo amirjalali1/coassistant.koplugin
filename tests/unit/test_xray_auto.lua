@@ -725,6 +725,16 @@ TestRunner:test("planAutoWork: idle reasons — ahead, goal reached, no position
         ladder = {}, base_progress = nil,
         position = 0.45, goal = nil, is_json = isJSON }
     TestRunner:assertEqual(w.reason, "ahead", "live coverage ahead: idle")
+    -- Build lag: a just-installed rung stays "ahead" until the reader is
+    -- BUILD_LAG past it (time to edit before the next build bases on live)
+    w = XrayAuto.planAutoWork{ entry = { result = "{}", progress_decimal = 0.3 },
+        ladder = { { result = "{}", progress_decimal = 0.3 } }, base_progress = 0.3,
+        position = 0.302, goal = nil, is_json = isJSON }
+    TestRunner:assertEqual(w.reason, "ahead", "within the build lag past the newest rung: idle")
+    w = XrayAuto.planAutoWork{ entry = { result = "{}", progress_decimal = 0.3 },
+        ladder = { { result = "{}", progress_decimal = 0.3 } }, base_progress = 0.3,
+        position = 0.304, goal = nil, is_json = isJSON }
+    TestRunner:assertEqual(w.build, true, "past the build lag: build the next rung")
     w = XrayAuto.planAutoWork{ entry = nil,
         ladder = { { result = "{}", progress_decimal = 0.5 } }, base_progress = 0.5,
         position = 0.55, goal = 0.5, is_json = isJSON }
@@ -870,6 +880,32 @@ TestRunner:test("snapLadderRungs: chapter-end snap, window, dedup, final rung su
     ActionCache.clearXrayLadder(DOC_PATH)
 end)
 
+TestRunner:test("pickAheadRung (B269): the LOWEST built rung past live that reaches the position", function()
+    local ladder = {
+        { progress_decimal = 0.2, result = "{}", timestamp = 1 },
+        { progress_decimal = 0.4, result = "{}", timestamp = 2 },
+        { progress_decimal = 0.6, result = "{}", timestamp = 3 },
+        { progress_decimal = 0.8, result = "{}", timestamp = 4 },
+        { progress_decimal = 1.0, result = "{}", timestamp = 5, full_document = true },
+    }
+    -- installed 0.4, reader at 0.52 -> the 0.6 rung, never the 1.0 one
+    TestRunner:assertEqual(XrayAuto.pickAheadRung(ladder, 0.4, 0.52).timestamp, 3, "covering rung")
+    -- reader sitting exactly on a rung's coverage: that rung
+    TestRunner:assertEqual(XrayAuto.pickAheadRung(ladder, 0.4, 0.6).timestamp, 3, "exact coverage")
+    -- reader just past 0.6 -> 0.8
+    TestRunner:assertEqual(XrayAuto.pickAheadRung(ladder, 0.4, 0.61).timestamp, 4, "next rung")
+    -- rungs at or below live never qualify: live 0.6, reader 0.5 -> 0.8
+    TestRunner:assertEqual(XrayAuto.pickAheadRung(ladder, 0.6, 0.5).timestamp, 4, "past live")
+    -- the covering rung is not built yet (gap at 0.5..0.6) -> nothing; no position -> nothing
+    TestRunner:assertEqual(XrayAuto.pickAheadRung({ ladder[1], ladder[2] }, 0.4, 0.52), nil, "unbuilt")
+    TestRunner:assertEqual(XrayAuto.pickAheadRung(ladder, 0.4, nil), nil, "no position")
+    -- intro rungs / result-less rungs are skipped
+    TestRunner:assertEqual(XrayAuto.pickAheadRung({
+        { progress_decimal = 0.6, result = "{}", intro = true, timestamp = 9 },
+        { progress_decimal = 0.8, timestamp = 10 },
+        ladder[5] }, 0.4, 0.52).timestamp, 5, "skips intro and empty")
+end)
+
 TestRunner:test("pickPromotableRung: at-or-below position, ahead of live, complete excluded", function()
     local ladder = {
         { progress_decimal = 0.2, result = "a" },
@@ -881,8 +917,10 @@ TestRunner:test("pickPromotableRung: at-or-below position, ahead of live, comple
     TestRunner:assertEqual(pick and pick.progress_decimal, 0.4, "highest rung <= position, ahead of live")
     TestRunner:assertEqual(XrayAuto.pickPromotableRung(ladder, 0.4, 0.45), nil,
         "live already at the covering rung -> nothing")
-    pick = XrayAuto.pickPromotableRung(ladder, 0.4, 0.599)
-    TestRunner:assertEqual(pick and pick.progress_decimal, 0.6, "half-percent tolerance at the boundary")
+    TestRunner:assertEqual(XrayAuto.pickPromotableRung(ladder, 0.4, 0.599), nil,
+        "a rung a tenth of a percent ahead of the reader does not install (ref #90)")
+    pick = XrayAuto.pickPromotableRung(ladder, 0.4, 0.5996)
+    TestRunner:assertEqual(pick and pick.progress_decimal, 0.6, "snap-unit tolerance at the boundary")
     TestRunner:assertEqual(XrayAuto.pickPromotableRung(ladder, 0.6, 1.0), nil,
         "full-document rungs never promote")
     pick = XrayAuto.pickPromotableRung(ladder, nil, 0.25)
@@ -978,6 +1016,67 @@ TestRunner:test("intro rung: disk round-trip, resume-point exclusion (round 20)"
     TestRunner:assertEqual(XrayAuto.pickPromotableRung(ladder, 0, 0.05), nil,
         "intro never promotes via the position picker (installed by the no-live fallback only)")
     ActionCache.clearXrayLadder(DOC_PATH)
+end)
+
+TestRunner:test("promoteXrayLadderRung: outgoing-only ledger stubs survive the install (F1, B278)", function()
+    local XrayParser = require("koassistant_xray_parser")
+    ActionCache.clearXrayLadder(DOC_PATH)
+    ActionCache.clearXrayCheckpoints(DOC_PATH)
+    ActionCache.clearXrayCache(DOC_PATH)
+    ActionCache.clear(DOC_PATH, "xray")
+
+    -- Live: a manual state (a fold landed after the rung below was built) —
+    -- the ledger holds Elias (only here) and Orrin (whom the rung names)
+    local live_json = [[{
+      "type": "fiction",
+      "characters": [{"name": "Tamsin", "description": "live"}],
+      "__dormant": [
+        {"name": "Elias", "category": "characters", "source": "Vol 2",
+         "description": "A ferryman.", "aliases": ["the ferryman"]},
+        {"name": "Orrin", "category": "characters", "source": "Vol 2",
+         "description": "A smuggler."}
+      ]
+    }]]
+    ActionCache.setXrayCache(DOC_PATH, live_json, 0.4,
+        { model = "m-live", used_book_text = true, progress_page = 40 })
+    ActionCache.set(DOC_PATH, "xray", live_json, 0.4, { model = "m-live" })
+    -- The built-ahead rung: a chain ledger without Elias, and Orrin arrives
+    ActionCache.pushXrayLadderRung(DOC_PATH, {
+        result = [[{
+          "type": "fiction",
+          "characters": [
+            {"name": "Tamsin", "description": "rung"},
+            {"name": "Orrin", "description": "Arrives in this stretch."}
+          ]
+        }]],
+        progress_decimal = 0.7, progress_page = 70, timestamp = 1700000070,
+        used_book_text = true, model = "m-70",
+    })
+    local ladder = ActionCache.getXrayLadder(DOC_PATH)
+    local ok = ActionCache.promoteXrayLadderRung(DOC_PATH, ladder[1], 5)
+    TestRunner:assertEqual(ok, true, "install succeeds")
+    local live = ActionCache.getXrayCache(DOC_PATH)
+    local data = XrayParser.parse(live.result)
+    local ledger = data[XrayParser.DORMANT_KEY] or {}
+    TestRunner:assertEqual(#ledger, 1, "the outgoing-only stub survived the install")
+    TestRunner:assertEqual(ledger[1].name, "Elias", "and it is that stub")
+    TestRunner:assertEqual(ledger[1].aliases and ledger[1].aliases[1], "the ferryman",
+        "the alias on the stub survived too")
+    local orrin
+    for _i, c in ipairs(data.characters or {}) do if c.name == "Orrin" then orrin = c end end
+    TestRunner:assertTrue(orrin ~= nil, "the arriving entity is live from the rung")
+    TestRunner:assertEqual(orrin.description, "Arrives in this stretch.",
+        "the rung's description owns the entry")
+    TestRunner:assertEqual(orrin.background and orrin.background[1] and orrin.background[1].source,
+        "Vol 2", "his carried history woke onto him at the doorway")
+    TestRunner:assertEqual(live.timestamp, 1700000070, "rung identity kept (timestamp)")
+    TestRunner:assertEqual(ActionCache.getXrayLadder(DOC_PATH)[1].result:find("__dormant", 1, true),
+        nil, "the ladder still holds the pure rung")
+
+    ActionCache.clearXrayLadder(DOC_PATH)
+    ActionCache.clearXrayCheckpoints(DOC_PATH)
+    ActionCache.clearXrayCache(DOC_PATH)
+    ActionCache.clear(DOC_PATH, "xray")
 end)
 
 TestRunner:test("promoteXrayLadderRung: copy semantics, conditional ring push, flag fallback", function()
@@ -1085,6 +1184,18 @@ TestRunner:test("ladder stop record: per-file, superseded by a chain (re)start",
     TestRunner:assertEqual(XrayAuto.lastLadderStop("/a.epub"), nil,
         "restart clears the pause reason")
     XrayAuto.endLadderBuild()
+end)
+
+TestRunner:test("matchAnyXrayExact: carried stubs route without the ahead peek (S1/Q8, ref #90)", function()
+    local route_json = '{"characters":[{"name":"Live Guy"}],"__dormant":[{"name":"Carried Gal","aliases":["the walker"],"category":"characters","description":"d","source":"Vol 1","file":"/b/v1.epub"}]}'
+    ActionCache.set(DOC_PATH, "xray", route_json, 0.4, { model = "m" })
+    ActionCache.setXrayCache(DOC_PATH, route_json, 0.4, { model = "m" })
+    TestRunner:assertEqual(ActionCache.matchAnyXrayExact(DOC_PATH, "Carried Gal"), true, "stub name routes")
+    TestRunner:assertEqual(ActionCache.matchAnyXrayExact(DOC_PATH, "THE WALKER"), true, "stub alias routes")
+    TestRunner:assertEqual(ActionCache.matchAnyXrayExact(DOC_PATH, "Live Guy"), true, "live still routes")
+    TestRunner:assertEqual(ActionCache.matchAnyXrayExact(DOC_PATH, "Nobody Here"), false, "miss stays a miss")
+    TestRunner:assertEqual(ActionCache.matchAnyXrayExact(DOC_PATH, "Carried Gal", { include_ahead = false }),
+        true, "Upcoming Entities off keeps the carried route (Q8)")
 end)
 
 os.execute(string.format("rm -rf %q", TMP_ROOT))

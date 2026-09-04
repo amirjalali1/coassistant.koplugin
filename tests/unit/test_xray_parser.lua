@@ -54,6 +54,30 @@ TestRunner:test("repair does not corrupt valid X-Ray", function()
     TestRunner:ok(d); TestRunner:ok(d.key_figures)
 end)
 
+TestRunner:suite("bare-key repair (2026-08-25 large-text bench failure)")
+TestRunner:test("a key missing its opening quote is recovered", function()
+    local txt = '{\n  "characters": [\n    {"name": "Alice", "description": "a girl"}\n  ],\n  "conclusion": {\n    themes_resolved": ["pride"]\n  }\n}'
+    local d, e = XrayParser.parse(txt)
+    TestRunner:ok(d, "should recover via bare-key repair: " .. tostring(e))
+    TestRunner:ok(d and d.conclusion and d.conclusion.themes_resolved, "the repaired key is present")
+end)
+TestRunner:test("a fully unquoted key before a structural value is recovered", function()
+    local txt = '{\n  characters: [\n    {"name": "Alice", "description": "a girl"}\n  ]\n}'
+    local d = XrayParser.parse(txt)
+    TestRunner:ok(d and d.characters and d.characters[1].name == "Alice")
+end)
+TestRunner:test("line-anchored: identifiers inside string values are untouched", function()
+    local JsonRepair = require("koassistant_json_repair")
+    local s = '{"characters":[{"name":"Alice","description":"she said\nquote\": no"}]}'
+    TestRunner:eq(JsonRepair.quoteBareKeys('{"a": 1}'), '{"a": 1}')
+    -- A bare word at line start followed by `":` IS the defect shape; inside a
+    -- value it can only appear after a newline the model put in the string,
+    -- which strict parsing already rejects. Valid JSON is never changed:
+    local valid = '{\n  "name": "x",\n  "list": ["a", "b"]\n}'
+    TestRunner:eq(JsonRepair.quoteBareKeys(valid), valid)
+    TestRunner:ok(#JsonRepair.quoteBareKeys(s) >= #s)
+end)
+
 TestRunner:suite("round 28 — parse-time shape normalization (#90 field report)")
 TestRunner:test("timeline of plain strings becomes {event} objects (fixes 'Unknown' rows)", function()
     local d = XrayParser.parse('{"characters":[{"name":"Jack"}],"timeline":["Jack arrives","The snow falls"]}')
@@ -354,6 +378,47 @@ TestRunner:test("Arabic: article-stripped QUERY matches unstripped handle (searc
     TestRunner:ok(not XrayParser.matchExactHandle(set2, "نار"))
 end)
 
+TestRunner:suite("B266 — cross-entity containment")
+local B266_DATA = {
+    characters = {
+        { name = "Stanley Kubrick", aliases = { "Kubrick" } },
+        { name = "Vivian Kubrick" },
+        { name = "Christiane Kubrick", aliases = { "Mrs. Kubrick" } },
+        { name = "Jack" },
+    },
+    timeline = { { event = "Kubrick Estate sale" } }, -- excluded category
+}
+TestRunner:test("containingHandles: other entities' longer handles, own forms excluded", function()
+    local h = XrayParser.containingHandles(B266_DATA, B266_DATA.characters[1])
+    local set = {}
+    for _i, x in ipairs(h) do set[x] = true end
+    TestRunner:ok(set["vivian kubrick"])
+    TestRunner:ok(set["christiane kubrick"])
+    TestRunner:ok(set["mrs. kubrick"])
+    TestRunner:ok(not set["stanley kubrick"]) -- own long form
+    TestRunner:ok(not set["kubrick estate sale"]) -- timeline never counts
+    TestRunner:eq(XrayParser.containingHandles(B266_DATA, B266_DATA.characters[4]), nil)
+end)
+TestRunner:test("countItemOccurrences: hits inside a longer handle are the other entity's", function()
+    local text = "kubrick spoke. vivian kubrick filmed it, and christiane kubrick painted. kubrick left."
+    local item = B266_DATA.characters[1]
+    TestRunner:eq(XrayParser.countItemOccurrences(item, text), 4)
+    TestRunner:eq(XrayParser.countItemOccurrences(item, text,
+        XrayParser.containingHandles(B266_DATA, item)), 2)
+    -- The longer entity keeps its own count
+    TestRunner:eq(XrayParser.countItemOccurrences(B266_DATA.characters[2], text), 1)
+end)
+TestRunner:test("hitInsideHandle: prev/next context completes the handle at word boundaries", function()
+    local handles = { "vivian kubrick", "mrs. kubrick" }
+    TestRunner:ok(XrayParser.hitInsideHandle("and Vivian", "Kubrick", "filmed it", handles))
+    TestRunner:ok(XrayParser.hitInsideHandle("Mrs.", "Kubrick", "painted", handles))
+    TestRunner:ok(not XrayParser.hitInsideHandle("director", "Kubrick", "left", handles))
+    -- "Olivian Kubrick" does not spell "Vivian Kubrick"
+    TestRunner:ok(not XrayParser.hitInsideHandle("Olivian", "Kubrick", "", handles))
+    TestRunner:ok(not XrayParser.hitInsideHandle(nil, "Kubrick", nil, handles))
+    TestRunner:ok(not XrayParser.hitInsideHandle("Vivian", "Kubrick", "", nil))
+end)
+
 TestRunner:suite("slice 2 — collectSearchTerms / buildMarkEntities")
 TestRunner:test("terms: parenthetical strip, dedupe, substring-minimal set", function()
     local terms, dropped = XrayParser.collectSearchTerms({
@@ -569,6 +634,98 @@ TestRunner:test("balanced input untouched", function()
     local JR = require("koassistant_json_repair")
     local good = '{"characters":[{"name":"A"}]}'
     TestRunner:eq(JR.closeUnclosed(good), good, "no-op when nothing is open")
+end)
+
+TestRunner:suite("S1 — searchLedger / addStubAlias / ledger folds (ref #90)")
+local LEDGER_JSON = '{"characters":[{"name":"Tamsin Vael"}],"__dormant":['
+    .. '{"name":"Orrin Blackwood","category":"characters","description":"Runs the night ferry. Knows every sandbar.","source":"Vol 2","file":"/b/v2.epub"},'
+    .. '{"name":"Vex","aliases":["the grey cat"],"category":"characters","description":"A cat.","source":"Vol 2","file":"/b/v2.epub"},'
+    .. '{"name":"Saltmere","category":"locations","description":"Drowned town.","source":"Vol 1","file":"/b/v1.epub"}]}'
+TestRunner:test("searchLedger: exact by name/alias, substring, description gate", function()
+    local d = XrayParser.parse(LEDGER_JSON)
+    TestRunner:ok(d, "fixture parses")
+    local ex = XrayParser.searchLedger(d, "orrin blackwood", { exact = true })
+    TestRunner:eq(#ex, 1, "exact name hit")
+    TestRunner:eq(ex[1].stub.name, "Orrin Blackwood")
+    TestRunner:eq(ex[1].source_title, "Vol 2")
+    TestRunner:eq(#XrayParser.searchLedger(d, "Orrin", { exact = true }), 0, "exact means equality")
+    local al = XrayParser.searchLedger(d, "THE GREY CAT", { exact = true })
+    TestRunner:eq(#al, 1, "exact alias hit")
+    TestRunner:eq(al[1].match_field, "alias")
+    TestRunner:eq(#XrayParser.searchLedger(d, "ferry", { skip_description = true }), 0,
+        "skip_description holds")
+    local sub = XrayParser.searchLedger(d, "ferry")
+    TestRunner:eq(#sub, 1, "description substring hit")
+    TestRunner:eq(sub[1].match_field, "description")
+    TestRunner:eq(XrayParser.searchLedger(d, "salt")[1].category_key, "locations")
+end)
+TestRunner:test("addStubAlias: adds, no-ops on known, refuses missing; resolves after", function()
+    local d = XrayParser.parse(LEDGER_JSON)
+    TestRunner:ok(XrayParser.addStubAlias(d, "Orrin Blackwood", "the ferry master"))
+    TestRunner:eq(d.__dormant[1].aliases[1], "the ferry master")
+    TestRunner:ok(XrayParser.addStubAlias(d, "Orrin Blackwood", "THE FERRY MASTER"),
+        "known alias = no-op success")
+    TestRunner:eq(#d.__dormant[1].aliases, 1)
+    TestRunner:ok(not XrayParser.addStubAlias(d, "Nobody", "x"), "missing stub refused")
+    TestRunner:eq(#XrayParser.searchLedger(d, "the ferry master", { exact = true }), 1,
+        "the new alias resolves")
+end)
+TestRunner:test("foldLedgerHandles: stub handles join the exact route set", function()
+    local d = XrayParser.parse(LEDGER_JSON)
+    local set = {}
+    XrayParser.foldExactHandles(d, set)
+    TestRunner:ok(not XrayParser.matchExactHandle(set, "Vex"), "actives only before the fold")
+    XrayParser.foldLedgerHandles(d, set)
+    TestRunner:ok(XrayParser.matchExactHandle(set, "vex"), "stub name folds")
+    TestRunner:ok(XrayParser.matchExactHandle(set, "The Grey Cat"), "stub alias folds")
+    TestRunner:ok(XrayParser.matchExactHandle(set, "Tamsin Vael"), "live handles kept")
+    TestRunner:ok(not XrayParser.matchExactHandle(set, "grey"), "exact only")
+end)
+TestRunner:test("buildLedgerMarkEntities: mark shape, carried flag, families", function()
+    local d = XrayParser.parse(LEDGER_JSON)
+    local ents = XrayParser.buildLedgerMarkEntities(d)
+    TestRunner:eq(#ents, 3, "every stub marks")
+    TestRunner:eq(ents[1].name, "Orrin Blackwood")
+    TestRunner:ok(ents[1].carried, "carried flag set")
+    TestRunner:ok(ents[1].terms[1].norm, "terms normalized like buildMarkEntities")
+    TestRunner:eq(ents[1].family, XrayParser.CATEGORY_FAMILY["characters"])
+    local found_alias = false
+    for _idx, tm in ipairs(ents[2].terms) do
+        if tm.text == "the grey cat" then found_alias = true end
+    end
+    TestRunner:ok(found_alias, "stub aliases become mark terms")
+end)
+TestRunner:test("categoryLabel: own type, cross-type fallback, unknown key", function()
+    local d = XrayParser.parse(LEDGER_JSON)
+    TestRunner:ok(XrayParser.categoryLabel(d, "characters") ~= "characters",
+        "fiction label resolves")
+    TestRunner:ok(XrayParser.categoryLabel(d, "key_figures") ~= "", "cross-type key labels")
+    TestRunner:eq(XrayParser.categoryLabel(d, "bogus_cat"), "bogus_cat")
+end)
+
+TestRunner:suite("type inference — schema-unique keys decide (2026-09-02)")
+
+TestRunner:test("typeless nonfiction JSON with an empty locations list parses as nonfiction", function()
+    local d = XrayParser.parse('{"key_figures":[{"name":"A","role":"R","description":"d"}],'
+        .. '"locations":[],"core_concepts":[],"terminology":[{"term":"t","definition":"x"}]}')
+    TestRunner:eq(d and d.type, "nonfiction")
+    local counts = {}
+    for _idx, c in ipairs(XrayParser.getCategories(d)) do counts[c.key] = #(c.items or {}) end
+    TestRunner:eq(counts.key_figures, 1, "the nonfiction categories render")
+    TestRunner:eq(counts.terminology, 1)
+end)
+
+TestRunner:test("fiction and academic still infer from their own keys; an explicit type wins", function()
+    TestRunner:eq(XrayParser.parse('{"characters":[],"locations":[]}').type, "fiction")
+    TestRunner:eq(XrayParser.parse('{"key_concepts":[],"locations":[]}').type, "academic")
+    TestRunner:eq(XrayParser.parse('{"type":"fiction","key_figures":[]}').type, "fiction",
+        "explicit type is never overridden")
+end)
+
+TestRunner:test("shared keys alone still validate, on the pre-existing first-match order", function()
+    local d = XrayParser.parse('{"locations":[{"name":"Harbor","description":"d"}]}')
+    TestRunner:ok(d and not d.error, "valid")
+    TestRunner:eq(d.type, "fiction")
 end)
 
 print(string.rep("-", 50))

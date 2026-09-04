@@ -86,6 +86,9 @@ local FULL_METADATA = {
     full_document = true,
     used_reasoning = true,
     web_search_used = true,
+    tokens_in = 120000,
+    tokens_out = 9500,
+    tokens_reasoning = 3000,
     used_research_mode = true,
     updated_by_auto = true,
     -- 50(f) FULL-posture ahead-install stamp (revert provenance)
@@ -109,6 +112,7 @@ local FULL_METADATA = {
     merged_from_books = "First Book; Second Book",
     -- Category stamp (presets v0.21): lineage's built categories, csv of group ids
     xray_categories = "people,events",
+    xray_depth = "light",
     edited_at = 1787000000,
     -- Groups round (D): the dated fold ledger behind that display string.
     -- Second record is the transitive/legacy shape — title only.

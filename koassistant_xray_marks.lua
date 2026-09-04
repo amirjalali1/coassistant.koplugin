@@ -79,7 +79,7 @@ local SCAN_SETTLE_S = 0.3
 --   term_hits = {},    -- term text (lower) -> { by_page = {[page] = {{start, e},...}},
 --                      -- pages = sorted unique page list } — whole-book,
 --                      -- searched at most once per term per session
---   page_marks,        -- current page: { {x,y,w,h, name}, ... } — FULL word
+--   page_marks,        -- current page: { {x,y,w,h, name, text}, ... } — FULL word
 --                      -- boxes, the tap targets (round 2, d2)
 --   paint_boxes,       -- same-line-merged union rects the strips paint from
 --                      -- (round 3: overlapping strips double-painted each
@@ -191,23 +191,38 @@ local function ensureIndex(plugin, pageno)
     -- with it off the key drops its "|ahead:" part, so a flip rebuilds the
     -- index on the next sync/scan by itself. Round 3: book override > global
     -- via the marking resolver, like the other marking keys.
-    st.ahead = nil
+    -- B269: the ladder is loaded once per disk change; the ONE rung the
+    -- peek may read is re-picked below on every call, from the reader's
+    -- position (pure arithmetic — the index key carries the pick, so a
+    -- page turn into the next checkpoint's stretch rebuilds by itself)
+    st.ladder = nil
     local marks_feats = plugin.settings and plugin.settings:readSetting("features") or {}
     if require("koassistant_book_settings").resolveXrayMarking(
         plugin.ui and plugin.ui.doc_settings, marks_feats).ahead then
-      local live_p = st.live and (st.live.full_document and 1.0
-        or tonumber(st.live.progress_decimal)) or 0
-      for _idx, rg in ipairs(ActionCache.getXrayLadder(st.file)) do
-        local p = rg.full_document and 1.0 or tonumber(rg.progress_decimal) or 0
-        if rg.result and not rg.intro and p > live_p + 0.005 then
-          if not st.ahead or p > st.ahead.p then
-            st.ahead = { result = rg.result, p = p, stamp = tostring(rg.timestamp) }
-          end
-        end
-      end
+      st.ladder = ActionCache.getXrayLadder(st.file)
+    end
+  end
+  st.ahead = nil
+  if st.ladder and #st.ladder > 0 then
+    local live_p = st.live and (st.live.full_document and 1.0
+      or tonumber(st.live.progress_decimal)) or 0
+    local total = plugin.ui and plugin.ui.document and plugin.ui.document.info
+      and plugin.ui.document.info.number_of_pages
+    local position = (pageno and total and total > 0) and (pageno / total) or nil
+    local rg = require("koassistant_xray_auto").pickAheadRung(st.ladder, live_p, position)
+    if rg then
+      st.ahead = { result = rg.result, stamp = tostring(rg.timestamp),
+        p = rg.full_document and 1.0 or tonumber(rg.progress_decimal) or 0 }
     end
   end
   local art = pickArtifact()
+  -- Predecessor tier (S2 Q4, ref #90): the nearest earlier X-Rayed book in
+  -- the group marks too — marked = findable, and the lookup/route surfaces
+  -- now answer from it. Memoized inside ActionCache (stamp-keyed), so the
+  -- steady-state cost here is stats, not parses. A book with NO artifacts
+  -- of its own still marks its predecessor's entities (the "never X-Rayed
+  -- this volume" case).
+  local group_list, group_stamp = ActionCache.groupXrays(st.file)
   -- Round 5: ALL section X-Rays fold in, range-free — the lookup/intercept
   -- surfaces search every section regardless of range (searchAllXrays), so
   -- a section-only entity was findable-but-never-marked outside its span
@@ -215,7 +230,7 @@ local function ensureIndex(plugin, pageno)
   -- Lloyd" matched lookups everywhere and marks nowhere). Marked = findable,
   -- one truth; the spoiler angle is covered by the round-7 ruling (installed
   -- content reveals through its coverage — sections are installed content).
-  if not art and #(st.sections or {}) == 0 then
+  if not art and #(st.sections or {}) == 0 and #group_list == 0 then
     st.entities = nil
     st.artifact_key = nil
     return
@@ -228,6 +243,7 @@ local function ensureIndex(plugin, pageno)
     key = key .. "|ahead:" .. st.ahead.stamp
   end
   key = key .. "|" .. st.stamps
+  key = key .. "|group:" .. group_stamp
   if st.artifact_key == key and st.entities then return end
   local XrayParser = require("koassistant_xray_parser")
   local user_aliases = ActionCache.getUserAliases(st.file)
@@ -259,10 +275,77 @@ local function ensureIndex(plugin, pageno)
         skipped[cat.key] = (skipped[cat.key] or 0) + #cat.items
       end
     end
+    return data
   end
-  if art then addFrom(art.result) end
+  local main_data
+  if art then main_data = addFrom(art.result) end
   for _idx, s in ipairs(st.sections or {}) do addFrom(s.data.result) end
+  -- Carried tier (S1 D1/Q1, ref #90): the ledger's stubs mark DOTTED like
+  -- live entities — the identity is known and spoiler-safe — and OUTRANK the
+  -- ahead peek (first-writer-wins keeps an ahead duplicate from re-tagging
+  -- a carried name as dashed). Position in this chain: after the position
+  -- truth (main + sections), before the peek.
+  if main_data then
+    for _idx, e in ipairs(XrayParser.buildLedgerMarkEntities(main_data)) do
+      local nk = type(e.name) == "string" and e.name:lower() or nil
+      if not (nk and seen_names[nk]) then
+        if nk then seen_names[nk] = true end
+        ents[#ents + 1] = e
+        included[e.category_key] = (included[e.category_key] or 0) + 1
+      end
+    end
+  end
+  -- Predecessor tier (S2 Q4, ref #90): the nearest earlier book's entities
+  -- and ITS carried list mark DOTTED like live ones (already-read content;
+  -- the card carries the "From <title>" provenance). After every local
+  -- source, before the peek — a local duplicate keeps its own style.
+  -- S4: every group book the direction rule allows (earlier first, later
+  -- only while unprotected, every member of a project) — same style
+  for _g, g in ipairs(group_list) do
+    for _idx, e in ipairs(XrayParser.buildMarkEntities(g.data)) do
+      local nk = type(e.name) == "string" and e.name:lower() or nil
+      if not (nk and seen_names[nk]) then
+        if nk then seen_names[nk] = true end
+        ents[#ents + 1] = e
+        included[e.category_key] = (included[e.category_key] or 0) + 1
+      end
+    end
+    for _idx, e in ipairs(XrayParser.buildLedgerMarkEntities(g.data)) do
+      local nk = type(e.name) == "string" and e.name:lower() or nil
+      if not (nk and seen_names[nk]) then
+        if nk then seen_names[nk] = true end
+        ents[#ents + 1] = e
+        included[e.category_key] = (included[e.category_key] or 0) + 1
+      end
+    end
+  end
   if st.ahead then addFrom(st.ahead.result, true) end
+  -- Cross-entity containment (B266): an entity whose term sits inside
+  -- another entity's longer handle ("Kubrick" in "Vivian Kubrick") records
+  -- those entities; the paint pass drops its hits that lie inside theirs.
+  -- Index-time only, so the per-turn scan pays nothing for it.
+  for i, a in ipairs(ents) do
+    local longer
+    for j, b in ipairs(ents) do
+      if i ~= j then
+        local hit = false
+        for _ta, ta in ipairs(a.terms) do
+          for _tb, tb in ipairs(b.terms) do
+            if XrayParser.handleContainsWord(tb.norm, ta.norm) then
+              hit = true
+              break
+            end
+          end
+          if hit then break end
+        end
+        if hit then
+          longer = longer or {}
+          longer[#longer + 1] = b.name
+        end
+      end
+    end
+    a.longer = longer
+  end
   st.entities = #ents > 0 and ents or nil
   st.artifact_key = key
   local function tally(t)
@@ -279,6 +362,7 @@ local function ensureIndex(plugin, pageno)
   end
   logger.dbg("KOAssistant marks: index rebuilt from " .. src
     .. " +" .. tostring(#(st.sections or {})) .. " sections"
+    .. (#group_list > 0 and (" +group:" .. #group_list) or "")
     .. (st.ahead and (" +ahead@" .. math.floor(st.ahead.p * 100 + 0.5) .. "%") or "")
     .. ": " .. tally(included)
     .. (next(skipped) and (" | skipped: " .. tally(skipped)) or ""))
@@ -297,6 +381,16 @@ local function blockingAffix(s)
   if s == "'s" or s == "\226\128\153s" then return false end
   if s:find("%a") or s:find("[\128-\255]") then return true end
   return false
+end
+
+--- B265: crengine reports a suffix for any match that does not end on a
+--- visible word end, so a term ending in punctuation ("D.B.", "Jr.") gets
+--- the NEXT word as its suffix on every occurrence and was never marked.
+--- When the term's own edge is a non-word char, the affix on that side
+--- describes a neighbour, not a mid-word leftover; ignore it.
+local function edgeIsWordChar(term_text, side)
+  local ch = side == "prefix" and term_text:sub(1, 1) or term_text:sub(-1)
+  return ch ~= "" and (ch:find("%w") ~= nil or ch:find("[\128-\255]") ~= nil)
 end
 
 --- Whole-doc hit index for one term: hits bucketed per page plus the sorted
@@ -323,8 +417,9 @@ local function searchTerm(document, term)
   if res then
     for _i, r in ipairs(res) do
       local keep = true
-      if not term.regex and (blockingAffix(r.matched_word_prefix)
-          or blockingAffix(r.matched_word_suffix)) then
+      if not term.regex
+          and ((edgeIsWordChar(term.text, "prefix") and blockingAffix(r.matched_word_prefix))
+            or (edgeIsWordChar(term.text, "suffix") and blockingAffix(r.matched_word_suffix))) then
         keep = false
       end
       if keep then
@@ -485,10 +580,12 @@ function XrayMarks._scanTick(plugin, pageno, token, hay)
     local paint_t = time.now()
     local dbg = st.debug and { marked = {} } or nil
     local marks = {}
+    -- Pass 1: hits on this page per entity (pageno+1 covers two-page
+    -- spreads) and, for the spacing window, the entity's nearest hit page
+    -- BEFORE this page
+    local per_ent, hits_by_name = {}, {}
     for _i, ent in ipairs(st.entities) do
       if not st.families or st.families[ent.family] then
-        -- Hits on this page (pageno+1 covers two-page spreads) and, for the
-        -- spacing window, the entity's nearest hit page BEFORE this page
         local page_hits = {}
         local prev_page
         for _j, term in ipairs(ent.terms) do
@@ -498,7 +595,11 @@ function XrayMarks._scanTick(plugin, pageno, token, hay)
               local bucket = th.by_page[p]
               if bucket then
                 for _k, h in ipairs(bucket) do
-                  page_hits[#page_hits + 1] = h
+                  -- The matched TEXT rides with the hit: a mark tap must
+                  -- open the card on the words the reader tapped, never on
+                  -- the entry name (an alias mark printing the entry name
+                  -- revealed the alias link on sight)
+                  page_hits[#page_hits + 1] = { h = h, text = term.text }
                 end
               end
             end
@@ -513,6 +614,35 @@ function XrayMarks._scanTick(plugin, pageno, token, hay)
             end
           end
         end
+        per_ent[#per_ent + 1] = { ent = ent, hits = page_hits, prev_page = prev_page }
+        hits_by_name[ent.name] = page_hits
+      end
+    end
+    -- Pass 2: containment (B266) — a hit lying inside a longer entity's hit
+    -- on this page is that entity's mention (xpointer range comparison on
+    -- the memo, no box work); then spacing + boxes
+    for _i, pe in ipairs(per_ent) do
+      local ent, page_hits, prev_page = pe.ent, pe.hits, pe.prev_page
+      if ent.longer and #page_hits > 0 then
+        local kept = {}
+        for _k, ph in ipairs(page_hits) do
+          local inside = false
+          for _l, lname in ipairs(ent.longer) do
+            for _m, lh in ipairs(hits_by_name[lname] or {}) do
+              local ok1, c1 = pcall(ui.document.compareXPointers, ui.document, lh.h.start, ph.h.start)
+              local ok2, c2 = pcall(ui.document.compareXPointers, ui.document, ph.h.e, lh.h.e)
+              if ok1 and ok2 and c1 and c2 and c1 >= 0 and c2 >= 0 then
+                inside = true
+                break
+              end
+            end
+            if inside then break end
+          end
+          if not inside then kept[#kept + 1] = ph end
+        end
+        page_hits = kept
+      end
+      do
         -- Spacing window: the entity appeared within the last N pages —
         -- stay quiet (math.huge = first appearance only). Measured from
         -- book positions, so it is deterministic under back-jumps too.
@@ -520,7 +650,8 @@ function XrayMarks._scanTick(plugin, pageno, token, hay)
             and (pageno - prev_page) < st.spacing
         if #page_hits > 0 and not suppressed then
           local ent_done = false
-          for _k, h in ipairs(page_hits) do
+          for _k, ph in ipairs(page_hits) do
+            local h = ph.h
             -- Off-view positions return no/off-screen boxes; y-filter drops
             local bok, bxs = pcall(ui.document.getScreenBoxesFromPositions,
               ui.document, h.start, h.e, true)
@@ -530,7 +661,7 @@ function XrayMarks._scanTick(plugin, pageno, token, hay)
                 if box.y and box.y >= 0 and box.h and box.h > 0 then
                   marks[#marks + 1] = { x = box.x, y = box.y,
                     w = box.w, h = box.h, name = ent.name,
-                    ahead = ent.ahead }
+                    text = ph.text, ahead = ent.ahead }
                   added = true
                 end
               end
@@ -664,7 +795,9 @@ function XrayMarks.tapTarget(plugin, ges)
   for _i, m in ipairs(marks) do
     if tx >= m.x - pad and tx <= m.x + m.w + pad
         and ty >= m.y - pad and ty <= m.y + m.h + pad then
-      return m.name, { x = m.x, y = m.y, w = m.w, h = m.h }
+      -- The tapped TEXT (name or alias as it stands in the book), so the
+      -- card resolves it like a long-press would and shows what was tapped
+      return m.text or m.name, { x = m.x, y = m.y, w = m.w, h = m.h }
     end
   end
   return nil

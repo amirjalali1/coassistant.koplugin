@@ -37,6 +37,7 @@ local util = require("util")
 local _ = require("koassistant_gettext")
 local Screen = Device.screen
 local MD = require("apps/filemanager/lib/md")
+local MathRender = require("koassistant_math")
 local SpinWidget = require("ui/widget/spinwidget")
 local UIConstants = require("koassistant_ui.constants")
 local Languages = require("koassistant_languages")
@@ -877,8 +878,75 @@ end
 -- back. Stacked blocks always fit the viewer width. Tune this to taste.
 local WIDE_TABLE_COLS = 3
 
+-- B066: two cheap robustness pre-passes ahead of luamd, one chokepoint for
+-- every MD() call site. (The third, footnote escaping, is unnecessary:
+-- preprocessBrackets already entity-escapes "[^1]" — probed 2026-08-25.)
+--  1. Fence heal: an odd number of ``` fences (a response cut short inside a
+--     code block) makes luamd throw (md.lua:280, match on nil) and the whole
+--     viewer falls back to plain text; append the closing fence instead.
+--  2. Math protection: inside $...$ / $$...$$ spans, luamd's emphasis pass
+--     pairs underscores/asterisks ACROSS spans ("$a_1$ and $b_2$" -> <em>);
+--     entity-escape them so the math text renders literally and intact.
+--     Since #105 (2026-09-02) applyMath converts math spans to HTML AHEAD of
+--     this pass, so the shield only meets spans it left alone (toggle off,
+--     prose like "$5 and 10$").
+--  3. List continuation join (#90, 2026-08-26, from an exported Recap): a
+--     bullet whose body sits on the NEXT indented line ("* **label**:\n  body")
+--     is standard lazy continuation, but luamd closes the <li> at the line
+--     end and emits the body as a <p> SIBLING inside the <ul>, which MuPDF
+--     renders as an empty bullet (Text mode showed the bodies). Join such
+--     lines onto their item; nested items, blank lines and fences are kept.
+local function joinListContinuations(text)
+    local lines = {}
+    for line in text:gmatch("([^\n]*)\n?") do lines[#lines + 1] = line end
+    if #lines > 0 and lines[#lines] == "" then lines[#lines] = nil end
+    local out, in_fence, i = {}, false, 1
+    local function isItem(l)
+        return l:match("^%s*[%*%-%+]%s") or l:match("^%s*%d+[%.%)]%s")
+    end
+    while i <= #lines do
+        local line = lines[i]
+        if line:match("^%s*```") then in_fence = not in_fence end
+        if not in_fence and isItem(line) then
+            local j = i + 1
+            while lines[j] and lines[j]:match("^%s%s+%S") and not isItem(lines[j])
+                and not lines[j]:match("^%s*```") do
+                line = line:gsub("%s+$", "") .. " " .. lines[j]:gsub("^%s+", "")
+                j = j + 1
+            end
+            i = j
+        else
+            i = i + 1
+        end
+        out[#out + 1] = line
+    end
+    return table.concat(out, "\n")
+end
+
+local function healMarkdown(text)
+    if not text then return text end
+    -- 1. fence heal
+    local fences = 0
+    for line in text:gmatch("[^\n]*") do
+        if line:match("^%s*```") then fences = fences + 1 end
+    end
+    if fences % 2 == 1 then
+        text = text .. "\n```\n"
+    end
+    -- 2. math protection ($$...$$ first, then single-$ spans on one line)
+    local function shield(body)
+        return (body:gsub("_", "&#95;"):gsub("%*", "&#42;"))
+    end
+    text = text:gsub("%$%$(.-)%$%$", function(body) return "$$" .. shield(body) .. "$$" end)
+    text = text:gsub("%$([^%$\n]-%S)%$", function(body) return "$" .. shield(body) .. "$" end)
+    -- 3. list continuation join
+    text = joinListContinuations(text)
+    return text
+end
+
 local function preprocessMarkdownTables(text)
     if not text then return text end
+    text = healMarkdown(text)
 
     local lines = {}
     for line in text:gmatch("([^\n]*)\n?") do
@@ -1057,6 +1125,19 @@ local function autoLinkUrls(text)
     return result
 end
 
+-- LaTeX math → readable HTML (#105, koassistant_math.lua). Display-only and
+-- FIRST in the markdown pre-pass: it must see raw "[" / "]" before
+-- preprocessBrackets entity-escapes them, and its output carries no "$", so
+-- healMarkdown's shield only ever meets spans this pass left alone (the toggle
+-- off, or prose like "$5 and 10$"). Saves, copies, exports and the plain-text
+-- view keep the original notation.
+local function applyMath(viewer, text)
+    if viewer.render_math == false or not MathRender.hasMath(text) then
+        return text
+    end
+    return MathRender.render(text)
+end
+
 -- Pre-process brackets to prevent them being rendered as links
 -- Square brackets in markdown can be interpreted as link references
 local function preprocessBrackets(text)
@@ -1166,6 +1247,12 @@ p {
     margin: 0.5em 0;
 }
 
+/* display math ($$ / \[ \]) rendered by koassistant_math.lua */
+p.koa-math {
+    text-align: center;
+    margin: 0.6em 0;
+}
+
 table {
     border-collapse: collapse;
     margin: 0.5em 0;
@@ -1208,6 +1295,7 @@ local ChatGPTViewer = InputContainer:extend {
   alignment = "left",
   justified = false,
   render_markdown = true, -- Convert markdown to HTML for display
+  render_math = true, -- Render LaTeX math as readable formulas (markdown mode only)
   strip_markdown_in_text_mode = true, -- Strip markdown syntax in plain text mode
   markdown_font_size = 20, -- Font size for markdown rendering
   text_align = "auto", -- "auto" (per direction) | "left" | "justify" | "right"
@@ -1705,6 +1793,9 @@ function ChatGPTViewer:init()
       self.render_markdown and "markdown" or "plain text")
   elseif self.configuration.features and self.configuration.features.render_markdown ~= nil then
     self.render_markdown = self.configuration.features.render_markdown
+  end
+  if self.configuration.features and self.configuration.features.render_math == false then
+    self.render_math = false
   end
   if self.configuration.features and self.configuration.features.strip_markdown_in_text_mode ~= nil then
     self.strip_markdown_in_text_mode = self.configuration.features.strip_markdown_in_text_mode
@@ -3118,7 +3209,7 @@ function ChatGPTViewer:init()
     if needs_rtl_fix then
       source_text = fixIPABidi(source_text)
     end
-    local auto_linked = autoLinkUrls(source_text)
+    local auto_linked = autoLinkUrls(applyMath(self, source_text))
     local bracket_escaped = preprocessBrackets(auto_linked)
     local preprocessed_text = preprocessMarkdownTables(bracket_escaped)
     local html_body, err = MD(preprocessed_text, {})
@@ -4682,7 +4773,7 @@ function ChatGPTViewer:update(new_text, scroll_to_bottom)
   if self.render_markdown then
     -- Convert Markdown to HTML and update the ScrollHtmlWidget
     -- 1. Auto-linkify plain URLs, 2. Escape non-link brackets, 3. Convert tables
-    local auto_linked = autoLinkUrls(new_text)
+    local auto_linked = autoLinkUrls(applyMath(self, new_text))
     local bracket_escaped = preprocessBrackets(auto_linked)
     local preprocessed_text = preprocessMarkdownTables(bracket_escaped)
     local html_body, err = MD(preprocessed_text, {})
@@ -4865,7 +4956,7 @@ function ChatGPTViewer:rebuildScrollWidget()
     if needs_rtl_fix then
       source_text = fixIPABidi(source_text)
     end
-    local auto_linked = autoLinkUrls(source_text)
+    local auto_linked = autoLinkUrls(applyMath(self, source_text))
     local bracket_escaped = preprocessBrackets(auto_linked)
     local preprocessed_text = preprocessMarkdownTables(bracket_escaped)
     local html_body, err = MD(preprocessed_text, {})

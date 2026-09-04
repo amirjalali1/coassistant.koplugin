@@ -394,6 +394,39 @@ local ModelLists = {
     hyperbolic = {
         "meta-llama/Llama-3.3-70B-Instruct",        -- seed (unverified)
     },
+    -- NVIDIA (build.nvidia.com / NIM). CURATED FROM A LIVE PROBE 2026-08-20:
+    -- of 77 chat ids in their public /v1/models, only 21 answered — 47 returned
+    -- 404 and 9 accepted the connection and never sent a byte (a silent hang
+    -- with no error to render, e.g. deepseek-ai/deepseek-v4-flash-0731 and
+    -- meta/llama-3.3-70b-instruct). ONLY add ids here after they answer live;
+    -- their catalog is aspirational and "Fetch models" will re-import the dead.
+    nvidia = {
+        "nvidia/nemotron-3-super-120b-a12b",        -- default: tools + forced tools + effort all probed
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "nvidia/nemotron-3-nano-30b-a3b",           -- ultrafast (~0.15s measured 2026-08-29, 3 samples)
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", -- fast (~1.2s); battery 2026-08-29: effort low/none ok, SSE ok, 65536 ok; forced tools 503 ~1 in 3, so no tools grant
+        "openai/gpt-oss-120b",                      -- answers live 2026-08-29 (reachability only)
+        "openai/gpt-oss-20b",
+        "minimaxai/minimax-m3",
+        -- RETIRED BY NVIDIA (HTTP 410 Gone, end of life 2026-08-26/28, re-probed
+        -- 2026-08-29; the reader-visible "HTTP 400/404" report on 0.21.2):
+        --   nvidia/nvidia-nemotron-nano-9b-v2, nvidia/llama-3.3-nemotron-super-49b-v1.5,
+        --   meta/llama-3.1-70b-instruct, meta/llama-3.1-8b-instruct,
+        --   stepfun-ai/step-3.7-flash, nvidia/nemotron-mini-4b-instruct
+        -- PROBED 2026-08-29 AND WITHHELD (model_audit has no nvidia adapter yet;
+        -- legs run by hand):
+        --   moonshotai/kimi-k3 -- answers, but 429 on every follow-up call even
+        --     paced 20s apart (roughly one request per minute on our tier).
+        --   mistralai/mistral-nemotron -- HTTP 500 on 5 of 8 calls.
+        --   deepseek-ai/deepseek-v4-flash-0731 -- 15-45s for a one-word answer,
+        --     one 529; deepseek-v4-pro-0813 still hangs.
+        -- EXCLUDED, do not re-add without re-probing (device round 2026-08-20):
+        --   nvidia/nemotron-3.5-lightning-30b-a3b -- reasoning never terminates on
+        --     constraint-shaped prompts ("translate this", "answer in N words"):
+        --     content comes back byte-identical to reasoning_content with no answer
+        --     after it, on every sample. Only reasoning_effort="none" works, and our
+        --     default stance sends nothing, so reasoning is ON by default.
+    },
     nebius = {
         "meta-llama/Llama-3.3-70B-Instruct",        -- seed (unverified)
         "deepseek-ai/DeepSeek-V4",                  -- seed (unverified)
@@ -519,6 +552,7 @@ local ModelLists = {
             doubao = "doubao-seed-2.0-pro-32k",
             zai = "glm-5.2",
             perplexity = "sonar-pro",
+            nvidia = "nvidia/nemotron-3-ultra-550b-a55b",
         },
 
         -- Balanced performance and cost
@@ -541,6 +575,7 @@ local ModelLists = {
             doubao = "doubao-seed-2.0-pro-32k",
             zai = "glm-5",
             perplexity = "sonar",
+            nvidia = "nvidia/nemotron-3-super-120b-a12b",
         },
 
         -- Optimized for speed and lower cost
@@ -563,6 +598,7 @@ local ModelLists = {
             doubao = "doubao-seed-2.0-lite",
             zai = "glm-5-turbo",
             perplexity = "sonar",
+            nvidia = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",  -- ~1.2s; lightning pulled: see the array note
         },
 
         -- Smallest/cheapest models for basic tasks
@@ -585,6 +621,7 @@ local ModelLists = {
             doubao = "doubao-seed-2.0-lite",
             zai = "glm-4.7-flash",
             perplexity = "sonar",
+            nvidia = "nvidia/nemotron-3-nano-30b-a3b",  -- ~0.15s measured (3 samples 2026-08-29); replaces the retired nano-9b-v2 (410, EOL 2026-08-26)
         },
     },
 
@@ -697,6 +734,10 @@ local ModelLists = {
         hyperbolic = {
             api_list = "https://api.hyperbolic.xyz/v1/models",
             docs = "https://docs.hyperbolic.xyz/",
+        },
+        nvidia = {
+            api_list = "https://integrate.api.nvidia.com/v1/models",
+            docs = "https://build.nvidia.com/",
         },
         nebius = {
             api_list = "https://api.studio.nebius.com/v1/models",

@@ -45,30 +45,8 @@ end
 --- @param filename string The sidecar filename
 --- @return boolean migrated Whether a file was migrated to current_path
 local function migrateSidecarIfNeeded(document_path, current_path, filename)
-    local current = G_reader_settings:readSetting("document_metadata_folder", "doc")
-    local alternates = { "doc", "dir" }
-    if DocSettings.isHashLocationEnabled() then
-        table.insert(alternates, "hash")
-    end
-    for _idx, loc in ipairs(alternates) do
-        if loc ~= current then
-            local alt_dir = DocSettings:getSidecarDir(document_path, loc)
-            local alt_path = alt_dir .. "/" .. filename
-            if lfs.attributes(alt_path, "mode") == "file" then
-                local util = require("util")
-                local dir = current_path:match("(.*/)") or ""
-                if dir ~= "" then util.makePath(dir) end
-                local ok, err = os.rename(alt_path, current_path)
-                if ok then
-                    logger.info("KOAssistant: Migrated sidecar file", filename, "from alternate storage location")
-                    return true
-                else
-                    logger.warn("KOAssistant: Failed to migrate sidecar file", filename, ":", err)
-                end
-            end
-        end
-    end
-    return false
+    -- the shared registry recipe (storage sweep 2026-09-03)
+    return require("koassistant_storage_registry").migrateSidecarFile(document_path, current_path, filename)
 end
 
 -- Sanitize a string for use as a filename
@@ -120,7 +98,7 @@ end
 function Notebook.generateFilename(document_path, doc_props)
     if not doc_props then
         local doc_settings = DocSettings:open(document_path)
-        doc_props = doc_settings:readSetting("doc_props")
+        doc_props = SafeDocSettings.overlayCustomProps(doc_settings:readSetting("doc_props"), document_path)
     end
 
     local title = doc_props and (doc_props.display_title or doc_props.title) or nil
@@ -155,7 +133,7 @@ end
 function Notebook.generateFrontmatter(document_path, doc_props)
     if not doc_props then
         local doc_settings = DocSettings:open(document_path)
-        doc_props = doc_settings:readSetting("doc_props")
+        doc_props = SafeDocSettings.overlayCustomProps(doc_settings:readSetting("doc_props"), document_path)
     end
 
     local parts = {"---"}
@@ -268,8 +246,8 @@ function Notebook.getPath(document_path)
         return base_dir .. "/" .. entry.filename
     end
 
-    -- Fallback: check DocSettings ref
-    local doc_settings = DocSettings:open(document_path)
+    -- Fallback: check the per-book ref (BookStore facade via SafeDocSettings)
+    local doc_settings = SafeDocSettings.resolve(document_path)
     local ref = doc_settings:readSetting("koassistant_notebook_ref")
     if ref and ref.filename then
         return base_dir .. "/" .. ref.filename
@@ -769,7 +747,7 @@ function Notebook.create(document_path)
     -- Resolved via SafeDocSettings: this instance later WRITES the notebook ref,
     -- and a fresh instance for an open book would clobber metadata.lua (issue #72)
     local doc_settings = SafeDocSettings.resolve(document_path)
-    local doc_props = doc_settings:readSetting("doc_props")
+    local doc_props = SafeDocSettings.overlayCustomProps(doc_settings:readSetting("doc_props"), document_path)
 
     local notebook_path, final_filename
     if location == "sidecar" then
@@ -877,8 +855,8 @@ function Notebook.resolvePathForLocation(document_path, location, features, inde
         return base_dir .. "/" .. index_entry.filename
     end
 
-    -- Check DocSettings ref
-    local doc_settings = DocSettings:open(document_path)
+    -- Check the per-book ref (BookStore facade via SafeDocSettings)
+    local doc_settings = SafeDocSettings.resolve(document_path)
     local ref = doc_settings:readSetting("koassistant_notebook_ref")
     if ref and ref.filename then
         return base_dir .. "/" .. ref.filename
@@ -956,7 +934,7 @@ function Notebook.migrateAll(from_location, to_location, features)
             if base_dir then
                 util.makePath(base_dir)
                 local ds = SafeDocSettings.resolve(nb.doc_path)
-                local doc_props = ds:readSetting("doc_props")
+                local doc_props = SafeDocSettings.overlayCustomProps(ds:readSetting("doc_props"), nb.doc_path)
                 local filename = Notebook.generateFilename(nb.doc_path, doc_props)
                 new_path = base_dir .. "/" .. filename
 

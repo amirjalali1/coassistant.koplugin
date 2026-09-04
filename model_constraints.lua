@@ -295,6 +295,40 @@ ModelConstraints.capabilities = {
             "grok-4",
         },
     },
+    -- NVIDIA (build.nvidia.com). Every entry below was probed live 2026-08-20.
+    -- NO web-search capability by design: the chat wire 400s on any non-`function`
+    -- tool type, and the Responses endpoint silently DISCARDS {type="web_search"}
+    -- (200, but empty annotations and the model says it has no internet access).
+    nvidia = {
+        -- reasoning_effort verified HONOURED on the nemotron-3 family: low ~140
+        -- chars of reasoning_content vs high ~540 on one prompt, 3 samples each,
+        -- and "none" returns 0.
+        reasoning = {
+            "nvidia/nemotron-3",
+        },
+        -- Function calling. EXACT ids, never a family prefix: within the very same
+        -- nemotron-3 family some models emit structured tool_calls under
+        -- tool_choice="required" while others answer with the call as PROSE JSON
+        -- in `content` (tool_calls null, finish_reason "stop"), which the
+        -- book-tools gather phase cannot consume.
+        --
+        -- Granted only where BOTH auto and forced returned real tool_calls across
+        -- repeated samples (device round 2026-08-20). An HTTP 200 proves nothing
+        -- here: the prose answers are all 200s, so the probe must inspect
+        -- message.tool_calls itself. The first pass got this backwards by
+        -- status-code alone.
+        --
+        -- Withheld, with the reason, so nobody widens this again:
+        --   nvidia/nemotron-3-super-120b-a12b  forced -> prose, every sample
+        --   nvidia/nemotron-3-ultra-550b-a55b  forced -> prose intermittently
+        --   openai/gpt-oss-20b                 auto   -> prose intermittently
+        --   minimaxai/minimax-m3               rate-limited, inconclusive
+        -- nano-9b-v2, llama-3.3-nemotron-super-49b, llama-3.1-70b and
+        -- step-3.7-flash were retired by NVIDIA 2026-08-26 (HTTP 410).
+        tools = {
+            "nvidia/nemotron-3-nano-30b-a3b",
+        },
+    },
     perplexity = {
         -- Reasoning models (always-on, but effort is controllable)
         -- sonar-reasoning-pro uses <think> tags, sonar-deep-research also supports effort
@@ -911,6 +945,13 @@ ModelConstraints.reasoning_profiles = {
           options = { "low", "medium", "high" }, default_option = "high",
           stance_map = { minimal = { state = "off" }, maximum = { state = "on", option = "high" } } },
     },
+    nvidia = {
+        -- Probed 2026-08-20: on by default (reasoning_content present with no
+        -- param), effort honoured, and reasoning_effort="none" fully disables.
+        { match = "nvidia/nemotron-3", axis = "effort", default_state = "on", can_disable = true, can_enable = true,
+          options = { "low", "medium", "high" }, default_option = "high", off_option = "none",
+          stance_map = { minimal = { option = "low" }, maximum = { option = "high" } } },
+    },
     groq = {
         { match = "openai/gpt-oss-120b", axis = "effort", default_state = "on", can_disable = false, can_enable = true,
           options = { "low", "medium", "high" }, default_option = "high",
@@ -1350,16 +1391,24 @@ function ModelConstraints.parseMaxTokensError(err_text)
     --  requested 20480 tokens (8192 in the messages, 12288 in the completion)."
     -- Checked FIRST: it also contains completion-token numbers that the
     -- output-cap patterns below must never mistake for a model ceiling.
+    -- OpenRouter (2026-09-03, #106 follow-up): "This endpoint's maximum context
+    -- length is 32768 tokens. However, you requested about 33002 tokens (234 of
+    -- text input, 32768 in the output)." Same arithmetic, different prompt wording;
+    -- every free model with a context at or below the 32,768 default budget failed
+    -- every request until this was recognized.
     local ctx = err_text:match("[Mm]aximum context length[^%d]*(%d+)")
         or err_text:match("context length of only (%d+)")
     if ctx then
         local limit = tonumber(ctx)
         local prompt = tonumber(err_text:match("(%d+)%s+in the messages")
-            or err_text:match("(%d+)%s+tokens? in the messages"))
+            or err_text:match("(%d+)%s+tokens? in the messages")
+            or err_text:match("(%d+)%s+of text input")
+            or err_text:match("(%d+)%s+in the prompt")
+            or err_text:match("(%d+)%s+input tokens"))
         if limit and prompt and limit > prompt then
             local room = limit - prompt - 256  -- margin for chat template overhead
             if room >= 1024 then
-                return { kind = "context", retry_at = room }
+                return { kind = "context", retry_at = room, limit = limit, prompt = prompt }
             end
         end
         return nil  -- context overflow but no computable room: retrying can't help
@@ -1464,6 +1513,28 @@ function ModelConstraints.maybeAppendGemini3GroundingHint(err_msg, provider, mod
         "key in Google AI Studio (confirmed to lift this limit)."
 end
 
+--- The answer budget a handler will put on the wire for this config, derived the
+--- way the handlers derive it (per-minute admission limits need the exact number
+--- to turn a refusal's "Requested M" into the prompt size): the action/user pin
+--- (api_params, or a top-level additional_parameters pin), else the resolver over
+--- the provider's own fallback (provider_settings[provider].additional_parameters
+--- from defaults.lua / the custom-provider defaults, else the handlers' literal
+--- 16384), clamped to the model ceiling. Pure; nil only for an unknown provider
+--- with no fallback at all.
+--- @param provider string|nil
+--- @param model string|nil
+--- @param config table|nil merged request config
+--- @return number|nil
+function ModelConstraints.effectiveMaxTokens(provider, model, config)
+    local pin = config and ((config.api_params and tonumber(config.api_params.max_tokens))
+        or (config.additional_parameters and tonumber(config.additional_parameters.max_tokens)))
+    if pin then return ModelConstraints.clampMaxTokens(provider, model, pin) end
+    local ps = config and config.provider_settings and provider and config.provider_settings[provider]
+    local fallback = (ps and ps.additional_parameters and tonumber(ps.additional_parameters.max_tokens)) or 16384
+    local v = ModelConstraints.resolveMaxTokens(provider, model, fallback)
+    return ModelConstraints.clampMaxTokens(provider, model, v)
+end
+
 --- Append an actionable tip when a request fails because the prompt (usually
 --- extracted book text) is too large for the model/tier. Covers HTTP 413
 --- ("request too large" / "payload too large") and HTTP 400 context_length_exceeded.
@@ -1492,6 +1563,50 @@ function ModelConstraints.maybeAppendContextLimitHint(err_msg, provider, model, 
         or lowered:find("reduce the length of the messages", 1, true)
         or lowered:find("tokens per minute", 1, true)
     if not is_size_error then return err_msg end
+
+    -- Per-minute admission refusal (docs/tpm_admission_plan.md): the plan's
+    -- tokens-per-minute allowance could not admit prompt + requested answer
+    -- budget. The old book-text tip was WRONG for this case (a 211-token
+    -- dictionary lookup was told to lower "Max Text Characters"); say what
+    -- actually happened, with the provider's own numbers.
+    local RateLimits = require("koassistant_rate_limits")
+    -- Context overflow where the PROMPT fits comfortably: the answer budget was the
+    -- problem (OpenRouter free models with small contexts against the 32,768
+    -- default). The book-text advice below would be wrong for that case too.
+    local overflow = ModelConstraints.parseMaxTokensError(err_msg)
+    if overflow and overflow.kind == "context" and overflow.prompt and overflow.limit then
+        return err_msg .. "\n\n" ..
+            "What happened: this model's context window is " .. tostring(overflow.limit) ..
+            " tokens and the request asked for an answer budget (max_tokens) that, together with the " ..
+            tostring(overflow.prompt) .. "-token prompt, exceeds it. KOAssistant resends such a request once " ..
+            "with a smaller answer budget and remembers this model's window for the session. If you keep " ..
+            "seeing this, pick a model with a larger context window."
+    end
+    local refusal = RateLimits.parseRefusal(err_msg)
+    if refusal then
+        local who = (type(provider) == "string" and provider ~= "") and provider or "This provider"
+        local text = "What happened: " .. who .. " counts the answer budget a request asks for " ..
+            "(max_tokens) against your plan's tokens-per-minute allowance before running it. " ..
+            "This request asked for " .. tostring(refusal.requested) .. " tokens in total against an " ..
+            "allowance of " .. tostring(refusal.limit) .. ".\n"
+        -- Which half was too big? The refusal names prompt + budget; the budget we
+        -- sent is the pin or the resolver's default (same derivation as the router).
+        local sent = ModelConstraints.effectiveMaxTokens(provider, model, config)
+        local prompt_tokens = RateLimits.promptTokensFromRefusal(refusal, sent)
+        local budget_was_the_problem = prompt_tokens
+            and (prompt_tokens + RateLimits.MARGIN + RateLimits.FLOOR) <= refusal.limit
+        if budget_was_the_problem then
+            text = text .. "KOAssistant resends such a request once with a smaller answer budget " ..
+                "and remembers the allowance for this session. If you keep seeing this, wait a " ..
+                "minute (the allowance refills) or pick a model or plan with a larger per-minute limit."
+        else
+            text = text .. "The request itself is larger than the allowance, so a smaller answer " ..
+                "budget cannot help: use a smaller scope (a section, \"Up to current position\", " ..
+                "or \"AI knowledge only\" where the action offers a source choice), or a plan/provider " ..
+                "with a larger per-minute limit."
+        end
+        return err_msg .. "\n\n" .. text
+    end
 
     local tip = "Tip: This request was too large for the selected model.\n" ..
         "Actions like X-Ray and Recap send the book's text, which can exceed a model's input limit. Options:\n" ..
@@ -1592,7 +1707,12 @@ function ModelConstraints.isRateLimitError(err_msg)
         or l:find("quota", 1, true)
         or l:find("rate limit", 1, true)
         or l:find("rate_limit", 1, true)
-        or l:find("too many requests", 1, true)) and true or false
+        or l:find("too many requests", 1, true)
+        -- Per-minute admission refusals (Groq sends them as HTTP 413): the
+        -- allowance refills within a minute, so the persistent dialog with
+        -- "Try again" is the right surface, not a 3-second toast.
+        or l:find("tokens per min", 1, true)
+        or l:find("(tpm)", 1, true)) and true or false
 end
 
 --- True when an error message looks like a provider overload/capacity refusal (HTTP 503
@@ -1625,6 +1745,8 @@ function ModelConstraints.maybeAppendRateLimitHint(err_msg, provider, model, con
     if type(err_msg) ~= "string" or err_msg == "" then return err_msg end
     if not ModelConstraints.isRateLimitError(err_msg) then return err_msg end
     if err_msg:find(GROUNDING_TIP_HEAD, 1, true) then return err_msg end
+    -- Admission refusals get their own explanation in maybeAppendContextLimitHint
+    if require("koassistant_rate_limits").parseRefusal(err_msg) then return err_msg end
     local who = (type(provider) == "string" and provider ~= "") and provider or "the provider"
     return err_msg .. "\n\n" ..
         "Tip: this is " .. who .. "'s own rate limit, not a plugin error. These allowances are " ..
@@ -1890,7 +2012,7 @@ end
 ModelConstraints.REASONING_WIRE_KEYS = {
     "thinking", "output_config", "reasoning", "thinking_budget", "thinking_level",
     "deepseek_thinking", "zai_thinking", "sambanova_thinking", "kimi_thinking",
-    "openrouter_reasoning", "requesty_reasoning", "groq_reasoning",
+    "openrouter_reasoning", "requesty_reasoning", "groq_reasoning", "nvidia_reasoning",
     "together_reasoning", "fireworks_reasoning", "xai_reasoning",
     "perplexity_reasoning", "custom_reasoning", "_reasoning",
 }
@@ -1968,6 +2090,10 @@ function ModelConstraints.applyReasoningParams(provider, api_params, decision)
     elseif provider == "requesty" then
         if on then api_params.requesty_reasoning = { effort = decision.effort }
         else api_params.requesty_reasoning = { enabled = false } end
+    elseif provider == "nvidia" then
+        -- "none" fully disables (probed); nvidia.lua puts either onto reasoning_effort.
+        if on then api_params.nvidia_reasoning = { effort = decision.effort }
+        elseif decision.off_option then api_params.nvidia_reasoning = { effort = decision.off_option } end
     elseif provider == "groq" then
         if on then api_params.groq_reasoning = { effort = decision.effort } end
     elseif provider == "together" then

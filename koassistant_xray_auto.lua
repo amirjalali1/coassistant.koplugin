@@ -95,6 +95,15 @@ end
 
 --- Stamp the rate limit at SCHEDULE time (several page turns can pass the gates
 --- inside the deferral window; only the first may schedule).
+--- B261: the inverse of markScheduled. The stamp was set at every schedule
+--- AND chain start but never cleared, so a completed chain left the
+--- page-turn trigger declining silently for a whole cooldown. Cooldown now
+--- means "minimum time between ATTEMPTS after a decline/failure/cancel":
+--- a chain that completes clears it, and an explicit enable clears it.
+function XrayAuto.clearScheduled()
+  last_attempt = nil
+end
+
 function XrayAuto.markScheduled(now)
   last_attempt = now
 end
@@ -266,6 +275,20 @@ end
 
 XrayAuto.LADDER_SPACING = 0.10   -- rung boundaries every 10% (baseline; formula below can widen OR narrow)
 XrayAuto.LADDER_TOLERANCE = 0.005
+-- Promotion reach (2026-08-25 device round, ref #90): a rung may install only
+-- once the reader has REACHED its coverage. Rung positions are snapped to
+-- three decimals, so half a snap unit is the whole allowance for "reached
+-- exactly"; LADDER_TOLERANCE here installed rungs up to half a percent
+-- (a few pages) ahead of the reader, and an alias folded from those pages
+-- went live before the reader met it.
+XrayAuto.PROMOTE_TOLERANCE = 0.0005
+-- Build lag (2026-08-25, maintainer): the NEXT checkpoint starts building only
+-- once the reader is this far PAST the newest built one, i.e. after it has
+-- installed (PROMOTE_TOLERANCE) and the dedup ask has shown. The point is
+-- that install and build are never simultaneous, and that the build bases
+-- on the LIVE copy (edits ride into every later rung). A couple of page
+-- turns; 1% felt like too many on device.
+XrayAuto.BUILD_LAG = 0.003
 XrayAuto.LADDER_MIN_RUNG_PAGES = 45  -- P2(a) floor: a rung must cover at least ~this many pages
                                      -- (round 10: 30 -> 45 — every rung pays a fixed re-send
                                      -- overhead, so short books get fewer, larger calls;
@@ -514,17 +537,19 @@ function XrayAuto.planAutoWork(state)
     return out
   end
   -- One-ahead invariant: a built checkpoint (or live coverage) ahead of the
-  -- reader means there is nothing to do yet
+  -- reader means there is nothing to do yet. "Ahead" reaches BUILD_LAG behind
+  -- the reader: the next build waits until the newest rung has installed and
+  -- the reader moved a few pages past it.
   local ahead = false
   for _idx, r in ipairs(state.ladder or {}) do
     local p = tonumber(r.progress_decimal)
-    if p and r.result and not r.intro and p > pos + XrayAuto.LADDER_TOLERANCE then
+    if p and r.result and not r.intro and p + XrayAuto.BUILD_LAG > pos then
       ahead = true break
     end
   end
   if not ahead and entry and entry.result and not entry.intro then
     local p = tonumber(entry.progress_decimal)
-    if p and p > pos + XrayAuto.LADDER_TOLERANCE then ahead = true end
+    if p and p + XrayAuto.BUILD_LAG > pos then ahead = true end
   end
   if ahead then
     out.reason = "ahead"
@@ -568,9 +593,39 @@ function XrayAuto.pickPromotableRung(ladder, live_progress, position, opts)
   for _idx, rung in ipairs(ladder or {}) do
     local p = tonumber(rung.progress_decimal)
     if p and not rung.full_document
-        and (ahead_ok or p <= position + XrayAuto.LADDER_TOLERANCE)
+        and (ahead_ok or p <= position + XrayAuto.PROMOTE_TOLERANCE)
         and p > (tonumber(live_progress) or 0) + XrayAuto.LADDER_TOLERANCE then
       if not best_p or p > best_p then
+        best, best_p = rung, p
+      end
+    end
+  end
+  return best
+end
+
+--- Pick the ONE rung the identification peek may read (B269, 2026-08-25):
+--- the LOWEST built rung that is past the live coverage AND whose coverage
+--- reaches the reading position — the checkpoint covering the stretch the
+--- reader is in right now. Never the newest: a ladder built to 100% used
+--- to identify an early minor character from the 100% entry, where they
+--- were already an alias of the revealed identity (issue #90). No position
+--- = no peek; a rung not built yet = the name is simply unknown for now.
+--- Shared by the card resolver, the marks index and the exact-route index
+--- so marked == resolvable holds.
+--- @param ladder table Rung array (any order)
+--- @param live_progress number|nil live cache progress 0..1
+--- @param position number|nil reading position 0..1
+--- @return table|nil rung entry
+function XrayAuto.pickAheadRung(ladder, live_progress, position)
+  if type(position) ~= "number" then return nil end
+  local live_p = tonumber(live_progress) or 0
+  local best, best_p
+  for _idx, rung in ipairs(ladder or {}) do
+    local p = rung.full_document and 1.0 or tonumber(rung.progress_decimal)
+    if p and rung.result and not rung.intro
+        and p > live_p + XrayAuto.LADDER_TOLERANCE
+        and p + XrayAuto.LADDER_TOLERANCE >= position then
+      if not best_p or p < best_p then
         best, best_p = rung, p
       end
     end

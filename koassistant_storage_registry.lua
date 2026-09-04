@@ -107,11 +107,13 @@ Registry.SETTINGS_SUBKEYS = {
         "gesture_actions", "markdown_font_size", "export_custom_path",
         "session_chips", "_dismissed_session_chips",
         "minimal_popup_actions",
+        "ollama_num_ctx",           -- ollama context-window cap (model menu row; nil = automatic sizing)
         "xray_default_categories",  -- global default for new X-Rays' category groups (presets v0.21)
+        "xray_default_depth",       -- global default for new X-Rays' depth rung (light/standard/deep; nil = standard)
     },
     internal = {
-        "languages_migrated", "behavior_migrated", "prompts_migrated_v2",
-        "_reasoning_v2_migrated", "_reasoning_hint_shown",
+        "languages_migrated", "behavior_migrated",
+        "_reasoning_v2_migrated",
         "_xray_auto_v2_migrated",
         "_xray_auto_legacy_optin",  -- one-way legacy grant (old master=true users' per-book
                                     -- boolean opt-ins key on it); can NEVER be re-derived
@@ -268,6 +270,13 @@ Registry.entries = {
         reset_in = { "wipe_all" }, uninstall = true,
         notes = "Transient lock; NOT koassistant_-prefixed.",
     },
+    {
+        id = "legacy_chat_storage_version", label = "Orphan early-build version key",
+        location = "global_key", ref = "koassistant_chat_storage_version",
+        category = "internal", legacy = true, backup = false,
+        reset_in = { "wipe_all" }, uninstall = true,
+        notes = "Written by an early 2026 build and never read since; initSettings deletes it when present (storage sweep 2026-09-03).",
+    },
 
     --========================= Sidecar files (per-book .sdr) ==================
     {
@@ -315,45 +324,26 @@ Registry.entries = {
         notes = "Create-ahead prefix versions (rungs, ascending by progress; xray_ecosystem_plan.md §6); promotion source; deleted with the X-Ray.",
     },
 
-    --========================= Sidecar DocSettings keys (per-book) ============
+    --========================= Plugin per-book files (Track 37, 2026-09-02) ===
+    -- Everything the plugin used to keep INSIDE KOReader's metadata.lua (the
+    -- Book Settings keys, chats, notebook ref, DOI cache, last-opened stamp,
+    -- X-Ray coverage-ask stamp) now lives in these two files in the same .sdr
+    -- folder as the other sidecar files. metadata.lua carries NO plugin keys
+    -- any more; the migration + straggler nets live in koassistant_book_store.lua.
     {
-        id = "dockey_book_settings", label = "Per-book settings",
-        location = "sidecar_dockey",
-        ref = function() return require("koassistant_book_settings").SIDECAR_KEYS end,
-        category = "config", backup = false,
-        notes = "Per-book override keys; SIDECAR_KEYS is the owner's source of truth (no dedicated index; per-book DocSettings).",
+        id = "sidecar_book_settings", label = "Per-book settings",
+        location = "sidecar_file", ref = "koassistant_book_settings.lua",
+        category = "config", backup = true,
+        opt_in_reset = true,
+        notes = "Single key `settings` = { koassistant_book_* (BookSettings.SIDECAR_KEYS) + koassistant_notebook_ref + koassistant_doi + koassistant_last_opened }. No dedicated index (per-book, small). Backed up as koassistant_book_settings.json.",
     },
     {
-        id = "dockey_chats", label = "Per-book chats",
-        location = "sidecar_dockey", ref = "koassistant_chats",
-        category = "conversations", backup = true,  -- backed up as JSON today
+        id = "sidecar_chats", label = "Per-book chats",
+        location = "sidecar_file", ref = "koassistant_chats.lua",
+        category = "conversations", backup = true,  -- backed up as JSON
         index_key = "koassistant_chat_index",
         opt_in_reset = true,
-    },
-    {
-        id = "dockey_notebook_ref", label = "Per-book notebook reference",
-        location = "sidecar_dockey", ref = "koassistant_notebook_ref",
-        category = "notebooks", backup = false,
-        index_key = "koassistant_notebook_index",
-        notes = "Currently never cleaned on notebook delete (Track 33 cleanup item).",
-    },
-    {
-        id = "dockey_doi", label = "Per-book DOI cache",
-        location = "sidecar_dockey", ref = "koassistant_doi",
-        category = "artifacts", rebuildable = true, backup = false,
-        notes = "No index; re-resolvable. Registered for visibility.",
-    },
-    {
-        id = "dockey_last_opened", label = "Per-book last-opened timestamp",
-        location = "sidecar_dockey", ref = "koassistant_last_opened",
-        category = "internal", backup = false,
-        notes = "Distinct from the settings-dir koassistant_last_opened.lua pointer.",
-    },
-    {
-        id = "dockey_xray_coverage_asked", label = "Per-book X-Ray coverage-ask stamp",
-        location = "sidecar_dockey", ref = "koassistant_book_xray_coverage_asked",
-        category = "internal", backup = false,
-        notes = "Once-per-book stamp for the first-auto-fire coverage ask (round 19); deliberately not in SIDECAR_KEYS (not an override).",
+        notes = "Single key `chats` = { [chat_id] = chat }. Was the `koassistant_chats` DocSettings key (metadata.lua) until Track 37.",
     },
 
     --========================= Plugin-folder files (USER_FILES) ===============
@@ -403,15 +393,15 @@ Registry.entries = {
         id = "chats_v1_dir", label = "Legacy v1 chats",
         location = "data_dir", ref = "koassistant_chats",
         category = "internal", legacy = true, backup = false,
-        reset_in = { "fresh_start", "wipe_all" }, uninstall = true,
-        notes = "v1 hash-dir storage; superseded by DocSettings v2.",
+        reset_in = { "wipe_all" }, uninstall = true,
+        notes = "v1 hash-dir storage, retired as a storage path in Track 37 (the importer survives). NOT cleared by Fresh Start: a dir left by an old-build restore may still hold un-imported chats.",
     },
     {
         id = "chats_backup_dir", label = "v1→v2 migration backup",
         location = "data_dir", ref = "koassistant_chats.backup",
         category = "internal", backup = false,
         reset_in = { "fresh_start", "wipe_all" }, uninstall = true,
-        notes = "Never purged today (Track 33 cleanup item).",
+        notes = "The import's own copy of already-imported chats. Fresh Start removes it once chat_storage_version >= 2 (storage sweep 2026-09-03; was never purged before).",
     },
     {
         id = "backups_dir", label = "Backups",
@@ -512,6 +502,22 @@ function Registry.backupPluginFiles()
     return out
 end
 
+-- Settings-dir files the backup copies as-is under settings/ (pinned stores,
+-- groups). The settings file itself and the chat stores are handled by their
+-- own paths (settings copy + chats JSON), so they are excluded here. Single
+-- source for the list that used to be a hand copy of the two pinned files in
+-- BOTH createBackup and restoreBackup (groups were missing from both).
+function Registry.backupSettingsFiles()
+    local out = {}
+    for _, e in ipairs(Registry.entries) do
+        if e.location == "settings_dir" and e.backup
+                and e.category ~= "config" and e.category ~= "conversations" then
+            out[#out + 1] = e.ref
+        end
+    end
+    return out
+end
+
 -- Plugin-folder dirs the backup includes (domains/, behaviors/).
 function Registry.backupPluginDirs()
     local out = {}
@@ -532,6 +538,45 @@ function Registry.indexKeys()
         end
     end
     return out
+end
+
+-- ── Sidecar relocation ───────────────────────────────────────────────────────
+-- KOReader's "Book metadata location" moves ONLY its own metadata file. Every
+-- plugin sidecar file follows lazily: when a reader finds its file missing at
+-- the current location, this looks in the other locations and moves it over.
+-- ONE implementation (storage sweep 2026-09-03; was four drifting copies in
+-- action_cache / notebook / pinned_manager / book_store).
+-- @param document_path string
+-- @param current_path string the file's path in the current storage mode
+-- @param filename string
+-- @return boolean moved
+function Registry.migrateSidecarFile(document_path, current_path, filename)
+    local ok_ds, DocSettings = pcall(require, "docsettings")
+    if not ok_ds or type(DocSettings) ~= "table" or not DocSettings.getSidecarDir then return false end
+    local lfs = require("libs/libkoreader-lfs")
+    local current = G_reader_settings:readSetting("document_metadata_folder", "doc")
+    local alternates = { "doc", "dir" }
+    if DocSettings.isHashLocationEnabled and DocSettings.isHashLocationEnabled() then
+        table.insert(alternates, "hash")
+    end
+    for _, loc in ipairs(alternates) do
+        if loc ~= current then
+            local ok_dir, alt_dir = pcall(DocSettings.getSidecarDir, DocSettings, document_path, loc)
+            local alt_path = ok_dir and type(alt_dir) == "string" and alt_dir ~= "" and (alt_dir .. "/" .. filename)
+            if alt_path and lfs.attributes(alt_path, "mode") == "file" then
+                local dir = current_path:match("(.*/)") or ""
+                if dir ~= "" then require("util").makePath(dir) end
+                local ok, err = os.rename(alt_path, current_path)
+                local logger = require("koassistant_logger")
+                if ok then
+                    logger.info("KOAssistant: Migrated sidecar file", filename, "from alternate storage location")
+                    return true
+                end
+                logger.warn("KOAssistant: Failed to migrate sidecar file", filename, ":", err)
+            end
+        end
+    end
+    return false
 end
 
 -- ── Reset preserve-lists (CONSUMED IN PHASE 2) ───────────────────────────────

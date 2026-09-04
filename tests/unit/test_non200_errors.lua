@@ -416,6 +416,55 @@ TestRunner:test("decorateRequestError: grounded 429 gets the grounding tip only"
     TestRunner:assertEqual(out:find(RATE_NEEDLE, 1, true), nil, "generic tip suppressed")
 end)
 
+TestRunner:suite("per-minute admission refusals (docs/tpm_admission_plan.md)")
+
+local GROQ_413 = "Request too large for model `openai/gpt-oss-20b` in organization `org_x` service tier "
+    .. "`on_demand` on tokens per minute (TPM): Limit 8000, Requested 32979, please reduce your message "
+    .. "size and try again."
+
+TestRunner:test("admission refusal: honest explanation replaces the book-text tip", function()
+    local out = ModelConstraints.decorateRequestError(GROQ_413, "groq", "openai/gpt-oss-20b", { features = {} })
+    TestRunner:assertContains(out, "groq/openai/gpt-oss-20b:", "model named")
+    TestRunner:assertContains(out, "counts the answer budget", "explains the mechanism")
+    TestRunner:assertContains(out, "32979", "provider's requested number")
+    TestRunner:assertContains(out, "8000", "provider's limit")
+    TestRunner:assertContains(out, "resends such a request once", "says what the plugin does about it")
+    TestRunner:assertEqual(out:find("Max Text Characters", 1, true), nil, "book-text advice gone")
+    TestRunner:assertEqual(out:find(RATE_NEEDLE, 1, true), nil, "generic wait-and-retry tip suppressed")
+end)
+
+TestRunner:test("admission refusal: prompt alone over the allowance = scope advice", function()
+    local out = ModelConstraints.decorateRequestError(
+        "on tokens per minute (TPM): Limit 8000, Requested 150000, please reduce your message size",
+        "groq", "openai/gpt-oss-120b", { features = {} })
+    TestRunner:assertContains(out, "larger than the allowance", "prompt-too-big branch")
+    TestRunner:assertContains(out, "smaller scope", "scope advice")
+    TestRunner:assertEqual(out:find("resends such a request once", 1, true), nil, "no resend promise")
+end)
+
+TestRunner:test("context overflow caused by the budget: honest tip, no book-text advice", function()
+    local out = ModelConstraints.decorateRequestError(
+        "This endpoint's maximum context length is 32768 tokens. However, you requested about 33002 tokens (234 of text input, 32768 in the output).",
+        "openrouter", "some/free-model:free", { features = {} })
+    TestRunner:assertContains(out, "context window is 32768", "names the window")
+    TestRunner:assertContains(out, "234-token prompt", "names the prompt size")
+    TestRunner:assertContains(out, "resends such a request once", "says what the plugin does")
+    TestRunner:assertEqual(out:find("Max Text Characters", 1, true), nil, "book-text advice gone")
+end)
+
+TestRunner:test("context overflow where the prompt itself is too big keeps the scope advice", function()
+    local out = ModelConstraints.decorateRequestError(
+        "This endpoint's maximum context length is 8192 tokens. However, you requested about 40000 tokens (9000 of text input, 31000 in the output).",
+        "openrouter", "some/free-model:free", { features = {} })
+    TestRunner:assertContains(out, "too large for the selected model", "book-text tip kept")
+end)
+
+TestRunner:test("admission refusal is a rate-limit for the persistent dialog (HTTP 413, no 429 wording)", function()
+    TestRunner:assertEqual(ModelConstraints.isRateLimitError(GROQ_413), true, "413 TPM wording classed as rate limit")
+    TestRunner:assertEqual(ModelConstraints.isRateLimitError("HTTP 413: Request Entity Too Large"), false,
+        "a plain 413 is not")
+end)
+
 TestRunner:test("decorateRequestError: size errors still get the context tip", function()
     local out = ModelConstraints.decorateRequestError(
         "Request too large for gpt-5.5", "openai", "gpt-5.5", { features = {} })

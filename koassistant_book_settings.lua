@@ -20,6 +20,10 @@ local UIManager = require("ui/uimanager")
 local ButtonDialog = require("ui/widget/buttondialog")
 local DomainLoader = require("domain_loader")
 local Languages = require("koassistant_languages")
+-- Track 37: per-book keys live in the plugin's own sidecar file; every public
+-- entry wraps the DocSettings it is handed (a raw ui.doc_settings from any
+-- caller becomes a BookStore facade; facades pass through unchanged)
+local BookStore = require("koassistant_book_store")
 
 local BookSettings = {}
 
@@ -40,6 +44,7 @@ BookSettings.KEY_QUIZ = "koassistant_book_quiz"
 --- Resolve the effective book-info level for a book: per-book override > global default ("basic").
 -- @return "none" | "basic" | "full"
 function BookSettings.resolveBookInfoLevel(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     local per_book = doc_settings and doc_settings:readSetting(BookSettings.KEY_BOOK_INFO)
     if per_book ~= nil then return per_book end
     return (features and features.book_info_in_chat) or "basic"
@@ -69,13 +74,20 @@ end
 -- @param features table|nil
 -- @param opts table|nil { layer = "request" (default) | "mechanical",
 --   session = true|false|nil — the Spoiler chip's per-chat value, if the
---   call site has one }
+--   call site has one,
+--   ignore_finished = true — skip the Finished layer. S5 (ref #90), the
+--   cross-book lookup rule: inside one book Finished means nothing is left
+--   to protect, but for a SERIES it only means the reader moved on to the
+--   next volume, whose entries retell this one's ending — so only the
+--   reader's own switch (research, book override, global) opens later
+--   books there }
 -- @return table { protected = boolean, reason = "session"|"research"|
 --   "finished"|"book"|"global"|"default", layer = the resolved layer }.
 --   "default" = nothing set anywhere (the schema default: protection ON
 --   since the §4.3 flip) — kept distinct from an explicit global value so
 --   the flip lives in exactly one branch.
 function BookSettings.resolveSpoilerPosture(doc_settings, features, opts)
+    doc_settings = BookStore.wrap(doc_settings)
     opts = opts or {}
     local layer = opts.layer == "mechanical" and "mechanical" or "request"
     if layer == "request" and opts.session ~= nil then
@@ -84,9 +96,11 @@ function BookSettings.resolveSpoilerPosture(doc_settings, features, opts)
     if BookSettings.resolveResearch(doc_settings, features) then
         return { protected = false, reason = "research", layer = layer }
     end
-    local summary = doc_settings and doc_settings:readSetting("summary")
-    if summary and summary.status == "complete" then
-        return { protected = false, reason = "finished", layer = layer }
+    if not opts.ignore_finished then
+        local summary = doc_settings and doc_settings:readSetting("summary")
+        if summary and summary.status == "complete" then
+            return { protected = false, reason = "finished", layer = layer }
+        end
     end
     local book = doc_settings and doc_settings:readSetting(BookSettings.KEY_SPOILER_FREE)
     if book ~= nil then
@@ -106,6 +120,7 @@ end
 -- the tool reading clamp now follow the same rule as X-Ray posture.
 -- @return boolean
 function BookSettings.resolveSpoilerFree(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     return BookSettings.resolveSpoilerPosture(doc_settings, features).protected
 end
 
@@ -121,6 +136,7 @@ end
 --   resolver's "default" collapses into "global" — callers only label
 --   layers, and nothing-set IS the global state)
 function BookSettings.resolveXrayPosture(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     local p = BookSettings.resolveSpoilerPosture(doc_settings, features, { layer = "mechanical" })
     local reason = p.reason == "default" and "global" or p.reason
     return p.protected and "track" or "full", reason
@@ -137,6 +153,7 @@ end
 -- @return string|nil layer "book" | "global" | nil — nil = no domain anywhere;
 --   "book" with a nil id = the explicit no-domain override
 function BookSettings.resolveDomain(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     local book = doc_settings and doc_settings:readSetting(BookSettings.KEY_DOMAIN) or nil
     if book == "_none" then return nil, "book" end
     if book ~= nil then return book, "book" end
@@ -149,6 +166,7 @@ end
 -- auto-detection (opts.doi — only callers holding a request know it; chips,
 -- pickers and the spoiler posture deliberately omit it) > global. Pure boolean.
 function BookSettings.resolveResearch(doc_settings, features, opts)
+    doc_settings = BookStore.wrap(doc_settings)
     local book = doc_settings and doc_settings:readSetting(BookSettings.KEY_RESEARCH)
     if book ~= nil then return book == true end
     if opts and opts.doi then return true end
@@ -165,10 +183,9 @@ BookSettings.KEY_TOOLS = "koassistant_book_tools"
 -- "on" only when the one-time migration recorded the old master as enabled —
 -- with the old master off, stored opt-ins were inert and must not re-activate.
 BookSettings.KEY_XRAY_AUTO = "koassistant_book_xray_auto"
--- Round 19: once-per-book stamp for the first-auto-fire coverage ask (set by the
--- ask itself and by every EXPLICIT follow opt-in — picker On, Create-form follow
--- pick, the P4 offer — which already answer the question the ask would pose)
-BookSettings.KEY_XRAY_COVERAGE_ASKED = "koassistant_book_xray_coverage_asked"
+-- (KEY_XRAY_COVERAGE_ASKED, the coverage ask's once-per-book stamp, retired
+-- 2026-09-04 with first-build automation; a stale value in an old sidecar
+-- file is inert.)
 -- Round 21 (unified checkpoint engine): per-book coverage GOAL bounding the
 -- checkpoint grid — a ratio for section-end targets; nil = whole book. Written
 -- by the Create form's "as I read" pick under section-end coverage and by the
@@ -202,20 +219,31 @@ BookSettings.KEY_XRAY_AHEAD = "koassistant_book_xray_ahead"                     
 -- landing+style PAIR into one three-way value.
 BookSettings.KEY_XRAY_INTERCEPT = "koassistant_book_xray_intercept"                -- true | false | nil (matching selections open entries)
 BookSettings.KEY_XRAY_CARD = "koassistant_book_xray_card"                          -- "footnote"|"popup"|"full" | nil (exact hits open)
+-- B269 (2026-08-25): what the card SHOWS — non-ahead entries whole or first
+-- sentence; ahead (upcoming) entries name-only-tap-to-show or one sentence.
+BookSettings.KEY_XRAY_CARD_LENGTH = "koassistant_book_xray_card_length"            -- "full"|"sentence" | nil
+BookSettings.KEY_XRAY_AHEAD_CARD = "koassistant_book_xray_ahead_card"              -- "name"|"entry" | nil
 -- Presets session (v0.21): categories a NEW X-Ray tracks — csv of group ids
 -- ("people,events"; canonical order people,places,ideas,terms,events), nil =
 -- full. The preference for future creates/rebuilds only: an existing lineage
 -- follows its cache STAMP (xray_categories on the entry), never this key —
 -- categories cannot be added incrementally (the text is only read once).
 BookSettings.KEY_XRAY_CATEGORIES = "koassistant_book_xray_categories"
+-- Depth rung for NEW X-Rays (docs/xray_depth_axis_plan.md): "light" | "standard"
+-- | "deep" | nil (follow global). An explicit "standard" pins Standard under a
+-- narrowed global, the categories "full" sentinel's role.
+BookSettings.KEY_XRAY_DEPTH = "koassistant_book_xray_depth"
 --- Effective X-Ray marking & lookup config for a book: book override > global
 --- > default. Pure. Read pattern must match the schema defaults (marking ON,
 --- tap ON, density "10", families "all", ahead ON, intercept ON, card
 --- "footnote"). `card` folds the global xray_card_landing/_style PAIR into one
 --- three-way value ("footnote" | "popup" | "full").
+--- B269: `card_length` ("full" default | "sentence") and `ahead_card`
+--- ("name" default | "entry") ride the same pattern.
 --- @return table { enabled, density, families, tap, ahead, intercept, card,
----   has_override }
+---   card_length, ahead_card, has_override }
 function BookSettings.resolveXrayMarking(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     features = features or {}
     -- No and/or chain here: it would fold an explicit book-level FALSE into
     -- nil and let the global leak through (the classic tri-state pitfall)
@@ -232,6 +260,8 @@ function BookSettings.resolveXrayMarking(doc_settings, features)
     local b_ahead = rd(BookSettings.KEY_XRAY_AHEAD)
     local b_int = rd(BookSettings.KEY_XRAY_INTERCEPT)
     local b_card = rd(BookSettings.KEY_XRAY_CARD)
+    local b_len = rd(BookSettings.KEY_XRAY_CARD_LENGTH)
+    local b_acard = rd(BookSettings.KEY_XRAY_AHEAD_CARD)
     local enabled
     if b_on ~= nil then
         enabled = b_on ~= false
@@ -274,20 +304,55 @@ function BookSettings.resolveXrayMarking(doc_settings, features)
         ahead = ahead,
         intercept = intercept,
         card = card,
+        card_length = (b_len == "sentence" or b_len == "full") and b_len
+            or (features.xray_card_length == "full" and "full" or "sentence"),
+        ahead_card = (b_acard == "entry" or b_acard == "name") and b_acard
+            or (features.xray_ahead_card == "entry" and "entry" or "name"),
         has_override = b_on ~= nil or b_dens ~= nil or b_fam ~= nil
-            or b_tap ~= nil or b_ahead ~= nil or b_int ~= nil or b_card ~= nil,
+            or b_tap ~= nil or b_ahead ~= nil or b_int ~= nil or b_card ~= nil
+            or b_len ~= nil or b_acard ~= nil,
     }
 end
 
 --- X-Ray promotion hold. Pure.
 --- @return boolean true = promotion follows the reading position for this book
 function BookSettings.xrayPromotionHold(doc_settings)
+    doc_settings = BookStore.wrap(doc_settings)
     return (doc_settings and doc_settings:readSetting(BookSettings.KEY_XRAY_PROMOTION)) == "position"
+end
+
+--- Forget the per-book state that described a DELETED X-Ray lineage: the
+--- coverage-ask stamp (a future from-nothing build should ask again), the
+--- promotion hold (it described the deleted timeline) and the Automatic X-Ray
+--- override (2026-08-25: an "as I read" pick left it ON, so a deleted book
+--- re-asked how to create on the next page turn; deleted = quiet until the
+--- reader creates again, and the form's pick turns it back on). ONE helper
+--- for every delete site (popup + both browser hamburgers). Flushes.
+--- 2026-09-03/04 (device rounds, B272): clearing alone was quiet ONLY for a
+--- book whose automation was its own "on"; the on-open offer and the global
+--- auto-create re-asked after a delete because both keyed on an UNSET
+--- per-book value plus a missing X-Ray, which every delete arranged. Both
+--- are retired now (first-build automation, 2026-09-04), and the override is
+--- still written "off" UNCONDITIONALLY: deleted = quiet until the reader
+--- creates again, whichever layer would have spoken (the form's "as I read"
+--- pick and the per-book picker write "on"). Checkpoint installs never read
+--- this key, so a later "Build all checkpoints" run still installs its rungs
+--- as the reader passes them.
+--- @param _features table|nil kept for the call sites; the pin does not depend on the global layer
+function BookSettings.clearXrayLineageState(doc_settings, _features)
+    doc_settings = BookStore.wrap(doc_settings)
+    if not doc_settings then return end
+    if doc_settings:readSetting(BookSettings.KEY_XRAY_PROMOTION) ~= nil then
+        doc_settings:delSetting(BookSettings.KEY_XRAY_PROMOTION)
+    end
+    doc_settings:saveSetting(BookSettings.KEY_XRAY_AUTO, "off")
+    doc_settings:flush()
 end
 
 --- Per-book checkpoint spacing override. Pure.
 --- @return number|nil ratio in (0, 0.5], or nil = follow the formula
 function BookSettings.xraySpacingOverride(doc_settings)
+    doc_settings = BookStore.wrap(doc_settings)
     local v = doc_settings and tonumber(doc_settings:readSetting(BookSettings.KEY_XRAY_SPACING))
     if v and v > 0.005 and v <= 0.5 then return v end
     return nil
@@ -296,6 +361,7 @@ end
 --- Per-book Automatic X-Ray override. Pure.
 --- @return string|nil "on" | "off" | nil (= follow global)
 function BookSettings.xrayAutoOverride(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     local v = doc_settings and doc_settings:readSetting(BookSettings.KEY_XRAY_AUTO)
     if v == "on" or v == "off" then return v end
     if v == true and features and features._xray_auto_legacy_optin == true then
@@ -304,21 +370,24 @@ function BookSettings.xrayAutoOverride(doc_settings, features)
     return nil
 end
 
---- Effective X-Ray automation for a book. Per-book "on" bundles auto-create
---- (the one-switch directive); follow-global books need the global create
---- sub-toggle on top of the global master. Pure.
+--- Effective X-Ray automation for a book. Per-book "on" bundles the first
+--- build (the one-switch directive, confirmed at pick time); follow-global
+--- books only ever CONTINUE an X-Ray the reader started — the global
+--- auto-create sub-toggle is retired (2026-09-04, maintainer: nothing may
+--- start an X-Ray without the reader picking it for that book). Pure.
 --- @return boolean auto, boolean create_allowed, string|nil override
 function BookSettings.resolveXrayAuto(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     local ov = BookSettings.xrayAutoOverride(doc_settings, features)
     if ov == "on" then return true, true, ov end
     if ov == "off" then return false, false, ov end
     local f = features or {}
-    local auto = f.xray_auto_update == true
-    return auto, auto and f.xray_auto_create == true, nil
+    return f.xray_auto_update == true, false, nil
 end
 
 --- Row/chip label for the current per-book Automatic X-Ray state. Pure.
 function BookSettings.xrayAutoLabel(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     local ov = BookSettings.xrayAutoOverride(doc_settings, features)
     if ov == "on" then return _("On") end
     if ov == "off" then return _("Off") end
@@ -346,6 +415,7 @@ end
 -- keep resolving ON) > legacy `tools_posture` read-through for configs the
 -- migration hasn't touched. Pure boolean: true = the Tools chip starts ON.
 function BookSettings.resolveBookTools(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     local per_book = toolsValueOn(
         doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOLS))
     if per_book ~= nil then return per_book end
@@ -383,6 +453,7 @@ BookSettings.BACKGROUND_MAX_CHARS = 2000
 -- system prompt would read as instruction text.
 -- @return string|nil  nil when unset/blank (never an empty string)
 function BookSettings.getBackground(doc_settings)
+    doc_settings = BookStore.wrap(doc_settings)
     local v = doc_settings and doc_settings:readSetting(BookSettings.KEY_BACKGROUND)
     if type(v) ~= "string" then return nil end
     v = v:match("^%s*(.-)%s*$")
@@ -401,6 +472,7 @@ BookSettings.KEY_WEB_SEARCH = "koassistant_book_web_search"
 -- per-chat toggle and the global default.
 -- @return true | false | nil
 function BookSettings.webSearchOverride(doc_settings)
+    doc_settings = BookStore.wrap(doc_settings)
     local v = doc_settings and doc_settings:readSetting(BookSettings.KEY_WEB_SEARCH)
     if v == nil then return nil end
     return v == true
@@ -415,6 +487,7 @@ end
 -- caller's concern (mirrors resolveSpoilerFree).
 -- @return boolean
 function BookSettings.resolveWebSearch(doc_settings, features, provider)
+    doc_settings = BookStore.wrap(doc_settings)
     local per_book = BookSettings.webSearchOverride(doc_settings)
     if per_book ~= nil then return per_book end
     local global = features and features.enable_web_search
@@ -434,6 +507,7 @@ BookSettings.KEY_WEB_EFFORT = "koassistant_book_web_effort"     -- "light"|"stan
 -- features.tool_lookup_effort > "standard" (schema default).
 -- @return "quick" | "standard" | "thorough"
 function BookSettings.resolveToolEffort(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     local valid = { quick = true, standard = true, thorough = true }
     local per_book = doc_settings and doc_settings:readSetting(BookSettings.KEY_TOOL_EFFORT)
     if valid[per_book] then return per_book end
@@ -446,6 +520,7 @@ end
 -- features.web_search_effort > "standard". Mirrors resolveToolEffort.
 -- @return "light" | "standard" | "thorough"
 function BookSettings.resolveWebEffort(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     local valid = { light = true, standard = true, thorough = true }
     local per_book = doc_settings and doc_settings:readSetting(BookSettings.KEY_WEB_EFFORT)
     if valid[per_book] then return per_book end
@@ -479,6 +554,7 @@ BookSettings.KEY_QUICK_ANSWER = "koassistant_book_quick_answer"
 -- quick_answer_default (opt-in, schema default false).
 -- @return boolean
 function BookSettings.resolveQuickAnswerDefault(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     local v = doc_settings and doc_settings:readSetting(BookSettings.KEY_QUICK_ANSWER)
     if v ~= nil then return v == true end
     return (features and features.quick_answer_default) == true
@@ -499,6 +575,7 @@ local VALID_CONTEXT_MODES = { none = true, sentence = true, paragraph = true, ch
 -- fall through so a corrupt sidecar value can't wedge the feature.
 -- @return "none" | "sentence" | "paragraph" | "characters"
 function BookSettings.resolveHighlightContext(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     local per_book = doc_settings and doc_settings:readSetting(BookSettings.KEY_HIGHLIGHT_CONTEXT)
     if VALID_CONTEXT_MODES[per_book] then return per_book end
     local global = features and features.highlight_context_mode
@@ -518,6 +595,7 @@ end
 -- pressed Ctx. The Ctx button stays as the per-lookup toggle, now turn-it-OFF.
 -- @return "none" | "sentence" | "paragraph" | "characters"
 function BookSettings.resolveDictionaryContext(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     local per_book = doc_settings and doc_settings:readSetting(BookSettings.KEY_DICTIONARY_CONTEXT)
     if VALID_CONTEXT_MODES[per_book] then return per_book end
     local global = features and features.dictionary_context_mode
@@ -540,6 +618,7 @@ end
 -- enabled (suppress-only), min_pages, and min_minutes. Booleans collapse the global's "nil = on" rule.
 -- @return table { count, difficulty, mc, sa, essay, chapter_depth, enabled, min_pages, min_minutes }
 function BookSettings.resolveQuiz(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     features = features or {}
     local bq = (doc_settings and doc_settings:readSetting(BookSettings.KEY_QUIZ)) or {}
     -- For required fields: book value, else global, else built-in default.
@@ -571,6 +650,7 @@ end
 -- reference isn't mutated, and drops an emptied table so a reset book carries no override.
 -- Shared by the Book Settings quiz screen and the chapter-quiz popup's "Not for this book".
 function BookSettings.setQuizField(doc_settings, field, value)
+    doc_settings = BookStore.wrap(doc_settings)
     if not doc_settings then return end
     local new = {}
     for k, v in pairs(doc_settings:readSetting(BookSettings.KEY_QUIZ) or {}) do new[k] = v end
@@ -596,6 +676,7 @@ BookSettings.KEY_RESPONSE_LANG = "koassistant_book_response_language"
 -- @param doc_settings table|nil
 -- @return table
 function BookSettings.applyLanguageOverride(config, doc_settings)
+    doc_settings = BookStore.wrap(doc_settings)
     if not doc_settings then return config end
     local t = doc_settings:readSetting(BookSettings.KEY_TRANSLATION_LANG)
     local d = doc_settings:readSetting(BookSettings.KEY_DICTIONARY_LANG)
@@ -624,6 +705,7 @@ end
 -- @param doc_settings table|nil
 -- @return table
 function BookSettings.applyResponseLanguageOverride(config, doc_settings)
+    doc_settings = BookStore.wrap(doc_settings)
     if not doc_settings then return config end
     local lang = doc_settings:readSetting(BookSettings.KEY_RESPONSE_LANG)
     if lang == nil or lang == "" then return config end
@@ -660,6 +742,7 @@ BookSettings.KEY_TEXT_EXTRACTION = "koassistant_book_text_extraction"
 --- Raw per-book privacy overrides. Pure.
 -- @return table { highlights = tri, annotations = tri, notebook = tri, book_text = tri }
 function BookSettings.getPrivacyOverrides(doc_settings)
+    doc_settings = BookStore.wrap(doc_settings)
     if not doc_settings then return {} end
     return {
         highlights = doc_settings:readSetting(BookSettings.KEY_HIGHLIGHTS_SHARING),
@@ -674,6 +757,7 @@ end
 -- annotations too (the promise is "no highlighted text from this book"). Pure.
 -- @return table { highlights = tri, annotations = tri, notebook = tri, book_text = tri }
 function BookSettings.effectivePrivacyOverrides(doc_settings)
+    doc_settings = BookStore.wrap(doc_settings)
     local raw = BookSettings.getPrivacyOverrides(doc_settings)
     -- Strict booleans only: a corrupt/hand-edited sidecar value (e.g. the string
     -- "off") must read as "follow global", never as a truthy ALLOW (fail-closed).
@@ -719,10 +803,10 @@ BookSettings.SIDECAR_KEYS = {
     BookSettings.KEY_XRAY_AHEAD,
     BookSettings.KEY_XRAY_INTERCEPT,
     BookSettings.KEY_XRAY_CARD,
+    BookSettings.KEY_XRAY_CARD_LENGTH,
+    BookSettings.KEY_XRAY_AHEAD_CARD,
     BookSettings.KEY_XRAY_CATEGORIES,
-    -- (KEY_XRAY_COVERAGE_ASKED is deliberately NOT here: a stamp, not an
-    -- override — it must not count as "customized" nor block on reset;
-    -- registered as its own storage-registry entry like the last-opened stamp)
+    BookSettings.KEY_XRAY_DEPTH,
     BookSettings.KEY_QUICK_ANSWER,
     BookSettings.KEY_TOOL_EFFORT,
     BookSettings.KEY_WEB_EFFORT,
@@ -735,6 +819,7 @@ BookSettings.SIDECAR_KEYS = {
 --- Count how many per-book settings deviate from the global defaults (any non-nil key).
 -- @return number
 function BookSettings.countCustomized(doc_settings)
+    doc_settings = BookStore.wrap(doc_settings)
     if not doc_settings then return 0 end
     local n = 0
     for _i, key in ipairs(BookSettings.SIDECAR_KEYS) do
@@ -745,11 +830,14 @@ end
 
 --- Clear every per-book override so this book follows the global defaults again.
 function BookSettings.resetBook(doc_settings)
+    doc_settings = BookStore.wrap(doc_settings)
     if not doc_settings then return end
     require("koassistant_logger").dbg("KOAssistant BookSettings: clearing all",
         #BookSettings.SIDECAR_KEYS, "per-book overrides")
     for _i, key in ipairs(BookSettings.SIDECAR_KEYS) do
-        doc_settings:saveSetting(key, nil)
+        if doc_settings:readSetting(key) ~= nil then
+            doc_settings:saveSetting(key, nil)  -- nil = delete (facade + DocSettings alike)
+        end
     end
     doc_settings:flush()
 end
@@ -757,6 +845,7 @@ end
 --- Read the per-book AI title/author overrides (what the AI sees for this book).
 -- @return title, author  -- each: nil (use metadata) | "" (send empty) | string (custom)
 function BookSettings.getMetadataOverride(doc_settings)
+    doc_settings = BookStore.wrap(doc_settings)
     if not doc_settings then return nil, nil end
     return doc_settings:readSetting(BookSettings.KEY_AI_TITLE),
            doc_settings:readSetting(BookSettings.KEY_AI_AUTHOR)
@@ -771,6 +860,7 @@ end
 -- @param doc_settings table|nil
 -- @return table|nil
 function BookSettings.applyMetadataOverride(metadata, doc_settings)
+    doc_settings = BookStore.wrap(doc_settings)
     local t, a = BookSettings.getMetadataOverride(doc_settings)
     if t == nil and a == nil then return metadata end
     local m = {}
@@ -795,6 +885,7 @@ end
 --- Row label for the Background setting: a one-line preview, or "not set".
 -- @return string
 function BookSettings.backgroundRowLabel(doc_settings)
+    doc_settings = BookStore.wrap(doc_settings)
     local v = BookSettings.getBackground(doc_settings)
     if not v then return _("not set") end
     v = v:gsub("%s+", " ")
@@ -1162,13 +1253,21 @@ function BookSettings.showXrayAutoPicker(opts)
         doc_settings:saveSetting(BookSettings.KEY_XRAY_AUTO, val)
         doc_settings:flush()
         UIManager:close(picker)
-        if opts.on_change then opts.on_change() end
-        -- Round 19 (after on_change so the catch-up dialog lands ON TOP of a
-        -- re-opened popup): picking On on a book with no X-Ray yet gets the
-        -- same honest catch-up flow as the Create form's follow pick
-        if val == "on" and opts.plugin and opts.plugin._onXrayAutoTurnedOn then
-            opts.plugin:_onXrayAutoTurnedOn()
+        -- Round 19: picking On gets the same catch-up flow as the Create
+        -- form's follow pick. 2026-09-04: that flow confirms first (Cancel
+        -- restores `cur`), so the surface reopen (on_change) is DEFERRED to
+        -- the confirm's outcome — reopening first and again after would
+        -- stack two copies of the popup. Only when the picker's book IS the
+        -- open book: the engine and the revert both act on the open book's
+        -- settings, and Book Settings can target any book from hub surfaces
+        local open_here = not opts.document_path
+            or (opts.ui and opts.ui.document and opts.ui.document.file
+                and require("koassistant_doc_settings").samePath(opts.ui.document.file, opts.document_path))
+        if val == "on" and open_here and opts.plugin and opts.plugin._onXrayAutoTurnedOn
+                and opts.plugin:_onXrayAutoTurnedOn(cur, opts.on_change) then
+            return
         end
+        if opts.on_change then opts.on_change() end
     end
     picker = ButtonDialog:new{
         title = _("Automatic X-Ray (this book)") .. "\n"
@@ -1788,6 +1887,16 @@ function BookSettings.xrayCardModeLabel(v)
     return _("Footnote panel")
 end
 
+function BookSettings.xrayCardLengthLabel(v)
+    if v == "full" then return _("Full entry") end
+    return _("First sentence")
+end
+
+function BookSettings.xrayAheadCardLabel(v)
+    if v == "entry" then return _("First sentence") end
+    return _("Name only, tap to show")
+end
+
 -- Category groups for the X-Ray category picker (presets v0.21). Ids and
 -- per-type key mapping live in prompts/actions.lua (XRAY_CATEGORY_ORDER);
 -- the user-facing labels live here with the picker.
@@ -1808,6 +1917,7 @@ local XRAY_CATEGORY_LABELS = {
 --- @param features table|nil global features table
 --- @return string|nil normalized csv (nil = full), string|nil deciding layer ("book"/"global")
 function BookSettings.resolveXrayCategories(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
     local Actions = require("prompts.actions")
     local raw = doc_settings and doc_settings:readSetting(BookSettings.KEY_XRAY_CATEGORIES)
     if raw == "full" then return nil, "book" end
@@ -1818,15 +1928,74 @@ function BookSettings.resolveXrayCategories(doc_settings, features)
     return nil, nil
 end
 
+--- Depth rung for NEW X-Rays: book pick > global default > standard.
+--- Values are the prompt assembly's ids; "standard" is returned as nil for the
+--- prompt (nil = the shipped wording) but the LAYER still says who decided.
+--- @param doc_settings table|nil
+--- @param features table|nil
+--- @return string|nil depth ("light"/"deep"; nil = standard), string|nil layer ("book"/"global")
+function BookSettings.resolveXrayDepth(doc_settings, features)
+    doc_settings = BookStore.wrap(doc_settings)
+    local Actions = require("prompts.actions")
+    local raw = doc_settings and doc_settings:readSetting(BookSettings.KEY_XRAY_DEPTH)
+    if raw == "standard" then return nil, "book" end
+    local d = Actions.normalizeXrayDepth(raw)
+    if d then return d, "book" end
+    local g = Actions.normalizeXrayDepth(features and features.xray_default_depth)
+    if g then return g, "global" end
+    return nil, nil
+end
+
+--- Label for a depth value (nil/"standard" = Standard).
+function BookSettings.xrayDepthLabel(v)
+    if v == "light" then return _("Light")
+    elseif v == "deep" then return _("Deep") end
+    return _("Standard")
+end
+
+--- Depth picker for new X-Rays: the canonical two-layer spec (For this book /
+--- Global). Book: Follow global (X) / Light / Standard / Deep (KEY_XRAY_DEPTH);
+--- Global: features.xray_default_depth. Option descriptions stay one line so
+--- the popup never scrolls (the categories picker's lesson).
+--- @param opts table: { plugin, ui, document_path, on_close, target_override }
+function BookSettings.showXrayDepthPicker(opts)
+    BookSettings.showLayeredPicker({
+        title = _("Depth of new X-Rays") .. "\n"
+            .. _("How much each entry carries. Applies to new builds and rebuilds; checkpoints and updates keep the depth the X-Ray was started with."),
+        key = BookSettings.KEY_XRAY_DEPTH,
+        field = "xray_default_depth",
+        global = function(f)
+            return require("prompts.actions").normalizeXrayDepth(f.xray_default_depth) or "standard"
+        end,
+        read_book = function(ds)
+            local raw = ds:readSetting(BookSettings.KEY_XRAY_DEPTH)
+            if raw == "standard" then return "standard" end
+            return require("prompts.actions").normalizeXrayDepth(raw)
+        end,
+        options = {
+            { value = "light", label = _("Light (one line per entry, recurring figures and turning points only)") },
+            { value = "standard", label = _("Standard (a few sentences per entry, everything the reader meets)") },
+            { value = "deep", label = _("Deep (longer entries, every figure and development, richer connections)") },
+        },
+        value_label = BookSettings.xrayDepthLabel,
+    }, opts)
+end
+
 --- Short label for a stored category selection (row/button text).
 --- @param value string|nil raw stored value (normalized internally)
---- @return string "Full" / "Character tracking" / "N of 5"
+--- @return string "All" / "Characters only" / "Characters and story" / "Reference" / "N of 5"
+--- Preset names (2026-08-25, depth-axis session): "All" frees "Full" for the
+--- document scope; "Light" left this axis because the timeline is the single
+--- heaviest block of an X-Ray (bench: 25-32 events at Standard depth), so a
+--- people+events preset is a PURPOSE preset, not a cheap one. Cost now lives on
+--- the depth dial. "Reference" = every static entry, no timeline.
 function BookSettings.xrayCategoriesLabel(value)
     local Actions = require("prompts.actions")
     local sel = Actions.normalizeXrayCategories(value)
-    if not sel then return _("Full") end
-    if sel == "people" then return _("Character tracking") end
-    if sel == "people,events" then return _("Light") end
+    if not sel then return _("All categories") end
+    if sel == "people" then return _("Characters only") end
+    if sel == "people,events" then return _("Characters and story") end
+    if sel == "people,places,ideas,terms" then return _("Reference") end
     local n = 0
     for _id in sel:gmatch("[^,]+") do n = n + 1 end
     return T(_("%1 of %2"), n, #Actions.XRAY_CATEGORY_ORDER)
@@ -1916,12 +2085,45 @@ function BookSettings.showXrayCategoriesPicker(opts)
         return n
     end
     local function dot(active) return active and "● " or "○ " end
-    -- Toggle idiom shared with the quick-preset pickers (dialogs): ✓ / ○
-    local function mark(active) return active and "✓ " or "○ " end
+    -- Category toggles are ✓ / ✗ (maintainer 2026-08-25): the presets above
+    -- them are a radio group (● / ○), and a shared hollow circle made the two
+    -- unrelated row kinds read as one list.
+    local function mark(active) return active and "✓ " or "✗ " end
+    -- Group labels (disabled rows) separate the radio presets from the
+    -- one-by-one picks; the Book Settings screens retired disabled header
+    -- rows, this popup is the deliberate exception (two row kinds, one list).
+    local function header(text) return {{ text = text, enabled = false }} end
 
     local full_stored
     if is_global then full_stored = (stored == nil) else full_stored = (raw == "full") end
     local buttons = {}
+    -- Target toggle row [For this book] [Global], the layered-picker engine's
+    -- header (maintainer 2026-08-25: every two-layer picker carries it) — only
+    -- when a book is in scope; the Settings entry has none and shows no row
+    local book_in_scope = doc_settings ~= nil
+        or (is_global and resolveDocSettings(opts.ui, opts.document_path) ~= nil)
+    if book_in_scope then
+        buttons[#buttons + 1] = {
+            { text = dot(not is_global) .. _("For this book"),
+              callback = function()
+                  if not is_global then return end
+                  if dialog then UIManager:close(dialog); dialog = nil end
+                  local reopen = {}
+                  for k, v in pairs(opts) do reopen[k] = v end
+                  reopen.target = "book"
+                  BookSettings.showXrayCategoriesPicker(reopen)
+              end },
+            { text = dot(is_global) .. _("Global"),
+              callback = function()
+                  if is_global then return end
+                  if dialog then UIManager:close(dialog); dialog = nil end
+                  local reopen = {}
+                  for k, v in pairs(opts) do reopen[k] = v end
+                  reopen.target = "global"
+                  BookSettings.showXrayCategoriesPicker(reopen)
+              end },
+        }
+    end
     if not is_global then
         buttons[#buttons + 1] = {{ text = dot(raw == nil)
                 .. T(_("Follow global (%1)"),
@@ -1932,20 +2134,20 @@ function BookSettings.showXrayCategoriesPicker(opts)
                 reshow()
             end }}
     end
-    buttons[#buttons + 1] = {{ text = dot(full_stored) .. _("Full (all categories)"),
+    buttons[#buttons + 1] = header(_("Presets"))
+    buttons[#buttons + 1] = {{ text = dot(full_stored) .. _("All categories"),
         callback = function()
             for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = true end
             save()
             reshow()
         end }}
-    -- Light (maintainer 2026-08-18): who + what happened. people + events =
-    -- cast/key figures and story arc/argument development (the current-state
-    -- singleton always rides regardless of selection). Deliberately NOT
-    -- including places or ideas: ideas is the depth sink with the largest
-    -- model variance, and a reader who wants either is one checkbox away.
-    -- Presets stay meaningfully distinct at 1 / 2 / 5 groups.
+    -- Characters and story (maintainer 2026-08-18, renamed 2026-08-25): who +
+    -- what happened. people + events = cast/key figures and story arc/argument
+    -- development (the current-state singleton always rides regardless of
+    -- selection). A purpose preset: the timeline is the heaviest block, so it
+    -- is not the cheap pick; Reference below is.
     buttons[#buttons + 1] = {{ text = dot(stored == "people,events")
-            .. _("Light (characters and story arc)"),
+            .. _("Characters and story (people, timeline)"),
         callback = function()
             for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = nil end
             set.people = true
@@ -1953,14 +2155,26 @@ function BookSettings.showXrayCategoriesPicker(opts)
             save()
             reshow()
         end }}
+    -- Reference (2026-08-25, from the bench): every static entry, no timeline.
+    -- places + ideas + terms together cost a fraction of the event log, so this
+    -- is the cheap preset that still answers who / where / what.
+    buttons[#buttons + 1] = {{ text = dot(stored == "people,places,ideas,terms")
+            .. _("Reference (everything except the timeline)"),
+        callback = function()
+            for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = true end
+            set.events = nil
+            save()
+            reshow()
+        end }}
     buttons[#buttons + 1] = {{ text = dot(stored == "people")
-            .. _("Character tracking (people only)"),
+            .. _("Characters only"),
         callback = function()
             for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do set[id] = nil end
             set.people = true
             save()
             reshow()
         end }}
+    buttons[#buttons + 1] = header(_("Pick one by one"))
     for _idx, id in ipairs(Actions.XRAY_CATEGORY_ORDER) do
         buttons[#buttons + 1] = {{ text = mark(set[id]) .. XRAY_CATEGORY_LABELS[id],
             callback = function()
@@ -1998,7 +2212,7 @@ end
 -- consolidation P2 flagship (2026-08-16): the Marking & lookup popup's
 -- tap-cycles became these canonical pickers. One wrapper serves the seven
 -- keys via opts.kind: "enabled" | "density" | "families" | "tap" | "ahead" |
--- "intercept" | "card". Defaults mirror resolveXrayMarking (marking ON, tap
+-- "intercept" | "card" | "card_length" | "ahead_card" (B269). Defaults mirror resolveXrayMarking (marking ON, tap
 -- ON, density "10", families "all", ahead ON, intercept ON, card "footnote").
 -- @param opts table: { plugin, ui, document_path, on_close, target_override, kind }
 function BookSettings.showXrayMarkingPicker(opts)
@@ -2104,6 +2318,33 @@ function BookSettings.showXrayMarkingPicker(opts)
                 { value = "footnote", label = _("Footnote panel") },
                 { value = "popup", label = _("Floating popup") },
                 { value = "full", label = _("Full entry") },
+            },
+        }
+    elseif opts.kind == "card_length" then
+        -- B269: what the card shows for entries at or behind the position
+        spec = {
+            title = _("Card Shows"),
+            key = BookSettings.KEY_XRAY_CARD_LENGTH,
+            field = "xray_card_length",
+            global = function(f) return f.xray_card_length == "full" and "full" or "sentence" end,
+            value_label = BookSettings.xrayCardLengthLabel,
+            options = {
+                { value = "sentence", label = _("First sentence") },
+                { value = "full", label = _("Full entry") },
+            },
+        }
+    elseif opts.kind == "ahead_card" then
+        -- B269: the card for UPCOMING entities (the ahead peek); name-only by
+        -- default so an alias-folded identity never reveals on sight
+        spec = {
+            title = _("Upcoming Entity Cards"),
+            key = BookSettings.KEY_XRAY_AHEAD_CARD,
+            field = "xray_ahead_card",
+            global = function(f) return f.xray_ahead_card == "entry" and "entry" or "name" end,
+            value_label = BookSettings.xrayAheadCardLabel,
+            options = {
+                { value = "name", label = _("Name only, tap to show") },
+                { value = "entry", label = _("First sentence right away") },
             },
         }
     else -- "enabled"
@@ -2293,7 +2534,8 @@ function BookSettings.show(opts)
         BookSettings.KEY_XRAY_MARKING, BookSettings.KEY_XRAY_MARKING_DENSITY,
         BookSettings.KEY_XRAY_MARKING_FAMILIES, BookSettings.KEY_XRAY_MARKING_TAP,
         BookSettings.KEY_XRAY_AHEAD, BookSettings.KEY_XRAY_INTERCEPT,
-        BookSettings.KEY_XRAY_CARD, BookSettings.KEY_XRAY_CATEGORIES,
+        BookSettings.KEY_XRAY_CARD, BookSettings.KEY_XRAY_CARD_LENGTH,
+        BookSettings.KEY_XRAY_AHEAD_CARD, BookSettings.KEY_XRAY_CATEGORIES,
     }), BookSettings.showXrayConfig))
     addButton(subScreenRow(_("Chat behavior"), groupCount({
         BookSettings.KEY_TOOLS, BookSettings.KEY_WEB_SEARCH,
@@ -2681,6 +2923,23 @@ function BookSettings.showXrayConfig(opts)
             UIManager:show(picker)
         end }})
 
+    -- Depth for NEW X-Rays (depth axis 2026-08-25): same shape as categories.
+    local depth_val, depth_layer = BookSettings.resolveXrayDepth(doc_settings, features)
+    table.insert(buttons, {{ text = T(_("New X-Ray depth: %1"),
+            depth_layer == "book" and BookSettings.xrayDepthLabel(depth_val)
+                or T(_("Follow global (%1)"), BookSettings.xrayDepthLabel(depth_val))),
+        callback = function()
+            closeDialog()
+            BookSettings.showXrayDepthPicker({
+                ui = ui, document_path = opts.document_path, plugin = plugin,
+                target_override = "book",
+                on_close = function()
+                    syncConfig()
+                    BookSettings.showXrayConfig(opts)
+                end,
+            })
+        end }})
+
     -- Categories for NEW X-Rays (presets v0.21): the sticky per-book pick the
     -- create/rebuild paths read (book > global default > full). First-class
     -- here so closed books can set it before their first build (the creation
@@ -2764,6 +3023,19 @@ function BookSettings.showXrayConfig(opts)
     table.insert(buttons, {{ text = T(_("Upcoming entities: %1"),
             boolLabel(b_ahead, features.xray_show_ahead_entities ~= false)),
         callback = function() markingPicker("ahead") end }})
+    -- B269: the two card-content dials
+    local b_acard = doc_settings:readSetting(BookSettings.KEY_XRAY_AHEAD_CARD)
+    table.insert(buttons, {{ text = T(_("Upcoming entity cards: %1"),
+            b_acard and BookSettings.xrayAheadCardLabel(b_acard)
+                or T(_("Follow global (%1)"),
+                    BookSettings.xrayAheadCardLabel(features.xray_ahead_card))),
+        callback = function() markingPicker("ahead_card") end }})
+    local b_len = doc_settings:readSetting(BookSettings.KEY_XRAY_CARD_LENGTH)
+    table.insert(buttons, {{ text = T(_("Card shows: %1"),
+            b_len and BookSettings.xrayCardLengthLabel(b_len)
+                or T(_("Follow global (%1)"),
+                    BookSettings.xrayCardLengthLabel(features.xray_card_length))),
+        callback = function() markingPicker("card_length") end }})
     -- Round 5 (maintainer: "yes per book"): the two lookup-side settings too
     local b_int = doc_settings:readSetting(BookSettings.KEY_XRAY_INTERCEPT)
     table.insert(buttons, {{ text = T(_("Matching selections open entries: %1"),

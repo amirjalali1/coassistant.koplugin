@@ -15,6 +15,11 @@ local BaseHandler = {
 BaseHandler.CODE_CANCELLED = "USER_CANCELED"
 BaseHandler.CODE_NETWORK_ERROR = "NETWORK_ERROR"
 BaseHandler.PROTOCOL_NON_200 = "X-NON-200-STATUS:"
+-- Per-minute admission limits (docs/tpm_admission_plan.md): the fetch child forwards
+-- the provider's rate-limit response headers to the parent as one marker line, same
+-- shape as PROTOCOL_NON_200, so the parent can size answer budgets to the plan.
+local RateLimits = require("koassistant_rate_limits")
+BaseHandler.PROTOCOL_RATELIMIT = RateLimits.PROTOCOL_MARKER
 
 --- Format a non-200 HTTP error body into a SINGLE-LINE message.
 --- The streaming reader consumes the PROTOCOL_NON_200 marker line-by-line, so a
@@ -331,7 +336,7 @@ end
 --- @param hostname string Host header value
 --- @param headers table|nil Additional request headers
 --- @param body string|nil Request body
---- @return number|nil status_code, boolean is_chunked
+--- @return number|nil status_code, boolean is_chunked, table headers (lower-cased keys)
 local function sendRequestAndReadHeaders(ssl_sock, method, path, hostname, headers, body)
     local req_lines = {
         string.format("%s %s HTTP/1.1", method, path),
@@ -355,17 +360,21 @@ local function sendRequestAndReadHeaders(ssl_sock, method, path, hostname, heade
     local status_line = ssl_sock:receive("*l")
     local status_code = status_line and tonumber(status_line:match("HTTP/%S+%s+(%d+)"))
 
-    -- Read response headers
+    -- Read response headers (kept, lower-cased: the rate-limit family rides
+    -- the pipe as a marker line — see RateLimits.encodeMarker)
     local is_chunked = false
+    local resp_headers = {}
     while true do
         local line = ssl_sock:receive("*l")
         if not line or line == "" then break end
         if line:lower():match("^transfer%-encoding:%s*chunked") then
             is_chunked = true
         end
+        local hk, hv = line:match("^([^:]+):%s*(.-)%s*$")
+        if hk then resp_headers[hk:lower()] = hv end
     end
 
-    return status_code, is_chunked
+    return status_code, is_chunked, resp_headers
 end
 
 --- Detect unfilled sample placeholders from apikeys.lua.sample
@@ -400,13 +409,29 @@ function BaseHandler.keyFingerprint(key)
     return mask .. ":" .. #key .. ":" .. h
 end
 
+--- Reduce a user-supplied key to the bytes an HTTP auth header can carry:
+--- printable ASCII, no whitespace anywhere. Anything else came from the way the
+--- key was ENTERED, never from the provider.
+---
+--- Kindle is the recurring case (discussion #54): the device has no system
+--- clipboard, so users copy the key out of a text file opened in KOReader, and a
+--- key long enough to wrap picks up the line break in the MIDDLE of the string.
+--- The 2026-03 fix only trimmed the ENDS, and only ASCII `%s` at that, so an
+--- interior break (or a NBSP / zero-width space / BOM anywhere) sailed through
+--- and the pasted key 401s while the same key in apikeys.lua works.
+function BaseHandler.sanitizeKey(key)
+    if type(key) ~= "string" then return "" end
+    return (key:gsub("[^\33-\126]", ""))
+end
+
 -- Fold one provider's store value (legacy string, array of strings, or array of
 -- { key, alias } tables) into `out` as { key, alias, source } entries. Keys are
--- trimmed (Kindle clipboard adds trailing whitespace) and placeholders dropped.
+-- sanitized on READ (so a key already saved with junk in it heals itself on the
+-- next request, with no migration) and placeholders dropped.
 local function foldKeyEntries(out, value, source)
     local function addOne(key, alias)
         if type(key) ~= "string" then return end
-        key = key:match("^%s*(.-)%s*$")
+        key = BaseHandler.sanitizeKey(key)
         if key == "" or BaseHandler.isPlaceholderKey(key) then return end
         out[#out + 1] = { key = key, alias = alias, source = source }
     end
@@ -453,12 +478,18 @@ function BaseHandler.getApiKey(provider, settings)
         if selected and selected ~= "" then
             for _idx, entry in ipairs(keys) do
                 if BaseHandler.keyFingerprint(entry.key) == selected then
+                    logger.dbg("KOAssistant: api key for", provider, "= selected",
+                        entry.source, "entry, length", #entry.key)
                     return entry.key
                 end
             end
             -- Stale selection (key deleted / file edited): fall through to default.
         end
     end
+    -- Source + LENGTH only, never the key: a wrong length in a user's crash.log
+    -- is what tells GUI-entry corruption apart from a genuinely wrong key.
+    logger.dbg("KOAssistant: api key for", provider, "= first", keys[1].source,
+        "entry of", #keys, "length", #keys[1].key)
     return keys[1].key
 end
 
@@ -503,11 +534,11 @@ function BaseHandler.fetchInSubprocess(url, opts)
         local port = tonumber(url:match("https://[^/:]+:(%d+)")) or 443
         local path = url:match("https://[^/]+(.*)") or "/"
         local ssl_sock = BaseHandler.connectSSLInSubprocess(opts.resolved_ip, host, port, timeout)
-        local status_code, is_chunked = sendRequestAndReadHeaders(
+        local status_code, is_chunked, resp_headers = sendRequestAndReadHeaders(
             ssl_sock, method, path, host, opts.headers, opts.body)
         local resp_body = readFullBody(ssl_sock, is_chunked)
         ssl_sock:close()
-        return status_code, resp_body
+        return status_code, resp_body, resp_headers
     end
     local su_ok, socketutil = pcall(require, "socketutil")
     if su_ok and socketutil then
@@ -538,13 +569,109 @@ function BaseHandler.fetchInSubprocess(url, opts)
     if opts.body then
         request.source = ltn12.source.string(opts.body)
     end
-    local ok, code = pcall(function()
+    local ok, code, resp_headers = pcall(function()
         return socket.skip(1, http.request(request))
     end)
     if not ok then
         return nil, tostring(code)
     end
-    return tonumber(code), table.concat(chunks)
+    return tonumber(code), table.concat(chunks), resp_headers
+end
+
+--- Non-blocking one-shot HTTP(S) fetch: fetchInSubprocess forked into a child,
+--- with the parent polling the pipe on the UI loop (the openai_codex_oauth
+--- pattern, generalized so other parent-side fetches — web-search backends —
+--- share one implementation instead of hand-copying the poll loop).
+--- The child ships {status_code, body} through the pipe as JSON.
+--- @param url string
+--- @param opts table: same fields as fetchInSubprocess (method, headers, body,
+---                    timeout); resolved_ip is filled here (parent-side DNS —
+---                    a forked child must NEVER resolve on macOS)
+--- @param on_done function(status_code|nil, body_or_error) — called once on the
+---        UI loop; never called after cancel. May be called synchronously when
+---        the subprocess cannot start.
+--- @return function|nil cancel: terminates the subprocess and suppresses on_done
+function BaseHandler.fetchAsync(url, opts, on_done)
+    opts = opts or {}
+    local resolved_ip = BaseHandler.resolveForSubprocess(url)
+    local fetch_fn = function(pid, child_write_fd)
+        if not pid or not child_write_fd then return end
+        local ok, status_code, body = pcall(BaseHandler.fetchInSubprocess, url, {
+            method = opts.method,
+            headers = opts.headers,
+            body = opts.body,
+            timeout = opts.timeout,
+            resolved_ip = resolved_ip,
+        })
+        local payload = ok
+            and json.encode({ status_code = status_code, body = body or "" })
+            or json.encode({ status_code = 0, body = tostring(status_code) })
+        BaseHandler.writeAllToFD(child_write_fd, payload)
+        ffi.C.close(child_write_fd)
+        pcall(function() ffi.C._exit(0) end)
+    end
+    local pid, read_fd = ffiutil.runInSubProcess(fetch_fn, true)
+    if not pid then
+        on_done(nil, "failed to start fetch subprocess")
+        return nil
+    end
+
+    local UIManager = require("ui/uimanager")
+    local cancelled = false
+    local chunk_size = 65536
+    local buffer = ffi.new("char[?]", chunk_size)
+    local pointer = ffi.cast("void*", buffer)
+    local parts = {}
+
+    local function finish()
+        ffi.C.close(read_fd)
+        if cancelled then return end
+        local raw = table.concat(parts)
+        local ok, decoded = pcall(json.decode, raw)
+        if ok and type(decoded) == "table" then
+            -- luajson decodes JSON null to a truthy sentinel — type-check both fields.
+            local status = type(decoded.status_code) == "number" and decoded.status_code or nil
+            local body = type(decoded.body) == "string" and decoded.body or ""
+            -- The child encodes a transport error as status 0 + message body.
+            if status == 0 then status = nil end
+            on_done(status, body)
+        else
+            on_done(nil, "failed to parse fetch subprocess response")
+        end
+    end
+
+    local function poll()
+        if cancelled then
+            ffi.C.close(read_fd)
+            return
+        end
+        while true do
+            local available = ffiutil.getNonBlockingReadSize(read_fd) or 0
+            if available > 0 then
+                local bytes = tonumber(ffi.C.read(read_fd, pointer, chunk_size))
+                if bytes and bytes > 0 then parts[#parts + 1] = ffi.string(pointer, bytes)
+                else finish() return end
+            elseif ffiutil.isSubProcessDone(pid) then
+                while true do
+                    local bytes = tonumber(ffi.C.read(read_fd, pointer, chunk_size))
+                    if not bytes or bytes <= 0 then break end
+                    parts[#parts + 1] = ffi.string(pointer, bytes)
+                end
+                finish()
+                return
+            else
+                UIManager:scheduleIn(0.15, poll)
+                return
+            end
+        end
+    end
+    UIManager:scheduleIn(0.15, poll)
+
+    return function()
+        if cancelled then return end
+        cancelled = true
+        pcall(ffiutil.terminateSubProcess, pid)
+    end
 end
 
 --- Socket read timeout for the request subprocess, in seconds (maintainer
@@ -585,8 +712,12 @@ function BaseHandler:backgroundRequest(url, headers, body)
 
                 local ssl_sock = BaseHandler.connectSSLInSubprocess(resolved_ip, parsed_host,
                     parsed_port, BaseHandler.SUBPROCESS_READ_TIMEOUT)
-                local status_code, is_chunked = sendRequestAndReadHeaders(
+                local status_code, is_chunked, resp_headers = sendRequestAndReadHeaders(
                     ssl_sock, "POST", parsed_path, parsed_host, headers, body)
+                -- Rate-limit headers first (also on a non-200: a refusal's own headers
+                -- name the plan's allowance)
+                local rl_marker = RateLimits.encodeMarker(resp_headers)
+                if rl_marker then ffiutil.writeToFD(child_write_fd, rl_marker) end
 
                 if status_code and status_code ~= 200 then
                     local err_body = readFullBody(ssl_sock, is_chunked)
@@ -636,6 +767,13 @@ function BaseHandler:backgroundRequest(url, headers, body)
                     return socket.skip(1, http.request(request))
                 end)
 
+                -- Rate-limit headers: on this path the body has already streamed into
+                -- the pipe, so the marker trails it; both parents accept it anywhere
+                if ok then
+                    local rl_marker = RateLimits.encodeMarker(_headers)
+                    if rl_marker then ffiutil.writeToFD(child_write_fd, rl_marker) end
+                end
+
                 if not ok then
                     local err_msg = tostring(code)
                     logger.warn("Background request error:", err_msg, "url:", url)
@@ -644,11 +782,26 @@ function BaseHandler:backgroundRequest(url, headers, body)
                             self.PROTOCOL_NON_200, err_msg))
                 elseif code ~= 200 then
                     logger.warn("Background request non-200:", code, "status:", status, "url:", url)
-                    local status_text = status and status:match("^HTTP/%S+%s+%d+%s+(.+)$") or status or "Request failed"
-                    local numeric_code = tonumber(code) or 0
-                    ffiutil.writeToFD(child_write_fd,
-                        string.format("\r\n%sError %d: %s\n\n",
-                            self.PROTOCOL_NON_200, numeric_code, status_text))
+                    local numeric_code = tonumber(code)
+                    if not numeric_code then
+                        -- luasocket signals a transport failure as nil + an error
+                        -- STRING, and socket.skip shifts that string into `code`.
+                        -- Coercing it to 0 turned "connection refused" into
+                        -- "Error 0: Request failed" on screen, hiding the only
+                        -- fact that mattered (device 2026-08-20: a stopped local
+                        -- server was indistinguishable from a broken request).
+                        -- The address goes with it: for a local provider, WHICH
+                        -- server is unreachable is half the diagnosis.
+                        ffiutil.writeToFD(child_write_fd,
+                            string.format("\r\n%sCannot reach %s: %s\n\n",
+                                self.PROTOCOL_NON_200, tostring(url), tostring(code)))
+                    else
+                        local status_text = status and status:match("^HTTP/%S+%s+%d+%s+(.+)$")
+                            or status or "Request failed"
+                        ffiutil.writeToFD(child_write_fd,
+                            string.format("\r\n%sError %d: %s\n\n",
+                                self.PROTOCOL_NON_200, numeric_code, status_text))
+                    end
                 end
             end
         end)

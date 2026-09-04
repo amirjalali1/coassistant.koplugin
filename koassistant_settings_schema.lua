@@ -162,6 +162,18 @@ local SettingsSchema = {
                             help_text = _("Markdown renders formatting. Plain Text has better font support for Arabic/CJK."),
                         },
                         {
+                            id = "render_math",
+                            type = "toggle",
+                            text = _("Render Math Formulas"),
+                            path = "features.render_math",
+                            default = true,
+                            enabled_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                return f.render_markdown ~= false
+                            end,
+                            help_text = _("Show LaTeX math from responses as readable formulas: Greek letters, operators, superscripts, vectors, fractions as a/b. Markdown view only. Saved chats, copies and exports keep the original notation, which Obsidian and similar apps render fully."),
+                        },
+                        {
                             id = "chat_exchange_page_breaks",
                             type = "toggle",
                             text = _("Latest Reply on New Page"),
@@ -897,14 +909,14 @@ local SettingsSchema = {
                             text = _("Automatic X-Ray (all books)"),
                             path = "features.xray_auto_update",
                             default = false,
-                            help_text = _("Automatically build and maintain every book's X-Ray as you read (flowing formats like EPUB only): a spoiler-free introduction first, then checkpoints at chapter-sized steps, always keeping the next checkpoint ready ahead of you; reaching it installs it instantly and the one after starts building. Individual books can override this either way: X-Ray popup or Book Settings → Automatic X-Ray; a per-book On works even with this off, and a per-book Off always wins.\n\nSpend guards: at most one background build per cooldown, WiFi only, and text-extraction consent (or a trusted provider) required; background runs extract book text and use API tokens without a per-request tap. Leave off if every request should be explicit."),
+                            help_text = _("Keep the X-Rays you started up to date as you read (flowing formats like EPUB only): checkpoints at chapter-sized steps, always keeping the next checkpoint ready ahead of you; reaching it installs it instantly and the one after starts building. Books with no X-Ray are left alone: start one from the X-Ray popup with \"Build as I read\", or switch a book to Automatic individually (X-Ray popup or Book Settings → Automatic X-Ray), which works even with this off; a per-book Off always wins.\n\nSpend guards: at most one background build per cooldown, WiFi only, and text-extraction consent (or a trusted provider) required; background runs extract book text and use API tokens without a per-request tap. Leave off if every request should be explicit."),
                             on_change = function(new_value, plugin)
                                 -- Round 22 (R4 / known gap (a)): flipping the master with a
                                 -- book open must reach that book immediately — refresh the
                                 -- per-page state and, when turning ON, run the same engine
-                                -- entry a book-open would (the coverage ask fires for
-                                -- first-spend books; established books just restore the
-                                -- one-ahead invariant).
+                                -- entry a book-open would (books with no X-Ray are left
+                                -- alone; established books just restore the one-ahead
+                                -- invariant).
                                 if not plugin or not plugin._refreshXrayAutoState then return end
                                 plugin:_refreshXrayAutoState()
                                 if new_value == true and plugin._fireXrayAutoCheckpoints
@@ -915,36 +927,6 @@ local SettingsSchema = {
                                     end)
                                 end
                             end,
-                        },
-                        {
-                            id = "xray_auto_create",
-                            type = "toggle",
-                            text = _("Also Start X-Rays Automatically"),
-                            path = "features.xray_auto_create",
-                            default = false,
-                            help_text = _("A sub-setting of Automatic X-Ray (all books), for books that have NO X-Ray yet: allow automation to make the FIRST build (introduction + checkpoints to your position; the first build asks how you want coverage, once per book). With this off, \"all books\" automation only maintains X-Rays you started yourself. Books with an existing non-incremental X-Ray (complete, AI-knowledge, legacy) are never touched.\n\nBooks switched to Automatic individually (per-book On) always build the first one, regardless of this setting."),
-                            depends_on = { id = "xray_auto_update", value = true },
-                        },
-                        {
-                            id = "xray_coverage_mode",
-                            type = "dropdown",
-                            text = _("First Build for New Books"),
-                            path = "features.xray_coverage_mode",
-                            default = "ask",
-                            options = {
-                                { label = _("Ask each book"), value = "ask" },
-                                { label = _("Catch up, then follow"), value = "follow" },
-                                { label = _("Build all checkpoints"), value = "build" },
-                            },
-                            help_text = _("How Automatic X-Ray handles its first build for a book. \"Ask each book\" shows a one-time choice per book. \"Catch up, then follow\" quietly builds checkpoints to your position and keeps one ahead. \"Build all checkpoints\" offers the full checkpoint build with its cost confirmation. The ask dialog's \"Always do this, for every book\" writes this setting too."),
-                        },
-                        {
-                            id = "xray_offer_auto",
-                            type = "toggle",
-                            text = _("Offer Automatic X-Ray for New Books"),
-                            path = "features.xray_offer_auto",
-                            default = false,
-                            help_text = _("When you open a book that has no X-Ray, ask once whether to turn on Automatic X-Ray for it. Only asks when it could act right away (flowing format, text-extraction consent in place). Declining turns the book's Automatic X-Ray off, so it never asks again for that book."),
                         },
                         -- (Round 21, unified engine: the min/max progress-gap dials are
                         -- retired — checkpoint spacing IS the increment. Stored values
@@ -960,7 +942,7 @@ local SettingsSchema = {
                             max = 120,
                             step = 1,
                             precision = "%d",
-                            help_text = _("Minimum time between background checkpoint builds (0 = no cooldown)."),
+                            help_text = _("Minimum wait before retrying an automatic checkpoint after one was declined, failed or cancelled (0 = no cooldown). A completed build does not wait."),
                             depends_on = { id = "xray_auto_update", value = true },
                         },
                         {
@@ -985,7 +967,14 @@ local SettingsSchema = {
                             type = "action",
                             text = _("Categories for New X-Rays"),
                             callback = "showXrayDefaultCategoriesPicker",
-                            help_text = _("Which category groups a new X-Ray tracks by default: everything, or a narrower pick like character tracking. Applies when an X-Ray is created or rebuilt; individual books can pick their own categories in Book Settings."),
+                            help_text = _("Which category groups a new X-Ray tracks by default: everything, or a narrower preset such as Reference (no timeline) or Characters only. Applies when an X-Ray is created or rebuilt; individual books can pick their own categories in Book Settings."),
+                        },
+                        {
+                            id = "xray_default_depth_picker",
+                            type = "action",
+                            text = _("Depth of New X-Rays"),
+                            callback = "showXrayDefaultDepthPicker",
+                            help_text = _("How much each X-Ray entry carries by default. Light: one line per entry, only recurring figures and turning points, about half the cost. Standard: a few sentences per entry, everything the reader meets. Deep: longer entries, every figure and development, richer connections. Applies when an X-Ray is created or rebuilt; checkpoints and updates keep the depth the X-Ray was started with. Individual books can pick their own depth in Book Settings."),
                         },
                         {
                             id = "xray_selection_intercept",
@@ -1043,7 +1032,7 @@ local SettingsSchema = {
                             text = _("Upcoming Entities"),
                             path = "features.xray_show_ahead_entities",
                             default = true,
-                            help_text = _("Let marking, matching selections and entity cards recognize entities that first appear past your installed X-Ray coverage, using the checkpoint already built ahead of you. Identification only: such names get short-dash marks and a brief card, and the full entry stays behind a spoiler confirmation. Off = the plugin only knows entities up to your installed coverage."),
+                            help_text = _("Let marking, matching selections and entity cards recognize entities that first appear past your installed X-Ray coverage, using only the next checkpoint built past your reading position (never a later one). Identification only: such names get short-dash marks and a card that, by default, shows just the tapped name until you ask for the entry. Off = the plugin only knows entities up to your installed coverage."),
                             on_change = function(new_value, plugin)
                                 if plugin.syncXrayMarks then
                                     local UIManager = require("ui/uimanager")
@@ -1052,6 +1041,42 @@ local SettingsSchema = {
                                     end)
                                 end
                             end,
+                        },
+                        {
+                            id = "xray_ahead_card",
+                            type = "radio",
+                            text_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                return T(_("Upcoming Entity Cards: %1"),
+                                    require("koassistant_book_settings").xrayAheadCardLabel(f.xray_ahead_card))
+                            end,
+                            path = "features.xray_ahead_card",
+                            default = "name",
+                            options = {
+                                { value = "name", text = _("Name only, tap to show a one-line description") },
+                                { value = "entry", text = _("First sentence right away") },
+                            },
+                            help_text = _("What the card shows first for an upcoming entity, known only from the next checkpoint built ahead of you. Name only shows the tapped name and its category; a tap on the card adds the entry's first sentence, and another tap opens the full entry behind a spoiler confirmation. First sentence right away skips the first step (it can reveal that a name is another character's alias). Can be overridden per book."),
+                            enabled_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                return f.xray_show_ahead_entities ~= false
+                            end,
+                        },
+                        {
+                            id = "xray_card_length",
+                            type = "radio",
+                            text_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                return T(_("Card Shows: %1"),
+                                    require("koassistant_book_settings").xrayCardLengthLabel(f.xray_card_length))
+                            end,
+                            path = "features.xray_card_length",
+                            default = "sentence",
+                            options = {
+                                { value = "sentence", text = _("First sentence only") },
+                                { value = "full", text = _("Full entry") },
+                            },
+                            help_text = _("How much of an entry the card shows for entities already in your installed X-Ray. First sentence keeps the card to a one-line identification, with the full entry a tap away. Full entry shows the whole description (swipe to scroll the footnote panel; the floating popup cuts it where it runs out of room). Can be overridden per book."),
                         },
                         {
                             id = "xray_card_landing",
@@ -1181,7 +1206,7 @@ local SettingsSchema = {
                             max = 20,
                             step = 1,
                             precision = "%d",
-                            help_text = _("Whenever an update or redo overwrites the X-Ray, the outgoing version is archived: browse, view, or restore them via \"All versions\" in the X-Ray popup and browser menu. This sets how many are kept per book (oldest dropped first). 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself. Checkpoints are stored separately and are never trimmed by this."),
+                            help_text = _("Whenever an update or redo overwrites the X-Ray, the outgoing version is archived: browse, view, or restore them via \"All versions\" in the X-Ray popup and browser menu. This sets how many are kept per book; the versions covering the least of the book are dropped first, oldest first among equally covering ones. 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself. Checkpoints are stored separately and are never trimmed by this."),
                             separator = true,
                         },
                         {
@@ -2049,7 +2074,7 @@ local SettingsSchema = {
                     text = _("Allow Highlights"),
                     path = "features.enable_highlights_sharing",
                     default = false,
-                    help_text = _("Share your highlighted text passages with the AI. Used by X-Ray, Recap, and actions with {highlights} placeholders. Does not include personal notes."),
+                    help_text = _("Share your highlighted text passages with the AI. Used by Recap, Analyze Notes, and actions with {highlights} placeholders. Does not include personal notes. X-Ray does not send them: it only matches them locally, to offer them on an entity page."),
                     enabled_func = function(plugin)
                         -- Grayed out when annotations is enabled (annotations implies highlights)
                         local f = plugin.settings:readSetting("features") or {}
@@ -3372,7 +3397,6 @@ function SettingsSchema.applyDefaults(features, preserve)
 
     -- Keep migration flags
     new_features.behavior_migrated = true
-    new_features.prompts_migrated_v2 = true
 
     return new_features
 end

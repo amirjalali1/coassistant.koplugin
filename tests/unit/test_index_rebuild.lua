@@ -109,6 +109,20 @@ package.loaded["document/documentregistry"] = nil
 -- Load standard mocks FIRST (logger, ffi, json, etc.)
 require("mock_koreader")
 
+-- Fix M: KOReader's BookInfo.extendProps overlays custom_metadata.lua props;
+-- mock it with a per-path custom_props map
+local mock_custom_props = {}
+package.loaded["apps/filemanager/filemanagerbookinfo"] = {
+    extendProps = function(original_props, filepath)
+        local custom = mock_custom_props[filepath] or {}
+        original_props = original_props or {}
+        return {
+            title = custom.title or original_props.title,
+            authors = custom.authors or original_props.authors,
+        }
+    end,
+}
+
 -- Capture logger.warn calls (mutex-collision regression check)
 local warn_log = {}
 local logger_mock = package.loaded["logger"]
@@ -143,10 +157,16 @@ function MockDocSettings:getSidecarDir(doc_path, force_location)
     return base .. ".sdr"
 end
 
+local docsettings_opens = 0   -- Fix M: the browser must not open DocSettings
 function MockDocSettings:open(path)
+    docsettings_opens = docsettings_opens + 1
     local store_key = "docsettings:" .. path
     if not mock_storage[store_key] then mock_storage[store_key] = {} end
     return setmetatable({ _path = store_key }, MockDocSettings)
+end
+
+function MockDocSettings:findCustomMetadataFile(doc_path)
+    return mock_custom_props[doc_path] and ("/mock/" .. doc_path .. ".sdr/custom_metadata.lua") or nil
 end
 
 function MockDocSettings.openSettingsFile(sidecar_file)
@@ -180,7 +200,9 @@ package.loaded["docsettings"] = MockDocSettings
 
 -- Mock LuaSettings
 package.loaded["luasettings"] = {
-    open = function(path)
+    -- accepts both LuaSettings:open(path) and LuaSettings.open(path)
+    open = function(a, b)
+        local path = b or a
         if not mock_storage[path] then mock_storage[path] = {} end
         return {
             _path = path,
@@ -331,9 +353,15 @@ local function chatsTable(ids)
     return chats
 end
 
--- Book with chats readable through (Safe)DocSettings + existing book file
+-- Book with chats in its koassistant_chats.lua sidecar file (Track 37) +
+-- existing book file. The DocSettings mock stays empty: metadata.lua carries
+-- no plugin keys any more.
+local function chatsFileFor(doc_path)
+    return MockDocSettings:getSidecarDir(doc_path) .. "/koassistant_chats.lua"
+end
 local function addBookWithChats(doc_path, chat_ids)
-    mock_storage["docsettings:" .. doc_path] = { koassistant_chats = chatsTable(chat_ids) }
+    mock_storage[chatsFileFor(doc_path)] = { chats = chatsTable(chat_ids) }
+    mock_storage["docsettings:" .. doc_path] = mock_storage["docsettings:" .. doc_path] or {}
     mock_files[doc_path] = { mode = "file" }
 end
 
@@ -467,6 +495,114 @@ TestRunner:test("no_flush opt skips flush but saves", function()
         { no_flush = true })
     TestRunner:assertEqual(chatSaves(), 1, "should save")
     TestRunner:assertEqual(flush_count, 0, "should not flush")
+end)
+
+-- ============================================================
+-- Tests: Fix M — title/author denormalized into the chat index
+-- ============================================================
+print("\n  -- Fix M: title/author in the index --")
+
+TestRunner:test("save with doc_props stores title/author", function()
+    ChatHistoryManager:updateChatIndex("/books/a.epub", "save", nil, chatsTable({ "c1" }),
+        { doc_props = { title = "Alpha", authors = "Someone" }, has_props = true })
+    local entry = g_reader_store[CHAT_KEY]["/books/a.epub"]
+    TestRunner:assertEqual(entry.title, "Alpha", "title stored")
+    TestRunner:assertEqual(entry.author, "Someone", "author stored")
+end)
+
+TestRunner:test("looked-up but absent props store false (known absent)", function()
+    ChatHistoryManager:updateChatIndex("/books/a.epub", "save", nil, chatsTable({ "c1" }),
+        { doc_props = nil, has_props = true })
+    local entry = g_reader_store[CHAT_KEY]["/books/a.epub"]
+    TestRunner:assertEqual(entry.title, false, "title false = known absent")
+    TestRunner:assertEqual(entry.author, false, "author false = known absent")
+end)
+
+TestRunner:test("write without doc_props preserves the stored title/author", function()
+    ChatHistoryManager:updateChatIndex("/books/a.epub", "save", nil, chatsTable({ "c1" }),
+        { doc_props = { title = "Alpha", authors = "Someone" }, has_props = true })
+    ChatHistoryManager:updateChatIndex("/books/a.epub", "delete", "c1", chatsTable({ "c2" }))
+    local entry = g_reader_store[CHAT_KEY]["/books/a.epub"]
+    TestRunner:assertEqual(entry.title, "Alpha", "title preserved across a prop-less write")
+    TestRunner:assertEqual(entry.author, "Someone", "author preserved")
+end)
+
+TestRunner:test("refresh heals an edited title, no-ops on an unchanged one", function()
+    local chats = chatsTable({ "c1" })
+    ChatHistoryManager:updateChatIndex("/books/a.epub", "save", nil, chats,
+        { doc_props = { title = "Alpha" }, has_props = true })
+    local n = chatSaves()
+    ChatHistoryManager:updateChatIndex("/books/a.epub", "refresh", nil, chats,
+        { doc_props = { title = "Alpha" }, has_props = true })
+    TestRunner:assertEqual(chatSaves(), n, "same title = no write")
+    ChatHistoryManager:updateChatIndex("/books/a.epub", "refresh", nil, chats,
+        { doc_props = { title = "Alpha (edited)" }, has_props = true })
+    TestRunner:assertEqual(chatSaves(), n + 1, "changed title = one write")
+    TestRunner:assertEqual(g_reader_store[CHAT_KEY]["/books/a.epub"].title, "Alpha (edited)",
+        "title healed")
+end)
+
+TestRunner:test("refreshChatIndexEntry carries the sidecar's doc_props", function()
+    addBookWithChats("/books/synced.epub", { "x1" })
+    mock_storage["docsettings:/books/synced.epub"].doc_props = { title = "Synced", authors = "A" }
+    ChatHistoryManager:refreshChatIndexEntry("/books/synced.epub", nil)
+    local entry = g_reader_store[CHAT_KEY]["/books/synced.epub"]
+    TestRunner:assertEqual(entry.title, "Synced", "title from sidecar")
+    TestRunner:assertEqual(entry.author, "A", "author from sidecar")
+end)
+
+TestRunner:test("browser renders from the index; legacy entries heal once", function()
+    addBookWithChats("/books/legacy.epub", { "c1" })
+    mock_storage["docsettings:/books/legacy.epub"].doc_props = { title = "Legacy", authors = "L" }
+    -- pre-Fix-M / pre-Fix-S entry: no starred, no title
+    g_reader_store[CHAT_KEY] = { ["/books/legacy.epub"] = {
+        count = 1, last_modified = 500, chat_ids = { "c1" } } }
+    addBookWithChats("/books/fresh.epub", { "d1" })
+    ChatHistoryManager:updateChatIndex("/books/fresh.epub", "save", nil, chatsTable({ "d1" }),
+        { doc_props = nil, has_props = true })
+
+    docsettings_opens = 0
+    local docs = ChatHistoryManager:getAllDocumentsUnified(nil)
+    TestRunner:assertEqual(docsettings_opens, 1, "only the legacy entry pays a DocSettings open")
+    local by_path = {}
+    for _idx, d in ipairs(docs) do by_path[d.path] = d end
+    TestRunner:assertEqual(by_path["/books/legacy.epub"].title, "Legacy", "legacy title healed")
+    TestRunner:assertEqual(by_path["/books/legacy.epub"].author, "L", "legacy author healed")
+    TestRunner:assertEqual(by_path["/books/fresh.epub"].title, "fresh.epub", "no props = filename")
+    TestRunner:assertNil(by_path["/books/fresh.epub"].author, "no props = nil author")
+    TestRunner:assertEqual(g_reader_store[CHAT_KEY]["/books/legacy.epub"].last_modified, 500,
+        "heal keeps last_modified")
+
+    docsettings_opens = 0
+    ChatHistoryManager:getAllDocumentsUnified(nil)
+    TestRunner:assertEqual(docsettings_opens, 0, "second open is index-only")
+end)
+
+TestRunner:test("edited (custom) metadata wins over the original doc_props", function()
+    local chats = chatsTable({ "c1" })
+    ChatHistoryManager:updateChatIndex("/books/a.epub", "save", nil, chats,
+        { doc_props = { title = "Original", authors = "Orig" }, has_props = true })
+    mock_custom_props["/books/a.epub"] = { title = "Original (edited)" }
+    local n = chatSaves()
+    ChatHistoryManager:updateChatIndex("/books/a.epub", "refresh", nil, chats,
+        { doc_props = { title = "Original", authors = "Orig" }, has_props = true })
+    TestRunner:assertEqual(chatSaves(), n + 1, "custom title = a write")
+    local entry = g_reader_store[CHAT_KEY]["/books/a.epub"]
+    TestRunner:assertEqual(entry.title, "Original (edited)", "custom title stored")
+    TestRunner:assertEqual(entry.author, "Orig", "untouched field keeps the original")
+    mock_custom_props["/books/a.epub"] = nil
+end)
+
+TestRunner:test("rebuild stores title/author", function()
+    addBookWithChats("/books/r.epub", { "c1" })
+    addDocSidecarDir("/books/r.epub")
+    mock_storage["docsettings:/books/r.epub"].doc_props = { title = "Rebuilt" }
+    g_reader_store["koassistant_artifact_index"] = { ["/books/r.epub"] = { count = 1 } }
+    ChatHistoryManager:rebuildChatIndex()
+    local entry = g_reader_store[CHAT_KEY]["/books/r.epub"]
+    TestRunner:assertNotNil(entry, "rebuilt entry")
+    TestRunner:assertEqual(entry.title, "Rebuilt", "title from rebuild")
+    TestRunner:assertEqual(entry.author, false, "absent author = false")
 end)
 
 -- ============================================================

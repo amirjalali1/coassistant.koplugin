@@ -460,7 +460,10 @@ tests/
 ├── test_config.lua            # Config helpers (buildFullConfig)
 ├── local_config.lua.sample    # Local config template
 ├── fixtures/
-│   └── sample_context.lua     # Sample context data for tests
+│   ├── sample_context.lua     # Sample context data for tests
+│   └── mock_series/           # Offline mock-book generator (X-Ray/groups device fixture):
+│                              #   lua tests/fixtures/mock_series/gen.lua --out <dir> [--base <target>]
+│                              # 7 tiny invented EPUBs + real-API sidecar data (see gen.lua header)
 ├── lib/
 │   ├── mock_koreader.lua      # KOReader module mocks
 │   ├── constraint_utils.lua   # Plugin constraint utilities wrapper
@@ -542,3 +545,44 @@ Some providers may be slow. Tests wait for API response without timeout. Check n
 - **Streaming**: Not fully testable standalone (requires KOReader subprocess)
 - **Token Limits**: Tests use small limits (64-512 tokens) to minimize costs
 - **Model Validation Cost**: `--models` uses ~10 input + 1 output tokens per model (~1,400 tokens total for all 130+ models, typically < $0.01)
+
+## Per-minute admission limits (no credentials needed)
+
+`tests/unit/test_rate_limits.lua` covers the pure logic (headers, pipe marker, session
+memo, refusal parsing, budget sizing) and `tests/unit/test_non200_errors.lua` the error
+text and dialog class. For an end-to-end run without any provider key:
+
+```bash
+python3 tests/tools/tpm_stub_server.py            # Groq-shaped plan: 8000 tokens/min, headers on
+python3 tests/tools/tpm_stub_server.py 8765 8000 --no-headers   # learn from the refusal text only
+```
+
+Automated transport check (real base.lua fetch paths under KOReader's bundled LuaJIT,
+no UI): with the stub running,
+
+```bash
+(cd /Applications/KOReader.app/Contents/koreader && ./luajit \
+    "$PWD_PLUGIN/tests/tools/tpm_e2e.lua" "$PWD_PLUGIN")   # PWD_PLUGIN = the plugin dir
+```
+
+expects "TPM e2e: all checks passed" (headers as fetchInSubprocess's 3rd return, the pipe
+marker on a 413 and on a 200 SSE stream, parent-side sizing, the capped request admitted).
+On macOS this exercises the http.request path (the one devices use); the macOS raw-SSL
+path is covered by any real https request on the desktop build.
+
+Desktop KOReader: Settings > Provider > Add custom provider, base URL
+`http://127.0.0.1:8765/v1/chat/completions`, no API key, any model id. Then:
+
+1. Send any chat. Stub log: first request `REFUSE` (max_tokens 32768), second `ok`
+   with a budget near 7,500. Plugin log (Console Debug on): "per-minute allowance 8000
+   refused budget 32768 - resending at N".
+2. Send another chat. Stub log: `ok` on the FIRST try; plugin log: "answer budget capped
+   to N by the plan's per-minute allowance 8000".
+3. Run "Test provider" on a fresh session, then send a chat: no refusal at all (the
+   probe learned the plan). Plugin log: "test probe learned per-minute allowance 8000".
+4. Paste ~40K characters into a chat: one refusal, no resend, and the error dialog says
+   the request itself is larger than the allowance (scope advice), staying on screen.
+5. OpenRouter shape: restart the stub as `python3 tests/tools/tpm_stub_server.py 1234 32768
+   --openrouter` (LIMIT = the model's context window, HTTP 400, no headers) and send a
+   chat. Expect one refusal then ok (plugin log: "max_tokens self-heal (context), retrying
+   at N"), and the NEXT chat admitted first try ("answer budget capped ... allowance 32768").

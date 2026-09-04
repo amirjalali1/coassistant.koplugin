@@ -12,6 +12,7 @@ Browser UI for viewing all notebooks across documents.
 local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
 local DocSettings = require("docsettings")
+local SafeDocSettings = require("koassistant_doc_settings")
 local InfoMessage = require("ui/widget/infomessage")
 local Menu = require("ui/widget/menu")
 local Screen = require("device").screen
@@ -44,7 +45,7 @@ function NotebookManager:showNotebookBrowser(opts)
         if Notebook.exists(doc_path) then
             -- Get book title and author from metadata, falling back to filename
             local doc_settings = DocSettings:open(doc_path)
-            local doc_props = doc_settings:readSetting("doc_props")
+            local doc_props = SafeDocSettings.overlayCustomProps(doc_settings:readSetting("doc_props"), doc_path)
             local title = doc_props and (doc_props.display_title or doc_props.title) or nil
             if not title or title == "" then
                 title = doc_path:match("([^/]+)%.[^%.]+$") or doc_path
@@ -224,6 +225,10 @@ function NotebookManager:showNotebookOptions(doc_path, doc_title)
                                 if ok == nil and err then
                                     logger.warn("KOAssistant Notebook: Failed to delete:", err)
                                 end
+                                -- Drop the book's pointer to it (vault/central modes keep one;
+                                -- it used to outlive the file — storage sweep 2026-09-03)
+                                local ds = doc_path and SafeDocSettings.resolve(doc_path)
+                                if ds then ds:saveSetting("koassistant_notebook_ref", nil) end
                                 -- Update index
                                 local AskGPT = self_ref:getAskGPTInstance()
                                 if AskGPT then

@@ -182,6 +182,39 @@ do
     end
 end
 
+-- OpenRouter context-overflow wording (#106 follow-up): "(P of text input, Q in the output)"
+do
+    local P = ModelConstraints.parseMaxTokensError
+    local OR = "This endpoint's maximum context length is 32768 tokens. However, you requested about 33002 tokens "
+        .. "(234 of text input, 32768 in the output). Please reduce the length of either one, or use the \"middle-out\" transform to compress your prompt automatically."
+    local r = P(OR)
+    TestRunner.assert(r and r.kind == "context", "openrouter overflow recognized as context kind")
+    TestRunner.assert(r and r.limit == 32768 and r.prompt == 234, "openrouter overflow: limit + prompt parsed")
+    TestRunner.assert(r and r.retry_at == 32768 - 234 - 256, "openrouter overflow: retry room = limit - prompt - margin")
+    local big = P("This endpoint's maximum context length is 8192 tokens. However, you requested about 40000 tokens (9000 of text input, 31000 in the output).")
+    TestRunner.assert(big == nil, "openrouter overflow: prompt alone over the window -> no retry")
+    local vllm = P("This model's maximum context length is 12288 tokens. However, you requested 20480 tokens (8192 in the messages, 12288 in the completion).")
+    TestRunner.assert(vllm and vllm.retry_at == 12288 - 8192 - 256 and vllm.prompt == 8192, "vLLM wording unchanged")
+end
+
+-- effectiveMaxTokens: the budget a handler will send, derived like the handlers do
+-- (per-minute admission limits need it to read a refusal's "Requested M").
+do
+    local E = ModelConstraints.effectiveMaxTokens
+    TestRunner.assert(E("groq", "openai/gpt-oss-20b", { provider_settings = { groq = { additional_parameters = { max_tokens = 16384 } } } }) == TARGET,
+        "effectiveMaxTokens: known ceiling -> raise-where-known target")
+    TestRunner.assert(E("custom_lm_studio", "stub-model", { provider_settings = {} }) == 16384,
+        "effectiveMaxTokens: custom provider, no ceiling -> the handlers' 16384 fallback")
+    TestRunner.assert(E("novita", "some-unknown", { provider_settings = { novita = { additional_parameters = { max_tokens = 4096 } } } }) == 4096,
+        "effectiveMaxTokens: community provider fallback from its defaults")
+    TestRunner.assert(E("groq", "openai/gpt-oss-20b", { api_params = { max_tokens = 4096 } }) == 4096,
+        "effectiveMaxTokens: api_params pin respected")
+    TestRunner.assert(E("groq", "llama-3.3-70b-versatile", { api_params = { max_tokens = 65536 } }) == 32768,
+        "effectiveMaxTokens: pin clamped to the ceiling")
+    TestRunner.assert(E("anthropic", "claude-sonnet-5", { additional_parameters = { max_tokens = 8000 } }) == 8000,
+        "effectiveMaxTokens: top-level additional_parameters pin (anthropic reads it as a pin)")
+end
+
 -- parseMaxTokensError: the self-heal's decision function. Only provider-STATED
 -- numbers may be acted on — a misparse here caches a wrong ceiling silently.
 do

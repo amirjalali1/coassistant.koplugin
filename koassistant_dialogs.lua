@@ -1785,70 +1785,60 @@ local function createSaveDialog(document_path, history, chat_history_manager, is
                             end
 
                             -- Check storage version and route to appropriate method
-                            if chat_history_manager:useDocSettingsStorage() then
-                                -- v2: DocSettings-based storage
-                                -- Build complete chat_data structure (matching old saveChat format)
-                                local chat_id = metadata.id or chat_history_manager:generateChatId()
+                            -- v2: DocSettings-based storage
+                            -- Build complete chat_data structure (matching old saveChat format)
+                            local chat_id = metadata.id or chat_history_manager:generateChatId()
 
-                                -- Preserve existing tags and starred when updating an existing chat
-                                local existing_tags = {}
-                                local existing_starred
-                                if metadata.id then
-                                    local existing = chat_history_manager:getChatById(document_path, metadata.id)
-                                    if existing then
-                                        existing_tags = existing.tags or {}
-                                        existing_starred = existing.starred
-                                    end
+                            -- Preserve existing tags and starred when updating an existing chat
+                            local existing_tags = {}
+                            local existing_starred
+                            if metadata.id then
+                                local existing = chat_history_manager:getChatById(document_path, metadata.id)
+                                if existing then
+                                    existing_tags = existing.tags or {}
+                                    existing_starred = existing.starred
                                 end
+                            end
 
-                                local chat_data = {
-                                    id = chat_id,
-                                    title = chat_title or "Conversation",
-                                    document_path = document_path,
-                                    timestamp = os.time(),
-                                    messages = history:getMessages(),
-                                    model = history:getModel(),
-                                    metadata = metadata,
-                                    book_title = metadata.book_title,
-                                    book_author = metadata.book_author,
-                                    prompt_action = history.prompt_action,
-                                    launched_from = history.launched_from,
-                                    launch_context = metadata.launch_context,
-                                    domain = metadata.domain,
-                                    tags = existing_tags,
-                                    starred = existing_starred,
-                                    original_highlighted_text = metadata.original_highlighted_text,
-                                    -- Store system prompt metadata for debug display
-                                    system_metadata = config and config.system,
-                                    -- Per-chat control state — resume reactivates it (parity §8c)
-                                    control_state = chat_history_manager.captureControlState(config),
-                                    -- Store cache continuation info (for "Updated from X% cache" notice)
-                                    used_cache = history.used_cache,
-                                    cached_progress = history.cached_progress,
-                                    cache_action_id = history.cache_action_id,
-                                    -- Store book text truncation info
-                                    book_text_truncated = history.book_text_truncated,
-                                    book_text_coverage_start = history.book_text_coverage_start,
-                                    book_text_coverage_end = history.book_text_coverage_end,
-                                    -- Store unavailable data info
-                                    unavailable_data = history.unavailable_data,
-                                }
+                            local chat_data = {
+                                id = chat_id,
+                                title = chat_title or "Conversation",
+                                document_path = document_path,
+                                timestamp = os.time(),
+                                messages = history:getMessages(),
+                                model = history:getModel(),
+                                metadata = metadata,
+                                book_title = metadata.book_title,
+                                book_author = metadata.book_author,
+                                prompt_action = history.prompt_action,
+                                launched_from = history.launched_from,
+                                launch_context = metadata.launch_context,
+                                domain = metadata.domain,
+                                tags = existing_tags,
+                                starred = existing_starred,
+                                original_highlighted_text = metadata.original_highlighted_text,
+                                -- Store system prompt metadata for debug display
+                                system_metadata = config and config.system,
+                                -- Per-chat control state — resume reactivates it (parity §8c)
+                                control_state = chat_history_manager.captureControlState(config),
+                                -- Store cache continuation info (for "Updated from X% cache" notice)
+                                used_cache = history.used_cache,
+                                cached_progress = history.cached_progress,
+                                cache_action_id = history.cache_action_id,
+                                -- Store book text truncation info
+                                book_text_truncated = history.book_text_truncated,
+                                book_text_coverage_start = history.book_text_coverage_start,
+                                book_text_coverage_end = history.book_text_coverage_end,
+                                -- Store unavailable data info
+                                unavailable_data = history.unavailable_data,
+                            }
 
-                                if document_path == "__GENERAL_CHATS__" then
-                                    return chat_history_manager:saveGeneralChat(chat_data)
-                                elseif document_path == "__LIBRARY_CHATS__" then
-                                    return chat_history_manager:saveLibraryChat(chat_data)
-                                else
-                                    return chat_history_manager:saveChatToDocSettings(ui, chat_data)
-                                end
+                            if document_path == "__GENERAL_CHATS__" then
+                                return chat_history_manager:saveGeneralChat(chat_data)
+                            elseif document_path == "__LIBRARY_CHATS__" then
+                                return chat_history_manager:saveLibraryChat(chat_data)
                             else
-                                -- v1: Legacy hash-based storage
-                                return chat_history_manager:saveChat(
-                                    document_path,
-                                    chat_title,
-                                    history,
-                                    metadata
-                                )
+                                return chat_history_manager:saveChatToDocSettings(ui, chat_data)
                             end
                         end)
                         
@@ -2762,72 +2752,62 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                         else
                             local save_result
                             -- Check storage version and route to appropriate method
-                            if chat_history_manager:useDocSettingsStorage() then
-                                -- v2: DocSettings-based storage
-                                local chat_id = metadata.id or history.chat_id or chat_history_manager:generateChatId()
+                            -- v2: DocSettings-based storage
+                            local chat_id = metadata.id or history.chat_id or chat_history_manager:generateChatId()
 
-                                -- Preserve existing tags, starred, and title when updating an existing chat
-                                local existing_tags = {}
-                                local existing_starred
-                                local existing_title = suggested_title
-                                local effective_chat_id = metadata.id or history.chat_id
-                                if effective_chat_id and save_path then
-                                    local existing = chat_history_manager:getChatById(save_path, effective_chat_id)
-                                    if existing then
-                                        existing_tags = existing.tags or {}
-                                        existing_starred = existing.starred
-                                        existing_title = existing.title or suggested_title
-                                    end
+                            -- Preserve existing tags, starred, and title when updating an existing chat
+                            local existing_tags = {}
+                            local existing_starred
+                            local existing_title = suggested_title
+                            local effective_chat_id = metadata.id or history.chat_id
+                            if effective_chat_id and save_path then
+                                local existing = chat_history_manager:getChatById(save_path, effective_chat_id)
+                                if existing then
+                                    existing_tags = existing.tags or {}
+                                    existing_starred = existing.starred
+                                    existing_title = existing.title or suggested_title
                                 end
+                            end
 
-                                local chat_data = {
-                                    id = chat_id,
-                                    title = existing_title or "Conversation",
-                                    document_path = save_path,
-                                    timestamp = os.time(),
-                                    messages = history:getMessages(),
-                                    model = history:getModel(),
-                                    metadata = metadata,
-                                    book_title = metadata.book_title,
-                                    book_author = metadata.book_author,
-                                    prompt_action = history.prompt_action,
-                                    launched_from = history.launched_from,
-                                    launch_context = metadata.launch_context,
-                                    domain = metadata.domain,
-                                    tags = existing_tags,
-                                    starred = existing_starred,
-                                    original_highlighted_text = metadata.original_highlighted_text,
-                                    -- Store system prompt metadata for debug display
-                                    system_metadata = cfg.system,
-                                    -- Per-chat control state — resume reactivates it (parity §8c)
-                                    control_state = chat_history_manager.captureControlState(cfg),
-                                    -- Store cache continuation info (for "Updated from X% cache" notice)
-                                    used_cache = history.used_cache,
-                                    cached_progress = history.cached_progress,
-                                    cache_action_id = history.cache_action_id,
-                                    -- Store book text truncation info
-                                    book_text_truncated = history.book_text_truncated,
-                                    book_text_coverage_start = history.book_text_coverage_start,
-                                    book_text_coverage_end = history.book_text_coverage_end,
-                                    -- Store unavailable data info
-                                    unavailable_data = history.unavailable_data,
-                                }
+                            local chat_data = {
+                                id = chat_id,
+                                title = existing_title or "Conversation",
+                                document_path = save_path,
+                                timestamp = os.time(),
+                                messages = history:getMessages(),
+                                model = history:getModel(),
+                                metadata = metadata,
+                                book_title = metadata.book_title,
+                                book_author = metadata.book_author,
+                                prompt_action = history.prompt_action,
+                                launched_from = history.launched_from,
+                                launch_context = metadata.launch_context,
+                                domain = metadata.domain,
+                                tags = existing_tags,
+                                starred = existing_starred,
+                                original_highlighted_text = metadata.original_highlighted_text,
+                                -- Store system prompt metadata for debug display
+                                system_metadata = cfg.system,
+                                -- Per-chat control state — resume reactivates it (parity §8c)
+                                control_state = chat_history_manager.captureControlState(cfg),
+                                -- Store cache continuation info (for "Updated from X% cache" notice)
+                                used_cache = history.used_cache,
+                                cached_progress = history.cached_progress,
+                                cache_action_id = history.cache_action_id,
+                                -- Store book text truncation info
+                                book_text_truncated = history.book_text_truncated,
+                                book_text_coverage_start = history.book_text_coverage_start,
+                                book_text_coverage_end = history.book_text_coverage_end,
+                                -- Store unavailable data info
+                                unavailable_data = history.unavailable_data,
+                            }
 
-                                if save_path == "__GENERAL_CHATS__" then
-                                    save_result = chat_history_manager:saveGeneralChat(chat_data)
-                                elseif save_path == "__LIBRARY_CHATS__" then
-                                    save_result = chat_history_manager:saveLibraryChat(chat_data)
-                                else
-                                    save_result = chat_history_manager:saveChatToDocSettings(ui_instance, chat_data)
-                                end
+                            if save_path == "__GENERAL_CHATS__" then
+                                save_result = chat_history_manager:saveGeneralChat(chat_data)
+                            elseif save_path == "__LIBRARY_CHATS__" then
+                                save_result = chat_history_manager:saveLibraryChat(chat_data)
                             else
-                                -- v1: Legacy hash-based storage
-                                save_result = chat_history_manager:saveChat(
-                                    save_path,
-                                    suggested_title,
-                                    history,
-                                    metadata
-                                )
+                                save_result = chat_history_manager:saveChatToDocSettings(ui_instance, chat_data)
                             end
 
                             if save_result and save_result ~= false then
@@ -2907,67 +2887,62 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                 local viewer_config = viewer and viewer.configuration
                 local success, save_result = pcall(function()
                     -- Check storage version and route to appropriate method
-                    if chat_history_manager:useDocSettingsStorage() then
-                        -- v2: DocSettings-based storage
-                        local chat_id = metadata.id or history.chat_id or chat_history_manager:generateChatId()
+                    -- v2: DocSettings-based storage
+                    local chat_id = metadata.id or history.chat_id or chat_history_manager:generateChatId()
 
-                        -- Preserve existing tags, starred, and title when updating an existing chat
-                        local existing_tags = {}
-                        local existing_starred
-                        local existing_title = suggested_title
-                        local effective_chat_id = metadata.id or history.chat_id
-                        if effective_chat_id then
-                            local existing = chat_history_manager:getChatById(save_path, effective_chat_id)
-                            if existing then
-                                existing_tags = existing.tags or {}
-                                existing_starred = existing.starred
-                                existing_title = existing.title or suggested_title
-                            end
+                    -- Preserve existing tags, starred, and title when updating an existing chat
+                    local existing_tags = {}
+                    local existing_starred
+                    local existing_title = suggested_title
+                    local effective_chat_id = metadata.id or history.chat_id
+                    if effective_chat_id then
+                        local existing = chat_history_manager:getChatById(save_path, effective_chat_id)
+                        if existing then
+                            existing_tags = existing.tags or {}
+                            existing_starred = existing.starred
+                            existing_title = existing.title or suggested_title
                         end
+                    end
 
-                        local chat_data = {
-                            id = chat_id,
-                            title = existing_title or "Conversation",
-                            document_path = save_path,
-                            timestamp = os.time(),
-                            messages = history:getMessages(),
-                            model = history:getModel(),
-                            metadata = metadata,
-                            book_title = metadata.book_title,
-                            book_author = metadata.book_author,
-                            prompt_action = history.prompt_action,
-                            launched_from = history.launched_from,
-                            launch_context = metadata.launch_context,
-                            domain = metadata.domain,
-                            tags = existing_tags,
-                            starred = existing_starred,
-                            original_highlighted_text = metadata.original_highlighted_text,
-                            -- Store system prompt metadata for debug display
-                            system_metadata = viewer_config and viewer_config.system,
-                            -- Per-chat control state — resume reactivates it (parity §8c)
-                            control_state = chat_history_manager.captureControlState(viewer_config),
-                            -- Store cache continuation info (for "Updated from X% cache" notice)
-                            used_cache = history.used_cache,
-                            cached_progress = history.cached_progress,
-                            cache_action_id = history.cache_action_id,
-                            -- Store book text truncation info
-                            book_text_truncated = history.book_text_truncated,
-                            book_text_coverage_start = history.book_text_coverage_start,
-                            book_text_coverage_end = history.book_text_coverage_end,
-                            -- Store unavailable data info
-                            unavailable_data = history.unavailable_data,
-                        }
+                    local chat_data = {
+                        id = chat_id,
+                        title = existing_title or "Conversation",
+                        document_path = save_path,
+                        timestamp = os.time(),
+                        messages = history:getMessages(),
+                        model = history:getModel(),
+                        metadata = metadata,
+                        book_title = metadata.book_title,
+                        book_author = metadata.book_author,
+                        prompt_action = history.prompt_action,
+                        launched_from = history.launched_from,
+                        launch_context = metadata.launch_context,
+                        domain = metadata.domain,
+                        tags = existing_tags,
+                        starred = existing_starred,
+                        original_highlighted_text = metadata.original_highlighted_text,
+                        -- Store system prompt metadata for debug display
+                        system_metadata = viewer_config and viewer_config.system,
+                        -- Per-chat control state — resume reactivates it (parity §8c)
+                        control_state = chat_history_manager.captureControlState(viewer_config),
+                        -- Store cache continuation info (for "Updated from X% cache" notice)
+                        used_cache = history.used_cache,
+                        cached_progress = history.cached_progress,
+                        cache_action_id = history.cache_action_id,
+                        -- Store book text truncation info
+                        book_text_truncated = history.book_text_truncated,
+                        book_text_coverage_start = history.book_text_coverage_start,
+                        book_text_coverage_end = history.book_text_coverage_end,
+                        -- Store unavailable data info
+                        unavailable_data = history.unavailable_data,
+                    }
 
-                        if save_path == "__GENERAL_CHATS__" then
-                            return chat_history_manager:saveGeneralChat(chat_data)
-                        elseif save_path == "__LIBRARY_CHATS__" then
-                            return chat_history_manager:saveLibraryChat(chat_data)
-                        else
-                            return chat_history_manager:saveChatToDocSettings(ui_instance, chat_data)
-                        end
+                    if save_path == "__GENERAL_CHATS__" then
+                        return chat_history_manager:saveGeneralChat(chat_data)
+                    elseif save_path == "__LIBRARY_CHATS__" then
+                        return chat_history_manager:saveLibraryChat(chat_data)
                     else
-                        -- v1: Legacy hash-based storage
-                        return chat_history_manager:saveChat(save_path, suggested_title, history, metadata)
+                        return chat_history_manager:saveChatToDocSettings(ui_instance, chat_data)
                     end
                 end)
                 if success and save_result then
@@ -3390,72 +3365,62 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
             if should_save then
                 local result
                 -- Check storage version and route to appropriate method
-                if chat_history_manager:useDocSettingsStorage() then
-                    -- v2: DocSettings-based storage
-                    local chat_id = metadata.id or history.chat_id or chat_history_manager:generateChatId()
+                -- v2: DocSettings-based storage
+                local chat_id = metadata.id or history.chat_id or chat_history_manager:generateChatId()
 
-                    -- Preserve existing tags, starred, and title when updating an existing chat
-                    local existing_tags = {}
-                    local existing_starred
-                    local existing_title = suggested_title
-                    local effective_chat_id = metadata.id or history.chat_id
-                    if effective_chat_id and save_path then
-                        local existing = chat_history_manager:getChatById(save_path, effective_chat_id)
-                        if existing then
-                            existing_tags = existing.tags or {}
-                            existing_starred = existing.starred
-                            existing_title = existing.title or suggested_title
-                        end
+                -- Preserve existing tags, starred, and title when updating an existing chat
+                local existing_tags = {}
+                local existing_starred
+                local existing_title = suggested_title
+                local effective_chat_id = metadata.id or history.chat_id
+                if effective_chat_id and save_path then
+                    local existing = chat_history_manager:getChatById(save_path, effective_chat_id)
+                    if existing then
+                        existing_tags = existing.tags or {}
+                        existing_starred = existing.starred
+                        existing_title = existing.title or suggested_title
                     end
+                end
 
-                    local chat_data = {
-                        id = chat_id,
-                        title = existing_title or "Conversation",
-                        document_path = save_path,
-                        timestamp = os.time(),
-                        messages = history:getMessages(),
-                        model = history:getModel(),
-                        metadata = metadata,
-                        book_title = metadata.book_title,
-                        book_author = metadata.book_author,
-                        prompt_action = history.prompt_action,
-                        launched_from = history.launched_from,
-                        launch_context = metadata.launch_context,
-                        domain = metadata.domain,
-                        tags = existing_tags,
-                        starred = existing_starred,
-                        original_highlighted_text = metadata.original_highlighted_text,
-                        -- Store system prompt metadata for debug display
-                        system_metadata = temp_config.system,
-                        -- Per-chat control state — resume reactivates it (parity §8c)
-                        control_state = chat_history_manager.captureControlState(temp_config),
-                        -- Store cache continuation info (for "Updated from X% cache" notice)
-                        used_cache = history.used_cache,
-                        cached_progress = history.cached_progress,
-                        cache_action_id = history.cache_action_id,
-                        -- Store book text truncation info
-                        book_text_truncated = history.book_text_truncated,
-                        book_text_coverage_start = history.book_text_coverage_start,
-                        book_text_coverage_end = history.book_text_coverage_end,
-                        -- Store unavailable data info
-                        unavailable_data = history.unavailable_data,
-                    }
+                local chat_data = {
+                    id = chat_id,
+                    title = existing_title or "Conversation",
+                    document_path = save_path,
+                    timestamp = os.time(),
+                    messages = history:getMessages(),
+                    model = history:getModel(),
+                    metadata = metadata,
+                    book_title = metadata.book_title,
+                    book_author = metadata.book_author,
+                    prompt_action = history.prompt_action,
+                    launched_from = history.launched_from,
+                    launch_context = metadata.launch_context,
+                    domain = metadata.domain,
+                    tags = existing_tags,
+                    starred = existing_starred,
+                    original_highlighted_text = metadata.original_highlighted_text,
+                    -- Store system prompt metadata for debug display
+                    system_metadata = temp_config.system,
+                    -- Per-chat control state — resume reactivates it (parity §8c)
+                    control_state = chat_history_manager.captureControlState(temp_config),
+                    -- Store cache continuation info (for "Updated from X% cache" notice)
+                    used_cache = history.used_cache,
+                    cached_progress = history.cached_progress,
+                    cache_action_id = history.cache_action_id,
+                    -- Store book text truncation info
+                    book_text_truncated = history.book_text_truncated,
+                    book_text_coverage_start = history.book_text_coverage_start,
+                    book_text_coverage_end = history.book_text_coverage_end,
+                    -- Store unavailable data info
+                    unavailable_data = history.unavailable_data,
+                }
 
-                    if save_path == "__GENERAL_CHATS__" then
-                        result = chat_history_manager:saveGeneralChat(chat_data)
-                    elseif save_path == "__LIBRARY_CHATS__" then
-                        result = chat_history_manager:saveLibraryChat(chat_data)
-                    else
-                        result = chat_history_manager:saveChatToDocSettings(ui_instance, chat_data)
-                    end
+                if save_path == "__GENERAL_CHATS__" then
+                    result = chat_history_manager:saveGeneralChat(chat_data)
+                elseif save_path == "__LIBRARY_CHATS__" then
+                    result = chat_history_manager:saveLibraryChat(chat_data)
                 else
-                    -- v1: Legacy hash-based storage
-                    result = chat_history_manager:saveChat(
-                        save_path,
-                        suggested_title,
-                        history,
-                        metadata
-                    )
+                    result = chat_history_manager:saveChatToDocSettings(ui_instance, chat_data)
                 end
 
                 if result and result ~= false then
@@ -3581,7 +3546,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             -- quick, exactly like a dialog-launched quick chat.
             if prompt and prompt.accept_quick_answer == true
                 and require("koassistant_book_settings")
-                    .resolveQuickAnswerDefault(ui and ui.doc_settings, tf) then
+                    .resolveQuickAnswerDefault(
+                        require("koassistant_doc_settings").resolve((tf.book_metadata or {}).file, ui)
+                            or (ui and ui.doc_settings), tf) then
                 tf._quick_answer_active = true
                 tf._session_quick_answer = true
             end
@@ -4326,7 +4293,12 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         -- default apply)
         local xr_sel = require("koassistant_book_settings")
             .resolveXrayCategories(xr_ds, config.features)
-        if xr_sel then
+        -- Depth rung (docs/xray_depth_axis_plan.md): same book > global > standard
+        -- chain; nil = the shipped wording, so a nil/nil pair leaves the prompt
+        -- untouched
+        local xr_depth = require("koassistant_book_settings")
+            .resolveXrayDepth(xr_ds, config.features)
+        if xr_sel or xr_depth then
             if not prompt._is_copy then
                 local original_prompt = prompt
                 prompt = {}
@@ -4335,9 +4307,11 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
             end
             prompt.prompt = PromptsActions.buildXrayCategoryPrompt(xr_sel,
                 (config.features and config.features._full_document_xray)
-                    and "complete" or "partial")
+                    and "complete" or "partial", xr_depth)
             message_data._xray_categories_applied = xr_sel
-            logger.dbg("KOAssistant: X-Ray create narrowed to categories:", xr_sel)
+            message_data._xray_depth_applied = xr_depth
+            logger.dbg("KOAssistant: X-Ray create narrowed to categories:", xr_sel,
+                "depth:", xr_depth)
         end
     end
 
@@ -4957,6 +4931,19 @@ if prune_book_text then
                     end
                     message_data._xray_categories_applied =
                         PromptsActions.normalizeXrayCategories(cached_entry.xray_categories)
+                    -- Depth is lineage truth too (change only at lineage start):
+                    -- the update carries the stamp and tells the model the
+                    -- per-entry budget it must keep, so Light lineages do not
+                    -- grow Standard-sized entries on every update
+                    local cached_depth = PromptsActions.normalizeXrayDepth(cached_entry.xray_depth)
+                    message_data._xray_depth_applied = cached_depth
+                    if cached_depth == "light" then
+                        prompt.prompt = prompt.prompt
+                            .. "\n\nThis X-Ray is kept LIGHT: one sentence per entry (two for the central few), only figures who return or shape what happens, only turning points in the timeline, connections only where needed to follow the work. Write new and re-emitted entries at that depth."
+                    elseif cached_depth == "deep" then
+                        prompt.prompt = prompt.prompt
+                            .. "\n\nThis X-Ray is kept DEEP: 3-5 sentences for major entries and 1-2 for minor ones including why they matter, every figure the reader encounters, every development in the timeline, connections carrying the relationship and what it changes. Write new and re-emitted entries at that depth."
+                    end
                 end
 
                 -- Get incremental book text (from cached to current position)
@@ -5144,7 +5131,11 @@ if prune_book_text then
         existing_history, plugin, additional_input, on_complete, book_metadata }
 
     -- Get response from AI with callback for async streaming
-    local function handleResponse(success, answer, err, reasoning, web_search_used)
+    local function handleResponse(success, answer, err, reasoning, web_search_used, usage)
+        -- Token usage rides on message_data (a captured table; no new upvalue for the
+        -- nested cache-write closures) and is stamped into every artifact cache entry
+        -- (tokens_in/out/reasoning) so builds can be compared afterwards
+        message_data._usage = type(usage) == "table" and usage or nil
         -- Smart retrieval (D3): the gather ran standalone before this request — fold its
         -- lookups into this response's provenance (per-message indicator + Show Sources)
         if success and message_data._smart_retrieval_lookups then
@@ -5478,6 +5469,9 @@ if prune_book_text then
                     { model = ConfigHelper:getModelInfo(temp_config), used_book_text = book_text_was_provided,
                       used_highlights = highlights_were_provided,
                       used_reasoning = (reasoning ~= nil and reasoning ~= ""),
+                      tokens_in = message_data._usage and message_data._usage.input_tokens or nil,
+                      tokens_out = message_data._usage and message_data._usage.output_tokens or nil,
+                      tokens_reasoning = message_data._usage and message_data._usage.reasoning_tokens or nil,
                       web_search_used = web_search_flag,
                       used_research_mode = research_mode_active or nil,
                       updated_by_auto = message_data._background_request or nil,
@@ -5499,6 +5493,7 @@ if prune_book_text then
                       -- guidelines re-invited every dropped category. The X-Ray
                       -- twin, promotions and ring restores already carry it.
                       xray_categories = message_data._xray_categories_applied,
+                      xray_depth = message_data._xray_depth_applied,
                       unavailable_data_text = unavailable_text }
                 )
                 if save_success then
@@ -5566,6 +5561,7 @@ if prune_book_text then
                         producer = xray_producer,
                         base_timestamp = xray_base_ts,
                         xray_categories = message_data._xray_categories_applied,
+                      xray_depth = message_data._xray_depth_applied,
                     })
                     if rung_ok then
                         logger.dbg("KOAssistant: ladder rung saved at", progress)
@@ -5588,6 +5584,9 @@ if prune_book_text then
                         used_highlights = used_highlights,
                         used_book_text = book_text_was_provided,
                         used_reasoning = (reasoning ~= nil and reasoning ~= ""),
+                        tokens_in = message_data._usage and message_data._usage.input_tokens or nil,
+                        tokens_out = message_data._usage and message_data._usage.output_tokens or nil,
+                        tokens_reasoning = message_data._usage and message_data._usage.reasoning_tokens or nil,
                         web_search_used = web_search_flag,
                         used_research_mode = research_mode_active or nil,
                         updated_by_auto = message_data._background_request or nil,
@@ -5601,6 +5600,7 @@ if prune_book_text then
                         timestamp = xray_fold_ts,
                         unavailable_data_text = unavailable_text,
                         xray_categories = message_data._xray_categories_applied,
+                      xray_depth = message_data._xray_depth_applied,
                     }
                     -- Archive the pre-overwrite snapshot (ring of 5; incremental updates
                     -- AND redos/regenerations, manual AND background — xray_ecosystem_plan.md
@@ -5686,6 +5686,9 @@ if prune_book_text then
                         used_book_text = book_text_was_provided,
                         used_highlights = (message_data.highlights and message_data.highlights ~= "") or false,
                         used_reasoning = (reasoning ~= nil and reasoning ~= ""),
+                        tokens_in = message_data._usage and message_data._usage.input_tokens or nil,
+                        tokens_out = message_data._usage and message_data._usage.output_tokens or nil,
+                        tokens_reasoning = message_data._usage and message_data._usage.reasoning_tokens or nil,
                         web_search_used = web_search_flag,
                         full_document = true,
                         source_mode = source_mode,
@@ -5712,6 +5715,9 @@ if prune_book_text then
                         model = model_name,
                         used_book_text = book_text_was_provided,
                         used_reasoning = (reasoning ~= nil and reasoning ~= ""),
+                        tokens_in = message_data._usage and message_data._usage.input_tokens or nil,
+                        tokens_out = message_data._usage and message_data._usage.output_tokens or nil,
+                        tokens_reasoning = message_data._usage and message_data._usage.reasoning_tokens or nil,
                         web_search_used = web_search_flag,
                         flow_visible_pages = message_data.flow_visible_pages,
                         unavailable_data_text = unavailable_text,
@@ -5729,6 +5735,9 @@ if prune_book_text then
                         language = temp_config.features and temp_config.features.translation_language or "English",
                         used_book_text = book_text_was_provided,
                         used_reasoning = (reasoning ~= nil and reasoning ~= ""),
+                        tokens_in = message_data._usage and message_data._usage.input_tokens or nil,
+                        tokens_out = message_data._usage and message_data._usage.output_tokens or nil,
+                        tokens_reasoning = message_data._usage and message_data._usage.reasoning_tokens or nil,
                         web_search_used = web_search_flag,
                         flow_visible_pages = message_data.flow_visible_pages,
                         unavailable_data_text = unavailable_text,
@@ -6722,7 +6731,12 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             local qa_ds
             if not (configuration.features.is_general_context
                 or configuration.features.is_library_context) then
-                qa_ds = ui_instance and ui_instance.doc_settings or nil
+                -- Resolve the TARGET book (closed-book / X-Ray chat / Book
+                -- Hub launches carry it in book_metadata.file), not the
+                -- open one (injection_gating_audit #55).
+                qa_ds = require("koassistant_doc_settings").resolve(
+                    (configuration.features.book_metadata or {}).file, ui_instance)
+                    or (ui_instance and ui_instance.doc_settings) or nil
             end
             configuration.features._session_quick_answer =
                 BookSettings.resolveQuickAnswerDefault(qa_ds, configuration.features)
@@ -7599,7 +7613,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             local title = nil
             local author = ""
             local ds = DocSettings:open(entry.file)
-            local doc_props = ds:readSetting("doc_props")
+            local doc_props = SafeDocSettings.overlayCustomProps(ds:readSetting("doc_props"), entry.file)
             if doc_props then
                 local dt = doc_props.display_title or doc_props.title
                 if dt and dt ~= "" then title = dt end
@@ -7925,7 +7939,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             local title = nil
                             local author = ""
                             local ds = DocSettings:open(file)
-                            local doc_props = ds:readSetting("doc_props")
+                            local doc_props = SafeDocSettings.overlayCustomProps(ds:readSetting("doc_props"), file)
                             if doc_props then
                                 local dt = doc_props.display_title or doc_props.title
                                 if dt and dt ~= "" then title = dt end
@@ -7981,7 +7995,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                     local title = nil
                                     local author = ""
                                     local ds = DocSettings:open(file)
-                                    local doc_props = ds:readSetting("doc_props")
+                                    local doc_props = SafeDocSettings.overlayCustomProps(ds:readSetting("doc_props"), file)
                                     if doc_props then
                                         local dt = doc_props.display_title or doc_props.title
                                         if dt and dt ~= "" then title = dt end
@@ -8454,8 +8468,11 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                                 })
                             end,
                             on_close = function()
-                                local qa_ds = chips_book_or_highlight and ui_instance
-                                    and ui_instance.doc_settings or nil
+                                local qa_ds = chips_book_or_highlight
+                                    and (require("koassistant_doc_settings").resolve(
+                                        (configuration.features.book_metadata or {}).file,
+                                        ui_instance)
+                                    or (ui_instance and ui_instance.doc_settings)) or nil
                                 local was_on = configuration.features._session_quick_answer == true
                                 local now_on = BookSettings.resolveQuickAnswerDefault(qa_ds,
                                     configuration.features) and true or nil
@@ -10699,6 +10716,8 @@ local function openXrayBrowserFromCache(ui, data, cached, config, plugin, book_m
         -- target_file, NOT ui.document.file: a cross-book lookup deleting the
         -- OPEN book's X-Ray would be silent data loss (2026-08-13)
         ActionCache.deleteXray(target_file, { keep_versions = keep_versions })
+        require("koassistant_book_settings").clearXrayLineageState(
+            SafeDocSettings.resolve(target_file, ui), config and config.features)
         UIManager:show(Notification:new{
             text = keep_versions and _("X-Ray deleted — archived versions kept")
                 or T(_("%1 deleted"), "X-Ray"),
@@ -10708,6 +10727,470 @@ local function openXrayBrowserFromCache(ui, data, cached, config, plugin, book_m
     return XrayBrowser
 end
 
+-- S1 (ref #90): the carried tier for lookups — the MAIN artifact's dormant
+-- ledger. Parsed lazily: the searched artifact may be a section, which never
+-- holds a ledger; when the caller already parsed the main artifact, reuse it.
+local function mainLedgerData(document_path, maybe_main_data, best)
+    if best and not best.is_section and maybe_main_data then return maybe_main_data end
+    local ActionCache = require("koassistant_action_cache")
+    local XrayParser = require("koassistant_xray_parser")
+    local main = ActionCache.getXrayCache(document_path)
+    if not (main and main.result and XrayParser.isJSON(main.result)) then return nil end
+    local data = XrayParser.parse(main.result)
+    if not data or data.error then return nil end
+    XrayParser.mergeUserAliases(data, ActionCache.getUserAliases(document_path))
+    return data
+end
+
+-- Land on one carried stub's page: browser root (main artifact) under the
+-- carried list under the stub — its natural group, mirroring the exact
+-- landing's stacked-on-home-category rule.
+local function openCarriedStubDetail(ui, main_data, config, plugin, book_metadata,
+        cleanup_widgets, document_path, stub_idx, stub)
+    local ActionCache = require("koassistant_action_cache")
+    local main = ActionCache.getXrayCache(document_path)
+    if not (main and main.result) then return end
+    local XrayBrowser = openXrayBrowserFromCache(ui, main_data, main, config, plugin,
+        book_metadata, { entry = main }, cleanup_widgets, document_path)
+    XrayBrowser:showDormantList()
+    local rows = XrayBrowser:_dormantRows()
+    local display_i
+    for ri, r in ipairs(rows) do
+        if r.idx == stub_idx then
+            display_i = ri
+            break
+        end
+    end
+    XrayBrowser:showDormantDetail(stub_idx, stub,
+        display_i and { rows = rows, index = display_i } or nil)
+end
+
+-- The carried tier's miss handling, shared by the lookup's no-result seams:
+-- an exact stub goes straight to its page (a chooser when several share the
+-- handle across families); substring-only stubs land on the main results
+-- list, where the carried group renders. Returns true when it presented
+-- something (the caller's own no-results UI stands down).
+local function carriedLookupHandled(ui, mdata, query, config, plugin,
+        book_metadata, cleanup_widgets, document_path)
+    local XrayParser = require("koassistant_xray_parser")
+    local cw = cleanup_widgets and #cleanup_widgets > 0 and cleanup_widgets or nil
+    local ex = XrayParser.searchLedger(mdata, query, { exact = true })
+    if #ex == 1 then
+        openCarriedStubDetail(ui, mdata, config, plugin, book_metadata, cw,
+            document_path, ex[1].stub_idx, ex[1].stub)
+        return true
+    end
+    if #ex > 1 then
+        local chooser
+        local rows = {}
+        for _idx, s in ipairs(ex) do
+            local captured = s
+            rows[#rows + 1] = { {
+                text = captured.stub.name .. "  ·  " .. T(_("Carried from %1"),
+                    captured.source_title or _("earlier books")),
+                align = "left",
+                callback = function()
+                    UIManager:close(chooser)
+                    openCarriedStubDetail(ui, mdata, config, plugin, book_metadata, cw,
+                        document_path, captured.stub_idx, captured.stub)
+                end,
+            } }
+        end
+        rows[#rows + 1] = { { text = _("Close"), callback = function() UIManager:close(chooser) end } }
+        chooser = ButtonDialog:new{
+            title = T(_("\"%1\" matches %2 carried entries"), query, #ex),
+            buttons = rows,
+        }
+        UIManager:show(chooser)
+        return true
+    end
+    if #XrayParser.searchLedger(mdata, query, { skip_description = true }) > 0 then
+        local ActionCache = require("koassistant_action_cache")
+        local main = ActionCache.getXrayCache(document_path)
+        if main and main.result then
+            local XrayBrowser = openXrayBrowserFromCache(ui, mdata, main, config, plugin,
+                book_metadata, { entry = main }, cw, document_path)
+            XrayBrowser:showSearchResults(query, true)
+            return true
+        end
+    end
+    return false
+end
+
+-- Read-only view of an entry found in an EARLIER book's X-Ray (S2, ref
+-- #90): the card's full-detail body (provenance line + item detail +
+-- background lines) plus the two actions — open that book's X-Ray at the
+-- entry, or carry the entry into THIS book's carried list (the manual
+-- single-entity seed: consent-gated like the create-time seed, no model
+-- request, wake-pass merges it when an update later brings the entity).
+-- Reached from the card tap-through, the lookup's exact hits, the
+-- predecessor results list and the earlier-books sweep.
+-- @param opts table { ui, config, plugin, book_metadata, cleanup_widgets,
+--   document_path (CURRENT book), hit { name, item, category_key,
+--   category_label, source_title, pred_file, pred_title, pred_stub } }
+local function showPredecessorEntity(opts)
+    local ActionCache = require("koassistant_action_cache")
+    local XrayCard = require("koassistant_xray_card")
+    local XrayParser = require("koassistant_xray_parser")
+    local hit = opts.hit
+    hit.source = "predecessor" -- the shared provenance line renders off this
+    local pred_entry = hit.pred_file and ActionCache.getXrayCache(hit.pred_file) or nil
+    local viewer
+    local action_row = {}
+    if pred_entry and pred_entry.result and opts.plugin then
+        action_row[#action_row + 1] = {
+            text = T(_("Open in %1's X-Ray"), hit.pred_title or _("that book")),
+            callback = function()
+                UIManager:close(viewer)
+                if not hit.pred_stub then
+                    local aliases = {}
+                    if type(hit.item) == "table" and type(hit.item.aliases) == "table" then
+                        for _idx, a in ipairs(hit.item.aliases) do aliases[#aliases + 1] = a end
+                    end
+                    -- The members-popup jump recipe: land on the entity, one
+                    -- fallback level at a time (a stub target skips this and
+                    -- opens at the root — stubs live in the carried list)
+                    require("koassistant_xray_browser")._pending_navigate_to = {
+                        category_key = hit.category_key,
+                        item_name = hit.name,
+                        item_aliases = aliases,
+                        book_file = hit.pred_file,
+                        fallback = true,
+                    }
+                end
+                opts.plugin:showCacheViewer({ name = _("X-Ray"), key = "_xray_cache",
+                    data = pred_entry, book_title = hit.pred_title, file = hit.pred_file })
+            end,
+        }
+    end
+    local live = ActionCache.getXrayCache(opts.document_path)
+    local live_data = live and live.result and XrayParser.isJSON(live.result)
+        and XrayParser.parse(live.result) or nil
+    if live_data and live_data.error then live_data = nil end
+    -- Q14 (device round 4): already here, in either form, is said instead
+    -- of offered — the whole-chain list shows an earlier book's entry even
+    -- after it was carried
+    local state
+    if live_data then
+        local names = { hit.name }
+        if type(hit.item) == "table" and type(hit.item.aliases) == "table" then
+            for _idx, a in ipairs(hit.item.aliases) do
+                if type(a) == "string" and a ~= "" then names[#names + 1] = a end
+            end
+        end
+        if XrayParser.findByIdentity(live_data, names, hit.category_key) then
+            state = "live"
+        elseif XrayParser.findDormantByIdentity(live_data, names) then
+            state = "carried"
+        end
+    end
+    if state == "live" then
+        action_row[#action_row + 1] = { text = _("Already in this book's X-Ray"), enabled = false }
+    elseif state == "carried" then
+        action_row[#action_row + 1] = { text = _("Already on this book's carried list"), enabled = false }
+    elseif live_data then
+        action_row[#action_row + 1] = {
+            text = _("Add to this book's carried list"),
+            callback = function()
+                local XrayMerge = require("koassistant_xray_merge")
+                local features = (opts.config and opts.config.features) or {}
+                local provider = opts.config and opts.config.provider
+                if pred_entry and not XrayMerge.consentOk({ pred_entry }, features,
+                        provider, hit.pred_file, opts.ui) then
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("Adding this entry needs text extraction allowed for %1 (Book Settings, Privacy) or a trusted provider."),
+                            hit.pred_title or _("that book")),
+                        timeout = 6,
+                    })
+                    return
+                end
+                local WriteBack = require("koassistant_artifact_writeback")
+                local ok, err, new_data = WriteBack.editLiveXray(opts.document_path,
+                    function(data)
+                        return XrayMerge.carryOne(data, hit.item, hit.category_key, {
+                            source = hit.source_title or hit.pred_title,
+                            file = hit.pred_stub and (hit.item.file or hit.pred_file)
+                                or hit.pred_file,
+                        })
+                    end, { features = features })
+                if not ok then
+                    UIManager:show(InfoMessage:new{
+                        text = err == "no_xray" and _("This book has no X-Ray to add it to.")
+                            or _("Could not save the X-Ray."),
+                        timeout = 4,
+                    })
+                    return
+                end
+                UIManager:close(viewer)
+                -- A hand-added entry cancels an earlier removal (S4 tombstones)
+                ActionCache.clearRemovedStub(opts.document_path, hit.name)
+                local Notification = require("ui/widget/notification")
+                UIManager:show(Notification:new{
+                    text = T(_("Added to the carried list: %1"), hit.name),
+                })
+                -- Land on the fresh carried entry when the caller threaded
+                -- book_metadata (the lookup paths); the card path just toasts
+                if opts.book_metadata and new_data then
+                    local s2, i2 = XrayParser.findDormantByIdentity(new_data, { hit.name })
+                    if s2 then
+                        openCarriedStubDetail(opts.ui, new_data, opts.config, opts.plugin,
+                            opts.book_metadata,
+                            opts.cleanup_widgets and #opts.cleanup_widgets > 0
+                                and opts.cleanup_widgets or nil,
+                            opts.document_path, i2, s2)
+                    end
+                end
+            end,
+        }
+    end
+    local rows = {}
+    if #action_row > 0 then rows[#rows + 1] = action_row end
+    rows[#rows + 1] = { { text = _("Close"), callback = function() UIManager:close(viewer) end } }
+    viewer = XrayCard.showFullDetail(hit, { buttons_table = rows })
+end
+
+-- Grouped results Menu for earlier-book hits (S2/S3): a "From <title>"
+-- header per book, rows open the read-only predecessor entry view. groups =
+-- { { file, title, entry, rows = { hit, ... } } }, nearest book first.
+local showEarlierBooksSweep
+-- S5 (ref #90): the reveal for later books in the series — the in-book
+-- "next checkpoint behind a confirm" pattern applied across books. Offered
+-- on every lookup list whenever this book's spoiler protection is holding
+-- later X-Rayed books back, regardless of hits (so the offer itself says
+-- nothing about the query); the confirmed sweep walks every group book,
+-- later ones labeled. Marks, cards and the selection intercept never show
+-- later books under protection — "later books" has no bound.
+local function laterBooksHeldBack(opts)
+    if opts.include_later or not opts.document_path then return false end
+    return require("koassistant_action_cache").heldBackLaterXrays(opts.document_path) > 0
+end
+local function confirmLaterBooksSweep(opts)
+    local ConfirmBox = require("ui/widget/confirmbox")
+    UIManager:show(ConfirmBox:new{
+        text = _("Later books in the series can reveal what happens in this book. Search them anyway?"),
+        ok_text = _("Search later books"),
+        ok_callback = function()
+            local o = {}
+            for k, v in pairs(opts) do o[k] = v end
+            o.include_later = true
+            showEarlierBooksSweep(o)
+        end,
+    })
+end
+local function predGroupsMenu(opts, groups, title)
+    local Menu = require("ui/widget/menu")
+    local items = {}
+    for _g, g in ipairs(groups) do
+        table.insert(items, {
+            text = g.direction == "later" and T(_("From %1 (later in the series)"), g.title)
+                or T(_("From %1"), g.title),
+            bold = true,
+            separator = true,
+            callback = function() end,
+        })
+        for _r, ghit in ipairs(g.rows) do
+            local captured = ghit
+            local match_label = captured.category_label or ""
+            if captured.match_field == "alias" then
+                match_label = match_label .. " (" .. _("alias") .. ")"
+            end
+            table.insert(items, {
+                text = "  " .. captured.name,
+                mandatory = match_label,
+                mandatory_dim = true,
+                callback = function()
+                    showPredecessorEntity{
+                        ui = opts.ui, config = opts.config, plugin = opts.plugin,
+                        book_metadata = opts.book_metadata,
+                        cleanup_widgets = opts.cleanup_widgets,
+                        document_path = opts.document_path,
+                        hit = captured,
+                    }
+                end,
+            })
+        end
+    end
+    if laterBooksHeldBack(opts) then
+        table.insert(items, {
+            text = _("Search later books too (may contain spoilers)…"),
+            bold = true,
+            separator = true,
+            callback = function() confirmLaterBooksSweep(opts) end,
+        })
+    end
+    local results_menu = Menu:new{
+        title = title,
+        item_table = items,
+        is_borderless = true,
+        is_popout = false,
+        width = Screen:getWidth(),
+        height = Screen:getHeight(),
+        single_line = true,
+        items_font_size = 18,
+        items_mandatory_font_size = 14,
+    }
+    if opts.cleanup_widgets then
+        table.insert(opts.cleanup_widgets, results_menu)
+    end
+    UIManager:show(results_menu)
+end
+
+-- Earlier-book result groups (S3, ref #90): every earlier X-Rayed book,
+-- nearest first, one group per book with hits. `exact` = exact handle
+-- matching (the direct-landing pass); otherwise substring over names and
+-- aliases, description skipped (noise for a lookup). Rows carry the
+-- provenance the entity view and the chooser render.
+local function collectPredGroups(preds, query, exact)
+    local XrayParser = require("koassistant_xray_parser")
+    local sopts = exact and { exact = true } or { skip_description = true }
+    local groups = {}
+    for _idx, pred in ipairs(preds) do
+        local rows = {}
+        for _i, r in ipairs(XrayParser.searchAll(pred.data, query, sopts)) do
+            rows[#rows + 1] = {
+                name = XrayParser.getItemName(r.item, r.category_key),
+                item = r.item, category_key = r.category_key,
+                category_label = r.category_label, match_field = r.match_field,
+                source_title = pred.title, pred_file = pred.file, pred_title = pred.title,
+                direction = pred.direction,
+            }
+        end
+        for _i, s in ipairs(XrayParser.searchLedger(pred.data, query, sopts)) do
+            rows[#rows + 1] = {
+                name = s.stub.name, item = s.stub,
+                category_key = s.category_key,
+                category_label = XrayParser.categoryLabel(pred.data, s.category_key),
+                match_field = s.match_field,
+                source_title = s.source_title or pred.title,
+                pred_file = pred.file, pred_title = pred.title, pred_stub = true,
+                direction = pred.direction,
+            }
+        end
+        if #rows > 0 then
+            groups[#groups + 1] = { file = pred.file, title = pred.title,
+                entry = pred.entry, rows = rows, direction = pred.direction }
+        end
+    end
+    return groups
+end
+
+-- "Search all earlier books…": the explicit whole-chain LIST, kept on the
+-- lists where this book had hits of its own (the browser's search results).
+-- The lookup's no-result seams no longer need it — predLookupHandled walks
+-- the chain itself (S3).
+-- True when the group walk reaches beyond earlier books (a later volume
+-- while unprotected, or every member of a project) — the wording follows.
+local function walkIsWide(list)
+    for _idx, g in ipairs(list) do
+        if g.direction ~= "earlier" then return true end
+    end
+    return false
+end
+
+showEarlierBooksSweep = function(opts)
+    local ActionCache = require("koassistant_action_cache")
+    -- opts.include_later = the confirmed later-books reveal (S5): ONLY the
+    -- later books — every surface carrying the confirm row already shows the
+    -- earlier books' hits (the auto-walked lookup lists, the browser's folded
+    -- groups since 2026-09-04), so the reveal lists what was held back and
+    -- nothing twice
+    local preds = ActionCache.groupXrays(opts.document_path, { include_later = opts.include_later })
+    if opts.include_later then
+        local later = {}
+        for _idx, p in ipairs(preds) do
+            if p.direction == "later" then later[#later + 1] = p end
+        end
+        preds = later
+    end
+    local wide = walkIsWide(preds)
+    local groups = collectPredGroups(preds, opts.query, false)
+    if #groups == 0 then
+        local text
+        if opts.include_later then
+            text = #preds == 1
+                and T(_("No results for \"%1\" in the later book of the series."), opts.query)
+                or T(_("No results for \"%1\" in the later books of the series."), opts.query)
+        elseif wide then
+            text = #preds == 1
+                and T(_("No results for \"%1\" in the other book of the group."), opts.query)
+                or T(_("No results for \"%1\" in the %2 other books of the group."), opts.query, #preds)
+        else
+            text = #preds == 1
+                and T(_("No results for \"%1\" in the earlier book."), opts.query)
+                or T(_("No results for \"%1\" in %2 earlier books."), opts.query, #preds)
+        end
+        UIManager:show(InfoMessage:new{ text = text, timeout = 4 })
+        return
+    end
+    local title
+    if opts.include_later then
+        title = T(_("Results for \"%1\" in later books of the series"), opts.query)
+    elseif wide then
+        title = T(_("Results for \"%1\" in the other books of the group"), opts.query)
+    else
+        title = T(_("Results for \"%1\" in earlier books"), opts.query)
+    end
+    predGroupsMenu(opts, groups, title)
+end
+
+-- Predecessor tier of the lookup (S2 + S3, ref #90): after a full local
+-- miss, walk EVERY earlier X-Rayed book in the ordered group, nearest first.
+-- Exact pass first: the first book holding the handle wins (one hit = the
+-- read-only entity view, several = a chooser of that book's hits). Then the
+-- substring pass, auto-shown as one grouped list (nearest book first) — the
+-- maintainer's call over a tap row, since the nearest book already
+-- auto-showed and every book parses once per stamp. Returns true when it
+-- showed something.
+local function predLookupHandled(ui, query, config, plugin, book_metadata,
+        cleanup_widgets, document_path)
+    local ActionCache = require("koassistant_action_cache")
+    local preds = ActionCache.groupXrays(document_path)
+    if #preds == 0 then return false end
+    local show_opts = { ui = ui, config = config, plugin = plugin,
+        book_metadata = book_metadata, cleanup_widgets = cleanup_widgets,
+        document_path = document_path, query = query }
+    local exact_groups = collectPredGroups(preds, query, true)
+    if #exact_groups > 0 then
+        local hits, in_title = exact_groups[1].rows, exact_groups[1].title
+        if #hits == 1 then
+            show_opts.hit = hits[1]
+            showPredecessorEntity(show_opts)
+            return true
+        end
+        local chooser
+        local rows = {}
+        for _idx, h in ipairs(hits) do
+            local captured = h
+            local from = captured.direction == "later"
+                and T(_("From %1 (later in the series)"), captured.source_title or in_title)
+                or T(_("From %1"), captured.source_title or in_title)
+            rows[#rows + 1] = { {
+                text = captured.name .. "  \u{00B7}  " .. from,
+                align = "left",
+                callback = function()
+                    UIManager:close(chooser)
+                    show_opts.hit = captured
+                    showPredecessorEntity(show_opts)
+                end,
+            } }
+        end
+        rows[#rows + 1] = { { text = _("Close"),
+            callback = function() UIManager:close(chooser) end } }
+        chooser = ButtonDialog:new{
+            title = T(_("\"%1\" matches %2 entries in %3"), query, #hits, in_title),
+            buttons = rows,
+        }
+        UIManager:show(chooser)
+        return true
+    end
+    local groups = collectPredGroups(preds, query, false)
+    if #groups == 0 then return false end
+    local n = 0
+    for _idx, g in ipairs(groups) do n = n + #g.rows end
+    predGroupsMenu(show_opts, groups, T(_("Results for \"%1\" (%2)"), query, n))
+    return true
+end
+
 -- Show cross-section X-Ray search results as a standalone picker Menu.
 -- @param grouped_results table From ActionCache.searchAllXrays()
 -- @param query string The search query
@@ -10715,7 +11198,7 @@ end
 -- @param config table Configuration
 -- @param plugin table Plugin reference
 -- @param book_metadata table Book metadata
-local function showCrossSectionResults(grouped_results, query, ui, config, plugin, book_metadata, cleanup_widgets, document_path)
+local function showCrossSectionResults(grouped_results, query, ui, config, plugin, book_metadata, cleanup_widgets, document_path, carried)
     local Menu = require("ui/widget/menu")
     local XrayParser = require("koassistant_xray_parser")
 
@@ -10785,6 +11268,30 @@ local function showCrossSectionResults(grouped_results, query, ui, config, plugi
         end
     end
 
+    -- Carried group (S1, ref #90): the main ledger's matches, one section
+    -- like the artifact groups; a row opens the stub's carried-detail page
+    if carried and carried.hits and #carried.hits > 0 then
+        table.insert(items, {
+            text = _("Carried from earlier books"),
+            bold = true,
+            dim = false,
+            separator = true,
+            callback = function() end,
+        })
+        for _idx2, sh in ipairs(carried.hits) do
+            local captured_sh = sh
+            table.insert(items, {
+                text = "  " .. captured_sh.stub.name,
+                mandatory = captured_sh.source_title or "",
+                mandatory_dim = true,
+                callback = function()
+                    openCarriedStubDetail(ui, carried.data, config, plugin, book_metadata,
+                        cleanup_widgets, document_path, captured_sh.stub_idx, captured_sh.stub)
+                end,
+            })
+        end
+    end
+
     local title = T(_("Results for \"%1\" (%2 across %3)"),
         query, total_results, #grouped_results)
 
@@ -10831,7 +11338,44 @@ local function showAliasTargetPicker(ctx)
             table.insert(alias_cats, cat)
         end
     end
-    if #alias_cats == 0 then
+    -- Carried stubs (S1, ref #90) are alias targets too — the write goes
+    -- onto the STUB in the live artifact's ledger (D6/Q3), never the
+    -- user-aliases sidecar (that store attaches by a live entry's primary
+    -- name and would dangle for a stub). Stubs always come from the MAIN
+    -- artifact, whatever artifact ctx.data is.
+    local main_ledger
+    do
+        local main = ActionCache.getXrayCache(document_path)
+        local mdata = main and main.result and XrayParser.isJSON(main.result)
+            and XrayParser.parse(main.result) or nil
+        if type(mdata) == "table" and not mdata.error
+            and type(mdata[XrayParser.DORMANT_KEY]) == "table" then
+            main_ledger = mdata[XrayParser.DORMANT_KEY]
+        end
+    end
+    local function commitStubAlias(stub)
+        local WriteBack = require("koassistant_artifact_writeback")
+        local ok, err, new_data = WriteBack.editLiveXray(document_path, function(d)
+            return XrayParser.addStubAlias(d, stub.name, query)
+        end, {})
+        if not ok then
+            UIManager:show(InfoMessage:new{
+                text = err == "stale"
+                    and _("The carried list changed on disk. Reopen it and try again.")
+                    or _("Could not save the alias."),
+                timeout = 3,
+            })
+            return
+        end
+        UIManager:show(InfoMessage:new{
+            text = T(_("Added \"%1\" as alias of %2."), query, stub.name),
+            timeout = 3,
+        })
+        if ctx.on_stub_committed then
+            ctx.on_stub_committed(stub, new_data)
+        end
+    end
+    if #alias_cats == 0 and not (main_ledger and #main_ledger > 0) then
         UIManager:show(InfoMessage:new{
             text = _("This X-Ray has no entries an alias could be added to."),
             timeout = 3,
@@ -10857,7 +11401,7 @@ local function showAliasTargetPicker(ctx)
         end
     end
 
-    local show_target_picker, show_category_pick, show_entity_page
+    local show_target_picker, show_category_pick, show_entity_page, show_stub_page
 
     -- Word-overlap suggestions first (a reintroduced character usually
     -- keeps part of the name), manual category pick as the fallback
@@ -10875,6 +11419,44 @@ local function showAliasTargetPicker(ctx)
                         commitAlias(s_item, s_cat)
                     end,
                 } }
+            end
+        end
+        -- Carried stubs sharing a word with the query rank alongside
+        if main_ledger then
+            local q_words = {}
+            for w in query:lower():gmatch("%S+") do
+                if #w > 2 then q_words[#q_words + 1] = w end
+            end
+            local added = 0
+            for _s_i, stub in ipairs(main_ledger) do
+                if added >= 4 then break end
+                if type(stub) == "table" and type(stub.name) == "string" and #q_words > 0 then
+                    local hay = stub.name:lower()
+                    if type(stub.aliases) == "table" then
+                        for _a_idx, a in ipairs(stub.aliases) do
+                            if type(a) == "string" then hay = hay .. "\n" .. a:lower() end
+                        end
+                    end
+                    local hit = false
+                    for _w_idx, w in ipairs(q_words) do
+                        if hay:find(w, 1, true) then
+                            hit = true
+                            break
+                        end
+                    end
+                    if hit then
+                        local captured = stub
+                        rows[#rows + 1] = { {
+                            text = captured.name .. "  ·  " .. T(_("Carried from %1"),
+                                captured.source or _("earlier books")),
+                            callback = function()
+                                UIManager:close(pd)
+                                commitStubAlias(captured)
+                            end,
+                        } }
+                        added = added + 1
+                    end
+                end
             end
         end
         if #rows == 0 then
@@ -10907,9 +11489,65 @@ local function showAliasTargetPicker(ctx)
                 end,
             } }
         end
+        if main_ledger and #main_ledger > 0 then
+            rows[#rows + 1] = { {
+                text = T(_("Carried from earlier books (%1)"), #main_ledger),
+                callback = function()
+                    UIManager:close(pd)
+                    show_stub_page(1)
+                end,
+            } }
+        end
         rows[#rows + 1] = { { text = _("Cancel"), callback = function() UIManager:close(pd) end } }
         pd = ButtonDialog:new{
             title = T(_("Add \"%1\" as an alias of which entry?"), query),
+            buttons = rows,
+        }
+        UIManager:show(pd)
+    end
+
+    show_stub_page = function(page)
+        local pd
+        local per_page = 8
+        local stubs = main_ledger or {}
+        local total_pages = math.max(1, math.ceil(#stubs / per_page))
+        page = math.max(1, math.min(page, total_pages))
+        local rows = {}
+        for i = (page - 1) * per_page + 1, math.min(page * per_page, #stubs) do
+            local stub = stubs[i]
+            if type(stub) == "table" and type(stub.name) == "string" then
+                local captured = stub
+                rows[#rows + 1] = { {
+                    text = captured.name .. "  ·  " .. T(_("Carried from %1"),
+                        captured.source or _("earlier books")),
+                    callback = function()
+                        UIManager:close(pd)
+                        commitStubAlias(captured)
+                    end,
+                } }
+            end
+        end
+        local nav = {}
+        if total_pages > 1 then
+            table.insert(nav, { text = "◀", enabled = page > 1, callback = function()
+                UIManager:close(pd)
+                show_stub_page(page - 1)
+            end })
+        end
+        table.insert(nav, { text = _("Back"), callback = function()
+            UIManager:close(pd)
+            show_category_pick()
+        end })
+        if total_pages > 1 then
+            table.insert(nav, { text = "▶", enabled = page < total_pages, callback = function()
+                UIManager:close(pd)
+                show_stub_page(page + 1)
+            end })
+        end
+        rows[#rows + 1] = nav
+        pd = ButtonDialog:new{
+            title = T(_("Add \"%1\" as an alias of which entry?"), query)
+                .. (total_pages > 1 and ("  (" .. page .. "/" .. total_pages .. ")") or ""),
             buttons = rows,
         }
         UIManager:show(pd)
@@ -10961,6 +11599,107 @@ local function showAliasTargetPicker(ctx)
     end
 
     show_target_picker()
+end
+
+-- The lookup's no-results dialog: message + "Add as alias of an entry…"
+-- (ref #63) — shared by the single-artifact seam AND the cross-section
+-- zero-hit (2026-09-01 device round: that seam was a bare InfoMessage, and
+-- on a book with section X-Rays it is the ONLY no-results surface the book
+-- ever shows, so the alias offer was unreachable there). data/cached/best
+-- describe the artifact the alias picker targets (the MAIN X-Ray at the
+-- cross-section seam); without them, or for a non-handle-shaped query, the
+-- message shows plain. The model can miss an identity the reader KNOWS —
+-- the live case was a reintroduction under a changed name that two of three
+-- runs failed to bridge; the shared picker (showAliasTargetPicker above,
+-- also reachable from the browser's search-results row) does the ranking
+-- and the write.
+local function showLookupNoResults(opts)
+    local ActionCache = require("koassistant_action_cache")
+    local query, msg = opts.query, opts.msg
+    -- S3 (ref #90): by the time any seam lands here the lookup has walked
+    -- every earlier X-Rayed book too (predLookupHandled), so say so in one
+    -- short sentence; opts.note (the "updating may find it" hint) follows
+    local walked = ActionCache.groupXrays(opts.document_path)
+    local n_earlier = #walked
+    if walkIsWide(walked) then
+        if n_earlier == 1 then
+            msg = msg .. " " .. _("The other book in the group has nothing either.")
+        elseif n_earlier > 1 then
+            msg = msg .. " " .. T(_("The %1 other books in the group have nothing either."), n_earlier)
+        end
+    elseif n_earlier == 1 then
+        msg = msg .. " " .. _("The earlier book in the group has nothing either.")
+    elseif n_earlier > 1 then
+        msg = msg .. " " .. T(_("The %1 earlier books in the group have nothing either."), n_earlier)
+    end
+    if opts.note then msg = msg .. "\n\n" .. opts.note end
+    local XrayParser = require("koassistant_xray_parser")
+    local ui, config, plugin = opts.ui, opts.config, opts.plugin
+    local book_metadata, document_path = opts.book_metadata, opts.document_path
+    local data, cached, best = opts.data, opts.cached, opts.best
+    local cw = opts.cleanup_widgets and #opts.cleanup_widgets > 0 and opts.cleanup_widgets or nil
+    local nores
+    local nores_buttons = {}
+    local alias_ok = opts.data and opts.cached and opts.document_path
+            and #query > 2 and #query <= 120
+            and ActionCache.getUserAliasesPath(opts.document_path)
+    if alias_ok then
+        nores_buttons[#nores_buttons + 1] =
+            { { text = _("Add as alias of an entry…"), callback = function()
+                UIManager:close(nores)
+                showAliasTargetPicker{
+                    data = data,
+                    query = query,
+                    document_path = document_path,
+                    on_stub_committed = function(stub, new_data)
+                        if not new_data then return end
+                        local s2, i2 = XrayParser.findDormantByIdentity(new_data, { stub.name })
+                        if s2 then
+                            openCarriedStubDetail(ui, new_data, config, plugin,
+                                book_metadata, cw, document_path, i2, s2)
+                        end
+                    end,
+                    on_committed = function(target_item, target_cat_key, target_name)
+                        local XrayBrowser = openXrayBrowserFromCache(ui, data, cached, config, plugin,
+                            book_metadata, best, cw, document_path)
+                        for _c_idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
+                            if cat.key == target_cat_key then
+                                XrayBrowser:showCategoryItems(cat)
+                                break
+                            end
+                        end
+                        -- Q6: direct entry — one X exits the browser
+                        XrayBrowser._direct_entry_exit = true
+                        XrayBrowser:showItemDetail(target_item, target_cat_key, target_name)
+                    end,
+                }
+            end } }
+    end
+    -- S5 (ref #90): the later-books reveal, offered whenever this book's
+    -- protection holds later X-Rayed books back (confirmLaterBooksSweep)
+    if laterBooksHeldBack(opts) then
+        nores_buttons[#nores_buttons + 1] =
+            { { text = _("Search later books too (may contain spoilers)…"), callback = function()
+                UIManager:close(nores)
+                confirmLaterBooksSweep{ ui = ui, config = config, plugin = plugin,
+                    book_metadata = book_metadata, cleanup_widgets = cw,
+                    document_path = document_path, query = query }
+            end } }
+    end
+    if #nores_buttons == 0 then
+        UIManager:show(InfoMessage:new{
+            text = msg,
+            timeout = 5,
+        })
+        return
+    end
+    nores_buttons[#nores_buttons + 1] =
+        { { text = _("Close"), callback = function() UIManager:close(nores) end } }
+    nores = ButtonDialog:new{
+        title = msg,
+        buttons = nores_buttons,
+    }
+    UIManager:show(nores)
 end
 
 -- Handle local X-Ray lookup: search cached X-Ray data for the query
@@ -11015,10 +11754,20 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
         local total_xrays = #sections + (main and main.result and 1 or 0)
 
         if total_xrays == 0 then
-            UIManager:show(InfoMessage:new{
-                text = _("No X-Ray found for this book. Generate one first via the X-Ray action."),
-                timeout = 4,
-            })
+            -- S2 (ref #90): a book with no X-Ray of its own still answers
+            -- from its group's earlier books — the reporter's "never
+            -- X-Rayed this volume" case. On a miss the shared no-results
+            -- surface offers the whole-chain sweep (no alias target here).
+            if predLookupHandled(ui, query, config, plugin, book_metadata,
+                    cleanup_widgets, document_path) then
+                return
+            end
+            showLookupNoResults{
+                ui = ui, config = config, plugin = plugin,
+                book_metadata = book_metadata, cleanup_widgets = cleanup_widgets,
+                document_path = document_path, query = query,
+                msg = _("No X-Ray found for this book. Generate one first via the X-Ray action."),
+            }
             return
         end
 
@@ -11026,11 +11775,31 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
             -- Multiple X-Rays: search across all (name + alias only for lookup)
             local grouped = ActionCache.searchAllXrays(document_path, query, doc, { skip_description = true })
             if #grouped == 0 then
-                -- No results anywhere
-                UIManager:show(InfoMessage:new{
-                    text = T(_("No results for \"%1\" across %2 X-Rays."), query, total_xrays),
-                    timeout = 5,
-                })
+                -- Carried tier (S1, ref #90): the main ledger answers before
+                -- "no results anywhere"
+                local mdata = mainLedgerData(document_path, nil, nil)
+                if mdata and carriedLookupHandled(ui, mdata, query, config, plugin,
+                        book_metadata, cleanup_widgets, document_path) then
+                    return
+                end
+                -- Predecessor tier (S2, ref #90): the nearest earlier
+                -- X-Rayed book answers before "no results anywhere"
+                if predLookupHandled(ui, query, config, plugin, book_metadata,
+                        cleanup_widgets, document_path) then
+                    return
+                end
+                -- No results anywhere: the shared dialog, so the alias
+                -- offer exists on multi-X-Ray books too. It targets the
+                -- MAIN artifact; without one the message shows plain.
+                showLookupNoResults{
+                    ui = ui, config = config, plugin = plugin,
+                    book_metadata = book_metadata, cleanup_widgets = cleanup_widgets,
+                    document_path = document_path, query = query,
+                    msg = T(_("No results for \"%1\" in this book's X-Rays."), query),
+                    data = mdata,
+                    cached = (main and main.result) and main or nil,
+                    best = (main and main.result) and { entry = main } or nil,
+                }
                 return
             elseif #grouped == 1 then
                 -- Results in only 1 X-Ray: use standard single-X-Ray flow
@@ -11043,8 +11812,14 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
                 -- Fall through to existing single-X-Ray handling below
             else
                 -- Results in multiple X-Rays: show cross-section results
+                -- (the carried group rides along — S1, ref #90)
+                local mdata = mainLedgerData(document_path, nil, nil)
+                local carried_hits = mdata
+                    and require("koassistant_xray_parser")
+                        .searchLedger(mdata, query, { skip_description = true }) or {}
                 showCrossSectionResults(grouped, query, ui, config, plugin, book_metadata,
-                    cleanup_widgets, document_path)
+                    cleanup_widgets, document_path,
+                    #carried_hits > 0 and { data = mdata, hits = carried_hits } or nil)
                 return
             end
         end
@@ -11115,6 +11890,21 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
     -- (F1, xray_marking_plan.md, ref #63)
     XrayParser.mergeUserAliases(data, ActionCache.getUserAliases(document_path))
 
+    -- Carried card target (S1, ref #90): the card resolved a LEDGER stub —
+    -- open its carried-detail page directly (a stale target falls through)
+    if card_target and card_target.carried and card_target.name then
+        local ledger = data[XrayParser.DORMANT_KEY]
+        if type(ledger) == "table" then
+            for s_i, s in ipairs(ledger) do
+                if type(s) == "table" and s.name == card_target.name then
+                    openCarriedStubDetail(ui, data, config, plugin, book_metadata,
+                        #cleanup_widgets > 0 and cleanup_widgets or nil, document_path, s_i, s)
+                    return
+                end
+            end
+        end
+    end
+
     -- Card target (round 19): open the card's own entity, stacked on its
     -- category — no search at all. A stale target (entity renamed/removed
     -- since the card resolved) falls through to the normal flow.
@@ -11153,61 +11943,39 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
     end
 
     if #results == 0 then
+        -- Carried tier (S1, ref #90): stubs answer before the no-results
+        -- dialog (exact -> the stub's page; substring -> the results list,
+        -- which renders the carried group)
+        local carried_mdata = mainLedgerData(document_path, data, best)
+        if carried_mdata and carriedLookupHandled(ui, carried_mdata, query, config, plugin,
+                book_metadata, cleanup_widgets, document_path) then
+            return
+        end
+        -- Predecessor tier (S2, ref #90): the nearest earlier X-Rayed book
+        -- answers before the no-results dialog
+        if predLookupHandled(ui, query, config, plugin, book_metadata,
+                cleanup_widgets, document_path) then
+            return
+        end
         -- No results
-        local msg = T(_("No results for \"%1\" in X-Ray."), query)
+        local msg = T(_("No results for \"%1\" in this book's X-Ray."), query)
         if best.is_section and best.label then
             msg = T(_("No results for \"%1\" in Section X-Ray: %2."), query, best.label)
         end
+        local note
         if progress_gap and progress_gap > 0.08 then
             local cache_pct = math.floor(cache_progress * 100 + 0.5)
             local current_pct = math.floor(current_progress * 100 + 0.5)
-            msg = msg .. "\n\n" .. T(_("X-Ray covers to %1% (you're at %2%). Updating may find this entry."), cache_pct, current_pct)
+            note = T(_("X-Ray covers to %1% (you're at %2%). Updating may find this entry."), cache_pct, current_pct)
         end
-        -- "Add as alias of..." (ref #63): the model can miss an identity the
-        -- reader KNOWS — the live case was a reintroduction under a changed
-        -- name that two of three runs failed to bridge. The user-aliases
-        -- sidecar is the reader-asserted fix; the shared picker
-        -- (showAliasTargetPicker above, also reachable from the browser's
-        -- search-results row for the hits-but-not-this-entity case) does the
-        -- ranking and the write. Offered only when the selection looks like
-        -- a handle (the intercept's length gate).
-        if not (document_path and #query > 2 and #query <= 120
-                and ActionCache.getUserAliasesPath(document_path)) then
-            UIManager:show(InfoMessage:new{
-                text = msg,
-                timeout = 5,
-            })
-            return
-        end
-        local nores
-        nores = ButtonDialog:new{
-            title = msg,
-            buttons = {
-                { { text = _("Add as alias of an entry…"), callback = function()
-                    UIManager:close(nores)
-                    showAliasTargetPicker{
-                        data = data,
-                        query = query,
-                        document_path = document_path,
-                        on_committed = function(target_item, target_cat_key, target_name)
-                            local XrayBrowser = openXrayBrowserFromCache(ui, data, cached, config, plugin,
-                                book_metadata, best, #cleanup_widgets > 0 and cleanup_widgets or nil, document_path)
-                            for _c_idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
-                                if cat.key == target_cat_key then
-                                    XrayBrowser:showCategoryItems(cat)
-                                    break
-                                end
-                            end
-                            -- Q6: direct entry — one X exits the browser
-                            XrayBrowser._direct_entry_exit = true
-                            XrayBrowser:showItemDetail(target_item, target_cat_key, target_name)
-                        end,
-                    }
-                end } },
-                { { text = _("Close"), callback = function() UIManager:close(nores) end } },
-            },
+        -- Shared no-results dialog (ref #63): message + the alias offer —
+        -- extracted to showLookupNoResults so the cross-section zero-hit
+        -- shows the same surface.
+        showLookupNoResults{
+            ui = ui, config = config, plugin = plugin, book_metadata = book_metadata,
+            cleanup_widgets = cleanup_widgets, document_path = document_path,
+            query = query, msg = msg, note = note, data = data, cached = cached, best = best,
         }
-        UIManager:show(nores)
     else
         -- Exact-identity fast path (device round 2026-08-13, ref #63): a query
         -- that IS an entity's name or alias goes straight to that entity —
@@ -11235,6 +12003,20 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
             end
         end
 
+        -- Carried tier (S1, ref #90): exact stub handles join the exact set.
+        -- A same-handle stub in the SAME family cannot coexist with a live
+        -- entity (the wake-pass would have woken it); a different family can
+        -- (lexicon "Warden" vs a carried character) and the chooser shows both.
+        local carried_mdata = mainLedgerData(document_path, data, best)
+        local stub_exact = carried_mdata
+            and XrayParser.searchLedger(carried_mdata, query, { exact = true }) or {}
+        local carried_cw = #cleanup_widgets > 0 and cleanup_widgets or nil
+        if #exact == 0 and #stub_exact == 1 then
+            openCarriedStubDetail(ui, carried_mdata, config, plugin, book_metadata,
+                carried_cw, document_path, stub_exact[1].stub_idx, stub_exact[1].stub)
+            return
+        end
+
         -- Open X-Ray browser directly
         local XrayBrowser = openXrayBrowserFromCache(ui, data, cached, config, plugin, book_metadata, best,
             #cleanup_widgets > 0 and cleanup_widgets or nil, document_path)
@@ -11242,7 +12024,7 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
         -- Exact only (device 2026-08-17): a LONE fuzzy hit used to auto-open
         -- too ("or #results == 1"), which read as landing on an unrelated
         -- entry — substring hits inside names are results-list material
-        if #exact == 1 then
+        if #exact == 1 and #stub_exact == 0 then
             -- One clear target: the entity page, stacked on its home
             -- category so the back arrow lands in the entry's natural group
             -- (not the search carousel — maintainer 2026-08-13)
@@ -11259,7 +12041,7 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
             -- chrome the reader never opened; ← still reveals it for browsing
             XrayBrowser._direct_entry_exit = true
             XrayBrowser:showItemDetail(result.item, result.category_key, name)
-        elseif #exact > 1 then
+        elseif #exact + #stub_exact > 1 then
             -- Several entities share the exact handle (round 19, device: a
             -- place and a lexicon term under one name): a compact
             -- DISAMBIGUATION of just the exact matches, with the full search
@@ -11289,6 +12071,34 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
                     end,
                 }}
             end
+            for _idx, s in ipairs(stub_exact) do
+                local captured = s
+                rows[#rows + 1] = {{
+                    text = captured.stub.name .. "  ·  " .. T(_("Carried from %1"),
+                        captured.source_title or _("earlier books")),
+                    align = "left",
+                    callback = function()
+                        UIManager:close(chooser)
+                        if best.is_section then
+                            openCarriedStubDetail(ui, carried_mdata, config, plugin,
+                                book_metadata, carried_cw, document_path,
+                                captured.stub_idx, captured.stub)
+                        else
+                            XrayBrowser:showDormantList()
+                            local d_rows = XrayBrowser:_dormantRows()
+                            local display_i
+                            for ri, r in ipairs(d_rows) do
+                                if r.idx == captured.stub_idx then
+                                    display_i = ri
+                                    break
+                                end
+                            end
+                            XrayBrowser:showDormantDetail(captured.stub_idx, captured.stub,
+                                display_i and { rows = d_rows, index = display_i } or nil)
+                        end
+                    end,
+                }}
+            end
             rows[#rows + 1] = {{
                 text = _("Full search results…"),
                 callback = function()
@@ -11297,7 +12107,7 @@ local function handleLocalXrayLookup(ui, query, document_path, book_metadata, co
                 end,
             }}
             chooser = ButtonDialog:new{
-                title = T(_("\"%1\" matches %2 entries"), query, #exact),
+                title = T(_("\"%1\" matches %2 entries"), query, #exact + #stub_exact),
                 buttons = rows,
             }
             UIManager:show(chooser)
@@ -11460,7 +12270,7 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
     -- sidecar props (the stale global book_metadata may name a THIRD book)
     if forced_path and not book_metadata then
         local ds = SafeDocSettings.resolve(forced_path, ui)
-        local props = (ds and ds:readSetting("doc_props")) or {}
+        local props = SafeDocSettings.overlayCustomProps(ds and ds:readSetting("doc_props"), forced_path) or {}
         local author = props.authors
         if author and author:find("\n") then
             author = author:gsub("\n", ", ")
@@ -11631,6 +12441,9 @@ local function executeDirectAction(ui, action, highlighted_text, configuration, 
                             -- Same shared lineage delete as the other
                             -- XrayBrowser:show callback above (round 28)
                             ActionCache.deleteXray(ui.document.file, { keep_versions = keep_versions })
+                            require("koassistant_book_settings").clearXrayLineageState(
+                                SafeDocSettings.resolve(ui.document.file, ui),
+                                configuration and configuration.features)
                             UIManager:show(Notification:new{
                                 text = keep_versions and _("X-Ray deleted — archived versions kept")
                                     or T(_("%1 deleted"), "X-Ray"),
@@ -12203,6 +13016,10 @@ return {
     -- Exported for the X-Ray browser's search-results "Add as alias…" row
     -- (inline require there — a top-level require would be circular)
     showAliasTargetPicker = showAliasTargetPicker,
+    showPredecessorEntity = showPredecessorEntity,
+    showEarlierBooksSweep = showEarlierBooksSweep,
+    confirmLaterBooksSweep = confirmLaterBooksSweep,
+    collectPredGroups = collectPredGroups,
     executeDirectAction = executeDirectAction,
     executeActionForResult = executeActionForResult,
     generateSummaryCache = generateSummaryCache,
