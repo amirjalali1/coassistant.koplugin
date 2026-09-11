@@ -20,7 +20,6 @@ local BookSettings = require("koassistant_book_settings")
 local MessageBuilder = require("message_builder")
 local ModelConstraints = require("model_constraints")
 local ReasoningPrefs = require("reasoning_prefs")
-local Defaults = require("koassistant_api.defaults")
 local Constants = require("koassistant_constants")
 local ScopeResolver = require("koassistant_scope_resolver")
 local PromptsActions = require("prompts.actions")
@@ -114,9 +113,15 @@ local function showRequestError(err_text, retry_fn, timeout, drop_offer)
     -- Overload/503 joins the persistent-dialog class (2026-08-15 device round: a
     -- high-demand 503 vanished as a toast with no retry button), but the drop row
     -- stays rate-limit-only — dropping web/tools does not heal an overloaded model.
-    local is_rate_limit = ModelConstraints.isRateLimitError(err_text)
+    -- An account wall (credits, balance, a spending cap) joins the persistent
+    -- class too: its tip is several lines a 3-second toast cannot show, and
+    -- "Try again" is right once the account is topped up. It is NOT a rate
+    -- limit here even when its wording says "quota" (OpenAI's
+    -- insufficient_quota): dropping web search or book tools cannot pay for it.
+    local is_billing = ModelConstraints.isBillingWall(err_text)
+    local is_rate_limit = not is_billing and ModelConstraints.isRateLimitError(err_text)
     if retry_fn and type(err_text) == "string"
-            and (is_rate_limit or ModelConstraints.isOverloadError(err_text)) then
+            and (is_rate_limit or is_billing or ModelConstraints.isOverloadError(err_text)) then
         local dialog
         local buttons = {{
             {
@@ -904,11 +909,11 @@ local function buildUnifiedRequestConfig(config, domain_context, action, plugin)
     -- API default (stance "default" with no overrides). See model_constraints.lua
     -- and reasoning_prefs.lua.
     local provider = config.provider or config.default_provider or "anthropic"
-    local reasoning_model = config.model
-    if not reasoning_model then
-        local pd = Defaults.ProviderDefaults[provider]
-        reasoning_model = pd and pd.model or nil
-    end
+    -- One model id per request (audit B3): the shared resolver, so reasoning is
+    -- resolved for the model that will be sent (covers custom providers too,
+    -- which Defaults.ProviderDefaults never did).
+    local reasoning_model = ModelConstraints.dispatchModel({
+        provider = provider, model = config.model, features = config.features })
     local reasoning_decision = ModelConstraints.resolveReasoning(provider, reasoning_model, {
         global_stance = ReasoningPrefs.getStance(features),
         model_pref = ReasoningPrefs.getModelPref(features, provider, reasoning_model),
@@ -1633,11 +1638,9 @@ local function applyQuickReplyOverrides(config, plugin)
     -- reply-time pick is the user's most explicit signal for THIS chat.
     for _idx, key in ipairs(REASONING_WIRE_KEYS) do config.api_params[key] = nil end
     local provider = config.provider or config.default_provider or "anthropic"
-    local model = config.model
-    if not model then
-        local pd = Defaults.ProviderDefaults[provider]
-        model = pd and pd.model or nil
-    end
+    -- One model id per request (audit B3): the shared resolver (see the bake).
+    local model = ModelConstraints.dispatchModel({
+        provider = provider, model = config.model, features = config.features })
     -- {follow=true} sentinel = reply-time "Follow settings" pick on a chat with
     -- a baked reasoning override: resolve WITHOUT a session layer (prefs/stance).
     local sr = f._session_reasoning
@@ -1663,8 +1666,14 @@ local function getAllPrompts(configuration, plugin)
     -- Determine context
     local context = config and getPromptContext(config) or "highlight"
 
-    -- Check if a book is currently open (for filtering requires_open_book actions)
+    -- Check if a book is currently open (for filtering requires_open_book actions).
+    -- "Open" means THIS dialog's book: a closed book's dialog launched beside
+    -- another open book (a group hub's Book Hub) is the not-open kind
     local has_open_book = plugin and plugin.ui and plugin.ui.document ~= nil
+    if has_open_book and config and config.features and config.features.is_book_context then
+        local target = config.features.book_metadata and config.features.book_metadata.file
+        if target and target ~= plugin.ui.document.file then has_open_book = false end
+    end
 
     -- Debug logging
     local logger = require("koassistant_logger")
@@ -1787,7 +1796,7 @@ local function createSaveDialog(document_path, history, chat_history_manager, is
                             -- Check storage version and route to appropriate method
                             -- v2: DocSettings-based storage
                             -- Build complete chat_data structure (matching old saveChat format)
-                            local chat_id = metadata.id or chat_history_manager:generateChatId()
+                            local chat_id = metadata.id or history.conversation_id or chat_history_manager:generateChatId()
 
                             -- Preserve existing tags and starred when updating an existing chat
                             local existing_tags = {}
@@ -2753,7 +2762,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                             local save_result
                             -- Check storage version and route to appropriate method
                             -- v2: DocSettings-based storage
-                            local chat_id = metadata.id or history.chat_id or chat_history_manager:generateChatId()
+                            local chat_id = metadata.id or history.chat_id or history.conversation_id or chat_history_manager:generateChatId()
 
                             -- Preserve existing tags, starred, and title when updating an existing chat
                             local existing_tags = {}
@@ -2888,7 +2897,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                 local success, save_result = pcall(function()
                     -- Check storage version and route to appropriate method
                     -- v2: DocSettings-based storage
-                    local chat_id = metadata.id or history.chat_id or chat_history_manager:generateChatId()
+                    local chat_id = metadata.id or history.chat_id or history.conversation_id or chat_history_manager:generateChatId()
 
                     -- Preserve existing tags, starred, and title when updating an existing chat
                     local existing_tags = {}
@@ -3366,7 +3375,7 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
                 local result
                 -- Check storage version and route to appropriate method
                 -- v2: DocSettings-based storage
-                local chat_id = metadata.id or history.chat_id or chat_history_manager:generateChatId()
+                local chat_id = metadata.id or history.chat_id or history.conversation_id or chat_history_manager:generateChatId()
 
                 -- Preserve existing tags, starred, and title when updating an existing chat
                 local existing_tags = {}
@@ -3872,6 +3881,9 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     -- Create history WITHOUT system prompt (we'll include it in the consolidated message)
     -- Pass prompt text for better chat naming
     local history = MessageHistory:new(nil, prompt.text)
+    -- The conversation id rides the request config (B285 / #107): OpenCode's
+    -- required x-opencode-session, OpenRouter session_id, OpenAI prompt_cache_key
+    temp_config.conversation_id = history.conversation_id
 
     -- Store source data for title generation (avoids fragile regex on message content)
     -- Skip for book-level actions where highlightedText is synthetic book metadata (Title: X. Author: Y.)
@@ -5885,8 +5897,17 @@ if prune_book_text then
     -- threshold on small-window models, and stays silent on unknown models.
     -- Rides the same warning dialogs and the same suppress flag.
     local function contextWindowNote(chars)
-        local p = (temp_config and temp_config.provider) or config.provider
-        local m = (temp_config and temp_config.model) or config.model
+        -- One model id per request (audit B3): the same resolver the memo key
+        -- and the answer budget use, so a nil config.model (first API key save,
+        -- a tier pin the provider lacks) still checks the model that is sent.
+        -- The per-request config, when there is one, answers ALONE: an action
+        -- pinned to another provider carries no model of its own, and falling
+        -- back to the global model here would check a foreign provider's id
+        -- (re-audit 2026-09-04).
+        local src = temp_config or config
+        local p = src.provider
+        local m = ModelConstraints.dispatchModel({ provider = p, model = src.model,
+            features = src.features })
         local exceeded, window = ModelConstraints.checkContextWindow(p, m, chars)
         if not exceeded then return nil end
         return T(_("This likely exceeds the current model's context window (%1: ~%2K tokens). Pick a smaller scope or switch models."),
@@ -6383,7 +6404,10 @@ local function runSmartRetrieval(action, action_id, highlighted_text, ui_instanc
             local n = info and info.tool_calls or 0
             local Notification = require("ui/widget/notification")
             local note
-            if n == 0 then
+            if info and info.whole_text then
+                -- The readable text fit the whole-text budget: sent in full, no lookups.
+                note = _("Read the book text in full")
+            elseif n == 0 then
                 -- Model decided no lookups were needed (zero-gather): the action
                 -- proceeds on AI knowledge with the fallback nudge.
                 note = _("No book lookups needed")
@@ -6861,8 +6885,17 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             book_metadata, SafeDocSettings.resolve(document_path, ui_instance))
     end
 
-    -- Determine input context for per-context action ordering
+    -- Determine input context for per-context action ordering. "Open" means
+    -- THIS dialog's book is the open document: a closed book's dialog launched
+    -- while another book is open (a group hub's Book Hub, the artifact
+    -- browser) is the not-open kind — its actions, chips and title must not be
+    -- the open book's (device round 2026-09-07); the extraction side already
+    -- routes that case to sidecar mode (is_file_browser_target)
     local has_open_book = ui_instance and ui_instance.document ~= nil
+    if has_open_book and configuration and configuration.features and configuration.features.is_book_context then
+        local target = configuration.features.book_metadata and configuration.features.book_metadata.file
+        if target and target ~= ui_instance.document.file then has_open_book = false end
+    end
     local input_context
     if is_general_context then
         input_context = "general"  -- Uses existing getGeneralMenuActionObjects()
@@ -6929,8 +6962,11 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
     local refreshInputDialog
 
     -- Domain target: "book" or "global" — controls where selection is saved
-    -- Default to "book" if any book override exists (domain or research mode), otherwise "global"
-    local domain_target = (doc_settings and (book_domain_id or book_research_id ~= nil)) and "book" or "global"
+    -- Default to "book" whenever the dialog is about a book (2026-09-07: it used
+    -- to need an existing override, so the first visit opened on Global);
+    -- general and library chats keep the global target
+    local domain_target = (doc_settings and input_context ~= "general" and input_context ~= "library")
+        and "book" or "global"
 
     -- Function to show domain selector
     -- Single list with target toggle at top when a book is open
@@ -9484,6 +9520,8 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                             end
                         end
                         configuration = copy
+                        -- Per-chat conversation id on the private copy (B285 / #107)
+                        configuration.conversation_id = history.conversation_id
                         if shared_features._session_quick_answer
                             or shared_features._session_reasoning
                             or shared_features._session_model then
@@ -9658,11 +9696,14 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                 -- showChatGPTDialog closures sit near the 60-upvalue cap).
                 local scope_cw_note
                 if scope_block then
+                    -- One model id per request (audit B3): the shared resolver, so a
+                    -- nil configuration.model still checks the model that is sent.
+                    local cw_model = require("model_constraints").dispatchModel(configuration)
                     local exceeded, window = require("model_constraints").checkContextWindow(
-                        configuration.provider, configuration.model, #scope_block.text)
+                        configuration.provider, cw_model, #scope_block.text)
                     if exceeded then
                         scope_cw_note = T(_("This likely exceeds the current model's context window (%1: ~%2K tokens). Pick a smaller scope or switch models."),
-                            configuration.model, math.floor(window / 1000))
+                            cw_model, math.floor(window / 1000))
                     end
                 end
                 if scope_block
@@ -9816,11 +9857,10 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         executeInputAction(prompt, custom_prompt_type)
                     end,
                     hold_callback = function()
-                        if prompt.description then
-                            UIManager:show(InfoMessage:new{
-                                text = prompt.description,
-                            })
-                        end
+                        require("koassistant_action_hold").show(plugin, prompt, {
+                            surface = "input", ctx = input_context,
+                            on_change = refreshInputDialog,
+                        })
                     end,
                 })
             end
@@ -9893,11 +9933,10 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         executeInputAction(action, action.id)
                     end,
                     hold_callback = function()
-                        if action.description then
-                            UIManager:show(InfoMessage:new{
-                                text = action.description,
-                            })
-                        end
+                        require("koassistant_action_hold").show(plugin, action, {
+                            surface = "input", ctx = input_context,
+                            on_change = refreshInputDialog,
+                        })
                     end,
                 })
             end
@@ -10827,7 +10866,11 @@ end
 -- predecessor results list and the earlier-books sweep.
 -- @param opts table { ui, config, plugin, book_metadata, cleanup_widgets,
 --   document_path (CURRENT book), hit { name, item, category_key,
---   category_label, source_title, pred_file, pred_title, pred_stub } }
+--   category_label, source_title, pred_file, pred_title, pred_stub },
+--   before_open (fn, G2 round 2: run before "Open in <title>'s X-Ray"
+--   switches — the group members popup retires the origin browser there,
+--   the browser being a singleton), return_to (Q16 descriptor for that
+--   switch: the other X-Ray's up-arrow at root reopens the origin) }
 local function showPredecessorEntity(opts)
     local ActionCache = require("koassistant_action_cache")
     local XrayCard = require("koassistant_xray_card")
@@ -10857,6 +10900,13 @@ local function showPredecessorEntity(opts)
                         book_file = hit.pred_file,
                         fallback = true,
                     }
+                end
+                if opts.before_open then opts.before_open() end
+                if opts.return_to then
+                    local rt = {}
+                    for k, v in pairs(opts.return_to) do rt[k] = v end
+                    rt.target = hit.pred_file
+                    require("koassistant_xray_browser")._pending_return_to = rt
                 end
                 opts.plugin:showCacheViewer({ name = _("X-Ray"), key = "_xray_cache",
                     data = pred_entry, book_title = hit.pred_title, file = hit.pred_file })
@@ -10960,19 +11010,35 @@ local showEarlierBooksSweep
 -- nothing about the query); the confirmed sweep walks every group book,
 -- later ones labeled. Marks, cards and the selection intercept never show
 -- later books under protection — "later books" has no bound.
-local function laterBooksHeldBack(opts)
-    if opts.include_later or not opts.document_path then return false end
-    return require("koassistant_action_cache").heldBackLaterXrays(opts.document_path) > 0
+-- S7 (2026-09-04, maintainer): ONE book per confirm, following the chain.
+-- `nextLaterBook(opts)` = the nearest X-Rayed later book the chain does not
+-- reach and `opts.reveal` confirms have not yet revealed (nil = nothing held
+-- back); the row names it, the confirm names it, and the reveal page carries
+-- the row for the book after it. A reveal never sticks: every search starts
+-- from the chain again. Each reveal is its OWN page holding only that book's
+-- hits, stacked on the page it was confirmed from (maintainer 2026-09-04:
+-- one book per confirm = one book per page; back = the previous book).
+local function nextLaterBook(opts)
+    if not opts.document_path then return nil end
+    return require("koassistant_action_cache").nextHeldBackLaterXray(opts.document_path, opts.reveal or 0)
+end
+local function bookLabel(book)
+    return book.title or (book.file and book.file:match("([^/]+)$")) or "?"
+end
+local function laterBookRowText(book)
+    return T(_("Search %1 too (may contain spoilers)…"), bookLabel(book))
 end
 local function confirmLaterBooksSweep(opts)
+    local book = nextLaterBook(opts)
+    if not book then return end
     local ConfirmBox = require("ui/widget/confirmbox")
     UIManager:show(ConfirmBox:new{
-        text = _("Later books in the series can reveal what happens in this book. Search them anyway?"),
-        ok_text = _("Search later books"),
+        text = T(_("%1 comes later in the series and can reveal what happens in the books before it. Search it anyway?"), bookLabel(book)),
+        ok_text = _("Search this book"),
         ok_callback = function()
             local o = {}
             for k, v in pairs(opts) do o[k] = v end
-            o.include_later = true
+            o.reveal = (opts.reveal or 0) + 1
             showEarlierBooksSweep(o)
         end,
     })
@@ -11010,11 +11076,13 @@ local function predGroupsMenu(opts, groups, title)
             })
         end
     end
-    if laterBooksHeldBack(opts) then
+    local next_book = nextLaterBook(opts)
+    if next_book then
         table.insert(items, {
-            text = _("Search later books too (may contain spoilers)…"),
+            text = laterBookRowText(next_book),
             bold = true,
             separator = true,
+            -- The next book's page stacks on this one (S7)
             callback = function() confirmLaterBooksSweep(opts) end,
         })
     end
@@ -11089,27 +11157,49 @@ end
 
 showEarlierBooksSweep = function(opts)
     local ActionCache = require("koassistant_action_cache")
-    -- opts.include_later = the confirmed later-books reveal (S5): ONLY the
-    -- later books — every surface carrying the confirm row already shows the
-    -- earlier books' hits (the auto-walked lookup lists, the browser's folded
-    -- groups since 2026-09-04), so the reveal lists what was held back and
-    -- nothing twice
-    local preds = ActionCache.groupXrays(opts.document_path, { include_later = opts.include_later })
-    if opts.include_later then
-        local later = {}
+    -- opts.reveal = the confirmed later-books reveal (S5; one book per
+    -- confirm since S7): ONLY the book THIS confirm revealed — the newest
+    -- revealed entry (revealed entries come in series order). Every surface
+    -- carrying the confirm row already shows the earlier books' hits and the
+    -- later books the chain reaches (the auto-walked lookup lists, the
+    -- browser's folded groups since 2026-09-04), and the books earlier
+    -- confirms revealed stay on their own pages underneath, so nothing is
+    -- listed twice
+    local reveal = tonumber(opts.reveal) or 0
+    local preds = ActionCache.groupXrays(opts.document_path, { reveal = reveal })
+    if reveal > 0 then
+        local newest
         for _idx, p in ipairs(preds) do
-            if p.direction == "later" then later[#later + 1] = p end
+            if p.revealed then newest = p end
         end
-        preds = later
+        preds = newest and { newest } or {}
     end
     local wide = walkIsWide(preds)
     local groups = collectPredGroups(preds, opts.query, false)
     if #groups == 0 then
         local text
-        if opts.include_later then
+        if reveal > 0 then
             text = #preds == 1
-                and T(_("No results for \"%1\" in the later book of the series."), opts.query)
+                and T(_("No results for \"%1\" in %2."), opts.query, bookLabel(preds[1]))
                 or T(_("No results for \"%1\" in the later books of the series."), opts.query)
+            -- The chain goes on from a no-hit page too (S7): the next book's
+            -- row rides a dialog instead of a plain message
+            local next_book = nextLaterBook(opts)
+            if next_book then
+                local dlg
+                dlg = ButtonDialog:new{
+                    title = text,
+                    buttons = {
+                        { { text = laterBookRowText(next_book), callback = function()
+                            UIManager:close(dlg)
+                            confirmLaterBooksSweep(opts)
+                        end } },
+                        { { text = _("Close"), callback = function() UIManager:close(dlg) end } },
+                    },
+                }
+                UIManager:show(dlg)
+                return
+            end
         elseif wide then
             text = #preds == 1
                 and T(_("No results for \"%1\" in the other book of the group."), opts.query)
@@ -11123,8 +11213,8 @@ showEarlierBooksSweep = function(opts)
         return
     end
     local title
-    if opts.include_later then
-        title = T(_("Results for \"%1\" in later books of the series"), opts.query)
+    if reveal > 0 then
+        title = T(_("Results for \"%1\" in %2"), opts.query, bookLabel(preds[1]))
     elseif wide then
         title = T(_("Results for \"%1\" in the other books of the group"), opts.query)
     else
@@ -11282,7 +11372,8 @@ local function showCrossSectionResults(grouped_results, query, ui, config, plugi
             local captured_sh = sh
             table.insert(items, {
                 text = "  " .. captured_sh.stub.name,
-                mandatory = captured_sh.source_title or "",
+                mandatory = require("koassistant_xray_browser").fitSourceTitle(
+                    "  " .. captured_sh.stub.name, captured_sh.source_title),
                 mandatory_dim = true,
                 callback = function()
                     openCarriedStubDetail(ui, carried.data, config, plugin, book_metadata,
@@ -11675,11 +11766,12 @@ local function showLookupNoResults(opts)
                 }
             end } }
     end
-    -- S5 (ref #90): the later-books reveal, offered whenever this book's
-    -- protection holds later X-Rayed books back (confirmLaterBooksSweep)
-    if laterBooksHeldBack(opts) then
+    -- S5 (ref #90): the later-books reveal, offered whenever the chain holds
+    -- an X-Rayed later book back (one book per confirm since S7)
+    local next_later = nextLaterBook{ document_path = document_path }
+    if next_later then
         nores_buttons[#nores_buttons + 1] =
-            { { text = _("Search later books too (may contain spoilers)…"), callback = function()
+            { { text = laterBookRowText(next_later), callback = function()
                 UIManager:close(nores)
                 confirmLaterBooksSweep{ ui = ui, config = config, plugin = plugin,
                     book_metadata = book_metadata, cleanup_widgets = cw,
@@ -11706,6 +11798,12 @@ end
 -- @param override_best table|nil Pre-selected X-Ray result (from selection popup callback)
 local function handleLocalXrayLookup(ui, query, document_path, book_metadata, config, plugin, override_best)
     local logger = require("koassistant_logger")
+    -- The same edge trim the selection intercept applies: a CJK selection
+    -- brings its stop along ("name。"), and the stop found nothing (#90)
+    if type(query) == "string" then
+        local trimmed = require("koassistant_xray_parser").trimEdgePunctuation(query)
+        if trimmed ~= "" then query = trimmed end
+    end
     logger.dbg("KOAssistant: Local X-Ray lookup for: " .. tostring(query))
 
     if not document_path then
@@ -12910,6 +13008,7 @@ local function launchArtifactChat(user_question, artifact_content, artifact_type
 
     -- Create history with artifact type as prompt_action for title generation
     local history = MessageHistory:new(nil, nil)
+    configuration.conversation_id = history.conversation_id  -- B285 / #107
     history.prompt_action = artifact_type_name
     -- Store domain for chat-save parity with freeform Send
     history.domain = artifact_domain_id

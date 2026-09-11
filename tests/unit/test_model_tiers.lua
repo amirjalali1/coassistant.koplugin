@@ -103,7 +103,7 @@ end
 -- router's curated ladder would hop sub-vendors on a tier hint, so openrouter
 -- (curated) and requesty (community) carry NO curated placements — asserted
 -- absent below; users add router tiers via the GUI/custom_models override layer.
-local META_ROUTERS = { openrouter = true, requesty = true }
+local META_ROUTERS = { openrouter = true, requesty = true, opencode = true, opencode_go = true }  -- opencode Zen/Go: curated 2026-09-05, meta routers
 for _idx, tier_name in ipairs({ "flagship", "standard", "fast", "ultrafast" }) do
     for _pidx, provider in ipairs(ModelLists.getAllProviders()) do
         if not ModelLists.isCommunity(provider) and not META_ROUTERS[provider] then
@@ -124,16 +124,17 @@ end
 -- pre-2026-08 community members keep their curated tier rows until promotion.
 -- (fireworks + cohere promoted OUT 2026-08-15: keyed, catalog-validated,
 -- probed — they now assert NOT-community while keeping their tier rows.
--- requesty left this list 2026-08-17: meta router, placements removed.)
-for _idx, legacy in ipairs({ "groq", "together", "sambanova", "doubao" }) do
+-- requesty left this list 2026-08-17: meta router, placements removed;
+-- groq promoted 2026-09-07 with a reader's free key, #106.)
+for _idx, legacy in ipairs({ "together", "sambanova", "doubao" }) do
     TestRunner.assert(ModelLists.isCommunity(legacy),
         legacy .. " is in the community set (never maintainer-tested)")
     TestRunner.assert(ModelLists._tiers.standard[legacy] ~= nil,
         legacy .. " keeps its existing tier placements despite community relabel")
 end
-for _idx, promoted in ipairs({ "fireworks", "cohere", "qwen", "kimi" }) do
+for _idx, promoted in ipairs({ "fireworks", "cohere", "qwen", "kimi", "groq" }) do
     TestRunner.assert(not ModelLists.isCommunity(promoted),
-        promoted .. " was promoted out of the community set (2026-08-15 keys session)")
+        promoted .. " was promoted out of the community set (keys sessions 2026-08-15; groq 2026-09-07)")
     TestRunner.assert(ModelLists._tiers.standard[promoted] ~= nil,
         promoted .. " keeps its tier placements after promotion")
 end

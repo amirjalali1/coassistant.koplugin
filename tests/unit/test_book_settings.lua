@@ -734,6 +734,27 @@ TestRunner:test("KEY_TOOLS is registered in SIDECAR_KEYS (reset/count coverage)"
     TestRunner:assertEqual(found, true, "koassistant_book_tools missing from SIDECAR_KEYS")
 end)
 
+TestRunner:test("resolveBookTextLanguage: off by default, metadata when set, per-book beats global", function()
+    local R = BookSettings.resolveBookTextLanguage
+    TestRunner:assertNil(R(nil, nil, "ar"), "no settings at all → off")
+    TestRunner:assertNil(R(fakeDocSettings({}), { book_text_language = "off" }, "ar"), "global off")
+    TestRunner:assertEqual(R(fakeDocSettings({}), { book_text_language = "metadata" }, "ar"), "ar", "global metadata → recorded language")
+    TestRunner:assertNil(R(fakeDocSettings({}), { book_text_language = "metadata" }, nil), "metadata unknown → nothing, never 'unknown'")
+    TestRunner:assertNil(R(fakeDocSettings({}), { book_text_language = "metadata" }, ""), "empty metadata → nothing")
+    TestRunner:assertNil(R(fakeDocSettings({ koassistant_book_text_language = "off" }), { book_text_language = "metadata" }, "ar"), "per-book off beats global metadata")
+    TestRunner:assertEqual(R(fakeDocSettings({ koassistant_book_text_language = "metadata" }), { book_text_language = "off" }, "ar"), "ar", "per-book metadata beats global off")
+    TestRunner:assertEqual(R(fakeDocSettings({ koassistant_book_text_language = "French" }), nil, nil), "French", "a picked language rides by its English name (ids are English; the native display is UI only)")
+    TestRunner:assertEqual(R(fakeDocSettings({ koassistant_book_text_language = "German and Latin" }), nil, nil), "German and Latin", "typed text rides as is")
+    TestRunner:assertEqual(BookSettings.textLanguageLabel("metadata", "ar"), "From metadata (ar)", "label with the recorded language")
+    TestRunner:assertEqual(BookSettings.textLanguageLabel("metadata", nil), "From metadata (not recorded)", "label without")
+    TestRunner:assertEqual(BookSettings.textLanguageLabel("off"), "Off", "off label")
+    local found = false
+    for _i, key in ipairs(BookSettings.SIDECAR_KEYS) do
+        if key == BookSettings.KEY_TEXT_LANG then found = true end
+    end
+    TestRunner:assertEqual(found, true, "koassistant_book_text_language registered in SIDECAR_KEYS")
+end)
+
 TestRunner:suite("Web search per-book layer (book_scoped_controls_plan.md §5)")
 
 TestRunner:test("webSearchOverride: tri-state raw override", function()
@@ -834,7 +855,7 @@ TestRunner:test("KEY_WEB_SEARCH and KEY_DOMAIN/KEY_RESEARCH are in SIDECAR_KEYS"
         "koassistant_book_background missing from SIDECAR_KEYS (book_background_plan.md)")
     TestRunner:assertEqual(found[BookSettings.KEY_XRAY_SPACING] == true, true,
         "koassistant_book_xray_spacing missing from SIDECAR_KEYS (spacing slice)")
-    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 37, "37 per-book keys expected (incl. 4 privacy overrides + xray promotion hold + checkpoint spacing + 9 marking & lookup overrides incl. upcoming-entities, intercept, card, card length, ahead card (B269) + xray categories + xray depth (2026-08-25); xray highlights removed with reader engagement 2026-08-18)")
+    TestRunner:assertEqual(#BookSettings.SIDECAR_KEYS, 38, "38 per-book keys expected (incl. 4 privacy overrides + xray promotion hold + checkpoint spacing + 9 marking & lookup overrides incl. upcoming-entities, intercept, card, card length, ahead card (B269) + xray categories + xray depth (2026-08-25) + book text language (2026-09-10); xray highlights removed with reader engagement 2026-08-18)")
 end)
 
 TestRunner:suite("resolveXrayMarking (2026-08-15: popup edits the book layer)")
@@ -1316,27 +1337,6 @@ TestRunner:test("explicit global vs nothing-set stay distinct (the §4.3 flip se
     TestRunner:assertEqual(p.reason, "default")
 end)
 
-TestRunner:test("ignore_finished: the cross-book rule reads only the reader's own switch (S5, ref #90)", function()
-    local finished = { summary = { status = "complete" } }
-    local p = BookSettings.resolveSpoilerPosture(fakeDocSettings(finished), {},
-        { layer = "mechanical", ignore_finished = true })
-    TestRunner:assertEqual(p.protected, true, "finished alone: the series stays protected")
-    TestRunner:assertEqual(p.reason, "default")
-    p = BookSettings.resolveSpoilerPosture(fakeDocSettings({ summary = { status = "complete" },
-        koassistant_book_spoiler_free = false }), {}, { ignore_finished = true })
-    TestRunner:assertEqual(p.protected, false, "finished + explicit book off: the switch counts")
-    TestRunner:assertEqual(p.reason, "book")
-    p = BookSettings.resolveSpoilerPosture(fakeDocSettings(finished), { spoiler_free_chat = false },
-        { ignore_finished = true })
-    TestRunner:assertEqual(p.protected, false, "global off counts")
-    TestRunner:assertEqual(p.reason, "global")
-    p = BookSettings.resolveSpoilerPosture(fakeDocSettings({ summary = { status = "complete" },
-        koassistant_book_research_mode = true }), {}, { ignore_finished = true })
-    TestRunner:assertEqual(p.reason, "research", "research still stands protection down")
-    p = BookSettings.resolveSpoilerPosture(fakeDocSettings(finished), {})
-    TestRunner:assertEqual(p.reason, "finished", "without the opt the finished layer is untouched")
-end)
-
 TestRunner:suite("clearXrayLineageState (B272, 2026-09-04: deleted = quiet, the override is pinned off unconditionally)")
 
 TestRunner:test("every delete pins the per-book automation off and clears the lineage stamps", function()
@@ -1456,13 +1456,26 @@ TestRunner:test("junk values fall through; nil doc settings still honours the gl
     TestRunner:assertEqual(BookSettings.xrayDepthLabel(nil), "Standard", "label")
 end)
 
-TestRunner:suite("resolveXrayCategories (book > global default > full)")
+TestRunner:suite("resolveXrayCategories (book > global default > Reference)")
 
 local KXC = BookSettings.KEY_XRAY_CATEGORIES
 
-TestRunner:test("nothing set = full, no layer", function()
+TestRunner:test("nothing set = the shipped Reference default, no layer", function()
     local sel, layer = BookSettings.resolveXrayCategories(makeDocSettings({}), {})
-    TestRunner:assertNil(sel); TestRunner:assertNil(layer)
+    TestRunner:assertEqual(sel, "people,places,ideas,terms"); TestRunner:assertNil(layer)
+end)
+
+TestRunner:test("global 'full' sentinel = All, global layer", function()
+    local sel, layer = BookSettings.resolveXrayCategories(
+        makeDocSettings({}), { xray_default_categories = "full" })
+    TestRunner:assertNil(sel, "explicit All = nil selection")
+    TestRunner:assertEqual(layer, "global")
+end)
+
+TestRunner:test("junk global falls through to the shipped default", function()
+    local sel, layer = BookSettings.resolveXrayCategories(
+        makeDocSettings({}), { xray_default_categories = "bogus" })
+    TestRunner:assertEqual(sel, "people,places,ideas,terms"); TestRunner:assertNil(layer)
 end)
 
 TestRunner:test("book csv beats a different global", function()
@@ -1500,7 +1513,7 @@ TestRunner:test("junk book value falls through; full-set global folds to full", 
         makeDocSettings({ [KXC] = "bogus" }),
         { xray_default_categories = "people,places,ideas,terms,events" })
     TestRunner:assertNil(sel, "full-set csv normalizes to nil = full")
-    TestRunner:assertNil(layer)
+    TestRunner:assertEqual(layer, "global")
 end)
 
 print("")

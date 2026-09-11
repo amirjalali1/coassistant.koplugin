@@ -39,17 +39,54 @@ RateLimits.HEADER_FIELDS = {
     ["x-ratelimit-reset-tokens"] = "reset_tokens",
     ["x-ratelimit-limit-requests"] = "limit_requests",
     ["x-ratelimit-remaining-requests"] = "remaining_requests",
+    -- The provider's own wait, sent with a refusal (Groq, Anthropic, OpenAI and
+    -- OpenRouter document it; the ms spellings are OpenAI's and Azure's). Read
+    -- by RateLimits.retryAfter, never by the budget arithmetic.
     ["retry-after"] = "retry_after",
+    ["retry-after-ms"] = "retry_after_ms",
+    ["x-ms-retry-after-ms"] = "retry_after_ms",
 }
 
 RateLimits.MARGIN = 256   -- tokens kept free under the allowance (estimate slack)
 RateLimits.FLOOR = 512    -- below this an answer is not worth asking for
 RateLimits.BYTES_PER_TOKEN = 3  -- conservative across scripts (CJK ~3 bytes/token)
 
+--- Could this number be a real model or plan token count?
+--- NOT a provider constant: it is the "a token count that could be a real model
+--- or plan number" bound that already lived in the tree, in the self-heal parser
+--- (model_constraints.lua parseMaxTokensError now delegates here, so there is
+--- ONE definition). It rejects a digit lifted out of a model name (`llama3` -> 3),
+--- a number too small for an allowance worth sizing against, and the 800030000
+--- that a duplicated response header welds into one value on the device transport.
+--- @param n any
+--- @return boolean
+function RateLimits.saneTokenCount(n)
+    return type(n) == "number" and n >= 1024 and n < 10000000
+end
+
 local memo = {}  -- ["provider/model"] = { limit_tokens=, remaining_tokens=, source= }
+--- ["provider/model"] = the moment (RateLimits._now() seconds) a provider said a
+--- refused request may be retried, from the retry-after header the fetch child
+--- forwarded with the refusal. Session-only like the allowance; read by
+--- RateLimits.retryAfter, never by the budget arithmetic.
+local waits = {}
+RateLimits._now = os.time     -- clock seam for tests
+RateLimits.MAX_WAIT_S = 86400 -- a "wait" longer than a day is not a wait
 
 local function key(provider, model)
     return tostring(provider or "?") .. "/" .. tostring(model or "?")
+end
+
+--- A refusal's retry-after (seconds, or one of the ms spellings) becomes a deadline.
+--- An HTTP-date form arrives mangled by the marker's charset and is not a number: ignored.
+local function noteWait(k, fields)
+    local secs = tonumber(fields.retry_after)
+    if not secs then
+        local ms = tonumber(fields.retry_after_ms)
+        if ms then secs = ms / 1000 end
+    end
+    if not secs or secs <= 0 or secs > RateLimits.MAX_WAIT_S then return end
+    waits[k] = RateLimits._now() + secs
 end
 
 --- Pick the forwardable fields out of a headers table (any key case).
@@ -103,12 +140,30 @@ function RateLimits.decodeMarker(line)
     return any and out or nil
 end
 
+--- Position of the next marker LINE in a buffer: the prefix at the very start
+--- of the text or right after a newline. The child writes the line as
+--- "\r\n<prefix>...\n\n", so the same bytes anywhere else are content (a model
+--- quoting the prefix) and must stay untouched.
+--- @param text string
+--- @param init number|nil search start (default 1)
+--- @return number|nil start position
+function RateLimits.findMarker(text, init)
+    if type(text) ~= "string" then return nil end
+    local from = init or 1
+    while true do
+        local s = text:find(RateLimits.PROTOCOL_MARKER, from, true)
+        if not s then return nil end
+        if s == 1 or text:sub(s - 1, s - 1) == "\n" then return s end
+        from = s + 1
+    end
+end
+
 --- Non-streaming consumer: pull the marker line out of a whole pipe buffer.
 --- @param text string
 --- @return table|nil fields, string cleaned text (marker line removed)
 function RateLimits.extractMarker(text)
     if type(text) ~= "string" then return nil, text end
-    local s = text:find(RateLimits.PROTOCOL_MARKER, 1, true)
+    local s = RateLimits.findMarker(text)
     if not s then return nil, text end
     local e = text:find("\n", s, true) or #text
     local line = text:sub(s, e)
@@ -116,20 +171,43 @@ function RateLimits.extractMarker(text)
     return RateLimits.decodeMarker(line), cleaned
 end
 
---- Remember what a provider told us. Only a numeric limit is worth keeping.
+--- Remember what a provider told us. Only a limit that could be real is worth
+--- keeping, and where two sources disagree the more reliable one wins: a header
+--- (or the "Test provider" probe) is the provider stating the plan, while a
+--- refusal is prose the plugin read numbers out of.
 --- @param provider string
 --- @param model string|nil
 --- @param fields table|nil (fromHeaders/decodeMarker shape)
---- @param source string|nil "header" | "refusal" | "probe" (for logs/tests)
+--- @param source string|nil "header" | "refusal" | "probe" | "context"
 --- @return boolean recorded
 function RateLimits.record(provider, model, fields, source)
     if type(fields) ~= "table" then return false end
+    -- The wait rides the same marker as the allowance and is kept whether or
+    -- not the allowance is (Anthropic's refusal carries only the wait).
+    noteWait(key(provider, model), fields)
     local limit = tonumber(fields.limit_tokens)
     if not limit or limit <= 0 then return false end
-    memo[key(provider, model)] = {
-        limit_tokens = math.floor(limit),
-        remaining_tokens = tonumber(fields.remaining_tokens),
-        source = source or "header",
+    limit = math.floor(limit)
+    if not RateLimits.saneTokenCount(limit) then return false end
+    source = source or "header"
+    local k = key(provider, model)
+    local old = memo[k]
+    local function stated(src) return src == "header" or src == "probe" end
+    if old and stated(old.source) and not stated(source) then
+        return false
+    end
+    -- A "context" record (a model's context window, written by the self-heal)
+    -- shares this slot with the allowance: one slot holding two quantities is
+    -- open question Q3 of the request-sizing audit. Until it is answered, a
+    -- window may replace a refusal-learned allowance (later writer wins, as
+    -- before) but never a header- or probe-stated one, because a larger window
+    -- overwriting a smaller allowance would re-open #106 for the session.
+    local remaining = tonumber(fields.remaining_tokens)
+    if remaining and (remaining < 0 or remaining >= 10000000) then remaining = nil end
+    memo[k] = {
+        limit_tokens = limit,
+        remaining_tokens = remaining,
+        source = source,
     }
     return true
 end
@@ -146,6 +224,7 @@ end
 --- Test seam.
 function RateLimits._reset()
     memo = {}
+    waits = {}
 end
 
 --- Conservative prompt-size estimate from byte length.
@@ -172,6 +251,41 @@ function RateLimits.budgetCap(provider, model, prompt_chars, prompt_tokens)
     return math.floor(room)
 end
 
+--- Byte size of everything we send as text: the system prompt plus every message
+--- whose content is a string. LIFTED VERBATIM from the closure in
+--- koassistant_gpt_query.lua's dispatch path, so a pre-send check and the
+--- dispatch-time cap work from the same number by construction and cannot drift.
+--- @param system_text string|nil config.system.text
+--- @param messages table|nil the message history
+--- @return number bytes
+function RateLimits.promptChars(system_text, messages)
+    local n = 0
+    if type(system_text) == "string" then
+        n = n + #system_text
+    end
+    for _idx = 1, #(messages or {}) do
+        local m = messages[_idx]
+        if m and type(m.content) == "string" then n = n + #m.content end
+    end
+    return n
+end
+
+--- Does the plan this session knows about leave no room for an answer? Exactly
+--- budgetCap's own condition (allowance minus the prompt estimate minus MARGIN
+--- below FLOOR), asked ahead of time: no new threshold, and it can never
+--- disagree with the cap because it asks the cap.
+--- @param provider string
+--- @param model string|nil
+--- @param prompt_chars number byte length of everything we send as text
+--- @return number|nil limit, number estimate, string|nil source
+---         (nil = the plan is unknown, or it leaves usable room)
+function RateLimits.promptExceedsPlan(provider, model, prompt_chars)
+    local k = memo[key(provider, model)]
+    if not k then return nil end
+    if RateLimits.budgetCap(provider, model, prompt_chars) then return nil end
+    return k.limit_tokens, RateLimits.estimateTokens(prompt_chars), k.source
+end
+
 --- Apply the cap to a resolved/pinned budget: only ever shrinks.
 --- @return number|nil new value, boolean changed
 function RateLimits.applyCap(value, cap)
@@ -180,22 +294,112 @@ function RateLimits.applyCap(value, cap)
     return value, false
 end
 
---- Recognize an admission refusal and read its numbers. Tolerant on purpose: a
+local PER_MINUTE_SIGNATURES = { "tokens per min", "(tpm)", "tokens-per-minute" }
+
+--- Where the per-minute signature starts in a lowercased error text (earliest
+--- of the three spellings), or nil when the text is not about a per-minute
+--- token bucket at all.
+local function perMinutePos(l)
+    local best
+    for _idx = 1, #PER_MINUTE_SIGNATURES do
+        local p = l:find(PER_MINUTE_SIGNATURES[_idx], 1, true)
+        if p and (not best or p < best) then best = p end
+    end
+    return best
+end
+
+--- Does the text name a per-minute TOKEN bucket at all? ONE definition, shared
+--- with model_constraints.lua's size and rate-limit gates, so the three spellings
+--- ("tokens per min", "(TPM)", "tokens-per-minute") cannot drift apart.
+--- @param err_text string|nil
+--- @return boolean
+function RateLimits.hasPerMinuteSignature(err_text)
+    if type(err_text) ~= "string" or err_text == "" then return false end
+    return perMinutePos(err_text:lower()) ~= nil
+end
+
+--- Read "<word> N" out of a text, tolerating the separators providers use
+--- ("Limit 8000", "limit: 12,000", "Requested ~12903"). The word must stand on
+--- its own, so "delimiter" is not a limit and "caused" is not a used count, and
+--- the number must follow the word directly (spaces, a colon, a tilde or an
+--- equals sign in between, nothing else), so a model id such as `limit-3b` or
+--- a "try again in 20s" further down the sentence never supplies the number.
+local function numberAfter(text, word)
+    local raw = text:match("%f[%a]" .. word .. "%f[%A][%s:~=]*(%d[%d,]*)")
+    if not raw then return nil end
+    return tonumber((raw:gsub(",", "")))
+end
+
+--- Does the text carry a "Used N" count, for ANY bucket (per minute, per day)?
+--- A used count means the bucket is SPENT and refills with time, so a wording
+--- that carries one is never a deterministic size error, whatever else it says.
+--- @param err_text string|nil
+--- @return boolean
+function RateLimits.hasUsedCount(err_text)
+    if type(err_text) ~= "string" or err_text == "" then return false end
+    return numberAfter(err_text:lower(), "used") ~= nil
+end
+
+--- Recognize a per-minute refusal and read its numbers. Tolerant on purpose: a
 --- per-minute signature plus a limit number and a requested number, in any prose.
 --- Groq: "... on tokens per minute (TPM): Limit 8000, Requested 32979, please reduce ..."
 --- OpenAI: "... on tokens per min (TPM): Limit 30000, Requested 40000. The input or output tokens must be reduced ..."
+--- The numbers are read from the text AFTER the signature only. Every real
+--- rate-limit 429 opens "Rate limit reached for model `llama3-70b-8192`", so a
+--- search of the whole text for "limit" reads the 3 out of the model name and
+--- reports an allowance of 3 tokens a minute.
 --- @param err_text string
---- @return table|nil { limit = N, requested = M }
+--- @return table|nil { limit = N, requested = M, used = U or nil }
 function RateLimits.parseRefusal(err_text)
     if type(err_text) ~= "string" or err_text == "" then return nil end
     local l = err_text:lower()
-    local per_minute = l:find("tokens per min", 1, true) or l:find("(tpm)", 1, true)
-        or l:find("tokens-per-minute", 1, true)
-    if not per_minute then return nil end
-    local limit = tonumber(l:match("limit[^%d]-(%d[%d,]*)") and l:match("limit[^%d]-(%d[%d,]*)"):gsub(",", ""))
-    local requested = tonumber(l:match("requested[^%d]-(%d[%d,]*)") and l:match("requested[^%d]-(%d[%d,]*)"):gsub(",", ""))
+    local at = perMinutePos(l)
+    if not at then return nil end
+    local tail = l:sub(at)
+    local limit = numberAfter(tail, "limit")
+    local requested = numberAfter(tail, "requested")
+    local used = numberAfter(tail, "used")
     if not limit or not requested or limit <= 0 or requested <= 0 then return nil end
-    return { limit = math.floor(limit), requested = math.floor(requested) }
+    return {
+        limit = math.floor(limit),
+        requested = math.floor(requested),
+        used = used and math.floor(used) or nil,
+    }
+end
+
+--- Which kind of per-minute refusal is this? Read off the NUMBERS, never off the
+--- wording: "Rate limit reached" and "Request too large" both come in either shape.
+---   "admission" the request ALONE can never fit: the wording states a limit and
+---               a requested size, and requested > limit. No wait admits it, so
+---               it is deterministic: resend ONCE at a smaller budget, and the
+---               explanation names what was too big. "Limit 7000, Used 0,
+---               Requested ~12903" is this kind, whatever its "try again in 50s".
+---   "burst"     every other per-minute TOKEN refusal: the allowance is spent
+---               for now ("Used N" with a request that would fit an empty
+---               bucket), or the wording states no numbers at all (Anthropic's
+---               "would exceed ... input tokens per minute", the plugin's own
+---               Gemini quota line, Cerebras). The bucket refills with TIME, so
+---               a burst is never resent and keeps the wait-and-retry tip. The
+---               2026-09-04 re-audit found the old rule ("no Used count means
+---               admission") calling every Anthropic and Gemini per-minute 429
+---               a deterministic refusal: wrong tip, and the checkpoint chain
+---               stopped for good instead of retrying.
+---   nil         not a per-minute token refusal (a daily bucket, a
+---               requests-per-minute 429, an output cap, ordinary prose).
+--- @param err_text string|nil
+--- @return string|nil
+function RateLimits.refusalKind(err_text)
+    if type(err_text) ~= "string" or err_text == "" then return nil end
+    local l = err_text:lower()
+    local at = perMinutePos(l)
+    if not at then return nil end
+    local tail = l:sub(at)
+    local limit = numberAfter(tail, "limit")
+    local requested = numberAfter(tail, "requested")
+    if limit and requested and limit > 0 and requested > limit then
+        return "admission"
+    end
+    return "burst"
 end
 
 --- Budget for the one resend after a refusal. When we know the budget the refused
@@ -222,6 +426,144 @@ function RateLimits.promptTokensFromRefusal(refusal, sent_budget)
     if type(refusal) ~= "table" or not sent_budget then return nil end
     if refusal.requested > sent_budget then return refusal.requested - sent_budget end
     return nil
+end
+
+--------------------------------------------------------------------------------
+-- The provider's own wait (borrowed from assistant.koplugin's retry loop, which
+-- reads Retry-After, retry-after-ms and Gemini's retryDelay before it counts
+-- down; here the number is advice on the attended surfaces and the timer of the
+-- unattended checkpoint ladder's one retry).
+--------------------------------------------------------------------------------
+
+--- Seconds in a duration the way providers write them: Go durations
+--- ("9m38.016s", "5.289s", "1m0s", "500ms"), protobuf durations ("15s",
+--- "15.002899939s") and words ("30 seconds", "2 minutes"). A bare number is
+--- seconds. Reading stops at the first thing that is not a number with a unit,
+--- so the sentence around it never counts ("20 tokens" is not a wait).
+--- @param s string
+--- @return number|nil seconds
+function RateLimits.parseDuration(s)
+    if type(s) ~= "string" then return nil end
+    local rest = s:lower():gsub("^%s+", "")
+    local total, any = 0, false
+    while true do
+        local num, unit, after = rest:match("^(%d+%.?%d*)%s*(%a*)()")
+        local n = num and tonumber(num)
+        if not n then break end
+        local factor
+        if unit == "" then
+            factor = (not any) and 1 or nil  -- a bare number only stands alone
+        elseif unit == "ms" or unit:find("^millis") then
+            factor = 0.001
+        elseif unit == "s" or unit:find("^sec") then
+            factor = 1
+        elseif unit == "m" or unit:find("^min") then
+            factor = 60
+        elseif unit == "h" or unit:find("^h[ro]") then
+            factor = 3600
+        end
+        if not factor then break end
+        total, any = total + n * factor, true
+        if unit == "" then break end
+        rest = rest:sub(after):gsub("^%s+", "")
+    end
+    if not any or total <= 0 then return nil end
+    return total
+end
+
+--- Phrases after which a provider names its wait (lower-case). The plugin's own
+--- tips say "wait and try again" and "asks for a wait of about", neither of
+--- which is here, so a decorated message never reads the plugin's advice back
+--- as a delay.
+local WAIT_PHRASES = {
+    "try again in ",    -- Groq, OpenAI: "Please try again in 5.289s"
+    "retry in ",        -- Gemini: "Please retry in 15.002899939s"; the plugin's
+                        -- own quota line: "You can retry in 15s"
+    "retry after ",
+    'retrydelay":"',    -- Google RetryInfo in a raw body
+    "retrydelay: ",
+}
+
+--- Seconds the wording itself asks us to wait, or nil when it names none. The
+--- earliest phrase in the text wins, so a message that states the delay twice
+--- (Gemini's sentence plus the plugin's rendering of the same RetryInfo) reads
+--- the provider's own first.
+--- @param err_text string|nil
+--- @return number|nil seconds
+function RateLimits.retryAfterSeconds(err_text)
+    if type(err_text) ~= "string" or err_text == "" then return nil end
+    local l = err_text:lower()
+    local best_pos, best
+    for _idx, phrase in ipairs(WAIT_PHRASES) do
+        local from = 1
+        while true do
+            local s, e = l:find(phrase, from, true)
+            if not s then break end
+            if not best_pos or s < best_pos then
+                local secs = RateLimits.parseDuration(l:sub(e + 1, e + 40))
+                if secs then best_pos, best = s, secs end
+            end
+            from = e + 1
+        end
+    end
+    return best
+end
+
+--- The wait a provider asked for on THIS failure: the wording's own number
+--- first (exact for this refusal), else the retry-after header the fetch child
+--- forwarded with it (Anthropic states the delay only there), as long as that
+--- moment is still ahead. nil = the provider named none.
+--- @param err_text string|nil
+--- @param provider string|nil
+--- @param model string|nil
+--- @return number|nil seconds, string|nil source ("text" | "header")
+function RateLimits.retryAfter(err_text, provider, model)
+    local named = RateLimits.retryAfterSeconds(err_text)
+    if named then return named, "text" end
+    local k = key(provider, model)
+    local deadline = waits[k]
+    if not deadline then return nil end
+    local left = deadline - RateLimits._now()
+    if left > 0 then return left, "header" end
+    waits[k] = nil
+    return nil
+end
+
+--- OpenRouter's 402 names the answer the remaining credits can pay for ("You
+--- requested up to 32000 tokens, but can only afford 1000"): the budget the
+--- self-heal may resend at, when it is worth anything.
+--- @param err_text string|nil
+--- @return number|nil tokens
+function RateLimits.parseAffordable(err_text)
+    if type(err_text) ~= "string" then return nil end
+    local n = err_text:lower():match("can only afford%s+([%d,]+)")
+    if not n then return nil end
+    return tonumber((n:gsub(",", "")))
+end
+
+--- The provider's machine classification appended to its sentence: "message
+--- (code)". error.code when it is a string, else error.type, else error.status
+--- (Google's RESOURCE_EXHAUSTED). Skipped when the sentence already carries it,
+--- when the code is a number (OpenRouter and Gemini put the HTTP status there),
+--- or when it does not look like a code. Every consumer of a non-200 body runs
+--- its message through this, so the classifiers can key on the code: OpenAI's
+--- insufficient_quota shares its sentence word for word with Gemini's ordinary
+--- per-minute 429.
+--- @param msg string the provider's message
+--- @param err table|nil the decoded error object
+--- @return string
+function RateLimits.withErrorCode(msg, err)
+    if type(msg) ~= "string" or msg == "" or type(err) ~= "table" then return msg end
+    local code
+    for _idx, field in ipairs({ "code", "type", "status" }) do
+        local v = err[field]
+        if type(v) == "string" and #v <= 64 and v:match("^[%w_%.%-]+$") and not v:match("^%d+$") then
+            code = v
+            break
+        end
+    end
+    if not code or msg:lower():find(code:lower(), 1, true) then return msg end
+    return msg .. " (" .. code .. ")"
 end
 
 return RateLimits

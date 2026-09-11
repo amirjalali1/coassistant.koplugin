@@ -284,12 +284,12 @@ TestRunner:test("lookupBooksFor: ordered = earlier (then later when both ways); 
     BookGroups.setKind(group.id, BookGroups.KIND_SERIES)
 end)
 
-TestRunner:test("groupXrays + the card follow the injected direction resolver", function()
+TestRunner:test("groupXrays + the card follow the injected chain resolver", function()
     local both = false
-    ActionCache.setLookupDirectionResolver(function(_file) return both end)
+    ActionCache.setLookupChainResolver(function(_file) return both end)
     local list, stamp = ActionCache.groupXrays(VOL2)
     TestRunner:eq(#list, 1, "protected: the earlier book only")
-    TestRunner:ok(stamp:find("^earlier"), "stamp carries the direction")
+    TestRunner:ok(stamp:find("^chain:0"), "stamp carries the reach")
     both = true
     local list2, stamp2 = ActionCache.groupXrays(VOL2)
     TestRunner:eq(#list2, 2, "unprotected: vol 1 and vol 3")
@@ -306,7 +306,7 @@ TestRunner:test("groupXrays + the card follow the injected direction resolver", 
     TestRunner:eq(ActionCache.matchAnyXrayExact(VOL2, "Mira Voss"), false, "route agrees")
     both = true
     TestRunner:eq(ActionCache.matchAnyXrayExact(VOL2, "Mira Voss"), true, "route follows the flip")
-    ActionCache.setLookupDirectionResolver(nil)
+    ActionCache.setLookupChainResolver(nil)
 end)
 
 TestRunner:test("tombstones: removed entries stay out of the seed and the install union; adding by hand clears", function()
@@ -383,7 +383,7 @@ end)
 TestRunner:suite("S5 — later books stay behind a confirm (ref #90)")
 
 TestRunner:test("groupXrays include_later walks past the rule; heldBackLaterXrays counts what it holds back", function()
-    ActionCache.setLookupDirectionResolver(function(_file) return false end)
+    ActionCache.setLookupChainResolver(function(_file) return false end)
     TestRunner:eq(#ActionCache.groupXrays(VOL2), 1, "protected: the earlier book only")
     local all, stamp = ActionCache.groupXrays(VOL2, { include_later = true })
     TestRunner:eq(#all, 2, "the confirmed reveal walks both directions")
@@ -394,13 +394,132 @@ TestRunner:test("groupXrays include_later walks past the rule; heldBackLaterXray
     TestRunner:eq(ActionCache.heldBackLaterXrays(VOL2), 1, "middle volume: one")
     TestRunner:eq(ActionCache.heldBackLaterXrays(VOL3), 0, "last volume: nothing later")
     TestRunner:eq(ActionCache.heldBackLaterXrays(TMP_ROOT .. "/lone.epub"), 0, "ungrouped: nothing")
-    ActionCache.setLookupDirectionResolver(function(_file) return true end)
+    ActionCache.setLookupChainResolver(function(_file) return true end)
     TestRunner:eq(ActionCache.heldBackLaterXrays(VOL2), 0, "unprotected: the walk already reaches them")
-    ActionCache.setLookupDirectionResolver(nil)
+    ActionCache.setLookupChainResolver(nil)
     TestRunner:eq(ActionCache.heldBackLaterXrays(VOL2), 1, "no resolver = protected")
     BookGroups.setKind(group.id, BookGroups.KIND_PROJECT)
     TestRunner:eq(ActionCache.heldBackLaterXrays(VOL2), 0, "project: every member answers, nothing held back")
     BookGroups.setKind(group.id, BookGroups.KIND_SERIES)
+end)
+
+TestRunner:suite("S6 — the chain: later volumes open one read book at a time (ref #90)")
+
+TestRunner:test("a later volume answers only when every book before it is read or unprotected", function()
+    local open = {}
+    ActionCache.setLookupChainResolver(function(file) return open[file] == true end)
+    TestRunner:eq(#ActionCache.groupXrays(VOL1), 0, "vol 1 unread and protected: nothing later")
+    TestRunner:eq(ActionCache.heldBackLaterXrays(VOL1), 2, "both later X-Rays held back")
+    open[VOL1] = true
+    local list, stamp = ActionCache.groupXrays(VOL1)
+    TestRunner:eq(#list, 1, "vol 1 read: vol 2 answers")
+    TestRunner:eq(list[1].file, VOL2)
+    TestRunner:eq(list[1].direction, "later")
+    TestRunner:ok(stamp:find("^chain:1"), "the stamp carries the reach")
+    TestRunner:eq(ActionCache.heldBackLaterXrays(VOL1), 1, "vol 3 still behind unread vol 2")
+    open[VOL3] = true
+    TestRunner:eq(#ActionCache.groupXrays(VOL1), 1, "vol 3's own state never opens it")
+    open[VOL2] = true
+    local list2, stamp2 = ActionCache.groupXrays(VOL1)
+    TestRunner:eq(#list2, 2, "vol 2 read too: vol 3 answers")
+    TestRunner:eq(list2[2].file, VOL3)
+    TestRunner:ok(stamp2 ~= stamp, "the reach changes the memo key")
+    TestRunner:eq(ActionCache.heldBackLaterXrays(VOL1), 0, "nothing held back")
+    open[VOL1] = nil
+    TestRunner:eq(#ActionCache.groupXrays(VOL1), 0, "the current book blocks first, whatever the others say")
+    TestRunner:eq(#ActionCache.groupXrays(VOL1, { include_later = true }), 2, "the confirmed reveal ignores the chain")
+    -- From the middle: earlier books never need clearing
+    open[VOL2] = nil
+    TestRunner:eq(#ActionCache.groupXrays(VOL2), 1, "vol 2 unread: vol 1 only")
+    open[VOL2] = true
+    TestRunner:eq(#ActionCache.groupXrays(VOL2), 2, "vol 2 read: vol 1 and vol 3")
+    ActionCache.setLookupChainResolver(nil)
+end)
+
+TestRunner:test("S7: the confirmed reveal opens one X-Rayed later book per confirm, past the chain", function()
+    local open = {}
+    ActionCache.setLookupChainResolver(function(file) return open[file] == true end)
+    local one = ActionCache.groupXrays(VOL1, { reveal = 1 })
+    TestRunner:eq(#one, 1, "one reveal from unread vol 1: vol 2")
+    TestRunner:eq(one[1].file, VOL2)
+    TestRunner:eq(one[1].revealed, true, "flagged as revealed")
+    TestRunner:eq(#ActionCache.groupXrays(VOL1, { reveal = 2 }), 2, "two reveals: vol 3 too")
+    TestRunner:eq(ActionCache.heldBackLaterXrays(VOL1, 1), 1, "one reveal in: vol 3 still held back")
+    TestRunner:eq(ActionCache.nextHeldBackLaterXray(VOL1, 0).file, VOL2, "the next reveal is vol 2")
+    TestRunner:eq(ActionCache.nextHeldBackLaterXray(VOL1, 1).file, VOL3, "then vol 3")
+    TestRunner:eq(ActionCache.nextHeldBackLaterXray(VOL1, 2), nil, "then nothing")
+    open[VOL1] = true
+    TestRunner:eq(ActionCache.nextHeldBackLaterXray(VOL1, 0).file, VOL3,
+        "vol 1 read: the chain shows vol 2, the reveal starts at vol 3")
+    local mixed = ActionCache.groupXrays(VOL1, { reveal = 1 })
+    TestRunner:eq(#mixed, 2, "chain plus one reveal")
+    TestRunner:eq(mixed[1].revealed, nil, "the chain-reached book is not a reveal")
+    TestRunner:eq(mixed[2].revealed, true)
+    ActionCache.setLookupChainResolver(nil)
+end)
+
+TestRunner:suite("G2 — group hub: held-back set, the chain walk on a HIT (group_hub_plan.md)")
+
+TestRunner:test("heldBackLaterFiles: the X-Rayed later books the chain holds back, as a set", function()
+    local open = {}
+    ActionCache.setLookupChainResolver(function(file) return open[file] == true end)
+    local held = ActionCache.heldBackLaterFiles(VOL1)
+    TestRunner:eq(held[VOL2] ~= nil, true, "vol 2 held back from unread vol 1")
+    TestRunner:eq(held[VOL3] ~= nil, true, "vol 3 held back too")
+    TestRunner:eq(held[VOL1], nil, "never the book itself")
+    open[VOL1] = true
+    held = ActionCache.heldBackLaterFiles(VOL1)
+    TestRunner:eq(held[VOL2], nil, "vol 1 read: vol 2 reachable")
+    TestRunner:eq(held[VOL3] ~= nil, true, "vol 3 still behind unread vol 2")
+    open[VOL2] = true
+    TestRunner:eq(next(ActionCache.heldBackLaterFiles(VOL1)), nil, "both read: nothing held back")
+    TestRunner:eq(next(ActionCache.heldBackLaterFiles(VOL3)), nil, "the last volume holds nothing back")
+end)
+
+TestRunner:test("alsoInGroup: active entries in the allowed books only; stubs never; later books as the chain allows", function()
+    local open = {}
+    ActionCache.setLookupChainResolver(function(file) return open[file] == true end)
+    local also = ActionCache.alsoInGroup(VOL3, { "Petra Lund" }, "characters")
+    TestRunner:eq(#also, 1, "earlier book's entry found from vol 3")
+    TestRunner:eq(also[1].file, VOL2)
+    TestRunner:eq(also[1].direction, "earlier")
+    TestRunner:eq(also[1].item.name, "Petra Lund")
+    TestRunner:eq(#ActionCache.alsoInGroup(VOL3, { "Wick" }, "characters"), 0, "a carried stub is not an entry")
+    TestRunner:eq(#ActionCache.alsoInGroup(VOL3, { "Mira Voss" }, "characters"), 0, "only in this book")
+    TestRunner:eq(#ActionCache.alsoInGroup(VOL1, { "Petra Lund" }, "characters"), 0,
+        "unread vol 1: the later book's entry is hidden, existence included")
+    open[VOL1] = true
+    also = ActionCache.alsoInGroup(VOL1, { "Petra Lund" }, "characters")
+    TestRunner:eq(#also, 1, "vol 1 read: vol 2 answers")
+    TestRunner:eq(also[1].direction, "later")
+    TestRunner:eq(#ActionCache.alsoInGroup(VOL1, { "Mira Voss" }, "characters"), 0, "vol 3 still behind unread vol 2")
+    open[VOL2] = true
+    TestRunner:eq(#ActionCache.alsoInGroup(VOL1, { "Mira Voss" }, "characters"), 1, "both read: vol 3 answers")
+    TestRunner:eq(#ActionCache.alsoInGroup(VOL1, {}, "characters"), 0, "no handles, no walk")
+end)
+
+TestRunner:test("card: a live hit carries also_in as far as the chain reaches", function()
+    local open = {}
+    ActionCache.setLookupChainResolver(function(file) return open[file] == true end)
+    -- vol 1 now also knows the orchard girl, so the same name is active in two volumes
+    local vol1_two = '{"characters":[{"name":"Zara Flint","description":"Dives for bells and never says who pays."},'
+        .. '{"name":"Mira Voss","description":"A girl seen once at the orchard gate."}]}'
+    assert(ActionCache.set(VOL1, "xray", vol1_two, 0.5, { model = "m", used_book_text = true }))
+    assert(ActionCache.setXrayCache(VOL1, vol1_two, 0.5, { model = "m", used_book_text = true }))
+    local hit = XrayCard.resolve(VOL3, "Mira Voss", { position = 0.5 })
+    TestRunner:eq(hit and hit.source, "live", "vol 3's own entry")
+    TestRunner:eq(hit.also_in and #hit.also_in, 1, "the earlier book's entry rides")
+    TestRunner:eq(hit.also_in[1].file, VOL1)
+    TestRunner:eq(hit.also_in[1].direction, "earlier")
+    hit = XrayCard.resolve(VOL1, "Mira Voss", { position = 0.5 })
+    TestRunner:eq(hit and hit.source, "live", "vol 1's own entry")
+    TestRunner:eq(hit.also_in, nil, "unread vol 1: nothing about later books, not even that one exists")
+    open[VOL1] = true
+    open[VOL2] = true
+    hit = XrayCard.resolve(VOL1, "Mira Voss", { position = 0.5 })
+    TestRunner:eq(hit.also_in and #hit.also_in, 1, "both read: the later book's entry rides")
+    TestRunner:eq(hit.also_in[1].file, VOL3)
+    TestRunner:eq(hit.also_in[1].direction, "later")
 end)
 
 -- ---------------------------------------------------------------- cleanup

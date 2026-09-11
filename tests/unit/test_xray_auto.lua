@@ -1174,6 +1174,96 @@ TestRunner:test("classifyStopReason: transient classes vs terminal ones (item 45
     end
 end)
 
+TestRunner:test("classifyStopReason: own abort sentinels and refusals that cannot succeed (audit B2b)", function()
+    -- The classifier is handed the DECORATED string (provider prefix + the hints
+    -- decorateRequestError appended), so build the provider cases that way: the
+    -- old code graded them off the plugin's own advice paragraph and came out
+    -- inverted (Cerebras retried, Groq's #106 refusal named no reason at all).
+    local ModelConstraints = require("model_constraints")
+    local function decorated(text, provider, model)
+        return ModelConstraints.decorateRequestError(text, provider, model, { features = {} })
+    end
+    local CEREBRAS = "Tokens per minute limit exceeded - too many tokens processed"
+    local GROQ_413 = "Request too large for model `openai/gpt-oss-20b` in organization `org_x` "
+        .. "service tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 32979, "
+        .. "please reduce your message size and try again."
+    -- "Used 0" and a request larger than the whole allowance: nothing to wait for
+    local GROQ_USED0 = "Rate limit reached for model `llama3-70b-8192` in organization `org_x` on "
+        .. "tokens per minute (TPM): Limit 7000, Used 0, Requested ~12903. Please try again in 50.597142857s."
+    -- A real burst: the request would fit an empty bucket
+    local GROQ_BURST = "Rate limit reached for model `gemma2-9b-it` in organization `...` service tier "
+        .. "`on_demand` on tokens per minute (TPM): Limit 15000, Used 11972, Requested 4351. "
+        .. "Please try again in 5.289s."
+    -- Anthropic's per-minute 429 states no numbers after the signature and never
+    -- counts max_tokens (re-audit 2026-09-04: it was graded too_large, which
+    -- stopped the chain for good instead of retrying once after 60 s).
+    local ANTHROPIC_ITPM = "This request would exceed your organization's rate limit of 80,000 input "
+        .. "tokens per minute. For details, refer to: https://docs.anthropic.com/en/api/rate-limits; "
+        .. "see the response headers for current usage. Please reduce the prompt length or the "
+        .. "maximum tokens requested, or try again later."
+
+    local cases = {
+        -- The plugin's own pre-send aborts: never sent, so never a model failure
+        -- ("delta truncated" used to match the bare "truncated" and be reported
+        -- to the reader as an unusable response).
+        { "background: incremental update not applicable", "aborted", false },
+        { "background: delta truncated", "aborted", false },
+        { "background: extraction truncated", "aborted", false },
+        -- Deterministic refusals: the one 60-second retry would fail identically
+        { decorated(GROQ_413, "groq", "openai/gpt-oss-20b"), "too_large", false },
+        { decorated(GROQ_USED0, "groq", "llama3-70b-8192"), "too_large", false },
+        -- A burst is the opposite: the bucket refills with time, so retry. A
+        -- per-minute wording that states no numbers proves nothing about the
+        -- request's size, so it is a burst too (Cerebras, Anthropic, Gemini).
+        { decorated(GROQ_BURST, "groq", "gemma2-9b-it"), "rate_limited", true },
+        { decorated(CEREBRAS, "cerebras", "zai-glm-4.7"), "rate_limited", true },
+        { decorated(ANTHROPIC_ITPM, "anthropic", "claude-sonnet-5"), "rate_limited", true },
+        -- Account walls (2026-09-05): credits, balance, a spending cap. No wait
+        -- heals them, so the chain stops and names the account. OpenAI's
+        -- insufficient_quota also says "quota" and used to buy the retry.
+        { decorated("You exceeded your current quota, please check your plan and billing details. "
+            .. "(insufficient_quota)", "openai", "gpt-5.5"), "billing", false },
+        { decorated("Insufficient Balance (invalid_request_error)", "deepseek", "deepseek-chat"), "billing", false },
+        { decorated("This request requires more credits, or fewer max_tokens. You requested up to 32000 "
+            .. "tokens, but can only afford 0. To increase, visit https://openrouter.ai/settings/keys",
+            "openrouter", "moonshotai/kimi-k2.5:free"), "billing", false },
+        { decorated("Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing "
+            .. "to upgrade or purchase credits. (invalid_request_error)", "anthropic", "claude-sonnet-5"), "billing", false },
+    }
+    for _idx, case in ipairs(cases) do
+        local kind, transient = XrayAuto.classifyStopReason(case[1])
+        TestRunner:assertEqual(kind, case[2], "kind for: " .. case[1]:sub(1, 60))
+        TestRunner:assertEqual(transient, case[3], "transient for: " .. case[1]:sub(1, 60))
+    end
+end)
+
+TestRunner:test("retryDelayFor: the provider's own wait times the one retry (2026-09-05)", function()
+    local RL = require("koassistant_rate_limits")
+    RL._reset()
+    local GROQ_BURST = "Rate limit reached for model `gemma2-9b-it` on tokens per minute (TPM): "
+        .. "Limit 15000, Used 11972, Requested 4351. Please try again in 5.289s."
+    TestRunner:assertEqual(XrayAuto.retryDelayFor(GROQ_BURST, "groq", "gemma2-9b-it"), 7,
+        "named 5.289 s: ceil plus a second of slack")
+    TestRunner:assertEqual(XrayAuto.retryDelayFor("This request would exceed your organization's rate limit of "
+        .. "80,000 input tokens per minute.", "anthropic", "claude-sonnet-5"), XrayAuto.RETRY_DELAY_S,
+        "no wait named anywhere: the fixed delay")
+    -- Anthropic names the wait only in its retry-after header, which the fetch
+    -- child forwards through the marker into the wait memo.
+    local real_now = RL._now
+    RL._now = function() return 5000 end
+    RL.record("anthropic", "claude-sonnet-5", { retry_after = "20" }, "header")
+    TestRunner:assertEqual(XrayAuto.retryDelayFor("This request would exceed your organization's rate limit of "
+        .. "80,000 input tokens per minute.", "anthropic", "claude-sonnet-5"), 21, "header wait plus slack")
+    RL._now = real_now
+    RL._reset()
+    TestRunner:assertEqual(XrayAuto.retryDelayFor("Please try again in 20ms.", "openai", "m"), 2, "never under 2 s")
+    TestRunner:assertEqual(XrayAuto.retryDelayFor("Please try again in 9m38.016s.", "groq", "m"), 580,
+        "a long named wait is waited out")
+    TestRunner:assertEqual(XrayAuto.retryDelayFor("Please try again in 2h.", "groq", "m"), nil,
+        "past RETRY_MAX_WAIT_S: no retry (a guaranteed second refusal)")
+    TestRunner:assertEqual(XrayAuto.retryDelayFor(nil, "groq", "m"), XrayAuto.RETRY_DELAY_S, "nil text")
+end)
+
 TestRunner:test("ladder stop record: per-file, superseded by a chain (re)start", function()
     XrayAuto.recordLadderStop("/a.epub", { step = 7, total = 11, kind = "overloaded" })
     local stop = XrayAuto.lastLadderStop("/a.epub")
@@ -1196,6 +1286,17 @@ TestRunner:test("matchAnyXrayExact: carried stubs route without the ahead peek (
     TestRunner:assertEqual(ActionCache.matchAnyXrayExact(DOC_PATH, "Nobody Here"), false, "miss stays a miss")
     TestRunner:assertEqual(ActionCache.matchAnyXrayExact(DOC_PATH, "Carried Gal", { include_ahead = false }),
         true, "Upcoming Entities off keeps the carried route (Q8)")
+end)
+
+TestRunner:test("skippedBuiltRung (B282): the swing guard fires only past a skipped built rung", function()
+    local function rung(p, ts) return { progress_decimal = p, result = "{}", timestamp = ts } end
+    local ladder = { rung(0.5, 1), rung(0.6, 2), rung(0.7, 3) }
+    TestRunner:assertEqual(XrayAuto.skippedBuiltRung(ladder, 0.4, 0.505), false, "crossing the next rung")
+    TestRunner:assertEqual(XrayAuto.skippedBuiltRung(ladder, 0.4, 0.78), true, "two rungs skipped")
+    TestRunner:assertEqual(XrayAuto.skippedBuiltRung(ladder, 0.6, 0.705), false, "next rung after a later live")
+    TestRunner:assertEqual(XrayAuto.skippedBuiltRung({ rung(0.7, 1) }, 0.4, 0.72), false,
+        "wide spacing: the next rung is still the next rung")
+    TestRunner:assertEqual(XrayAuto.skippedBuiltRung(ladder, 0.4, 0.45), false, "nothing promotable: nothing to guard")
 end)
 
 os.execute(string.format("rm -rf %q", TMP_ROOT))

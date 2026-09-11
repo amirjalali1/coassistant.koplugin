@@ -13,6 +13,7 @@ This module extracts reading context data from KOReader documents:
 local Constants = require("koassistant_constants")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("koassistant_logger")
+local ScopeResolver = require("koassistant_scope_resolver")
 
 local ContextExtractor = {}
 ContextExtractor.__index = ContextExtractor
@@ -63,6 +64,59 @@ function ContextExtractor.getFlowFingerprint(document)
     return visible
 end
 
+--- End-of-document xpointer for reflowable documents (parity audit F242, 2026-09-04).
+--- getPageXPointer(N) is the START of page N, so a range that ended on the last
+--- page silently lost that page's text: every whole-document extraction dropped the
+--- book's final page. crengine has no "end of page N" call and getPageXPointer(N+1)
+--- is an empty string, but the screen-selection call returns exactly that bound:
+--- the logical end of the last glyph on the current page. Navigates to the last
+--- page and restores the position itself; every probe is pcall-guarded.
+--- @param document table KOReader document object (CRE)
+--- @param total_pages number|nil Page count (defaults to document.info.number_of_pages)
+--- @return string|nil xpointer, nil when the engine cannot tell (callers then keep
+---   the old start-of-last-page bound rather than risk a wrong range)
+function ContextExtractor.documentEndXPointer(document, total_pages)
+    if not (document and document.getTextFromPositions and document.gotoPage) then
+        return nil
+    end
+    total_pages = total_pages or (document.info and document.info.number_of_pages) or 0
+    if total_pages < 1 then return nil end
+    local Screen = require("device").screen
+    local restore_xp
+    pcall(function() restore_xp = document:getXPointer() end)
+    local ok, end_xp = pcall(function()
+        document:gotoPage(total_pages)
+        local range = document:getTextFromPositions({ x = 0, y = 0 },
+            { x = Screen:getWidth(), y = Screen:getHeight() }, true)
+        return range and range.pos1
+    end)
+    if restore_xp then
+        pcall(function() document:gotoXPointer(restore_xp) end)
+    end
+    if not ok or type(end_xp) ~= "string" or end_xp == "" then
+        return nil
+    end
+    -- Trust it only when the engine orders it after the last page's start.
+    local last_start
+    pcall(function() last_start = document:getPageXPointer(total_pages) end)
+    if last_start and last_start ~= "" and document.compareXPointers then
+        local ordered
+        pcall(function() ordered = document:compareXPointers(last_start, end_xp) end)
+        if ordered ~= 1 then return nil end
+    end
+    return end_xp
+end
+
+--- Range end xpointer for pages start..end_page: the start of the next page, or
+--- the document end when the range reaches the last page.
+local function rangeEndXPointer(document, end_page, total_pages)
+    if end_page >= total_pages then
+        local end_xp = ContextExtractor.documentEndXPointer(document, total_pages)
+        if end_xp then return end_xp end
+    end
+    return document:getPageXPointer(math.min(end_page + 1, total_pages))
+end
+
 --- Extract text from visible page ranges using XPointers.
 --- @param document table KOReader document object
 --- @param ranges table Array of {start_page, end_page} from getVisiblePageRanges
@@ -73,7 +127,7 @@ local function extractVisibleText(document, ranges, total_pages)
     local parts = {}
     for _idx, r in ipairs(ranges) do
         local start_xp = document:getPageXPointer(r.start_page)
-        local end_xp = document:getPageXPointer(math.min(r.end_page + 1, total_pages))
+        local end_xp = rangeEndXPointer(document, r.end_page, total_pages)
         if start_xp and end_xp then
             local text = document:getTextFromXPointers(start_xp, end_xp)
             if text and text ~= "" then
@@ -445,7 +499,7 @@ function ContextExtractor:getBookText(options)
         local notice = string.format(
             "[Book text covers ~%d%%-%d%%. Earlier content truncated due to extraction limit.]",
             coverage_start, coverage_end)
-        book_text = notice .. "\n\n" .. book_text:sub(-max_chars)
+        book_text = notice .. "\n\n" .. ScopeResolver.utf8Tail(book_text, max_chars)
     end
 
     result.text = book_text
@@ -530,8 +584,13 @@ function ContextExtractor:getBookTextRange(from_progress, to_progress, options)
                 document:gotoPage(from_page)
                 local start_xp = document:getXPointer()
 
-                document:gotoPage(to_page)
-                local end_xp = document:getXPointer()
+                -- The last page has no "next page start" to bound on
+                local end_xp = to_page >= total_pages
+                    and ContextExtractor.documentEndXPointer(document, total_pages)
+                if not end_xp then
+                    document:gotoPage(to_page)
+                    end_xp = document:getXPointer()
+                end
 
                 return document:getTextFromXPointers(start_xp, end_xp) or ""
             end)
@@ -610,7 +669,7 @@ function ContextExtractor:getBookTextRange(from_progress, to_progress, options)
         local notice = string.format(
             "[New content covers ~%d%%-%d%%. Earlier portion truncated due to extraction limit.]",
             coverage_start, coverage_end)
-        book_text = notice .. "\n\n" .. book_text:sub(-max_chars)
+        book_text = notice .. "\n\n" .. ScopeResolver.utf8Tail(book_text, max_chars)
     end
 
     result.text = book_text
@@ -678,11 +737,17 @@ function ContextExtractor:getFullDocumentText(options)
             local success, text = pcall(function()
                 local current_xp = document:getXPointer()
 
+                -- gotoPage(total_pages) + getXPointer() is the TOP of the last page,
+                -- which dropped the book's final page from every full extraction
+                local end_xp = ContextExtractor.documentEndXPointer(document, total_pages)
+
                 document:gotoPos(0)
                 local start_xp = document:getXPointer()
 
-                document:gotoPage(total_pages)
-                local end_xp = document:getXPointer()
+                if not end_xp then
+                    document:gotoPage(total_pages)
+                    end_xp = document:getXPointer()
+                end
 
                 if current_xp then
                     document:gotoXPointer(current_xp)
@@ -753,7 +818,7 @@ function ContextExtractor:getFullDocumentText(options)
         local notice = string.format(
             "[Document text covers ~%d%%-%d%%. Earlier content truncated due to extraction limit.]",
             coverage_start, coverage_end)
-        book_text = notice .. "\n\n" .. book_text:sub(-max_chars)
+        book_text = notice .. "\n\n" .. ScopeResolver.utf8Tail(book_text, max_chars)
     end
 
     result.text = book_text
@@ -823,7 +888,7 @@ function ContextExtractor:getPageRangeText(start_page, end_page, options)
             -- Standard: XPointer-based range extraction
             local success, text = pcall(function()
                 local start_xp = document:getPageXPointer(start_page)
-                local end_xp = document:getPageXPointer(math.min(end_page + 1, total_pages))
+                local end_xp = rangeEndXPointer(document, end_page, total_pages)
                 if start_xp and end_xp then
                     return document:getTextFromXPointers(start_xp, end_xp) or ""
                 end
@@ -879,7 +944,7 @@ function ContextExtractor:getPageRangeText(start_page, end_page, options)
         local notice = string.format(
             "[Section text truncated due to extraction limit. Showing last %d characters.]",
             max_chars)
-        book_text = notice .. "\n\n" .. book_text:sub(-max_chars)
+        book_text = notice .. "\n\n" .. ScopeResolver.utf8Tail(book_text, max_chars)
     end
 
     result.text = book_text

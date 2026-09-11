@@ -66,6 +66,7 @@ require("mock_koreader")
 local JSON_OK, json = pcall(require, "json")
 local ModelLists = require("koassistant_model_lists")
 local ModelConstraints = require("model_constraints")
+local RateLimits = require("koassistant_rate_limits")
 local Defaults = require("koassistant_api.defaults")
 local TestConfig = require("test_config")
 
@@ -332,6 +333,10 @@ end
 -- parseMaxTokensError; T7 P1 fix 2026-08-14).
 function ModelAudit.parseCeiling(err, sent)
     local text = tostring(err)
+    -- A per-minute admission refusal ("Limit 8000, Requested 10000211") states
+    -- the PLAN's allowance, not the model's ceiling (#106; a strict Groq plan
+    -- answers the oversized request this way): never draft it as a ceiling.
+    if RateLimits.hasPerMinuteSignature(text) then return nil end
     local ctx = text:match("context length[^%d]*(%d+)")
         or text:match("context window[^%d]*(%d+)")
     if ctx then
@@ -527,6 +532,10 @@ local DISCOVERY = {
         end,
     },
     xai = { headers = bearerHeaders, parse = parseOpenAIShapedList },
+    -- Groq (keyed 2026-09-07, #106): the list mixes in speech/guard ids that
+    -- never chat (whisper, tts, prompt-guard) — a "+ NEW" here is a candidate
+    -- only, --probe it before adding to the curated array.
+    groq = { headers = bearerHeaders, parse = parseOpenAIShapedList },
     -- NVIDIA lists ~100 ids of which most are NOT served: probed live 2026-08-20,
     -- 47 of 77 chat ids returned 404 and 9 accepted the connection then never
     -- answered (a silent hang the UI cannot render). Treat every "+ NEW" here as
@@ -561,7 +570,19 @@ local DISCOVERY = {
     -- Instead we verify our curated ids still exist and cross-check their
     -- reported supported_parameters against our resolution layer.
     openrouter = { headers = bearerHeaders, parse = parseOpenAIShapedList, marketplace = true },
+    -- OpenCode (#107, 2026-09-05): /models is public on both plans; the Zen
+    -- list (ModelLists._docs) also carries GPT/Claude/Gemini ids that answer
+    -- only on the Responses/Messages doors — "+ NEW" is a candidate, --probe it.
+    opencode = { headers = bearerHeaders, parse = parseOpenAIShapedList, marketplace = true },
+    opencode_go = { headers = bearerHeaders, parse = parseOpenAIShapedList },
 }
+
+-- One key per provider entry, no sharing (maintainer 2026-09-05: OpenCode
+-- Zen and Go are separate `opencode` / `opencode_go` entries; the same
+-- string may sit under both).
+local function keyFor(apikeys, provider)
+    return apikeys[provider]
+end
 
 local function fetchProviderList(provider, api_key)
     local docs = ModelLists._docs[provider]
@@ -1126,6 +1147,10 @@ local OPENAI_FAMILY = {
     groq       = { effort_key = "reasoning_effort" },
     together   = { effort_key = "reasoning_effort" },
     fireworks  = { effort_key = "reasoning_effort" },
+    opencode   = { effort_key = "reasoning_effort",   -- #107: open-weight models on the chat door; reasoning wire = whatever the backend honors (probe decides)
+                   extra_headers = { ["x-opencode-session"] = "koassistant-model-audit" } },
+    opencode_go = { effort_key = "reasoning_effort",
+                   extra_headers = { ["x-opencode-session"] = "koassistant-model-audit" } },
     deepseek   = { binary_key = "thinking" },   -- {type="enabled"/"disabled"}
     zai        = { binary_key = "thinking" },
     mistral    = {},                            -- no reasoning params (magistral always-on)
@@ -2047,7 +2072,7 @@ local function probeModel(provider, model, api_key, verbose)
         facts = probeOpenAIFamily(provider, model, api_key, verbose)
     else
         printf("  %sno probe adapter for %q yet%s (have: anthropic, gemini, %s)",
-            C.red, provider, C.off, "openai/deepseek/xai/zai/mistral/perplexity/openrouter/groq/together/fireworks/qwen/kimi")
+            C.red, provider, C.off, "openai/deepseek/xai/zai/mistral/perplexity/openrouter/groq/together/fireworks/qwen/kimi/opencode")
         return nil
     end
 
@@ -2344,7 +2369,7 @@ local function main()
     local apikeys = TestConfig.loadApiKeys()
 
     if mode == "probe" then
-        local facts = probeModel(probe_provider, probe_model, apikeys[probe_provider], verbose)
+        local facts = probeModel(probe_provider, probe_model, keyFor(apikeys, probe_provider), verbose)
         os.exit((facts and facts.reachable) and 0 or 1)
     end
 
@@ -2356,7 +2381,7 @@ local function main()
             for _i, p in ipairs(ModelLists.getAllProviders()) do
                 if (p == "anthropic" or p == "gemini" or OPENAI_FAMILY[p])
                         and p ~= "openrouter"
-                        and TestConfig.isValidApiKey(apikeys[p]) then
+                        and TestConfig.isValidApiKey(keyFor(apikeys, p)) then
                     table.insert(providers, p)
                 end
             end
@@ -2366,7 +2391,7 @@ local function main()
         end
         local any_drift = false
         for _i, p in ipairs(providers) do
-            local counts = runRecheck(p, apikeys[p], verbose, { ceilings = recheck_ceilings })
+            local counts = runRecheck(p, keyFor(apikeys, p), verbose, { ceilings = recheck_ceilings })
             if counts and counts.drift > 0 then any_drift = true end
         end
         os.exit(any_drift and 1 or 0)
@@ -2401,7 +2426,7 @@ local function main()
                 printf("  %swatching: %-24s %s%s", C.yellow, id, note, C.off)
             end
         else
-            local diff = runDiscovery(provider, apikeys[provider], verbose)
+            local diff = runDiscovery(provider, keyFor(apikeys, provider), verbose)
             if diff then
                 for _j, id in ipairs(diff.new) do
                     table.insert(to_probe, { provider = provider, model = id })
@@ -2442,7 +2467,7 @@ local function main()
                         C.yellow, MAX_PROBE_NEW, entry.provider, entry.model, C.off)
                     break
                 end
-                probeModel(entry.provider, entry.model, apikeys[entry.provider], verbose)
+                probeModel(entry.provider, entry.model, keyFor(apikeys, entry.provider), verbose)
             end
         end
     elseif #to_probe > 0 then

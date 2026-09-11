@@ -19,6 +19,21 @@ BaseHandler.PROTOCOL_NON_200 = "X-NON-200-STATUS:"
 -- the provider's rate-limit response headers to the parent as one marker line, same
 -- shape as PROTOCOL_NON_200, so the parent can size answer budgets to the plan.
 local RateLimits = require("koassistant_rate_limits")
+
+--- Every request names the plugin (B285 / #107: OpenCode requires a
+--- self-identifying client, "no broad user agents"; harmless elsewhere).
+--- Applied at BOTH transports (backgroundRequest + fetchInSubprocess), so no
+--- handler builds it; a handler that sets its own (openai_codex) is kept.
+BaseHandler.USER_AGENT = "KOAssistant/" .. tostring(require("_meta").version or "unknown")
+
+function BaseHandler.withUserAgent(headers)
+    local out = {}
+    for k, v in pairs(headers or {}) do out[k] = v end
+    if not out["User-Agent"] and not out["user-agent"] then
+        out["User-Agent"] = BaseHandler.USER_AGENT
+    end
+    return out
+end
 BaseHandler.PROTOCOL_RATELIMIT = RateLimits.PROTOCOL_MARKER
 
 --- Format a non-200 HTTP error body into a SINGLE-LINE message.
@@ -37,6 +52,9 @@ function BaseHandler.formatNon200(code, err_body)
             local e = j.error or (type(j[1]) == "table" and j[1].error)
             if type(e) == "table" then
                 msg = e.message or e.status or err_body
+                -- The machine code rides with the sentence (see RateLimits.withErrorCode):
+                -- this line is what the macOS streaming path shows and classifies.
+                if type(e.message) == "string" then msg = RateLimits.withErrorCode(e.message, e) end
             elseif type(e) == "string" then
                 msg = e
             end
@@ -526,6 +544,7 @@ end
 --- @return number|nil status_code (nil = transport error), string body_or_error
 function BaseHandler.fetchInSubprocess(url, opts)
     opts = opts or {}
+    opts.headers = BaseHandler.withUserAgent(opts.headers)
     local method = opts.method or "GET"
     local timeout = opts.timeout or 120
     local is_https = url:sub(1, 8) == "https://"
@@ -692,6 +711,7 @@ BaseHandler.SUBPROCESS_READ_TIMEOUT = 900
 --- @param body string: Request body (JSON encoded)
 --- @return function: A function to be run in subprocess via ffiutil.runInSubProcess
 function BaseHandler:backgroundRequest(url, headers, body)
+    headers = BaseHandler.withUserAgent(headers)
     -- Pre-resolve DNS in parent process (macOS only)
     local resolved_ip = BaseHandler.resolveForSubprocess(url)
 

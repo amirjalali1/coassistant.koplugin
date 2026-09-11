@@ -835,12 +835,8 @@ function AskGPT:generateFileDialogRows(file, is_file, book_props)
           self_ref:executeFileBrowserAction(file, title, authors, book_props, fb_action.id)
         end,
         hold_callback = function()
-          if action_for_hold and action_for_hold.description then
-            local InfoMessage = require("ui/widget/infomessage")
-            UIManager:show(InfoMessage:new{
-              text = action_for_hold.description,
-            })
-          end
+          -- rows rebuild on the next long-press (separator generator, 2026-08-17)
+          require("koassistant_action_hold").show(self_ref, action_for_hold, { surface = "file_browser" })
         end,
       })
     end
@@ -1883,7 +1879,16 @@ end
 -- Helper: Get current model name
 function AskGPT:getCurrentModel()
   local features = self.settings:readSetting("features") or {}
-  return features.model or self.configuration.model or "claude-sonnet-4-20250514"
+  local model = features.model or self.configuration.model
+  if type(model) == "string" and model ~= "" then return model end
+  -- No model picked yet (first API key save, a cleared custom provider): answer
+  -- with the id the wire will carry (audit B3). The old fallback was a retired
+  -- Claude id, which the Quick chip's "follow the global model" pick then put on
+  -- the wire of whatever provider was active.
+  return require("model_constraints").dispatchModel({
+    provider = self:getCurrentProvider(),
+    features = { custom_providers = self:getCustomProviders() },
+  })
 end
 
 -- Helper: Get custom models for a provider
@@ -2719,7 +2724,23 @@ function AskGPT:testProvider(provider_id)
     })
     return
   end
+  -- Probe the model the next request will really dispatch under (audit B3
+  -- follow-up): tapping a model row writes features.model, always for the ACTIVE
+  -- provider, and per-minute allowances differ per model (Groq publishes 8,000 a
+  -- minute on the gpt-oss models and 12,000 on llama-3.3-70b), so a header
+  -- recorded under the provider's default model would be a lie.
+  local probe_features = self.settings:readSetting("features") or {}
   local model = provider.default_model
+  if provider_id == probe_features.provider then
+    -- The active provider: exactly what dispatch resolves for it, the picked
+    -- model or, with none picked, the provider's shipped default (the user's
+    -- per-provider default only reaches the wire through a provider switch,
+    -- which writes it into features.model).
+    model = require("model_constraints").dispatchModel({
+      provider = provider_id, model = probe_features.model,
+      features = { custom_providers = self:getCustomProviders() },
+    }) or model
+  end
   if not model or model == "" then
     model = self:getCustomModels(provider_id)[1]
   end
@@ -2729,6 +2750,14 @@ function AskGPT:testProvider(provider_id)
     })
     return
   end
+
+  -- One model id per request (audit B3): the key the plan allowance is recorded
+  -- under comes from the SAME resolver the dispatch path reads it with, so the
+  -- probe's record and the first real request provably share one memo key.
+  local key_model = require("model_constraints").dispatchModel({
+    provider = provider_id, model = model,
+    features = { custom_providers = self:getCustomProviders() },
+  })
 
   local BaseHandler = require("koassistant_api.base")
   local json = require("json")
@@ -2771,9 +2800,9 @@ function AskGPT:testProvider(provider_id)
     -- first real request is already sized to fit (Groq free: 8K/min against
     -- a 32K default budget refused every request until this was learned).
     local RL = require("koassistant_rate_limits")
-    if RL.record(provider_id, model, RL.fromHeaders(resp_headers), "probe") then
+    if RL.record(provider_id, key_model, RL.fromHeaders(resp_headers), "probe") then
       logger.dbg("KOAssistant: test probe learned per-minute allowance",
-        RL.known(provider_id, model).limit_tokens, "for", provider_id, model)
+        RL.known(provider_id, key_model).limit_tokens, "for", provider_id, key_model)
     end
     return code, body
   end
@@ -2982,6 +3011,8 @@ function AskGPT:getProviderDisplayName(provider_id)
     novita = "Novita AI",
     nebius = "Nebius AI Studio",
     vercel = "Vercel AI Gateway",
+    opencode = "OpenCode Zen",
+    opencode_go = "OpenCode Go",
   }
   if special[provider_id] then return special[provider_id] end
   -- Built-in provider: capitalize first letter
@@ -4314,6 +4345,13 @@ function AskGPT:buildModelMenu(simplified, provider_override)
             { value = "search_pro_sogou", text = _("Sogou (Chinese web)") },
             { value = "search_pro", text = _("Pro (Chinese web)") },
             { value = "search_std", text = _("Basic (Chinese web)") },
+          } },
+      },
+      gemini = {
+        { key = "gemini_safety", tpl = _("Content filter: %1"), default = "relaxed",
+          options = {
+            { value = "relaxed", text = _("Relaxed for books (default)") },
+            { value = "google", text = _("Google default") },
           } },
       },
       qwen = {
@@ -6268,11 +6306,28 @@ function AskGPT:showDomainManager()
   manager:show()
 end
 
+-- KOReader appends plugin rows to the END of the hinted menu (after "More
+-- tools"). Naming the row in the order tables places it instead; the tables
+-- are require-cached and merged after every addToMainMenu, so this insert
+-- lands before the sort. Front of Tools, same slot as assistant.koplugin.
+local function placeMenuFirstInTools()
+  for _idx, order_path in ipairs({ "ui/elements/reader_menu_order", "ui/elements/filemanager_menu_order" }) do
+    local ok, order = pcall(require, order_path)
+    if ok and type(order) == "table" and type(order.tools) == "table" then
+      local found = false
+      for _i, id in ipairs(order.tools) do
+        if id == "koassistant" then found = true break end
+      end
+      if not found then table.insert(order.tools, 1, "koassistant") end
+    end
+  end
+end
+
 function AskGPT:addToMainMenu(menu_items)
+  placeMenuFirstInTools()
   menu_items["koassistant"] = {
     text = _("KOAssistant"),
     sorting_hint = "tools",
-    sorting_order = 1,
     sub_item_table_func = function()
       self:ensureInitialized()
       return SettingsManager:generateMenuFromSchema(self, SettingsSchema)
@@ -6519,6 +6574,11 @@ function AskGPT:syncDictButtons()
       self_ref:executeDictAction(act, popup.word, popup, popup._koassistant_non_reader,
         popup._koassistant_lookup_book)
     end
+    -- Long press: the shared hold menu (the popup keeps its buttons; the next
+    -- lookup re-syncs through the showDict wrap)
+    spec.hold_callback = function()
+      require("koassistant_action_hold").show(self_ref, act, { surface = "dictionary" })
+    end
     dictionary:addToDictButtons(spec)
   end
 end
@@ -6665,10 +6725,11 @@ function AskGPT:_sweepCrossBookSurfaces()
   closeField("koassistant_xray_browser", "_detail_viewer")
   closeField("koassistant_xray_browser", "menu")
   closeField("koassistant_book_page", "_menu")
+  closeField("koassistant_group_page", "_menu")
+  closeField("koassistant_group_page", "_list_menu")
   closeField("koassistant_artifact_browser", "current_menu")
   closeField("koassistant_chat_history_dialog", "current_menu")
   closeField("koassistant_notebook_manager", "current_menu")
-  closeField("koassistant_book_groups_ui", "_group_dialog")
   -- The stock long-press file dialog: ReaderUI closes the FileManager itself,
   -- never this separate window (the #1 dead-guard sites' stock sibling)
   if FileManager.instance and FileManager.instance.file_dialog then
@@ -7081,13 +7142,61 @@ function AskGPT:onKOAssistantBookOverview()
   return true
 end
 
+--- Book-scoped group entry (G0 round 2, docs/group_hub_plan.md — ONE
+--- landing for every "Group" button a book carries: the Book Hub's Group
+--- row, Book Settings' Group row, the QA panel utility + gesture, the
+--- artifact viewers' "→ Group" buttons, the jump popup's "Group hub…" row):
+--- the book's Group Hub when it is in one group, a chooser when in several,
+--- the memberships popup (join / create) when in none — never a dead end.
+--- opts: { front (default true), on_close, enable_emoji }.
+function AskGPT:openGroupHubFor(file, opts)
+  if not file then return end
+  opts = opts or {}
+  local BookGroups = require("koassistant_book_groups")
+  local GroupsUI = require("koassistant_book_groups_ui")
+  local list = BookGroups.groupsFor(file)
+  local enable_emoji = opts.enable_emoji
+  if enable_emoji == nil then
+    enable_emoji = configuration and configuration.features
+      and configuration.features.enable_emoji_icons == true
+  end
+  local self_ref = self
+  local function open(group)
+    GroupsUI.showGroup(group.id, { plugin = self_ref, ui = self_ref.ui,
+      on_close = opts.on_close, front = opts.front ~= false, enable_emoji = enable_emoji })
+  end
+  if #list == 0 then
+    GroupsUI.showBookRow(file, { plugin = self, ui = self.ui, on_close = opts.on_close })
+  elseif #list == 1 then
+    open(list[1])
+  else
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local dialog
+    local rows = {}
+    for _idx, group in ipairs(list) do
+      local captured = group
+      rows[#rows + 1] = {{
+        text = T(_("%1 (%2 books)"), GroupsUI.displayName(captured), #captured.books),
+        align = "left",
+        callback = function()
+          UIManager:close(dialog)
+          open(captured)
+        end,
+      }}
+    end
+    rows[#rows + 1] = {{ text = _("Cancel"), callback = function() UIManager:close(dialog) end }}
+    dialog = ButtonDialog:new{ title = _("Which group?"), buttons = rows }
+    UIManager:show(dialog)
+  end
+end
+
 --- Group entry for registry-driven surfaces (QA panel utility "book_group",
---- gestures). Members popup when this book is in a group, the manager
+--- gestures). The book's hub when it is in a group, the Groups list
 --- otherwise — so the entry is never a dead end.
 function AskGPT:onKOAssistantBookGroup()
   local file = self.ui and self.ui.document and self.ui.document.file
   if file and self:_inBookGroup(file) then
-    self:_showGroupMembersPopup(file, "artifacts")
+    self:openGroupHubFor(file)
   else
     self:showBookGroupsManager()
   end
@@ -7112,26 +7221,87 @@ end
 --- when a book is open) owns them; the direction resolver reads the live
 --- DocSettings only while that instance still has a document.
 function AskGPT:_installGroupSeedingHooks()
+  -- Nearness rank for the carried-list fold (#90, 2026-09-09): a stub's
+  -- book index in its ordered group; every carried stub comes from a book
+  -- before the reader's, so a higher index is the nearer book
+  require("koassistant_xray_parser").setStubRankResolver(function(stub)
+    local file = type(stub) == "table" and stub.file
+    if type(file) ~= "string" or file == "" then return nil end
+    local BookGroups = require("koassistant_book_groups")
+    local group = BookGroups.groupsFor(file)[1]
+    if not group or not BookGroups.isOrdered(group) then return nil end
+    for i, p in ipairs(group.books) do
+      if p == file then return i end
+    end
+    return nil
+  end)
   local self_ref = self
   local ActionCache = require("koassistant_action_cache")
   local BookGroups = require("koassistant_book_groups")
-  -- Earlier books only while the current book is under spoiler protection;
-  -- both directions once the reader's OWN switch turns it off (global off,
-  -- book override off, research mode). S5 (ref #90): Finished does NOT
-  -- count here — inside one book it means nothing is left to protect, for
-  -- the series it only means the reader moved on to the next volume, and
-  -- the later volumes retell this one's ending. Held-back later books stay
-  -- one confirm away on the lookup lists (Dialogs.confirmLaterBooksSweep).
-  ActionCache.setLookupDirectionResolver(function(file)
+  -- The lookup chain (S6, ref #90, maintainer 2026-09-04: "the access
+  -- should cascade"): lookups look PAST a book only once it is read
+  -- (Finished, or its last page reached) or its own spoiler protection is
+  -- off (global off, book override off, research mode). A later volume's
+  -- entries retell everything before it, so the first volume that still
+  -- has unread pages under protection hides every volume behind it,
+  -- whatever those volumes' own settings. The open book answers live;
+  -- closed books answer from their sidecars, memoized per file on the
+  -- metadata + book-settings file stamps and the two global switches,
+  -- because the marks index and the route check ask on page turns.
+  -- Held-back later books stay one confirm away on the lookup lists
+  -- (Dialogs.confirmLaterBooksSweep).
+  local chain_memo = {}
+  local function stampOf(path)
+    local a = path and lfs.attributes(path)
+    return a and (tostring(a.modification) .. ":" .. tostring(a.size)) or "-"
+  end
+  ActionCache.setLookupChainResolver(function(file)
     local features = configuration and configuration.features
-    if not features then return false end
+    if not features or not file then return false end
+    local SafeDocSettings = require("koassistant_doc_settings")
     local ui = (self_ref.ui and self_ref.ui.document) and self_ref.ui or nil
-    local ds = require("koassistant_doc_settings").resolve(file, ui)
-    return require("koassistant_book_settings").resolveSpoilerPosture(ds, features,
-      { layer = "mechanical", ignore_finished = true }).protected == false
+    local live = ui and SafeDocSettings.samePath(ui.document.file, file)
+    local key
+    if not live then
+      local DocSettings = require("docsettings")
+      local ok, meta = pcall(DocSettings.findSidecarFile, DocSettings, file)
+      key = stampOf(ok and meta or nil) .. "|"
+        .. stampOf(require("koassistant_book_store").pathFor(file, "koassistant_book_settings.lua"))
+        -- G1: a follow-group marker reads the groups file's value
+        .. "|" .. stampOf(BookGroups.filePath())
+        .. "|" .. tostring(features.spoiler_free_chat) .. "/" .. tostring(features.research_mode)
+      local hit = chain_memo[file]
+      if hit and hit.key == key then return hit.clears end
+    end
+    local ds = SafeDocSettings.resolve(file, ui)
+    local open = require("koassistant_book_settings").resolveSpoilerPosture(ds, features,
+      { layer = "mechanical" }).protected == false
+    if not open then
+      local pos = self_ref:_xrayReaderPosition(file)
+      open = type(pos) == "number" and pos >= 0.995
+    end
+    if key then chain_memo[file] = { key = key, clears = open } end
+    return open
   end)
   BookGroups.on_change = function(group_id)
     self_ref:_scheduleGroupReseed(group_id)
+  end
+  -- G1 group settings (docs/group_hub_plan.md §2.1): a book that leaves a
+  -- group, or a deleted group, turns that group's follow markers on the
+  -- book(s) into follow-global; a book's own pick replacing a marker gets
+  -- the "no longer follows" toast
+  local GroupSettings = require("koassistant_group_settings")
+  BookGroups.on_leave = function(group_id, path)
+    GroupSettings.onLeave(group_id, path)
+  end
+  BookGroups.on_removed = function(group_id, books)
+    GroupSettings.onRemoved(group_id, books)
+  end
+  require("koassistant_book_store").on_marker_replaced = function(_path, key, group_id)
+    local text = GroupSettings.replacedNotice(key, group_id)  -- nil = the group is gone
+    if text then
+      UIManager:show(require("ui/widget/notification"):new{ text = text })
+    end
   end
   ActionCache.on_live_xray_written = function(file)
     for _idx, group in ipairs(BookGroups.groupsFor(file)) do
@@ -7177,6 +7347,10 @@ function AskGPT:_scheduleGroupReseed(group_id)
   UIManager:scheduleIn(2, self._reseed_fn)
 end
 
+--- The "→ Group" jump popup (X-Ray surfaces only since G0 round 2: the old
+--- artifacts mode, which listed members as Book Hubs, is retired — the
+--- Group Hub's member rows are those destinations, and openGroupHubFor is
+--- the landing every book-scoped Group button uses). `mode` stays "xray".
 function AskGPT:_showGroupMembersPopup(file, mode, opts)
   local BookGroups = require("koassistant_book_groups")
   local GroupsUI = require("koassistant_book_groups_ui")
@@ -7187,6 +7361,18 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
   local self_ref = self
   local dialog
   local rows = {}
+  -- G2 (group hub plan, 2026-09-06): the later books the chain holds back
+  -- from this book (the first containing group's order; X-Rayed ones, since
+  -- only an X-Ray can reveal anything) + each member's direction for the
+  -- entry view's provenance line. Computed once, only when a row could open
+  -- X-Ray content.
+  local held, dirs = {}, {}
+  if mode == "xray" then
+    held = ActionCache.heldBackLaterFiles(file)
+    for _idx, row in ipairs(BookGroups.lookupBooksFor(file, true)) do
+      dirs[row.file] = row.direction
+    end
+  end
   for _g, group in ipairs(list) do
     if #list > 1 then
       rows[#rows + 1] = {{ text = GroupsUI.displayName(group), enabled = false }}
@@ -7203,75 +7389,131 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
       local cb
       if captured == file then
         title = title .. " " .. _("(this book)")
-      elseif mode == "xray" then
+      else
         local ok, entry = pcall(ActionCache.getXrayCache, captured)
         if ok and entry and entry.result then
-          -- Entity graying (2026-08-09 round answer A): with an entity
+          -- Entity presence (2026-08-09 round answer A): with an entity
           -- context, a member whose X-Ray lacks the entity (name+aliases,
           -- entity's category preferred — findByIdentity) is disabled instead
-          -- of offering a jump that could only fall back. One parse per
-          -- member, only at popup-open; the → Group button itself stays
+          -- of offering a jump that could only fall back. One memoized parse
+          -- per member, only at popup-open; the → Group button itself stays
           -- ungated (per-detail gating would pay these reads on every page).
-          local present = true
-          if opts and opts.location and opts.location.item_name then
+          -- entryHit() = that entry in the read-only entry view's hit shape;
+          -- nil = not in its X-Ray; true = no entity context at all.
+          local function entryHit()
+            if not (opts and opts.location and opts.location.item_name) then return true end
+            local px = ActionCache.parsedXrayFor(captured)
+            if not px then return nil end
             local XrayParser = require("koassistant_xray_parser")
-            local parsed = XrayParser.parse(entry.result)
             local names = { opts.location.item_name }
             for _i, a in ipairs(opts.location.item_aliases or {}) do
               names[#names + 1] = a
             end
-            present = (parsed and not parsed.error
-              and XrayParser.findByIdentity(parsed, names, opts.location.category_key)) ~= nil
+            local item, cat_key = XrayParser.findByIdentity(px.data, names, opts.location.category_key)
+            if not item then return nil end
+            return {
+              name = XrayParser.getItemName(item, cat_key),
+              item = item,
+              category_key = cat_key,
+              category_label = XrayParser.categoryLabel(px.data, cat_key),
+              source_title = raw_title,
+              pred_file = captured,
+              pred_title = raw_title,
+              direction = dirs[captured],
+            }
           end
-          if present then
+          local function jump(book_title)
+            if opts and opts.before_open then opts.before_open() end
+            -- Round 25: land the jump where the reader was in THIS book's
+            -- X-Ray (set inside the callback, so a dismissed popup leaves no
+            -- stranded descriptor; the book stamp guards a browser that never
+            -- opens — e.g. an unparseable cache falls through to plain text)
+            if opts and opts.location then
+              require("koassistant_xray_browser")._pending_navigate_to = {
+                category_key = opts.location.category_key,
+                item_name = opts.location.item_name,
+                item_aliases = opts.location.item_aliases,
+                book_file = captured,
+                fallback = true,
+              }
+            end
+            -- Q16: the jumped-to browser's up-arrow at root returns to the
+            -- X-Ray this popup was opened from (browser callers pass it)
+            if opts and opts.return_to then
+              local rt = {}
+              for k, v in pairs(opts.return_to) do rt[k] = v end
+              rt.target = captured
+              require("koassistant_xray_browser")._pending_return_to = rt
+            end
+            self_ref:showCacheViewer({ name = _("X-Ray"), key = "_xray_cache",
+              data = entry, book_title = book_title, file = captured })
+          end
+          -- G2 round 2 (maintainer: the full switch was "very unintuitive to
+          -- get back from"): from an ENTITY page a member's entry opens as
+          -- the read-only entry view OVER this page — read it, close it, or
+          -- switch from inside ("Open in <title>'s X-Ray", which retires
+          -- this browser first and returns through the Q16 up-arrow: the
+          -- browser is a singleton, two cannot stack). The hamburger's
+          -- "→ Group" (category level, no entry in hand) keeps the switch.
+          local entry_view = (opts and opts.entry_view and opts.location
+            and opts.location.item_name) and true or false
+          local function openEntry(hit)
+            require("koassistant_dialogs").showPredecessorEntity{
+              ui = self_ref.ui, config = configuration, plugin = self_ref,
+              document_path = file, hit = hit,
+              before_open = opts and opts.before_open or nil,
+              return_to = opts and opts.return_to or nil,
+            }
+          end
+          local function notInXray()
+            UIManager:show(InfoMessage:new{
+              text = T(_("Not in %1's X-Ray: %2"), raw_title, opts.location.item_name),
+              timeout = 3,
+            })
+          end
+          if held[captured] then
+            -- G2 (group hub plan, 2026-09-06; maintainer: "to know that a
+            -- character appears in a later book is already a spoiler"): a
+            -- later book the chain holds back is listed WITHOUT the presence
+            -- probe — the row reads the same whether or not the entry exists
+            -- there — behind the search reveal's named confirm; the probe
+            -- runs after it: the entry view (or just the note) from an entity
+            -- page, the switch (plus the note on a miss) from the hamburger.
+            title = title .. " " .. _("(later in the series)")
             cb = function()
               UIManager:close(dialog)
-              if opts and opts.before_open then opts.before_open() end
-              -- Round 25: land the jump where the reader was in THIS book's
-              -- X-Ray (set inside the callback, so a dismissed popup leaves no
-              -- stranded descriptor; the book stamp guards a browser that never
-              -- opens — e.g. an unparseable cache falls through to plain text)
-              if opts and opts.location then
-                require("koassistant_xray_browser")._pending_navigate_to = {
-                  category_key = opts.location.category_key,
-                  item_name = opts.location.item_name,
-                  item_aliases = opts.location.item_aliases,
-                  book_file = captured,
-                  fallback = true,
-                }
-              end
-              -- Q16: the jumped-to browser's up-arrow at root returns to the
-              -- X-Ray this popup was opened from (browser callers pass it)
-              if opts and opts.return_to then
-                local rt = {}
-                for k, v in pairs(opts.return_to) do rt[k] = v end
-                rt.target = captured
-                require("koassistant_xray_browser")._pending_return_to = rt
-              end
-              self_ref:showCacheViewer({ name = _("X-Ray"), key = "_xray_cache",
-                data = entry, book_title = title, file = captured })
+              UIManager:show(require("ui/widget/confirmbox"):new{
+                text = T(_("%1 comes later in the series and can reveal what happens in the books before it. Open it anyway?"), raw_title),
+                ok_text = _("Open it"),
+                ok_callback = function()
+                  local hit = entryHit()
+                  if entry_view then
+                    if hit and hit ~= true then openEntry(hit) else notInXray() end
+                    return
+                  end
+                  jump(raw_title)
+                  if not hit then notInXray() end
+                end,
+              })
             end
           else
-            title = title .. " " .. _("(not in its X-Ray)")
+            local hit = entryHit()
+            if hit == true or (hit and not entry_view) then
+              cb = function()
+                UIManager:close(dialog)
+                jump(title)
+              end
+            elseif hit then
+              cb = function()
+                UIManager:close(dialog)
+                openEntry(hit)
+              end
+            else
+              title = title .. " " .. _("(not in its X-Ray)")
+            end
           end
         else
           title = title .. " " .. _("(no X-Ray)")
-        end
-      else
-        -- A4: a member row opens the member's Book Hub — every book has one
-        -- (chrome rows at minimum), so the old artifact gate, its disabled
-        -- "(no artifacts)" rows and the bare 1-arg selector call all retire
-        cb = function()
-          UIManager:close(dialog)
-          if opts and opts.before_open then opts.before_open() end
-          require("koassistant_book_page").show({
-            file = captured,
-            plugin = self_ref,
-            ui = self_ref.ui,
-            title = raw_title,
-            enable_emoji = configuration and configuration.features
-                and configuration.features.enable_emoji_icons == true,
-          })
         end
       end
       rows[#rows + 1] = {{
@@ -7306,6 +7548,15 @@ function AskGPT:_showGroupMembersPopup(file, mode, opts)
   -- render a popup with nothing tappable and no way onward. Always offer the
   -- manager, which is where adding, reordering and the series/project switch
   -- live. (Artifacts mode stopped disabling rows with the A4 Book Hub swap.)
+  -- G0 (docs/group_hub_plan.md, 2026-09-06): the hub is where the group's
+  -- books, actions and (G1) settings live; this popup stays the jump surface
+  rows[#rows + 1] = {{
+    text = _("Group hub…"),
+    callback = function()
+      UIManager:close(dialog)
+      self_ref:openGroupHubFor(file)
+    end,
+  }}
   rows[#rows + 1] = {{
     text = _("Manage groups…"),
     callback = function()
@@ -7594,7 +7845,7 @@ function AskGPT:showCacheViewer(cache_info)
     _artifact_book_author = book_author,
     _book_open = (self.ui and self.ui.document ~= nil),
     group_open = (not cache_info.checkpoint and self:_inBookGroup(file))
-      and function() self:_showGroupMembersPopup(file, "artifacts") end or nil,
+      and function() self:openGroupHubFor(file) end or nil,
     on_launch_chat = self:_buildLaunchChatCallback(file, book_title, book_author, cache_info.data.result, cache_info.name),
   }
   UIManager:show(viewer)
@@ -10000,9 +10251,17 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       end
       popup_title = popup_title .. "\n" .. pos_line
     end
-    -- "Last auto-update failed" trace line (session-scoped, silent-failure surfacing)
-    if doc and doc.file and XrayAuto.lastFailure(doc.file) then
-      popup_title = popup_title .. "\n" .. _("Last auto-update failed")
+    -- "Last auto-update failed" trace line (session-scoped, silent-failure
+    -- surfacing). Audit B2b: the message is already stored, so name the reason
+    -- with the same classifier the ladder stop uses instead of a fixed string
+    -- ("request too large" is the one a #106 reader needs).
+    local last_fail = doc and doc.file and XrayAuto.lastFailure(doc.file)
+    if last_fail then
+      local fail_kind = XrayAuto.classifyStopReason(last_fail)
+      local fail_why = self:_xrayStopReasonLabel(fail_kind)
+      popup_title = popup_title .. "\n" .. (fail_why
+        and T(_("Last auto-update failed (%1)"), fail_why)
+        or _("Last auto-update failed"))
     end
     dialog = ButtonDialog:new{
       title = popup_title,
@@ -11135,6 +11394,15 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
       self.settings and self.settings:readSetting("features"))
     local depth_value = BookSettings.resolveXrayDepth(self.ui.doc_settings,
       self.settings and self.settings:readSetting("features"))
+    -- A locked extend continues the lineage's OWN stamps (the update branch
+    -- overwrites the pick from the cache entry), so the grayed buttons show
+    -- the stamps, not the preference (2026-09-07: a Light / Characters-only
+    -- lineage read "Standard…" / "All categories…" on a locked Extend)
+    if not categories_on and base_entry then
+      local PA = require("prompts/actions")
+      cat_value = PA.normalizeXrayCategories(base_entry.xray_categories)
+      depth_value = PA.normalizeXrayDepth(base_entry.xray_depth)
+    end
     local ButtonTableO = require("ui/widget/buttontable")
     -- The row's header is its FIRST ROW inside the same table (maintainer
     -- 2026-08-25: a floating label above the frame read as part of the hint
@@ -11417,6 +11685,8 @@ end
 --- resumes on reopen), plain close when the book was already automatic.
 --- opts.after runs once the confirm resolved either way (the picker defers
 --- its surface reopen to it). Nothing to build = no confirm, just the toast.
+--- opts.intro = a leading line naming the situation (the engine's own
+--- first-build confirm), opts.cancel_label = the Cancel row's text.
 function AskGPT:_xrayFollowCatchUp(_decimal, opts)
   local rebuild = opts and opts.rebuild or nil
   local self_ref = self
@@ -11428,27 +11698,30 @@ function AskGPT:_xrayFollowCatchUp(_decimal, opts)
       text = rebuild and _("Automatic X-Ray on: rebuilding as you read.")
         or _("Automatic X-Ray on: building as you read."),
     })
+    -- The reader said Start: this book open's retries never re-ask
+    self_ref._xray_first_build_ok = true
     self_ref:_fireXrayAutoCheckpoints({ notify = true, explicit = true, rebuild = rebuild })
     after()
   end
   local n = self:_xrayEstablishmentSteps(rebuild and { rebuild = true } or nil)
-  if n == 0 then
+  -- nil = nothing would build right now (the X-Ray is already ahead of the
+  -- reader, or a lineage automation never touches): no spend, no confirm
+  if not n or n == 0 then
     start()
     return
   end
   local lines = {}
+  if opts and opts.intro then lines[#lines + 1] = opts.intro end
   if rebuild then
-    lines[1] = _("Automatic X-Ray on: the X-Ray is rebuilt from the start in background requests, the introduction and checkpoints up to your position, plus one ahead.")
+    lines[#lines + 1] = _("Automatic X-Ray on: the X-Ray is rebuilt from the start in background requests, the introduction and checkpoints up to your position, plus one ahead.")
   else
-    lines[1] = _("Automatic X-Ray on: background requests build the introduction and checkpoints up to your position, plus one ahead.")
+    lines[#lines + 1] = _("Automatic X-Ray on: background requests build the introduction and checkpoints up to your position, plus one ahead.")
   end
-  if n then
-    lines[2] = T(_("Requests needed now: %1. Each covers a bounded slice of the text."), n)
-  else
-    lines[2] = _("Each covers a bounded slice of the text.")
-  end
-  lines[3] = _("Start now?")
+  lines[#lines + 1] = T(_("Requests needed now: %1. Each covers a bounded slice of the text."), n)
+  lines[#lines + 1] = _("Start now?")
   local revert = opts and opts.revert
+  local cancel_label = (opts and opts.cancel_label)
+    or (revert and _("Cancel (leave Automatic X-Ray off)") or _("Cancel"))
   local function cancel()
     if revert then revert() end
     after()
@@ -11461,7 +11734,7 @@ function AskGPT:_xrayFollowCatchUp(_decimal, opts)
         UIManager:close(confirm)
         start()
       end }},
-      {{ text = revert and _("Cancel (leave Automatic X-Ray off)") or _("Cancel"),
+      {{ text = cancel_label,
         callback = function()
           UIManager:close(confirm)
           cancel()
@@ -11470,6 +11743,31 @@ function AskGPT:_xrayFollowCatchUp(_decimal, opts)
     tap_close_callback = cancel,
   }
   UIManager:show(confirm)
+end
+
+--- The engine's own confirm for a book whose Automatic X-Ray is On but whose
+--- X-Ray does not exist yet (2026-09-04, maintainer: "the same protection as
+--- when you turn on Automatic X-Ray"): the pick's dialog, shown at the moment
+--- the first build would otherwise start on its own (an On set while the
+--- book was closed, or set before the confirm existed). Start marks this book
+--- open so retries never re-ask; Cancel or tapping outside pins the book's
+--- Automatic X-Ray off, so nothing runs and nothing resumes on reopen. One
+--- dialog at a time (page-turn fires keep coming while it is up).
+function AskGPT:_confirmFirstAutoBuild()
+  if self._xray_first_build_confirm then return end
+  self._xray_first_build_confirm = true
+  local self_ref = self
+  self:_xrayFollowCatchUp(nil, {
+    intro = _("Automatic X-Ray is on for this book, but the X-Ray has not been built yet."),
+    cancel_label = _("Cancel (turn Automatic X-Ray off)"),
+    revert = function()
+      local BookSettings = require("koassistant_book_settings")
+      self_ref:_openBookDS():saveSetting(BookSettings.KEY_XRAY_AUTO, "off")
+      self_ref:_openBookDS():flush()
+      self_ref:_refreshXrayAutoState()
+    end,
+    after = function() self_ref._xray_first_build_confirm = nil end,
+  })
 end
 
 --- Round 19/21 ("auto-toggle entry"): turning per-book Automatic X-Ray ON from
@@ -13234,7 +13532,7 @@ function AskGPT:viewCachedAction(action, action_id, cached_entry, opts)
     _artifact_book_author = book_author,
     _book_open = (self.ui and self.ui.document ~= nil),
     group_open = self:_inBookGroup(file)
-      and function() self:_showGroupMembersPopup(file, "artifacts") end or nil,
+      and function() self:openGroupHubFor(file) end or nil,
     on_launch_chat = self:_buildLaunchChatCallback(file, book_title, book_author, cached_entry.result, action_name),
   }
   UIManager:show(viewer)
@@ -13672,7 +13970,7 @@ function AskGPT:_xrayAutoOnPageUpdate(pageno)
     -- the log at ~25 lines/second on the 2026-08-14 device round
     if state.debug and not self._xray_auto_pending_logged then
       self._xray_auto_pending_logged = true
-      logger.info("KOAssistant: automatic X-Ray: fire already scheduled")
+      logger.dbg("KOAssistant: automatic X-Ray: fire already scheduled")
     end
     return
   end
@@ -13704,17 +14002,17 @@ function AskGPT:_xrayAutoOnPageUpdate(pageno)
   -- request (update-checker precedent; the streaming-disabled overlap is accepted,
   -- correctness preserved by the completion guard)
   if _G.KOAssistantStreaming then
-    if state.debug then logger.info("KOAssistant: automatic X-Ray declined: user request streaming") end
+    if state.debug then logger.dbg("KOAssistant: automatic X-Ray declined: user request streaming") end
     return
   end
   -- WiFi fast guard: background work never prompts (update-checker precedent)
   if not NetworkMgr:isWifiOn() then
-    if state.debug then logger.info("KOAssistant: automatic X-Ray declined: WiFi off") end
+    if state.debug then logger.dbg("KOAssistant: automatic X-Ray declined: WiFi off") end
     return
   end
   -- Round 22 (D3): an explicitly cancelled build stays cancelled this session
   if XrayAuto.isAutoSuppressed(self.ui.document.file) then
-    if state.debug then logger.info("KOAssistant: automatic X-Ray declined: cancelled this session") end
+    if state.debug then logger.dbg("KOAssistant: automatic X-Ray declined: cancelled this session") end
     return
   end
   self:_scheduleXrayAutoFire()
@@ -13760,7 +14058,8 @@ end
 --- the front-load build uses (same grid, same store, same promotion). Replaces
 --- the retired to-position auto-update/auto-create path. Disk truth derived
 --- here; the chain re-verifies per step. A first-ever build for a book runs
---- only under a per-book On (the reader's own pick, confirmed at pick time)
+--- only under a per-book On and only behind the reader's confirm, at pick
+--- time or (an On set on a closed book) when the build would first start
 --- — first-build automation is retired (2026-09-04). opts: { notify = true }
 --- → announce chain progress (explicit enables); { explicit = true } → fired
 --- by an explicit enable (skip the posture re-check — the key may have just
@@ -13825,10 +14124,21 @@ function AskGPT:_fireXrayAutoCheckpoints(opts)
   local chain_rebuild = opts and opts.rebuild or nil
   if not chain_rebuild then
     if work.lineage_blocked or not work.build then return end
-    -- The FIRST build for a book needs a per-book On (create_allowed) unless
-    -- the enable was explicit: a follow-global book with no X-Ray is left
-    -- alone (first-build automation retired 2026-09-04, maintainer)
-    if not work.has_any and not create_allowed and not (opts and opts.explicit) then return end
+    if not work.has_any and not (opts and opts.explicit) then
+      -- The FIRST build for a book needs a per-book On (create_allowed): a
+      -- follow-global book with no X-Ray is left alone (first-build
+      -- automation retired 2026-09-04, maintainer)
+      if not create_allowed then return end
+      -- ...and even a per-book On starts its first build only behind the
+      -- same confirm the pick shows (2026-09-04 device round: an On set on a
+      -- closed book, or set before the confirm existed, started building on
+      -- the first page turn). Asked once per book open; Start covers this
+      -- session's retries.
+      if not self._xray_first_build_ok then
+        self:_confirmFirstAutoBuild()
+        return
+      end
+    end
   end
 
   local spacing = self:_xrayLadderSpacing()
@@ -14062,8 +14372,14 @@ function AskGPT:_fireXrayLadderPromotion(opts)
   -- position-following (a deliberate below-newest install said "by position")
   local hold = posture == "full"
     and require("koassistant_book_settings").xrayPromotionHold(self.ui.doc_settings)
+  -- B282 (2026-09-06): the swing guard applies only when the reader SKIPPED a
+  -- built rung. Crossing the very next rung is reading whatever the spacing;
+  -- the dial compares reader vs installed coverage, and on a spacing above
+  -- the dial that distance IS the spacing, so the crossing was refused for
+  -- good (forever with automatic off, until the next build with it on).
   if opts and opts.capped and (posture ~= "full" or hold)
-      and decimal - live_p > XrayAuto.dialsFromFeatures(features).max_gap then
+      and decimal - live_p > XrayAuto.dialsFromFeatures(features).max_gap
+      and XrayAuto.skippedBuiltRung(ladder, live_p, decimal) then
     logger.dbg("KOAssistant: ladder promotion declined - position swing above the max-gap dial")
     return false
   end
@@ -15051,14 +15367,19 @@ function AskGPT:_fireXrayLadderRung()
         -- Item 45: one silent retry per step for transient provider failures
         -- (503/429/5xx/network) — the field specimen healed on a resume 76s
         -- later. The build state stays ALIVE through the wait so cancel works.
-        if transient and (cur.retried or 0) < 1 and not cur.cancel_requested then
+        -- The wait is the provider's own when it named one (Groq's "try again
+        -- in 5.289s", Anthropic's retry-after header), else the fixed 60 s; a
+        -- wait past XrayAuto.RETRY_MAX_WAIT_S means no retry (nil).
+        local retry_in = transient and XrayAuto.retryDelayFor(err_text, config_copy.provider,
+          require("model_constraints").dispatchModel(config_copy)) or nil
+        if retry_in and (cur.retried or 0) < 1 and not cur.cancel_requested then
           cur.retried = 1
           logger.dbg("KOAssistant: ladder step", cur.step or cur.idx, "transient failure (",
-            kind, ") - retrying in", XrayAuto.RETRY_DELAY_S, "s:", err_text)
+            kind, ") - retrying in", retry_in, "s:", err_text)
           if not cur.silent or features.xray_auto_notify == true then
             UIManager:show(Notification:new{
               text = T(_("Model busy — retrying checkpoint %1 of %2 in %3 s…"),
-                cur.step or cur.idx, cur.total, XrayAuto.RETRY_DELAY_S),
+                cur.step or cur.idx, cur.total, retry_in),
             })
           end
           local retry_fn = function()
@@ -15074,7 +15395,7 @@ function AskGPT:_fireXrayLadderRung()
             self_ref:_fireXrayLadderRung()
           end
           self_ref._xray_ladder_retry = retry_fn
-          UIManager:scheduleIn(XrayAuto.RETRY_DELAY_S, retry_fn)
+          UIManager:scheduleIn(retry_in, retry_fn)
           return
         end
         XrayAuto.endLadderBuild()
@@ -15178,6 +15499,16 @@ function AskGPT:_xrayStopReasonLabel(kind)
   if kind == "network" then return _("connection problem") end
   if kind == "bad_json" then return _("unusable response") end
   if kind == "step_too_large" then return _("large step needs review") end
+  -- Audit B2b: the two verdicts the classifier gained. "too_large" is a
+  -- deterministic refusal (a per-minute admission limit, or a context/output
+  -- cap), never retried, and the label names no plan because a context or
+  -- output cap has none; "aborted" is one of the plugin's own pre-send skips
+  -- (the surfaces render it as "stopped: nothing was sent").
+  if kind == "too_large" then return _("request too large") end
+  if kind == "aborted" then return _("nothing was sent") end
+  -- An account wall (credits, balance, a spending cap): never retried, the
+  -- reader must act on the account.
+  if kind == "billing" then return _("account credits or billing") end
   return nil
 end
 
@@ -15229,6 +15560,9 @@ function AskGPT:onCloseDocument()
     self._xray_auto_pending = nil
     self._xray_auto_pending_logged = nil
   end
+  -- The first-build confirm's state is per book open (2026-09-04)
+  self._xray_first_build_ok = nil
+  self._xray_first_build_confirm = nil
   if self._xray_ladder_promo_pending then
     UIManager:unschedule(self._xray_ladder_promo_pending)
     self._xray_ladder_promo_pending = nil
@@ -16824,7 +17158,7 @@ function AskGPT:onKOAssistantAISettings(on_close_callback)
       opening_subdialog = true
       UIManager:close(dialog)
       require("koassistant_book_settings").showDomainResearch({
-        plugin = self_ref, ui = self_ref.ui,
+        plugin = self_ref, ui = self_ref.ui, target_override = "book",
         on_close = reopenQuickSettings,
       })
     end or nil,
@@ -17442,11 +17776,13 @@ function AskGPT:onKOAssistantQuickActions()
           self_ref:executeBookLevelAction(action_id)
         end,
         hold_callback = function()
-          if action.description then
-            UIManager:show(InfoMessage:new{
-              text = action.description,
-            })
-          end
+          require("koassistant_action_hold").show(self_ref, action, {
+            surface = "quick_actions",
+            on_change = function()
+              UIManager:close(dialog)
+              self_ref:onKOAssistantQuickActions()
+            end,
+          })
         end,
       })
     end
@@ -17501,14 +17837,14 @@ function AskGPT:onKOAssistantQuickActions()
         elseif util_id == "book_group" then
           -- Round 28: same dynamic rule as View Artifacts — the row exists only
           -- when this book actually belongs to a group, so readers who don't use
-          -- groups never see it. Opens the members popup (THE group-navigation
-          -- idiom), not the manager: from the panel you want to GO somewhere.
+          -- groups never see it. Opens the book's Group Hub (G0 round 2), not
+          -- the list: from the panel you want to GO somewhere.
           if self_ref:_inBookGroup(file) then
             addButton({
-              text = Constants.getEmojiText(qa_emoji_map[util_id], _("Group"), qa_enable_emoji),
+              text = Constants.getEmojiText(qa_emoji_map[util_id], _("Group Hub"), qa_enable_emoji),
               callback = function()
                 UIManager:close(dialog)
-                self_ref:_showGroupMembersPopup(file, "artifacts")
+                self_ref:openGroupHubFor(file)
               end,
             })
           end
@@ -18427,11 +18763,9 @@ function AskGPT:registerHighlightMenuActions()
         enabled = Device:hasClipboard(),
         allow_hold_when_disabled = true,
         hold_callback = function()
-          if action.description then
-            UIManager:show(InfoMessage:new{
-              text = action.description,
-            })
-          end
+          -- The menu stays open (the selection lives in it); a removed row leaves
+          -- on the next open
+          require("koassistant_action_hold").show(self, action, { surface = "highlight" })
         end,
         callback = function()
           -- Capture text and extract context BEFORE closing highlight overlay
@@ -18922,9 +19256,8 @@ function AskGPT:syncHighlightBypass()
       -- Collapse whitespace runs (selections can span lines), trim edge
       -- ASCII punctuation; entity handles are short — skip the parse cost
       -- for long selections outright
-      local sel = hl_self.selected_text.text:gsub("%s+", " ")
-      sel = sel:match("^%s*(.-)%s*$") or ""
-      sel = sel:gsub("^%p+", ""):gsub("%p+$", "")
+      -- (CJK stops included since #90's device round: "name。" is a handle)
+      local sel = require("koassistant_xray_parser").trimEdgePunctuation(hl_self.selected_text.text)
       if #sel > 2 and #sel <= 120 then
         local ActionCache = require("koassistant_action_cache")
         local i_file = self_ref.ui and self_ref.ui.document and self_ref.ui.document.file

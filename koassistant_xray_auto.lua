@@ -27,6 +27,25 @@ XrayAuto.CATCHUP_DELAY_S = 30    -- session-start catch-up delay (update-checker
 -- socket timeouts self-resolve dead connections, every in-progress state has
 -- a tap-to-cancel row, and book close cancels the flight.)
 XrayAuto.RETRY_DELAY_S = 60      -- item 45: single transient-failure retry per ladder step.
+XrayAuto.RETRY_MAX_WAIT_S = 600  -- a provider-named wait past this holds no build session
+
+--- Seconds the one retry waits: the provider's own delay when it named one
+--- (the wording, or the retry-after header: RateLimits.retryAfter), plus a
+--- second of slack, else RETRY_DELAY_S. nil = the provider asked for longer
+--- than RETRY_MAX_WAIT_S, so the retry is a guaranteed second refusal and the
+--- step stops instead (the resume rows stay). Pure.
+--- @param err string|nil the failure text
+--- @param provider string|nil
+--- @param model string|nil
+--- @return number|nil seconds
+function XrayAuto.retryDelayFor(err, provider, model)
+  local named = require("koassistant_rate_limits").retryAfter(err, provider, model)
+  if not named then return XrayAuto.RETRY_DELAY_S end
+  local wait = math.ceil(named) + 1
+  if wait < 2 then wait = 2 end
+  if wait > XrayAuto.RETRY_MAX_WAIT_S then return nil end
+  return wait
+end
                                  -- Field specimen (2026-08-03): a Gemini 503 healed on a
                                  -- resume 76s later — one 60s retry makes that invisible.
 
@@ -195,11 +214,58 @@ end
 --- Classify a request-failure message into a short reason kind (item 45).
 --- Wire-neutral: matches HTTP status classes and generic phrasings, never one
 --- provider's exact wording. Pure.
+---
+--- The size classes CONSULT the parsers that already own those wordings rather
+--- than re-matching their sentences (audit B2b, F36): the string handed in has
+--- been through decorateRequestError, so the retry decision used to be driven by
+--- the plugin's own advice paragraph and came out exactly inverted (Cerebras's
+--- per-minute refusal graded "rate limited" and bought a useless 60-second
+--- retry, only because the appended tip contained the words "rate limit"; Groq's
+--- #106 refusal graded "other" and named no reason at all). An admission refusal
+--- and a context/output-cap 400 are deterministic, so transient is false: the
+--- retry would be a guaranteed second failure.
 --- @param err string|nil The error text (handler-formatted, e.g. "gemini/…: HTTP 503: …")
---- @return string kind "overloaded"|"rate_limited"|"server_error"|"timeout"|"network"|"bad_json"|"other"
+--- @return string kind "aborted"|"billing"|"too_large"|"overloaded"|"rate_limited"|"server_error"|"timeout"|"network"|"bad_json"|"other"
 --- @return boolean transient True when a short wait plausibly heals it (retry-worthy)
 function XrayAuto.classifyStopReason(err)
   local text = type(err) == "string" and err:lower() or ""
+  -- The plugin's own pre-send abort sentinels (koassistant_dialogs.lua raises
+  -- "background: …" BEFORE any request goes out): a deliberate local skip, not a
+  -- model failure. Same test the scheduled path already uses. Without it
+  -- "background: delta truncated" matched the bare "truncated" below and was
+  -- reported to the reader as an "unusable response" for a request never sent.
+  if text:find("^background:") then
+    return "aborted", false
+  end
+  -- Inline requires: both modules are pure and loadable from here, and this file
+  -- deliberately keeps no file-level dependency on the api/constraints layer.
+  local RateLimits = require("koassistant_rate_limits")
+  local ModelConstraints = require("model_constraints")
+  -- An account wall (credits, balance, a spending cap: ModelConstraints.isBillingWall)
+  -- is neither transient nor a size problem: no wait heals it, so the chain
+  -- stops and the stop names the account. Checked before the per-minute family
+  -- because OpenAI's insufficient_quota also says "quota".
+  if ModelConstraints.isBillingWall(err) then
+    return "billing", false
+  end
+  -- Per-minute token refusals are graded off their NUMBERS (RateLimits.refusalKind):
+  -- an admission refusal (the request alone exceeds the allowance) is
+  -- deterministic; a burst (the allowance is spent for now, or the wording
+  -- states no numbers, as Anthropic's and Gemini's do) refills with time and is
+  -- exactly the failure the one 60-second retry can heal. Only outside that
+  -- family does a size signature mean "too large", and never beside a "Used N"
+  -- count (a daily bucket that also says "reduce your message size").
+  local refusal_kind = RateLimits.refusalKind(err)
+  if refusal_kind == "admission" then
+    return "too_large", false
+  end
+  if refusal_kind == "burst" then
+    return "rate_limited", true
+  end
+  if not RateLimits.hasUsedCount(err) and (ModelConstraints.parseMaxTokensError(err)
+      or ModelConstraints.isSizeError(err)) then
+    return "too_large", false
+  end
   if text:find("http 503", 1, true) or text:find("overload", 1, true)
       or text:find("high demand", 1, true) or text:find("capacity", 1, true) then
     return "overloaded", true
@@ -601,6 +667,34 @@ function XrayAuto.pickPromotableRung(ladder, live_progress, position, opts)
     end
   end
   return best
+end
+
+--- B282 (2026-09-06): true when a built rung sits BETWEEN the live coverage
+--- and the rung the reader is crossing — the reader swung past built content
+--- (a page-by-page flip far ahead; a TOC jump never reaches the fire, the
+--- page-delta guard at the trigger catches it). Crossing the very NEXT rung
+--- after live is reading, whatever the spacing: the max-gap dial (25%) used
+--- to refuse it for good on a spacing above the dial, since it compares the
+--- reader against the installed coverage and that distance IS the spacing.
+--- Same rung filter as pickPromotableRung. No promotable rung = nothing to
+--- guard.
+--- @param ladder table Rung array (any order)
+--- @param live_progress number|nil live cache progress 0..1
+--- @param position number reading position 0..1
+--- @return boolean
+function XrayAuto.skippedBuiltRung(ladder, live_progress, position)
+  local pick = XrayAuto.pickPromotableRung(ladder, live_progress, position)
+  if not pick then return false end
+  local pick_p = tonumber(pick.progress_decimal)
+  local floor = (tonumber(live_progress) or 0) + XrayAuto.LADDER_TOLERANCE
+  for _idx, rung in ipairs(ladder or {}) do
+    local p = tonumber(rung.progress_decimal)
+    if p and not rung.full_document and p > floor
+        and p < pick_p - XrayAuto.LADDER_TOLERANCE then
+      return true
+    end
+  end
+  return false
 end
 
 --- Pick the ONE rung the identification peek may read (B269, 2026-08-25):
