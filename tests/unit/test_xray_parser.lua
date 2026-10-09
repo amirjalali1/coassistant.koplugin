@@ -378,6 +378,76 @@ TestRunner:test("Arabic: article-stripped QUERY matches unstripped handle (searc
     TestRunner:ok(not XrayParser.matchExactHandle(set2, "نار"))
 end)
 
+TestRunner:suite("B338 — exact search reads the names the marks underline")
+TestRunner:test("a bracketed name answers to its bracket-less form", function()
+    -- Device 2026-09-28: the underline sends "الله", the entry is named with
+    -- a same-script gloss in brackets; the card's exact search missed it
+    local data = { characters = { { name = "الله (رب السماوات والأرض)" } } }
+    local r = XrayParser.searchAll(data, "الله", { exact = true })
+    TestRunner:eq(#r, 1, "one hit")
+    TestRunner:eq(r[1].match_field, "name")
+    TestRunner:eq(#XrayParser.searchAll(data, "الله (رب السماوات والأرض)", { exact = true }), 1,
+        "the full name still hits")
+    TestRunner:eq(#XrayParser.searchAll(data, "رب السماوات والأرض", { exact = true }), 0,
+        "a same-script bracketed part is a gloss, never a name")
+end)
+TestRunner:test("a bracketed part in another script is a name (Tokyo (東京))", function()
+    local data = { locations = { { name = "Tokyo (東京)" } } }
+    TestRunner:eq(#XrayParser.searchAll(data, "東京", { exact = true }), 1)
+    TestRunner:eq(#XrayParser.searchAll(data, "tokyo", { exact = true }), 1)
+    TestRunner:eq(#XrayParser.searchAll(data, "Signal", { exact = true }), 0)
+    local set = {}
+    XrayParser.foldExactHandles(data, set)
+    TestRunner:ok(XrayParser.matchExactHandle(set, "東京"), "the route index agrees")
+end)
+TestRunner:test("aliases fold the same way and report as aliases", function()
+    local data = { characters = { { name = "Maryam", aliases = { "Umm Isa (أم عيسى)" } } } }
+    local r = XrayParser.searchAll(data, "أم عيسى", { exact = true })
+    TestRunner:eq(#r, 1)
+    TestRunner:eq(r[1].match_field, "alias")
+    TestRunner:eq(#XrayParser.searchAll(data, "umm isa", { exact = true }), 1)
+end)
+TestRunner:test("two entries sharing a bracket-less name both hit (the chooser gets both)", function()
+    local data = { characters = { { name = "Anna (the elder)" }, { name = "Anna (the younger)" } } }
+    TestRunner:eq(#XrayParser.searchAll(data, "Anna", { exact = true }), 2)
+end)
+TestRunner:test("the carried list folds the same forms", function()
+    local data = { [XrayParser.DORMANT_KEY] = {
+        { name = "الله (رب السماوات والأرض)", category = "characters" },
+        { name = "Maryam", aliases = { "Tokyo (東京)" }, category = "characters" },
+    } }
+    local s = XrayParser.searchLedger(data, "الله", { exact = true })
+    TestRunner:eq(#s, 1)
+    TestRunner:eq(s[1].match_field, "name")
+    local a = XrayParser.searchLedger(data, "東京", { exact = true })
+    TestRunner:eq(#a, 1)
+    TestRunner:eq(a[1].match_field, "alias")
+    local set = {}
+    XrayParser.foldLedgerHandles(data, set)
+    TestRunner:ok(XrayParser.matchExactHandle(set, "東京"))
+end)
+TestRunner:test("every underline's tap text opens its own entry (marks = card)", function()
+    -- What a tap sends is matchTermSet's source for the matched form; the
+    -- card resolves it with searchAll exact. Every source must find its entry.
+    local data = { characters = {
+        { name = "الله (رب السماوات والأرض)", aliases = { "الرحمن" } },
+        { name = "Tokyo (東京)" },
+        { name = "The Wise Old Man", aliases = { "Anna (the elder)" } },
+        { name = "Signal fire (beacon)" },
+    } }
+    for _i, item in ipairs(data.characters) do
+        local set = XrayParser.matchTermSet(item)
+        TestRunner:ok(set, "term set for " .. item.name)
+        for _form, text in pairs(set.source) do
+            local found = false
+            for _k, r in ipairs(XrayParser.searchAll(data, text, { exact = true })) do
+                if r.item == item then found = true end
+            end
+            TestRunner:ok(found, "tap text '" .. text .. "' opens " .. item.name)
+        end
+    end
+end)
+
 TestRunner:suite("B266 — cross-entity containment")
 local B266_DATA = {
     characters = {
@@ -669,6 +739,36 @@ TestRunner:test("addStubAlias: adds, no-ops on known, refuses missing; resolves 
     TestRunner:ok(not XrayParser.addStubAlias(d, "Nobody", "x"), "missing stub refused")
     TestRunner:eq(#XrayParser.searchLedger(d, "the ferry master", { exact = true }), 1,
         "the new alias resolves")
+end)
+TestRunner:test("linkStubs: two carried rows become one, both books' names and texts kept (B314)", function()
+    local json = '{"characters":[{"name":"Tamsin Vael"}],"__dormant":['
+        .. '{"name":"Dorrit","category":"characters","description":"Kept the inn.","source":"Vol 1","file":"/b/v1.epub"},'
+        .. '{"name":"Dorrit Hale","aliases":["the innkeeper"],"category":"characters","description":"Keeps the ferry inn.","source":"Vol 2","file":"/b/v2.epub"},'
+        .. '{"name":"Saltmere","category":"locations","description":"Drowned town.","source":"Vol 1","file":"/b/v1.epub"}]}'
+    local d = XrayParser.parse(json)
+    TestRunner:ok(XrayParser.linkStubs(d, 1, "Dorrit", 2, "Dorrit Hale"))
+    TestRunner:eq(#d.__dormant, 2, "one row for the two")
+    -- Which row keeps the name is the fold's rule (the nearest book's)
+    local row = d.__dormant[1]
+    local names = { [row.name] = true }
+    for _i, a in ipairs(row.aliases or {}) do names[a] = true end
+    TestRunner:ok(names["Dorrit"] and names["Dorrit Hale"] and names["the innkeeper"],
+        "both names and the alias on the one row")
+    local texts = { row.description }
+    for _i, b in ipairs(row.background or {}) do texts[#texts + 1] = b.text end
+    table.sort(texts)
+    TestRunner:eq(table.concat(texts, "|"), "Keeps the ferry inn.|Kept the inn.", "both books' texts")
+    TestRunner:eq(XrayParser.foldLedger(d), 0, "nothing left to fold: a re-seed finds it settled")
+    -- A row that moved is found by its name; a missing one and another kind
+    -- of thing are refused and nothing changes
+    d = XrayParser.parse(json)
+    TestRunner:ok(XrayParser.linkStubs(d, 3, "Dorrit", 1, "Dorrit Hale"), "indices off, names right")
+    d = XrayParser.parse(json)
+    TestRunner:ok(not XrayParser.linkStubs(d, 1, "Dorrit", 2, "Nobody"), "a row that is gone")
+    TestRunner:ok(not XrayParser.linkStubs(d, 1, "Dorrit", 1, "Dorrit"), "a row with itself")
+    TestRunner:ok(not XrayParser.linkStubs(d, 1, "Dorrit", 3, "Saltmere"), "a person and a place")
+    TestRunner:eq(#d.__dormant, 3)
+    TestRunner:eq(d.__dormant[1].aliases, nil, "a refused link leaves the row as it was")
 end)
 TestRunner:test("foldLedgerHandles: stub handles join the exact route set", function()
     local d = XrayParser.parse(LEDGER_JSON)

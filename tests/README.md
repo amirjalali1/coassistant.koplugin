@@ -115,13 +115,24 @@ lua tests/model_audit.lua --probe anthropic claude-opus-5
 # Probe everything the diff found (capped at 10 per run)
 lua tests/model_audit.lua --probe-new
 
+# Key health: one request per keyed provider on its default model (cents)
+lua tests/model_audit.lua --keys
+
+# Drift sweep over the curated models (2-3 requests each); --ceilings adds the
+# output-limit leg and prints draft lines for models with no limit on record
+lua tests/model_audit.lua --recheck mistral --ceilings
+
 lua tests/model_audit.lua --verbose   # full error bodies + ignored-id lists
 ```
 
 OpenRouter runs in marketplace mode (verifies curated ids exist + cross-checks
 their `supported_parameters` against our resolution instead of listing hundreds
-of "new" backends). Pure helpers are unit-tested in
-`tests/unit/test_model_audit.lua`; the probe engine itself is live-only.
+of "new" backends). A full discovery run also lists where a vendor's new model is
+served on a gateway we do not curate it on, and OpenRouter's recent releases that
+no list carries. Every run that sends requests ends with SPEND: the tokens each
+reply reported, per provider, and an estimate at OpenRouter's list prices. Pure
+helpers are unit-tested in `tests/unit/test_model_audit.lua`; the probe engine
+itself is live-only.
 
 ### Request Inspector (`inspect.lua`)
 
@@ -192,13 +203,13 @@ lua tests/inspect.lua --web --port 3000
 
 ### Unit Tests (no API calls)
 
-Located in `tests/unit/` — **96 files, ~3,180 checks** (run `lua tests/run_tests.lua --unit` for the live count; the runner prints a per-file summary and no grand total).
+Located in `tests/unit/` — **104 files, ~3,180 checks** (run `lua tests/run_tests.lua --unit` for the live count; the runner prints a per-file summary and no grand total).
 
 **Contract every test file must follow:** end with `return TestRunner.failed == 0` (or return a `runAll` table). ⚠ The harness treats a `nil` return as PASSING — a forgotten return line yields a false green. Read the printed per-file summaries, not just the exit code.
 
 **Running a single file:** there is no filter flag; run directly from the repo root: `lua tests/unit/test_xray_parser.lua`.
 
-The 96 files, with what each one pins:
+The 104 files, with what each one pins:
 
 - `test_action_cache_parity.lua` - ActionCache `set()` / `saveCache()` / `loadCache()` field parity through a real disk round-trip
 - `test_action_display_text.lua` - `ActionService.getActionDisplayText`: the badge text on action buttons
@@ -236,6 +247,7 @@ The 96 files, with what each one pins:
 - `test_gemini_tools_request.lua` - Gemini tool request construction
 - `test_gettext_lang_cache.lua` - the gettext language cache (no settings re-read per `_()` call)
 - `test_gettext_unescape.lua` - the PO parser unescapes both msgid and msgstr
+- `test_handler_constraints.lua` - every curated parameter constraint, and a custom_models.lua one on every built-in and a custom provider, reaches the request the handler builds (including Ollama's and Cohere's second body copy in `query()` and xAI's Responses route); kimi still drops temperature with thinking off
 - `test_handler_max_tokens.lua` - every provider handler both resolves and clamps max_tokens (the handler contract)
 - `test_image_gen.lua` - image-model inventory, provider resolution chain, the book-association index
 - `test_index_rebuild.lua` - index heal/rebuild (#92): refresh ops, per-book helpers, merge semantics, pruning
@@ -261,9 +273,12 @@ The 96 files, with what each one pins:
 - `test_openai_compatible.lua` - the OpenAI-compatible base handler and its hooks
 - `test_openai_responses.lua` - the OpenAI Responses path: routing, request builder, transformer, stream events
 - `test_openai_tools_request.lua` - OpenAI chat-completions tool declarations and the message-copy loop
+- `test_perplexity_agent.lua` - the Perplexity Agent API request: presets vs direct models, retired Sonar ids mapped, web off to the direct Sonar model without tools, the system prompt as an input item, no temperature on presets, the old chat-wire base URL rewritten
 - `test_pinned_manager_parity.lua` - pinned save/load long-string round-trip against adversarial content
 - `test_prompt_building.lua` - MessageBuilder, ContextExtractor privacy gating and cache flow end to end
 - `test_prompt_chars.lua` - `RateLimits.promptChars` stays the router's own prompt-size arithmetic
+- `test_provider_probe.lua` - Test provider's steps are built by the provider's own handler: DeepSeek and Kimi tool steps switch thinking off, OpenAI and xAI tool steps take the Responses endpoint, web search stays off, the region and a configuration.lua base_url reach the probe
+- `test_provider_regions.lua` - the Z.AI, Qwen and Kimi region settings reach the wire; a configuration.lua `base_url` still wins; every built-in keeps its default URL
 - `test_quick_preset_forces.lua` - `Dialogs.quickPresetForces`, the quick-preset facet-off rule
 - `test_quick_reply_overrides.lua` - reply-time re-derivation of web / tools / model / reasoning from the Quick baseline
 - `test_quiz_chapters.lua` - pure chapter-boundary resolution for the chapter-end quiz
@@ -271,6 +286,7 @@ The 96 files, with what each one pins:
 - `test_rate_limits.lua` - per-minute admission limits: header capture, pipe marker, session memo, refusal parsing, budget sizing
 - `test_reasoning.lua` - reasoning parameter injection and reasoning-content parsing
 - `test_reply_quote.lua` - the "Add to reply" quote formatting and popup gating
+- `test_response_body_decode.lua` - the non-streaming response pipe: an empty, whitespace-only, marker-only or non-table body is named rather than handed to a provider transform, and one `read()` result is graded off errno so a signal-interrupted read is not mistaken for an empty pipe (#111, B325)
 - `test_response_parser.lua` - per-provider response parsing from mock responses (the Responses-API transformer is covered in `test_openai_responses.lua`)
 - `test_session_chips_registry.lua` - `Constants.resolveSessionChips` auto-injection (a new chip appears, a dismissed one stays gone)
 - `test_setup_wizard.lua` - wizard pure helpers: font install dir, `font_ui_fallbacks` append semantics, completer probes
@@ -522,7 +538,7 @@ its own provider id in code). `ModelLists.getAllProviders()` is the live list, a
 | cohere | Command models (v2 API) |
 | doubao | ByteDance |
 | zai | Z.AI GLM models |
-| perplexity | Sonar models (built-in web search) |
+| perplexity | Agent API presets + direct models (built-in web search) |
 | nvidia | Nemotron family + hosted open models (no web search) |
 | cerebras | Very fast open-model inference |
 | minimax | MiniMax M-series |
@@ -558,14 +574,15 @@ tests/
 │   └── web_server.lua         # LuaSocket HTTP server
 ├── tools/
 │   ├── tpm_stub_server.py     # Local provider stub playing a per-minute token allowance (no credentials)
-│   └── tpm_e2e.lua            # End-to-end transport check against that stub (KOReader's bundled LuaJIT)
+│   ├── tpm_e2e.lua            # End-to-end transport check against that stub (KOReader's bundled LuaJIT)
+│   └── bad_response_stub_server.py  # Local provider stub answering 200 with unusable bodies (#111)
 ├── web/
 │   └── index.html             # Web UI frontend
 ├── integration/
 │   ├── test_full_provider.lua    # Comprehensive tests (--full)
 │   ├── test_model_validation.lua # Model validation (--models)
 │   └── test_reasoning.lua        # Reasoning integration tests (--reasoning)
-└── unit/                      # 96 files - see "Unit Tests" above for the per-file list
+└── unit/                      # 104 files - see "Unit Tests" above for the per-file list
 ```
 
 ## Troubleshooting
@@ -617,6 +634,52 @@ Some providers may be slow. Tests wait for API response without timeout. Check n
 - **Streaming**: Not fully testable standalone (requires KOReader subprocess)
 - **Token Limits**: Tests use small limits (64-512 tokens) to minimize costs
 - **Model Validation Cost**: `--models` uses ~10 input + 1 output tokens per model (~2,000 tokens total for all 179 curated models, typically < $0.01)
+
+## Malformed responses (no credentials needed)
+
+`tests/unit/test_response_body_decode.lua` covers the pure guard (empty, whitespace-only,
+marker-only, JSON null, scalars, truncated and non-JSON bodies). For the real transport,
+`tests/tools/bad_response_stub_server.py` answers HTTP 200 with a body the plugin cannot
+use. Before the #111 fix an empty body crashed KOReader outright, so every shape here is a
+crash regression check.
+
+```bash
+python3 tests/tools/bad_response_stub_server.py                  # port 8766, empty body
+python3 tests/tools/bad_response_stub_server.py 8766 null        # one named shape
+python3 tests/tools/bad_response_stub_server.py 8766 --cycle     # a different shape each request
+python3 tests/tools/bad_response_stub_server.py 8766 --heal      # empty once, then normal answers
+```
+
+Desktop KOReader:
+
+1. Settings > Advanced > Streaming > **Enable Streaming OFF**. The decode being tested
+   lives in the NON-streaming path; with streaming on the request never reaches it.
+2. Settings > Provider > Add custom provider, base URL
+   `http://127.0.0.1:8766/v1/chat/completions`, no API key, any model id.
+3. Run any action nine times against `--cycle`, one per shape.
+
+Expect, in order: `empty`, `headers-only`, `whitespace` and `hangup` say "Empty response
+from <provider>. Please try again."; `null`, `scalar`, `truncated` and `html` say "Failed
+to parse response from <provider>"; `ok` answers normally. No crash in any of them. With
+Console Debug on the plugin log names the empty case with its buffer length. `headers-only`
+is the subtle one: the body is empty only AFTER the rate-limit marker line is stripped.
+
+The checkpoint chain's retry is a SEPARATE round: the `empty_response` class only reaches
+`XrayAuto.classifyStopReason` from the unattended ladder ([main.lua](../main.lua), the
+ladder step's failure branch), never from a chat. Open an EPUB pointed at the stub and
+build X-Ray checkpoints:
+
+- `--heal` (empty once, then real answers): the first rung fails, the log says "transient
+  failure ( empty_response ) - retrying in 60 s", and the retry commits the rung and the
+  chain carries on. This is the case `--cycle` cannot show, since the retry would land on
+  the next broken shape.
+- default `empty` (every request empty): the rung fails, retries once after 60 s, fails
+  again and the chain stops. The Resume row then reads "stopped: empty reply".
+
+Both take a minute of waiting per retry, which is the real retry delay, not a test artifact.
+The `ok` answer is valid X-Ray JSON so the rungs it commits are real ones and the chain
+walks its whole length; it still leaves a "Stub Character" X-Ray on the book, so run the
+ladder round against a throwaway EPUB, or delete the X-Ray afterwards.
 
 ## Per-minute admission limits (no credentials needed)
 

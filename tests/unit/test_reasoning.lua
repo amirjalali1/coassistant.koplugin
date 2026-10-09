@@ -193,9 +193,55 @@ TestRunner:test("opencode_go: its own facts (glm-5.3-flash ladder low/high/max, 
     TestRunner:assertEqual(kp.opencode_reasoning and kp.opencode_reasoning.effort, "none", "Go kimi-k3 Minimal = off via none")
     TestRunner:assertTrue(ModelConstraints.supportsCapability("opencode_go", "kimi-k3", "tools"), "kimi-k3 tools granted on Go")
     TestRunner:assertFalse(ModelConstraints.supportsCapability("opencode_go", "kimi-k2.6", "tools"), "kimi-k2.6 NO tools on Go (forced calls rejected)")
-    TestRunner:assertTrue(ModelConstraints.supportsCapability("opencode", "kimi-k2.6", "tools"), "kimi-k2.6 tools on Zen (probed there)")
+    TestRunner:assertTrue(ModelConstraints.supportsCapability("opencode", "qwen3.8-max", "tools"), "qwen3.8-max tools on Zen (forced calls accepted there)")
+    TestRunner:assertFalse(ModelConstraints.supportsCapability("opencode_go", "qwen3.8-max", "tools"), "qwen3.8-max NO tools on Go (forced calls rejected)")
     local opt = ModelConstraints.resolveReasoning("opencode_go", "deepseek-v4-flash", { global_stance = "maximum" })
     TestRunner:assertEqual(opt.axis, "none", "opt-in unprobed id on Go: axis none")
+end)
+
+TestRunner:suite("A2Agent reasoning injection (probed 2026-09-27)")
+
+local A2agentHandler = require("a2agent")
+
+local function a2agentWire(model, stance)
+    local d = ModelConstraints.resolveReasoning("a2agent", model, { global_stance = stance })
+    local params = {}
+    ModelConstraints.applyReasoningParams("a2agent", params, d)
+    return A2agentHandler:customizeRequestBody({ model = model, messages = {} },
+        { api_params = params, features = {} })
+end
+
+TestRunner:test("a2agent: off is thinking disabled, never effort 'none'", function()
+    for _idx, model in ipairs({ "deepseek-v4-flash", "deepseek-v4-pro", "kimi-k3", "qwen3.8-flash", "MiniMax-M3" }) do
+        local body = a2agentWire(model, "minimal")
+        TestRunner:assertEqual(body.thinking and body.thinking.type, "disabled", model .. " Minimal = thinking disabled")
+        TestRunner:assertNil(body.reasoning_effort, model .. " off sends no reasoning_effort")
+    end
+end)
+
+TestRunner:test("a2agent: effort models send the level, GLM cannot turn off", function()
+    TestRunner:assertEqual(a2agentWire("qwen3.8-max", "maximum").reasoning_effort, "max", "qwen Maximum = max")
+    TestRunner:assertEqual(a2agentWire("glm-5.3-flash", "minimal").reasoning_effort, "low",
+        "GLM Minimal = lowest level (every disable is refused upstream)")
+    TestRunner:assertNil(a2agentWire("glm-5.3", "minimal").thinking, "GLM never gets thinking disabled")
+end)
+
+TestRunner:test("a2agent: binary on sends enabled only where reasoning is not the default", function()
+    local flash = a2agentWire("deepseek-v4-flash", "maximum")
+    TestRunner:assertEqual(flash.thinking and flash.thinking.type, "enabled", "deepseek-v4-flash: the gateway default varies, Maximum sends an explicit enable")
+    TestRunner:assertNil(a2agentWire("MiniMax-M3", "maximum").thinking,
+        "MiniMax-M3 on = nothing sent (thinking enabled is refused)")
+    TestRunner:assertNil(a2agentWire("deepseek-v4-pro", "maximum").thinking, "deepseek-v4-pro reasons by default")
+end)
+
+TestRunner:test("a2agent: unprobed ids send nothing; kimi-k3 temperature forced; qwen gets no tools", function()
+    local d = ModelConstraints.resolveReasoning("a2agent", "glm-5", { global_stance = "maximum" })
+    TestRunner:assertEqual(d.axis, "none", "unprobed id: axis none")
+    local params = ModelConstraints.apply("a2agent", "kimi-k3", { temperature = 0.7 })
+    TestRunner:assertEqual(params.temperature, 1.0, "kimi-k3 accepts only 0, 0.6 and 1.0")
+    TestRunner:assertFalse(ModelConstraints.supportsCapability("a2agent", "qwen3.8-max", "tools"),
+        "qwen refuses forced tool calls while thinking")
+    TestRunner:assertTrue(ModelConstraints.supportsCapability("a2agent", "deepseek-v4-flash", "tools"), "deepseek tools granted")
 end)
 
 TestRunner:test("opencode: an unprobed id sends nothing", function()
@@ -379,32 +425,36 @@ TestRunner:suite("Perplexity reasoning injection")
 
 local PerplexityHandler = require("perplexity")
 
-TestRunner:test("adds reasoning_effort for sonar-reasoning-pro", function()
-    local body = { model = "sonar-reasoning-pro", messages = { { role = "user", content = "hi" } } }
-    local config = { api_params = { perplexity_reasoning = { effort = "high" } }, features = {} }
-    local result = PerplexityHandler:customizeRequestBody(body, config)
-    TestRunner:assertEqual(result.reasoning_effort, "high", "reasoning_effort")
+-- Agent API (B078): a resolver effort rides a typed preset as reasoning.effort;
+-- the retired Sonar reasoning ids that carry the profiles land on Sonar
+local function perplexityBody(model, api_params, features)
+    return PerplexityHandler:buildRequestBody({ { role = "user", content = "hi" } }, {
+        model = model, api_key = "k", api_params = api_params or {}, features = features or {},
+    }).body
+end
+
+TestRunner:test("a resolver effort rides a typed preset as reasoning.effort", function()
+    local body = perplexityBody("low", { perplexity_reasoning = { effort = "high" } })
+    TestRunner:assertEqual(body.preset, "low", "typed preset")
+    TestRunner:assertEqual(body.reasoning and body.reasoning.effort, "high", "reasoning.effort")
+    TestRunner:assertNil(body.reasoning_effort, "no chat-wire reasoning_effort")
 end)
 
-TestRunner:test("no reasoning for sonar (non-reasoning model)", function()
-    local body = { model = "sonar", messages = { { role = "user", content = "hi" } } }
-    local config = { api_params = { perplexity_reasoning = { effort = "high" } }, features = {} }
-    local result = PerplexityHandler:customizeRequestBody(body, config)
-    TestRunner:assertNil(result.reasoning_effort, "should not add reasoning_effort")
+TestRunner:test("a retired reasoning id lands on Sonar, which gets no effort", function()
+    local body = perplexityBody("sonar-reasoning-pro", { perplexity_reasoning = { effort = "high" } })
+    TestRunner:assertEqual(body.model, "perplexity/sonar", "retired id mapped")
+    TestRunner:assertNil(body.reasoning, "Sonar does not reason; the preset keeps its own effort")
 end)
 
-TestRunner:test("merges consecutive same-role messages", function()
-    local body = {
-        model = "sonar",
-        messages = {
-            { role = "user", content = "context" },
-            { role = "user", content = "question" },
-        },
-    }
-    local config = { api_params = {}, features = {} }
-    local result = PerplexityHandler:customizeRequestBody(body, config)
-    TestRunner:assertEqual(#result.messages, 1, "should merge to 1 message")
-    TestRunner:assertTrue(result.messages[1].content:find("question"), "should contain question")
+TestRunner:test("no effort sent without a resolver decision", function()
+    TestRunner:assertNil(perplexityBody("fast").reasoning, "preset keeps its tuned effort")
+end)
+
+TestRunner:test("no effort on the web-off Sonar model", function()
+    local body = perplexityBody("sonar-reasoning-pro", { perplexity_reasoning = { effort = "high" } },
+        { enable_web_search = false })
+    TestRunner:assertEqual(body.model, "perplexity/sonar", "web off goes to the direct model")
+    TestRunner:assertNil(body.reasoning, "a direct model gets no preset effort")
 end)
 
 --------------------------------------------------------------------------------
@@ -597,13 +647,12 @@ TestRunner:test("SambaNova extracts <think> tags", function()
     TestRunner:assertNotNil(reasoning, "should extract reasoning")
 end)
 
-TestRunner:test("Perplexity extracts <think> tags from sonar-reasoning-pro", function()
+TestRunner:test("Perplexity extracts <think> tags a direct model writes", function()
     local response = {
-        choices = { {
-            message = {
-                content = "<think>Sonar reasoning.</think>Web-grounded answer.",
-            },
-            finish_reason = "stop",
+        status = "completed",
+        output = { {
+            type = "message", role = "assistant", status = "completed",
+            content = { { type = "output_text", text = "<think>Sonar reasoning.</think>Web-grounded answer." } },
         } },
     }
     local ok, content, reasoning = ResponseParser:parseResponse(response, "perplexity")
@@ -629,13 +678,13 @@ local capability_checks = {
     { "together", "Qwen/Qwen3-235B-A22B", "reasoning", true },
     { "together", "Qwen/Qwen3.5-397B-A17B", "reasoning", true },
     { "together", "meta-llama/Llama-4-Maverick", "reasoning", false },
-    { "fireworks", "accounts/fireworks/models/deepseek-v4-flash-0731", "reasoning", true },
+    { "fireworks", "accounts/fireworks/models/deepseek-v4p1-flash", "reasoning", true },
     { "fireworks", "accounts/fireworks/models/llama-v3p3-70b", "reasoning", false },
     { "sambanova", "DeepSeek-V3.1", "thinking", true },
     { "sambanova", "DeepSeek-V3.2", "thinking", true },
     { "sambanova", "Llama-4-Maverick", "thinking", false },
     { "xai", "grok-4.3", "reasoning", true },
-    { "xai", "grok-4.20-0309-reasoning", "reasoning", true },
+    { "xai", "grok-4.20-0309-reasoning", "reasoning", false },   -- refuses reasoningEffort (2026-09-29)
     { "xai", "grok-4.20-0309-non-reasoning", "reasoning", false },
     { "perplexity", "sonar-reasoning-pro", "reasoning", true },
     { "perplexity", "sonar-deep-research", "reasoning", true },
@@ -684,7 +733,7 @@ TestRunner:test("xAI has low/medium/high effort options", function()
 end)
 
 TestRunner:test("all effort providers default to high", function()
-    local providers = { "openrouter", "requesty", "groq", "together", "fireworks", "perplexity", "opencode", "opencode_go" }
+    local providers = { "openrouter", "requesty", "groq", "together", "fireworks", "perplexity", "opencode", "opencode_go", "a2agent" }
     for _idx, p in ipairs(providers) do
         TestRunner:assertEqual(ModelConstraints.reasoning_defaults[p].effort, "high",
             p .. " should default to high")
@@ -1355,6 +1404,116 @@ TestRunner:test("unknown and custom models default to free, and nil args are saf
     TestRunner:assertEqual(ModelConstraints.temperatureSupport("custom_lmstudio", "local-model"),
         "free", "custom provider defaults to free")
     TestRunner:assertEqual(ModelConstraints.temperatureSupport(nil, nil), "free", "nil-safe")
+end)
+
+-- Model refresh 2026-09-28: the off wires a new model needs, each from its probe
+local function offWire(provider, model, layers)
+    local d = ModelConstraints.resolveReasoning(provider, model, layers or { global_stance = "minimal" })
+    local ap = {}
+    ModelConstraints.applyReasoningParams(provider, ap, d)
+    return ap, d
+end
+
+TestRunner:test("refresh 2026-09-28: off reaches the wire only in a form the model accepts", function()
+    local ap = offWire("openai", "gpt-6-luna")
+    TestRunner:assertEqual(ap.reasoning and ap.reasoning.effort, "none", "gpt-6 luna turns off with none")
+    ap = offWire("openai", "gpt-6-astra")
+    TestRunner:assertEqual(ap.reasoning and ap.reasoning.effort, "low", "gpt-6 astra cannot turn off: lowest")
+    ap = offWire("openai", "gpt-5.6-terra")
+    TestRunner:assertEqual(ap.reasoning, nil, "gpt-5.6 is off by default: off stays silent")
+    ap = offWire("anthropic", "claude-opus-5-5")
+    TestRunner:assertEqual(ap.thinking and ap.thinking.type, "adaptive", "opus 5.5 never gets disabled")
+    ap = offWire("anthropic", "claude-fable-5-1")
+    TestRunner:assertEqual(ap.thinking, nil, "fable 5.1 is off by sending nothing")
+    ap = offWire("openrouter", "anthropic/claude-fable-5.1", { action_override = { force = "off" } })
+    TestRunner:assertEqual(ap.openrouter_reasoning, nil, "OR fable 5.1: an explicit off sends nothing")
+    ap = offWire("openrouter", "anthropic/claude-fable-5")
+    TestRunner:assertEqual(ap.openrouter_reasoning and ap.openrouter_reasoning.effort, "low",
+        "OR fable 5 refuses enabled=false: lowest")
+    ap = offWire("openrouter", "deepseek/deepseek-v4-flash")
+    TestRunner:assertEqual(ap.openrouter_reasoning and ap.openrouter_reasoning.enabled, false,
+        "the generic catch-all keeps the explicit off")
+    ap = offWire("fireworks", "accounts/fireworks/models/kimi-k3")
+    TestRunner:assertEqual(ap.fireworks_reasoning and ap.fireworks_reasoning.effort, "none",
+        "fireworks models reason by default: off is sent as none")
+    ap = offWire("fireworks", "accounts/fireworks/models/glm-5p3")
+    TestRunner:assertEqual(ap.fireworks_reasoning and ap.fireworks_reasoning.effort, "low",
+        "glm-5p3 is thinking-only on fireworks: lowest")
+    ap = offWire("zai", "glm-5.3")
+    TestRunner:assertEqual(ap.zai_thinking, nil, "glm-5.3 always thinks: Minimal sends nothing")
+    ap = offWire("xai", "grok-4.7")
+    TestRunner:assertEqual(ap.xai_reasoning and ap.xai_reasoning.effort, "minimal", "grok 4.7 never gets none")
+end)
+
+TestRunner:test("refresh 2026-09-28: new prefixes do not catch neighbouring ids", function()
+    local p = ModelConstraints.getReasoningProfile("qwen", "qwen3-8b")
+    TestRunner:assertEqual(p.default_state == "on" and p.axis == "none", false, "qwen3-8b is not a 3.8 model")
+    TestRunner:assertEqual(ModelConstraints.clampMaxTokens("qwen", "qwen3-8b", 500000), 500000,
+        "the qwen3.8- cap does not clamp qwen3-8b")
+    TestRunner:assertEqual(ModelConstraints.clampMaxTokens("qwen", "qwen3.8-flash", 500000), 131072, "3.8 capped")
+    TestRunner:assertEqual(ModelConstraints.apply("qwen", "qwen3.8-flash", { temperature = 2.0 }).temperature, 1.9,
+        "DashScope refuses 2.0: capped at 1.9")
+    TestRunner:assertTrue(ModelConstraints.supportsCapability("openrouter", "qwen/qwen3.8-max", "no_forced_tool_choice"),
+        "every OR qwen3.8 id gets auto on gather rounds")
+    TestRunner:assertFalse(ModelConstraints.supportsCapability("openrouter", "qwen/qwen3-max", "no_forced_tool_choice"),
+        "qwen3-max keeps the forced call")
+end)
+
+-- Sonnet 5.5 (probed 2026-09-29): its own rows, not Sonnet 5's by prefix
+TestRunner:test("Sonnet 5.5: off is its named lowest setting, never disabled", function()
+    local ap, d = offWire("anthropic", "claude-sonnet-5-5")
+    TestRunner:assertEqual(d.mode, "off", "Minimal turns it off")
+    TestRunner:assertEqual(ap.thinking and ap.thinking.type, "between_tools", "the API refuses disabled")
+    TestRunner:assertFalse(ModelConstraints.reasoningDisplayEnabled(ap), "between_tools does not read as reasoning on")
+    ap = offWire("anthropic", "claude-sonnet-5-5", { action_override = { force = "off" } })
+    TestRunner:assertEqual(ap.thinking and ap.thinking.type, "between_tools", "an action's off too")
+    ap = offWire("anthropic", "claude-sonnet-5")
+    TestRunner:assertEqual(ap.thinking and ap.thinking.type, "disabled", "Sonnet 5 keeps disabled")
+    d = ModelConstraints.resolveReasoning("anthropic", "claude-sonnet-5-5", { global_stance = "default" })
+    TestRunner:assertTrue(d.send_nothing and d.mode == "on", "thinks by default: Default sends nothing, reads on")
+    d = ModelConstraints.resolveReasoning("anthropic", "claude-sonnet-5-5", { global_stance = "maximum" })
+    TestRunner:assertEqual(d.effort, "max", "max effort")
+    TestRunner:assertTrue(ModelConstraints.supportsCapability("anthropic", "claude-sonnet-5-5", "no_forced_tool_choice"),
+        "refuses a forced tool call")
+    TestRunner:assertFalse(ModelConstraints.supportsCapability("anthropic", "claude-sonnet-5", "no_forced_tool_choice"),
+        "Sonnet 5 keeps the forced call")
+    ap = offWire("openrouter", "anthropic/claude-sonnet-5.5")
+    TestRunner:assertEqual(ap.openrouter_reasoning and ap.openrouter_reasoning.effort, "low",
+        "OR sonnet 5.5 refuses enabled=false: lowest")
+    ap = offWire("openrouter", "anthropic/claude-sonnet-5")
+    TestRunner:assertEqual(ap.openrouter_reasoning and ap.openrouter_reasoning.enabled, false,
+        "OR sonnet 5 still turns off")
+end)
+
+TestRunner:test("Requesty: Claude 5.x rows mirror OpenRouter's (enabled=false is refused there)", function()
+    local ap = offWire("requesty", "anthropic/claude-sonnet-5-5")
+    TestRunner:assertEqual(ap.requesty_reasoning and ap.requesty_reasoning.effort, "low", "sonnet 5.5: lowest")
+    ap = offWire("requesty", "anthropic/claude-opus-5-5")
+    TestRunner:assertEqual(ap.requesty_reasoning and ap.requesty_reasoning.effort, "low", "opus 5.5: lowest")
+    ap = offWire("requesty", "anthropic/claude-fable-5")
+    TestRunner:assertEqual(ap.requesty_reasoning and ap.requesty_reasoning.effort, "low", "fable 5: lowest")
+    ap = offWire("requesty", "anthropic/claude-fable-5.1", { action_override = { force = "off" } })
+    TestRunner:assertEqual(ap.requesty_reasoning, nil, "fable 5.1 thinks only when asked: off sends nothing")
+    ap = offWire("requesty", "anthropic/claude-sonnet-5")
+    TestRunner:assertEqual(ap.requesty_reasoning and ap.requesty_reasoning.enabled, false,
+        "the generic catch-all keeps the explicit off")
+    local d = ModelConstraints.resolveReasoning("requesty", "anthropic/claude-fable-5.1", { global_stance = "maximum" })
+    TestRunner:assertEqual(d.effort, "max", "fable 5.1 on: max effort")
+end)
+
+-- Found by the recheck's Minimal request (2026-09-29): each 400ed on Minimal
+TestRunner:test("recheck 2026-09-29: Minimal sends a shape these models accept", function()
+    local ap = offWire("xai", "grok-4.5")
+    TestRunner:assertEqual(ap.xai_reasoning and ap.xai_reasoning.effort, "minimal", "grok 4.5 refuses none now")
+    ap = offWire("xai", "grok-4.20-0309-reasoning")
+    TestRunner:assertEqual(ap.xai_reasoning, nil, "grok 4.20 reasoning refuses reasoningEffort: nothing sent")
+    ap = offWire("xai", "grok-4.3")
+    TestRunner:assertEqual(ap.xai_reasoning and ap.xai_reasoning.effort, "none", "grok 4.3 still turns off")
+    for _i, m in ipairs({ "openai/gpt-oss-120b", "openai/gpt-oss-20b" }) do
+        ap = offWire("openrouter", m)
+        TestRunner:assertEqual(ap.openrouter_reasoning and ap.openrouter_reasoning.effort, "low",
+            m .. " on OpenRouter: mandatory, lowest")
+    end
 end)
 
 -- Summary

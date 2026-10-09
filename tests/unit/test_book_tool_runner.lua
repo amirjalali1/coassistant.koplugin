@@ -1056,7 +1056,7 @@ TestRunner:test("gather: a readable text that fits is sent whole, no rounds", fu
         end
     end
 
-    -- Over budget: the search rounds run as before (quick effort, 64K budget, oversized page).
+    -- Over the size: the search rounds run as before (Medium, 64,000 characters, an oversized page).
     calls = 0
     local big = makeUi()
     local filler = string.rep("word ", 14000)  -- 70,000 chars on page 1
@@ -1134,10 +1134,134 @@ TestRunner:test("gatherForAction: a readable text that fits is returned whole", 
     TestRunner:assertEqual(info_out.tool_calls, 0, "no lookups")
 end)
 
-TestRunner:test("budgets carry the whole-text limit per effort", function()
-    TestRunner:assertEqual(BookToolRunner.budgetFor({ tool_lookup_effort = "quick" }).whole_chars, 64000, "quick (sending a fitting text is the quickest path, same limit as standard)")
-    TestRunner:assertEqual(BookToolRunner.budgetFor({}).whole_chars, 64000, "standard")
-    TestRunner:assertEqual(BookToolRunner.budgetFor({ tool_lookup_effort = "thorough" }).whole_chars, 128000, "thorough")
+TestRunner:test("the whole-text size is the reader's setting, not the effort's (B402)", function()
+    local L = BookToolRunner.wholeTextLimit
+    TestRunner:assertEqual(L({}), 64000, "default: Medium")
+    TestRunner:assertEqual(L({ tool_whole_text = true }), 64000, "the old switch's On reads as Medium")
+    TestRunner:assertEqual(L({ tool_whole_text = false }), nil, "the old switch's Off stays Off")
+    TestRunner:assertEqual(L({ tool_whole_text = "small" }), 16000, "Small")
+    TestRunner:assertEqual(L({ tool_whole_text = "large" }), 128000, "Large")
+    TestRunner:assertEqual(L({ tool_whole_text = true, tool_lookup_effort = "thorough" }), 64000, "effort no longer raises it")
+    TestRunner:assertEqual(BookToolRunner.budgetFor({ tool_lookup_effort = "thorough" }).whole_chars, nil, "budgets carry no size")
+    -- The settings row offers exactly the values the runner reads, Medium by default.
+    local f = assert(io.open(package.searchpath("koassistant_settings_schema", package.path), "r"))
+    local schema = f:read("*a")
+    f:close()
+    local row = schema:match('id = "tool_whole_text",(.-)\n                },')
+    TestRunner:assertTrue(row ~= nil, "the settings row")
+    local values = {}
+    for v in row:gmatch("{ value = ([^,]+),") do values[#values + 1] = v end
+    TestRunner:assertEqual(table.concat(values, " "), 'false "small" true "large"', "Off, Small, Medium, Large")
+    TestRunner:assertTrue(row:find("default = true,", 1, true) ~= nil, "Medium by default")
+end)
+
+-- Two pages of 6,000 characters: inside every size from Medium up, over a small plan.
+local function bigUi()
+    local ui = makeUi()
+    local page = string.rep("word ", 1200)
+    ui.document.getPageText = function(_self, p) return p <= 2 and page or "" end
+    return ui
+end
+
+local function wholeTextSent(config, ui)
+    local calls, sent = 0, false
+    BookToolRunner.run({
+        query_fn = function(messages, _c, cb)
+            calls = calls + 1
+            for _i, m in ipairs(messages) do
+                if type(m.content) == "string" and m.content:find("[The book's readable text, in full]", 1, true) then
+                    sent = true
+                end
+            end
+            if calls == 1 and not sent then cb(true, doneAnswer()) else cb(true, "answer") end
+        end,
+        messages = { { role = "user", content = "hi" } },
+        config = config,
+        ui = ui,
+        on_complete = function() end,
+    })
+    return sent, calls
+end
+
+TestRunner:test("a text the model's known limits cannot take is searched instead (B402)", function()
+    local ModelConstraints = require("model_constraints")
+    local RateLimits = require("koassistant_rate_limits")
+    local cfg = gatherConfig({ tool_whole_text = true, spoiler_free_chat = false })
+    local model = ModelConstraints.dispatchModel(cfg)
+    TestRunner:assertTrue(model ~= nil, "the dispatch model")
+    TestRunner:assertEqual((wholeTextSent(cfg, bigUi())), true, "no known limit: sent whole")
+
+    -- A per-minute plan this session learned: 2,000 tokens leave no room for 12,000 characters.
+    RateLimits.record("gemini", model, { limit_tokens = 2000 }, "header")
+    local sent, calls = wholeTextSent(gatherConfig({ tool_whole_text = true, spoiler_free_chat = false }), bigUi())
+    TestRunner:assertEqual(sent, false, "over the plan: not sent")
+    TestRunner:assertEqual(calls, 2, "the search rounds ran instead")
+    TestRunner:assertEqual((wholeTextSent(gatherConfig({ tool_whole_text = true, spoiler_free_chat = false }), makeUi())), true,
+        "a text that fits the plan still goes whole")
+    RateLimits.forget("gemini", model)
+
+    -- The model's context window.
+    local windows = ModelConstraints._context_windows.gemini
+    local saved = windows[model]
+    windows[model] = 2000
+    TestRunner:assertEqual((wholeTextSent(gatherConfig({ tool_whole_text = true, spoiler_free_chat = false }), bigUi())), false,
+        "over the context window: not sent")
+    windows[model] = saved
+    TestRunner:assertEqual((wholeTextSent(gatherConfig({ tool_whole_text = true, spoiler_free_chat = false }), bigUi())), true,
+        "restored")
+end)
+
+TestRunner:test("the readable text sits right after the opening context, the same place every turn (B402)", function()
+    local seen
+    local function query_fn(messages, _c, cb) seen = messages; cb(true, "answer") end
+    local opening = { role = "user", content = "[Context]\nBook: A\n\n[User Question]\nwho writes letters?", is_context = true }
+    local spoiler = { role = "user", content = "The reader is currently at 50%.", is_context = true }
+    local function run(messages)
+        BookToolRunner.run({ query_fn = query_fn, messages = messages,
+            config = gatherConfig({ tool_whole_text = true }), ui = makeUi(), on_complete = function() end })
+        return seen
+    end
+    local function isText(m) return m and type(m.content) == "string" and m.content:find("[The book's readable text, in full]", 1, true) end
+    -- Turn 1: the opening, the text, then the live spoiler line, last as it should be.
+    local t1 = run({ opening, spoiler })
+    TestRunner:assertEqual(t1[1].content, opening.content, "turn 1: the opening first")
+    TestRunner:assertTrue(isText(t1[2]), "turn 1: the text second")
+    TestRunner:assertEqual(t1[3].content, spoiler.content, "turn 1: the spoiler line last")
+    -- Turn 2: the same prefix (opening, text), then the exchange, the new question, the line.
+    local t2 = run({ opening, { role = "assistant", content = "a letter writer" },
+        { role = "user", content = "and who reads them?" }, spoiler })
+    TestRunner:assertEqual(t2[1].content, opening.content, "turn 2: the opening first")
+    TestRunner:assertTrue(isText(t2[2]), "turn 2: the text in the same place")
+    TestRunner:assertEqual(t2[2].content, t1[2].content, "turn 2: the same text, so the prefix repeats")
+    TestRunner:assertEqual(t2[4].content, "and who reads them?", "turn 2: the new question after the exchange")
+    TestRunner:assertEqual(t2[5].content, spoiler.content, "turn 2: the spoiler line last")
+    -- No opening context message: the text goes before the newest question, as before.
+    local plain = run({ { role = "user", content = "hi" } })
+    TestRunner:assertTrue(isText(plain[1]), "no opening context: before the question")
+    TestRunner:assertEqual(plain[2].content, "hi", "the question after it")
+end)
+
+TestRunner:test("a page turn changes only the end of the text, so its start stays cached (B402)", function()
+    local seen
+    local function query_fn(messages, _c, cb) seen = messages; cb(true, "answer") end
+    local function blockAt(page)
+        local ui = makeUi()
+        ui.view.state.page = page  -- protection on: the text ends at the reader's page
+        BookToolRunner.run({ query_fn = query_fn, messages = { { role = "user", content = "hi" } },
+            config = gatherConfig({ tool_whole_text = true }), ui = ui, on_complete = function() end })
+        for _i, m in ipairs(seen) do
+            if type(m.content) == "string" and m.content:find("[The book's readable text, in full]", 1, true) then
+                return m.content
+            end
+        end
+    end
+    local at1, at2 = blockAt(1), blockAt(2)
+    TestRunner:assertTrue(at1 ~= nil and at2 ~= nil, "both turns read the text whole")
+    TestRunner:assertTrue(at2:find("garden path", 1, true) ~= nil, "the later turn reaches the new page")
+    -- Byte for byte the same up to the end of the text read before: a cached prefix
+    local _s, page1_end = at1:find("Daisy was mentioned in a letter.", 1, true)
+    TestRunner:assertEqual(at2:sub(1, page1_end), at1:sub(1, page1_end), "the shared start covers page 1's text")
+    TestRunner:assertTrue(at1:find("Pages 1-1 of 2", page1_end, true) ~= nil, "the page range comes after the text")
 end)
 
 TestRunner:test("gather: zero lookups leave a note saying the book was not consulted", function()
@@ -1636,6 +1760,74 @@ TestRunner:test("liveSpoilerLine: substitutes the live position when stats allow
     TestRunner:assertEqual(type(line), "string", "protected book chat gets the line")
     TestRunner:assertEqual(line:find("42%%") ~= nil, true, "position substituted")
     TestRunner:assertEqual(line:find("{reading_progress}", 1, true), nil, "placeholder resolved")
+end)
+
+-- B416: on the Claude 5.5 family a replayed thinking block is valid only while the system
+-- prompt, the tools and every earlier message are unchanged (a 400 on accounts created from
+-- 2026-08-31). The interactive final pass used to swap the system instructions.
+TestRunner:test("interactive: the final pass only appends (system text and history unchanged)", function()
+    -- Deterministic dump of a message, so an edit in place is caught, not just a swap
+    local function dump(v)
+        if type(v) ~= "table" then return tostring(v) end
+        local keys = {}
+        for k in pairs(v) do keys[#keys + 1] = k end
+        table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+        local parts = {}
+        for _i, k in ipairs(keys) do parts[#parts + 1] = tostring(k) .. "=" .. dump(v[k]) end
+        return "{" .. table.concat(parts, ",") .. "}"
+    end
+    local seen = {}
+    local calls = 0
+    local function query_fn(messages, config, callback)
+        calls = calls + 1
+        local snapshot = {}
+        for i, m in ipairs(messages) do snapshot[i] = dump(m) end
+        seen[calls] = { messages = messages, snapshot = snapshot, config = config }
+        if calls <= 2 then  -- quick effort = 2 rounds, then the final pass
+            local id = "toolu_" .. calls
+            callback(true, {
+                _tool_calls = true,
+                calls = { { id = id, name = "search_book", args = { query = "Daisy" } } },
+                raw_assistant_turn = { role = "assistant", content = {
+                    { type = "thinking", thinking = "", signature = "sig" .. calls },
+                    { type = "tool_use", id = id, name = "search_book", input = { query = "Daisy" } } } },
+            })
+        else
+            callback(true, "Daisy is mentioned in a letter.")
+        end
+    end
+    local ok
+    BookToolRunner.run({
+        query_fn = query_fn,
+        messages = { { role = "user", content = "Where is Daisy?" } },
+        config = { provider = "anthropic", features = { is_book_context = true, tool_mode = "interactive",
+            tool_lookup_effort = "quick", spoiler_free_chat = true, tool_whole_text = false } },
+        ui = makeUi(),
+        on_complete = function(success) ok = success end,
+    })
+    TestRunner:assertEqual(calls, 3, "two tool rounds, then the final pass")
+    TestRunner:assertTrue(ok, "answered")
+    local round, final = seen[2], seen[3]
+    TestRunner:assertEqual(final.config.system.text, round.config.system.text, "same system text")
+    TestRunner:assertEqual(final.config.system.text, seen[1].config.system.text, "same as round one")
+    TestRunner:assertEqual(final.config.tools.mode, "NONE", "no more calls")
+    TestRunner:assertEqual(#final.config.tools.specs, #round.config.tools.specs, "same tools declared")
+    for i, before in ipairs(round.snapshot) do
+        TestRunner:assertEqual(dump(final.messages[i]), before, "message " .. i .. " unchanged")
+    end
+    local thinking = 0
+    for _i, m in ipairs(final.messages) do
+        if m.role == "assistant" and type(m.content) == "table" and m.content[1].type == "thinking" then
+            thinking = thinking + 1
+        end
+    end
+    TestRunner:assertEqual(thinking, 2, "both thinking blocks replayed")
+    local last = final.messages[#final.messages]
+    TestRunner:assertEqual(last.role, "user", "the final wording is the last message")
+    TestRunner:assertTrue(last.content:find("do not call more tools", 1, true) ~= nil, "no more calls, in words")
+    TestRunner:assertTrue(last.content:find("Do not describe the lookups", 1, true) ~= nil, "final instructions")
+    TestRunner:assertTrue(last.content:find("beyond the user's current reading position", 1, true) ~= nil,
+        "spoiler rule under the current-position scope")
 end)
 
 return TestRunner:summary()

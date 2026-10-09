@@ -5,6 +5,7 @@ local json = require("json")
 local Defaults = require("koassistant_api.defaults")
 local ResponseParser = require("koassistant_api.response_parser")
 local DebugUtils = require("koassistant_debug_utils")
+local ModelConstraints = require("model_constraints")
 local logger = require("koassistant_logger")
 local _ = require("koassistant_gettext")
 local T = require("ffi/util").template
@@ -302,6 +303,8 @@ function OllamaHandler:buildRequestBody(message_history, config)
         num_ctx = api_params.num_ctx
             or contextBucket(promptChars(request_body.messages), config.features),
     }
+    -- Model parameter constraints (curated + custom_models.lua), on the options keys
+    request_body.options = ModelConstraints.apply("ollama", model, request_body.options)
 
     local headers = {
         ["Content-Type"] = "application/json",
@@ -349,6 +352,8 @@ function OllamaHandler:query(message_history, config)
         num_ctx = api_params.num_ctx
             or checkTruncation(request_body.messages, config, model),
     }
+    -- Model parameter constraints (curated + custom_models.lua), on the options keys
+    request_body.options = ModelConstraints.apply("ollama", model, request_body.options)
 
     -- Check if streaming is enabled
     local use_streaming = config.features and config.features.enable_streaming ~= false
@@ -362,7 +367,7 @@ function OllamaHandler:query(message_history, config)
         print("Streaming enabled:", use_streaming and "yes" or "no")
     end
 
-    local requestBody = json.encode(request_body)
+    local requestBody = BaseHandler.encodeBody(request_body)
     local headers = {
         ["Content-Type"] = "application/json",
         ["Content-Length"] = tostring(#requestBody),

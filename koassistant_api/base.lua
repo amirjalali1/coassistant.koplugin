@@ -36,6 +36,90 @@ function BaseHandler.withUserAgent(headers)
 end
 BaseHandler.PROTOCOL_RATELIMIT = RateLimits.PROTOCOL_MARKER
 
+--- The `undefined` the decoder hands back for a provider's non-standard token.
+--- Absent under the test encoders, hence the nil guard at every comparison.
+local JSON_UNDEFINED = type(json) == "table" and json.util and json.util.undefined or nil
+
+--- The UTF-8 validator and repair live in ScopeResolver next to the byte-budget
+--- cuts: ONE copy, shared with the behavior and domain loaders.
+local ScopeResolver = require("koassistant_scope_resolver")
+local utf8FirstBad, utf8Repair = ScopeResolver.utf8FirstBad, ScopeResolver.utf8Repair
+
+--- Walk a request body, repairing what KOReader's JSON encoder would otherwise
+--- turn into a document no provider can parse. Returns the ORIGINAL value when
+--- nothing needed repair (the common case allocates nothing) and a repaired
+--- copy otherwise, so the caller's config and message history are never mutated.
+--- @return any value, boolean changed
+local function scrubValue(v, key, report, seen)
+    local t = type(v)
+    if t == "string" then
+        if not utf8FirstBad(v) then return v, false end
+        report(key, "invalid UTF-8")
+        return utf8Repair(v), true
+    elseif t == "number" then
+        if v ~= v or v == math.huge or v == -math.huge then
+            report(key, "non-finite number")
+            return nil, true
+        end
+        return v, false
+    elseif t == "table" then
+        -- A cycle would spin here forever. The encoder refuses one outright
+        -- ("Recursive encoding of value"), so hand it straight on and let it
+        -- raise exactly as it did before this walk existed.
+        seen = seen or {}
+        if seen[v] then return v, false end
+        seen[v] = true
+        local copy, changed = nil, false
+        for k, sub in pairs(v) do
+            local nv, ch = scrubValue(sub, k, report, seen)
+            if ch then
+                if not copy then
+                    copy = {}
+                    for k2, v2 in pairs(v) do copy[k2] = v2 end
+                end
+                copy[k] = nv
+                changed = true
+            end
+        end
+        seen[v] = nil
+        return copy or v, changed
+    elseif t == "function" and JSON_UNDEFINED ~= nil and v == JSON_UNDEFINED then
+        report(key, "undefined sentinel")
+        return nil, true
+    end
+    return v, false
+end
+
+--- THE request-body encoder. Every handler encodes its body through this one.
+---
+--- KOReader's LuaJSON emits four tokens a provider's JSON parser rejects, and
+--- ordinary reading data reaches all four: bytes >= 0x80 ride out VERBATIM (a
+--- mojibake title, a malformed EPUB's text, a byte cut inside a character), a
+--- non-finite number prints as `NaN` or `Infinity`, and the decoder's
+--- `undefined` sentinel prints back as a bare `undefined` (the decoder accepts
+--- both non-standard tokens from a provider, so a replayed tool turn can carry
+--- one back in). The provider then rejects the WHOLE request with a message
+--- about its own parser ("There was an error parsing the body", issue #112) and
+--- the reader is left with an error that names nothing they can act on.
+---
+--- The repair is invisible to the reader and logged once per request: field
+--- names and the kind of damage, never the content.
+--- @param body table the request body
+--- @return string encoded JSON
+function BaseHandler.encodeBody(body)
+    local notes
+    local function report(key, kind)
+        notes = notes or {}
+        notes[#notes + 1] = tostring(key) .. " (" .. kind .. ")"
+    end
+    local clean = scrubValue(body, "body", report)
+    if notes then
+        logger.warn("KOAssistant: repaired request body before sending:", table.concat(notes, ", "))
+    end
+    return json.encode(clean)
+end
+
+
 --- Format a non-200 HTTP error body into a SINGLE-LINE message.
 --- The streaming reader consumes the PROTOCOL_NON_200 marker line-by-line, so a
 --- multi-line JSON body (e.g. Gemini's {\n "error": {...}}) would be truncated to

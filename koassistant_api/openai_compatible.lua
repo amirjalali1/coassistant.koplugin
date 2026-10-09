@@ -186,6 +186,11 @@ function OpenAICompatibleHandler:buildRequestBody(message_history, config)
         or ModelConstraints.resolveMaxTokens(constraints_key, model, default_params.max_tokens or 16384)
     request_body.max_tokens = ModelConstraints.clampMaxTokens(constraints_key, model, request_body.max_tokens)
 
+    -- Model parameter constraints (curated + custom_models.lua), before the child
+    -- hook so a mode-dependent rule there still wins (kimi drops the forced
+    -- temperature when thinking is disabled)
+    request_body = ModelConstraints.apply(constraints_key, model, request_body)
+
     -- Book-tool declarations from the neutral config.tools (set by the tool runner).
     -- Only reachable for providers with a `tools` capability in model_constraints.lua —
     -- some OpenAI-compatible backends silently ignore the tools param, so the capability
@@ -207,8 +212,14 @@ function OpenAICompatibleHandler:buildRequestBody(message_history, config)
             request_body.tool_choice = "none"
         elseif config.tools.mode == "ANY" then
             -- Gather rounds force a tool call (search or done) so the model can never
-            -- answer in prose on the non-streamed gather path.
-            request_body.tool_choice = "required"
+            -- answer in prose on the non-streamed gather path. A model that refuses a
+            -- forced call gets auto (no_forced_tool_choice; the runner accepts a round
+            -- that answers in prose).
+            if ModelConstraints.supportsCapability(constraints_key, model, "no_forced_tool_choice") then
+                request_body.tool_choice = "auto"
+            else
+                request_body.tool_choice = "required"
+            end
         else
             request_body.tool_choice = "auto"
         end
@@ -271,7 +282,7 @@ function OpenAICompatibleHandler:query(message_history, config)
         print("Streaming enabled:", use_streaming and "yes" or "no")
     end
 
-    local requestBody = json.encode(request_body)
+    local requestBody = BaseHandler.encodeBody(request_body)
     local headers = built.headers
     headers["Content-Length"] = tostring(#requestBody)
 

@@ -113,5 +113,42 @@ TestRunner:test("_shipped_defaults data integrity", function()
     end
 end)
 
+TestRunner:test("resolveModelRefresh — a retired id moves even when picked on purpose", function()
+    local retired = ModelLists._retired.perplexity
+    local action, to = resolve({ model = "sonar-reasoning-pro", explicit = true,
+        current_default = "openai/gpt-6-luna",
+        known_models = ModelLists.perplexity, shipped_defaults = ModelLists._shipped_defaults.perplexity,
+        retired = retired })
+    TestRunner:assertEqual(action, "retired", "the provider no longer serves it")
+    TestRunner:assertEqual(to, "perplexity/sonar", "moves to its own replacement, not the default")
+    local action2, to2 = resolve({ model = "sonar-pro", current_default = "perplexity/sonar",
+        known_models = ModelLists.perplexity, shipped_defaults = ModelLists._shipped_defaults.perplexity,
+        retired = retired })
+    TestRunner:assertEqual(action2, "retired", "an auto-baked retired id says retired, not refresh")
+    TestRunner:assertEqual(to2, "perplexity/sonar", "sonar-pro -> perplexity/sonar")
+    local action3 = resolve({ model = "openai/gpt-6-luna", explicit = true, current_default = "perplexity/sonar",
+        known_models = ModelLists.perplexity, retired = retired })
+    TestRunner:assertEqual(action3, "keep", "a live id is untouched")
+end)
+
+TestRunner:test("_retired data integrity", function()
+    for provider, map in pairs(ModelLists._retired) do
+        for old_id, new_id in pairs(map) do
+            local listed = false
+            for _idx, id in ipairs(ModelLists[provider] or {}) do
+                if id == new_id then listed = true end
+                TestRunner:assertTrue(id ~= old_id,
+                    string.format("%s: retired '%s' is no longer offered", provider, old_id))
+            end
+            TestRunner:assertTrue(listed,
+                string.format("%s: '%s' replaces '%s' and is offered", provider, new_id, old_id))
+            TestRunner:assertEqual(ModelLists.retiredReplacement(provider, old_id), new_id, old_id)
+        end
+    end
+    TestRunner:assertEqual(ModelLists.retiredReplacement("perplexity", "fast"), nil, "live id: no replacement")
+    TestRunner:assertEqual(ModelLists.retiredReplacement("anthropic", "sonar-pro"), nil, "other provider")
+    TestRunner:assertEqual(ModelLists.retiredReplacement(nil, nil), nil, "nil-safe")
+end)
+
 local ok = TestRunner:summary()
 return ok

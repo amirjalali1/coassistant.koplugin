@@ -118,6 +118,74 @@ function ScopeResolver.utf8Tail(str, max_bytes)
     return ScopeResolver.utf8TrimHead(str:sub(-max_bytes))
 end
 
+--- Byte length of the valid UTF-8 sequence starting at `i`, or nil when the
+--- bytes there are not one. Rejects what the standard rejects: continuation
+--- bytes with no lead, the overlong C0/C1 heads, surrogates (ED A0..BF) and
+--- everything past U+10FFFF (F5..FF).
+local function utf8SeqLen(s, i)
+    local b = s:byte(i)
+    if not b then return nil end
+    if b < 0x80 then return 1 end
+    if b < 0xC2 then return nil end
+    local need, lo, hi
+    if b < 0xE0 then
+        need, lo, hi = 2, 0x80, 0xBF
+    elseif b < 0xF0 then
+        need = 3
+        lo = (b == 0xE0) and 0xA0 or 0x80
+        hi = (b == 0xED) and 0x9F or 0xBF
+    elseif b < 0xF5 then
+        need = 4
+        lo = (b == 0xF0) and 0x90 or 0x80
+        hi = (b == 0xF4) and 0x8F or 0xBF
+    else
+        return nil
+    end
+    local c = s:byte(i + 1)
+    if not c or c < lo or c > hi then return nil end
+    for k = 2, need - 1 do
+        c = s:byte(i + k)
+        if not c or c < 0x80 or c > 0xBF then return nil end
+    end
+    return need
+end
+
+--- Position of the first byte that is not part of a valid UTF-8 sequence, or
+--- nil when the string is clean. ASCII runs are jumped in C by the find, so an
+--- all-ASCII string costs ONE find and no copy: this runs on every request on
+--- e-ink hardware and must not walk the body byte by byte.
+function ScopeResolver.utf8FirstBad(s)
+    local pos = 1
+    while true do
+        local i = s:find("[\128-\255]", pos)
+        if not i then return nil end
+        local len = utf8SeqLen(s, i)
+        if not len then return i end
+        pos = i + len
+    end
+end
+
+--- Drop every byte that is not part of a valid UTF-8 sequence.
+function ScopeResolver.utf8Repair(s)
+    local out, pos, keep_from = {}, 1, 1
+    while true do
+        local i = s:find("[\128-\255]", pos)
+        if not i then break end
+        local len = utf8SeqLen(s, i)
+        if len then
+            pos = i + len
+        else
+            if i > keep_from then out[#out + 1] = s:sub(keep_from, i - 1) end
+            pos = i + 1
+            keep_from = pos
+        end
+    end
+    if keep_from == 1 then return s end
+    out[#out + 1] = s:sub(keep_from)
+    return table.concat(out)
+end
+
+
 --- Real paragraph window: take the last/first n newline-separated segments around
 -- the selection. The segment adjacent to the selection is the remainder of the
 -- paragraph containing it, so n=1 means "just the containing paragraph". Sides
@@ -411,6 +479,52 @@ function ScopeResolver.trimContext(prev, next_text, highlighted_text, mode, opts
 
         return result
     end
+end
+
+--- A short display excerpt around the selection, cut from a trimContext
+--- result (its ">>>word<<<" marker). Each side stays inside the word's own
+--- paragraph, takes up to `side_bytes` bytes (a byte budget keeps CJK and
+--- Latin lines comparable), snaps to whole characters and, where the script
+--- has spaces, to whole words; whitespace collapses to single spaces. A side
+--- that was cut here or already by trimContext ("...") gets "…". Display
+--- only: the dictionary views show it above the answer.
+--- @param context string|nil a trimContext result
+--- @param side_bytes number|nil per-side budget (default 100)
+--- @return string|nil before, string|nil word, string|nil after (nil = no marker)
+function ScopeResolver.contextExcerpt(context, side_bytes)
+    if type(context) ~= "string" then return nil end
+    local s = context:find(">>>", 1, true)
+    local e = s and context:find("<<<", s + 3, true)
+    if not e then return nil end
+    side_bytes = side_bytes or 100
+    local function squash(t)
+        return (t:gsub("%s+", " "):match("^ ?(.-) ?$"))
+    end
+    local word = squash(context:sub(s + 3, e - 1))
+    if word == "" then return nil end
+    local raw_before, raw_after = context:sub(1, s - 1), context:sub(e + 3)
+    local before_cut = raw_before:find("^%s*%.%.%.") ~= nil
+    local after_cut = raw_after:find("%.%.%.%s*$") ~= nil
+    -- Paragraph boundaries (crengine's "\n"): an excerpt never reaches into
+    -- the neighbouring paragraph
+    local nl_before = raw_before:match("^.*\n(.*)$")
+    if nl_before then raw_before, before_cut = nl_before, false end
+    local nl_after = raw_after:match("^(.-)\n")
+    if nl_after then raw_after, after_cut = nl_after, false end
+    local before = squash((raw_before:gsub("^%s*%.%.%.", "")))
+    local after = squash((raw_after:gsub("%.%.%.%s*$", "")))
+    if #before > side_bytes then
+        -- Start on a word boundary (unchanged where the script has no spaces)
+        before = squash((ScopeResolver.utf8Tail(before, side_bytes):gsub("^%S*%s", "", 1)))
+        before_cut = true
+    end
+    if #after > side_bytes then
+        after = squash((ScopeResolver.utf8Head(after, side_bytes):gsub("%s%S*$", "", 1)))
+        after_cut = true
+    end
+    if before_cut and before ~= "" then before = "…" .. before end
+    if after_cut and after ~= "" then after = after .. "…" end
+    return before, word, after
 end
 
 return ScopeResolver

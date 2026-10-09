@@ -66,6 +66,9 @@ local Constants = require("koassistant_constants")
 --   local_note       - Details-view note replacing the generic "local action: no AI
 --                      call is made" line — for local handlers that DO call an API
 --                      (image_gen); translated string (optional)
+--   menu_button      - A button of the highlight menu and the dictionary popup, not an
+--                      action on the selection (model_switch): it goes first when added,
+--                      and the input dialogs and the bypass pickers leave it out
 
 local _ = require("koassistant_gettext")
 
@@ -261,7 +264,7 @@ Actions.highlight = {
         description = _("Explains the selected passage clearly, matching the tone of the source material."),
         context = "highlight",
         template = "explain",
-        in_highlight_menu = 2,  -- Default in highlight menu
+        in_highlight_menu = 3,  -- Default in highlight menu
         -- Uses global behavior variant (full/minimal)
         api_params = {
             temperature = 0.5,  -- More focused for explanations
@@ -280,7 +283,7 @@ Actions.highlight = {
         -- Joined the menu defaults + DEFAULT_MINIMAL_POPUP_ACTIONS in the A9
         -- follow-up 2026-08-17 (maintainer): the minimal-popup registry needs a
         -- launch surface, and this is the popup's natural resident.
-        in_highlight_menu = 3,
+        in_highlight_menu = 4,
         text = _("Quick Explain"),
         description = _("A two-or-three-sentence plain-language explanation of the selection, on a fast model."),
         context = "highlight",
@@ -290,8 +293,9 @@ Actions.highlight = {
         include_book_context = true,
         skip_domain = true,  -- Speed posture: no domain layer, like the dictionary family
         model_tier = "fast",
-        compact_view = true,
-        minimal_buttons = true,
+        -- No compact_view / minimal_buttons (B263, maintainer 2026-09-27): not a
+        -- dictionary action, so an answer the minimal popup cannot fit opens the
+        -- normal chat window, never the compact dictionary one.
         api_params = {
             temperature = 0.4,
         },
@@ -327,7 +331,7 @@ Actions.highlight = {
             temperature = 0.4,  -- More deterministic for summaries
         },
         include_book_context = true,
-        in_highlight_menu = 4,  -- A9 pare-down 2026-08-17 (2026-08-21: shifted up, the conditional xray_lookup moved to the tail)
+        in_highlight_menu = 5,  -- A9 pare-down 2026-08-17 (2026-08-21: shifted up, the conditional xray_lookup moved to the tail)
         builtin = true,
     },
     elaborate = {
@@ -682,7 +686,7 @@ Use plain language first, adding the technical term in parentheses when it helps
         local_handler = "xray_lookup",
         requires_open_book = true,
         requires_xray_cache = true,
-        in_highlight_menu = 7,  -- 2026-08-21: second-to-last, beside image_gen — it is conditional (maintainer)
+        in_highlight_menu = 8,  -- 2026-08-21: second-to-last, beside image_gen — it is conditional (maintainer)
         in_dictionary_popup = 6,
         exclude_from_compact = true,
         no_duplicate = true,
@@ -701,7 +705,27 @@ Use plain language first, adding the technical term in parentheses when it helps
         local_handler = "image_gen",
         local_note = _("This action skips the chat pipeline, but it does send one AI request: the framed prompt below goes to the image provider's API. Provider, model, size and prompt framing are set in Settings → Advanced → Image Generation."),
         requires_image_provider = true,
-        in_highlight_menu = 8,  -- A9 pare-down 2026-08-17: last, it is conditional (maintainer)
+        in_highlight_menu = 9,  -- A9 pare-down 2026-08-17: last, it is conditional (maintainer)
+        exclude_from_compact = true,
+        no_duplicate = true,
+        builtin = true,
+    },
+    -- The model button (#86, B345 step 4): shows your model; a tap lists your
+    -- favorites and recent picks and switches the model for good (main.lua
+    -- draws it, koassistant_model_switch.lua). In the highlight menu by
+    -- default, first among KOAssistant's buttons (maintainer 2026-09-29); not
+    -- in the dictionary popup by default (maintainer: its actions are to lean
+    -- on model tiers, and a long-press runs one on another model). Added from
+    -- either editor, it goes first.
+    model_switch = {
+        id = "model_switch",
+        text = _("Switch model"),
+        description = _("Shows your model. Tap it to switch to a favorite, a recent pick or any other model; the menu stays open. Actions with a model of their own keep it."),
+        context = "highlight",
+        local_handler = "model_switch",
+        in_highlight_menu = 1,
+        local_note = _("A button, not an action: it sends nothing. A pick changes your model for everything after, as Settings → Model does. The highlight menu and the dictionary popup can show it."),
+        menu_button = true,
         exclude_from_compact = true,
         no_duplicate = true,
         builtin = true,
@@ -946,9 +970,30 @@ local function normalizeXrayCategories(value)
     return table.concat(out, ",")
 end
 
+--- Normalize a stored status-block switch (B271): "off" | nil (= on, the
+--- shipped prompt). The status block ("Where things stand": current_state /
+--- current_position, or conclusion for a whole-document build) is NOT a
+--- category group: it is one object, replaced whole by every update, and it
+--- has its own key and stamp so every stored category value keeps its meaning.
+local function normalizeXrayStatus(value)
+    if value == "off" or value == false then return "off" end
+    return nil
+end
+
+-- The template lines the status block occupies, each with the newline before
+-- it, so a status-less prompt carries no blank schema line and no orphan
+-- bullet. Fiction and non-fiction (the academic template is never narrowed).
+local XRAY_STATUS_LINES = {
+    "\n  __FICTION_STATUS__", "\n- __FICTION_STATUS_GUIDANCE__",
+    "\n  __NONFICTION_STATUS__", "\n- __NONFICTION_STATUS_GUIDANCE__",
+}
+
 --- Assemble the four schema/guidance replacement strings for a selection.
 --- @param selection string|nil canonical csv (nil = full)
-local function assembleXraySchemaParts(selection, depth)
+--- @param depth string|nil "light" | "deep" (nil = standard)
+--- @param status string|nil "off" = no status block follows the categories,
+---   so the last one takes no trailing comma (nil = on, the shipped wording)
+local function assembleXraySchemaParts(selection, depth, status)
     depth = normalizeXrayDepth(depth)
     local fguide = depth and FICTION_GUIDANCE_BY_DEPTH[depth] or FICTION_GUIDANCE_FRAGMENTS
     local nguide = depth and NONFICTION_GUIDANCE_BY_DEPTH[depth] or NONFICTION_GUIDANCE_FRAGMENTS
@@ -989,10 +1034,11 @@ local function assembleXraySchemaParts(selection, depth)
     fg[#fg + 1] = conn_rule
     ng[#ng + 1] = conn_rule
     local size_key = depth or "standard"
+    local after_schema = normalizeXrayStatus(status) and "" or ","
     return {
-        __FICTION_SCHEMA__ = table.concat(fs, ",\n  ") .. ",",
+        __FICTION_SCHEMA__ = table.concat(fs, ",\n  ") .. after_schema,
         __FICTION_GUIDANCE__ = table.concat(fg, "\n"),
-        __NONFICTION_SCHEMA__ = table.concat(ns, ",\n  ") .. ",",
+        __NONFICTION_SCHEMA__ = table.concat(ns, ",\n  ") .. after_schema,
         __NONFICTION_GUIDANCE__ = table.concat(ng, "\n"),
         __FICTION_OUTPUT_SIZE__ = OUTPUT_SIZE_BY_DEPTH.fiction[size_key],
         __NONFICTION_OUTPUT_SIZE__ = OUTPUT_SIZE_BY_DEPTH.nonfiction[size_key],
@@ -1004,11 +1050,25 @@ end
 --- @param replacements table Scope replacement set (partial/complete/section)
 --- @param selection string|nil canonical csv (nil = full)
 --- @param depth string|nil "light" | "deep" (nil = standard)
-local function assemble_xray_prompt(template, replacements, selection, depth)
-    local merged = assembleXraySchemaParts(selection, depth)
+--- @param status string|nil "off" = no status block (B271; nil = on)
+local function assemble_xray_prompt(template, replacements, selection, depth, status)
+    local merged = assembleXraySchemaParts(selection, depth, status)
     for k, v in pairs(replacements) do merged[k] = v end
+    if normalizeXrayStatus(status) then
+        for _idx, line in ipairs(XRAY_STATUS_LINES) do
+            local s, e = template:find(line, 1, true)
+            if s then template = template:sub(1, s - 1) .. template:sub(e + 1) end
+        end
+    end
     return build_xray_prompt(template, merged)
 end
+
+-- The create prompt's type decision (B337a), its own string so a type the
+-- reader set replaces exactly this (applyXrayType, B337c). No create prompt
+-- asks the model to name front matter (B378): light models answered it for
+-- the work itself. A checkpoint step the model builds nothing from is skipped
+-- instead (B353, main.lua's ladder step).
+local XRAY_TYPE_DECISION = "First, decide whether the WORK is FICTION or NON-FICTION. If you know this title and author, that decides it: a novel is fiction even when this edition opens with a biographical or critical introduction. Otherwise judge from the main text, never from front matter by someone other than the author (an editor's or translator's introduction or note, a foreword, a chronology, an author biography). Then output ONLY a valid JSON object (no markdown, no code fences, no explanation) using the appropriate schema below."
 
 local XRAY_PROMPT_TEMPLATE = [[Create a structured reader's companion for "{title}"{author_clause}.{doi_clause}
 
@@ -1016,7 +1076,7 @@ __SCOPE_LINE__
 
 __TEXT_SECTION__
 
-First, determine if this is FICTION or NON-FICTION. Then output ONLY a valid JSON object (no markdown, no code fences, no explanation) using the appropriate schema below. __SCOPE_INSTRUCTION__. Order characters by narrative importance.
+]] .. XRAY_TYPE_DECISION .. [[ __SCOPE_INSTRUCTION__. Order characters by narrative importance.
 
 ---
 
@@ -1048,7 +1108,7 @@ __NONFICTION_OUTPUT_SIZE__
 
 __CLOSING__
 
-Base the X-Ray on the provided text. You do not need to recognize this work — analyze the text on its own terms whether or not you know it. Do NOT add characters, events, or details that are not in the provided text or clearly implied by it.
+Base the X-Ray on the provided text. You do not need to recognize this work — analyze the text on its own terms whether or not you know it (what you know of it may settle fiction or non-fiction, nothing else). Do NOT add characters, events, or details that are not in the provided text or clearly implied by it.
 If no text is provided, or the text is unreadable or too fragmentary to analyze, respond with ONLY this JSON:
 {"error": "The extracted text is empty or unusable, so no X-Ray can be built from it."}]]
 
@@ -1068,7 +1128,7 @@ local XRAY_PARTIAL_REPLACEMENTS = {
     "building_toward": ["What the author appears to be building toward"]
   }]],
     __NONFICTION_STATUS_GUIDANCE__ = "**Current Position**: A paragraph-length summary of what's been established so far, the current line of inquiry, and where the author seems to be heading.",
-    __CLOSING__ = [[CRITICAL: Do not reveal ANYTHING beyond {reading_progress}. This must be completely spoiler-free. Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values (descriptions, summaries, significance, definitions, connections, etc.) must be written in {response_language}, regardless of the language of the source text.]],
+    __CLOSING__ = [[CRITICAL: Do not reveal ANYTHING beyond {reading_progress}. This must be completely spoiler-free. Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. Aliases are other names for the same entry (a nickname, title, short form or spelling), never pronouns. All other string values (descriptions, summaries, significance, definitions, connections, etc.) must be written in {response_language}, regardless of the language of the source text.]],
 }
 
 local XRAY_COMPLETE_REPLACEMENTS = {
@@ -1087,7 +1147,7 @@ local XRAY_COMPLETE_REPLACEMENTS = {
     "implications": ["Practical implication, recommendation, or open question"]
   }]],
     __NONFICTION_STATUS_GUIDANCE__ = "**Conclusion**: A paragraph-length summary of the document's overall conclusions and key findings, plus practical implications.",
-    __CLOSING__ = [[Output ONLY valid JSON — no other text. Cover the work comprehensively, including all events, resolutions, and conclusions. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values (descriptions, summaries, significance, definitions, connections, etc.) must be written in {response_language}, regardless of the language of the source text.]],
+    __CLOSING__ = [[Output ONLY valid JSON — no other text. Cover the work comprehensively, including all events, resolutions, and conclusions. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. Aliases are other names for the same entry (a nickname, title, short form or spelling), never pronouns. All other string values (descriptions, summaries, significance, definitions, connections, etc.) must be written in {response_language}, regardless of the language of the source text.]],
 }
 
 -- Section X-Ray: uses complete-style analysis but scoped to a specific section
@@ -1099,7 +1159,7 @@ local XRAY_SECTION_REPLACEMENTS = {
     __FICTION_STATUS_GUIDANCE__ = XRAY_COMPLETE_REPLACEMENTS.__FICTION_STATUS_GUIDANCE__,
     __NONFICTION_STATUS__ = XRAY_COMPLETE_REPLACEMENTS.__NONFICTION_STATUS__,
     __NONFICTION_STATUS_GUIDANCE__ = XRAY_COMPLETE_REPLACEMENTS.__NONFICTION_STATUS_GUIDANCE__,
-    __CLOSING__ = [[Output ONLY valid JSON — no other text. Cover the section comprehensively. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values (descriptions, summaries, significance, definitions, connections, etc.) must be written in {response_language}, regardless of the language of the source text.]],
+    __CLOSING__ = [[Output ONLY valid JSON — no other text. Cover the section comprehensively. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. Aliases are other names for the same entry (a nickname, title, short form or spelling), never pronouns. All other string values (descriptions, summaries, significance, definitions, connections, etc.) must be written in {response_language}, regardless of the language of the source text.]],
 }
 
 -- ============================================================
@@ -1238,8 +1298,12 @@ local ACADEMIC_SECTION_REPLACEMENTS = {
 --- @param scope_label string The section label (e.g., "Part 1")
 --- @param page_summary string Human-readable page range (e.g., "Ch 1–5, pp 1–120")
 --- @param academic boolean|nil If true, use academic template
+--- @param selection string|nil canonical category csv (nil = full)
+--- @param depth string|nil "light" | "deep" (nil = standard)
+--- @param status string|nil "off" = no conclusion block (B271; nil = on).
+---   Ignored by the academic template, like the categories and the depth.
 --- @return string prompt The fully resolved prompt
-function Actions.buildSectionXrayPrompt(scope_label, page_summary, academic)
+function Actions.buildSectionXrayPrompt(scope_label, page_summary, academic, selection, depth, status)
     local template = academic and ACADEMIC_XRAY_PROMPT_TEMPLATE or XRAY_PROMPT_TEMPLATE
     local base_replacements = academic and ACADEMIC_SECTION_REPLACEMENTS or XRAY_SECTION_REPLACEMENTS
     local replacements = {}
@@ -1247,9 +1311,11 @@ function Actions.buildSectionXrayPrompt(scope_label, page_summary, academic)
     replacements.__SCOPE_LINE__ = string.format(
         'Analyzing section "%s" (%s) of the %s.', scope_label, page_summary,
         academic and "paper" or "document")
-    -- Sections always use the full category set (v0.21); the schema markers
-    -- are absent from the academic template, so the assembly no-ops there
-    return assemble_xray_prompt(template, replacements, nil)
+    -- The book's X-Ray categories and depth, as for a new X-Ray (B388; the
+    -- request assembly resolves them). The schema markers are absent from the
+    -- academic template, so the assembly no-ops there
+    return assemble_xray_prompt(template, replacements, selection, depth,
+        not academic and status or nil)
 end
 
 --- Canonical group order for the category picker (presets v0.21).
@@ -1264,6 +1330,13 @@ Actions.normalizeXrayCategories = normalizeXrayCategories
 --- timeline is the single heaviest block and Recap covers it; places and
 --- terms cost a fraction and feed every lookup surface.
 Actions.XRAY_DEFAULT_CATEGORIES = "people,places,ideas,terms"
+
+--- The introduction step of a checkpoint build (round 20): rung 1's slice,
+--- premise only. The request assembly appends it to the FINAL create prompt,
+--- after the research, full-document and category swaps (B336: appended at
+--- the fire site, the category assembly replaced it whenever categories
+--- resolved, the default since v0.22.1).
+Actions.XRAY_INTRO_CLAUSE = "\n\nIMPORTANT — INTRODUCTORY X-RAY: This X-Ray is a spoiler-free introduction for a reader who has NOT started the book yet. Cover only the premise, the setting, and the characters, concepts, or terms as they stand when first introduced in this opening portion. Do not mention any developments, reveals, relationships, or events beyond the initial setup."
 
 --- Is a stored categories value an explicit "everything" pick: the "full"
 --- sentinel, or a csv naming every group? (normalizeXrayCategories folds
@@ -1285,11 +1358,41 @@ end
 --- @param selection string canonical csv from normalizeXrayCategories
 --- @param which string "partial" (to reading position) | "complete" (whole document)
 --- @param depth string|nil "light" | "deep" (nil = standard, the shipped wording)
+--- @param status string|nil "off" = no status block (B271; nil = on, the shipped wording)
 --- @return string prompt
-function Actions.buildXrayCategoryPrompt(selection, which, depth)
+function Actions.buildXrayCategoryPrompt(selection, which, depth, status)
     local replacements = which == "complete"
         and XRAY_COMPLETE_REPLACEMENTS or XRAY_PARTIAL_REPLACEMENTS
-    return assemble_xray_prompt(XRAY_PROMPT_TEMPLATE, replacements, selection, depth)
+    return assemble_xray_prompt(XRAY_PROMPT_TEMPLATE, replacements, selection, depth, status)
+end
+
+--- Normalize a stored status-block switch ("off" | nil = on).
+Actions.normalizeXrayStatus = normalizeXrayStatus
+
+-- The update prompt's status line, as the built-in update prompts carry it
+-- (the standard one and the research one), and what replaces it for an X-Ray
+-- that keeps no status block (B271).
+local XRAY_UPDATE_STATUS_LINES = {
+    '- You MUST always include "current_state" (fiction) or "current_position" (nonfiction) — these are always considered changed',
+    '- You MUST always include "current_position" — this is always considered changed',
+}
+local XRAY_UPDATE_NO_STATUS_LINE = '- This X-Ray keeps no status object: never output "current_state", "current_position" or "conclusion". When the new content adds nothing to the entries and changes none of them, output an empty JSON object: {}'
+
+--- An update prompt for an X-Ray that keeps no status block (B271): the
+--- "always include the status object" line becomes "never output one; nothing
+--- new is an empty object". A prompt without that line (a custom update
+--- prompt) gets the instruction appended instead.
+--- @param text string an update prompt
+--- @return string
+function Actions.xrayUpdateWithoutStatus(text)
+    if type(text) ~= "string" then return text end
+    for _idx, line in ipairs(XRAY_UPDATE_STATUS_LINES) do
+        local s, e = text:find(line, 1, true)
+        if s then
+            return text:sub(1, s - 1) .. XRAY_UPDATE_NO_STATUS_LINE .. text:sub(e + 1)
+        end
+    end
+    return text .. "\n\n" .. XRAY_UPDATE_NO_STATUS_LINE:sub(3)
 end
 
 --- Depth rungs in picker order.
@@ -1297,6 +1400,46 @@ Actions.XRAY_DEPTH_ORDER = XRAY_DEPTH_ORDER
 
 --- Normalize a stored depth ("light" | "deep" | nil = standard).
 Actions.normalizeXrayDepth = normalizeXrayDepth
+
+--- Normalize a stored X-Ray type (B337c): "fiction" | "nonfiction" |
+--- "academic" | nil (= auto, the AI decides).
+function Actions.normalizeXrayType(value)
+    if value == "fiction" or value == "nonfiction" or value == "academic" then return value end
+    return nil
+end
+
+--- A create prompt with the reader's type set (B337c): the other schema's
+--- section leaves and the type decision becomes the reader's pick. Fiction or
+--- nonfiction only (Academic is the research template); a prompt of any other
+--- shape comes back unchanged.
+--- @param text string an assembled create prompt (default, narrowed or complete)
+--- @param xray_type string "fiction" | "nonfiction"
+--- @return string
+function Actions.applyXrayType(text, xray_type)
+    if type(text) ~= "string" or (xray_type ~= "fiction" and xray_type ~= "nonfiction") then
+        return text
+    end
+    -- head --- fiction --- non-fiction, whose guidance block (single-line
+    -- bullets) ends at the first blank line, where the closing starts
+    local SEP = "\n\n---\n\n"
+    local head_end = text:find(SEP, 1, true)
+    local fic_end = head_end and text:find(SEP, head_end + #SEP, true)
+    if not fic_end then return text end
+    local head = text:sub(1, head_end - 1)
+    local fiction = text:sub(head_end + #SEP, fic_end - 1)
+    local rest = text:sub(fic_end + #SEP)
+    local guide = rest:find("Guidance for non-fiction:\n", 1, true)
+    local tail_at = guide and rest:find("\n\n", guide, true)
+    local s, e = head:find(XRAY_TYPE_DECISION, 1, true)
+    if not (s and tail_at and fiction:find("^FOR FICTION") and rest:find("^FOR NON%-FICTION")) then
+        return text
+    end
+    local set = xray_type == "fiction"
+        and "This work is FICTION (the reader set its type). Output ONLY a valid JSON object (no markdown, no code fences, no explanation) using the schema below."
+        or "This work is NON-FICTION (the reader set its type). Output ONLY a valid JSON object (no markdown, no code fences, no explanation) using the schema below."
+    return head:sub(1, s - 1) .. set .. head:sub(e + 1) .. SEP
+        .. (xray_type == "fiction" and fiction or rest:sub(1, tail_at - 1)) .. rest:sub(tail_at)
+end
 
 --- JSON keys a selection maps to for an artifact type (update-clause helper).
 --- @param selection string canonical csv
@@ -1535,7 +1678,7 @@ Guidelines:
 - Add new timeline/argument_development entries for events in the new content. These lists are the ONE exception to the re-emit rule: they are permanent records with no name matching, and every entry you send is APPENDED as-is — re-sending an existing event, even reworded, creates a duplicate. Never re-send existing events; do record the significant events of the newly provided text.
 
 
-CRITICAL: This must remain spoiler-free up to {reading_progress}. Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. All other string values must be written in {response_language}, regardless of the language of the source text.]],
+CRITICAL: This must remain spoiler-free up to {reading_progress}. Output ONLY valid JSON — no other text. JSON keys must remain in English. Character names, location names, terms, and aliases must be in the same language and script as the source text. Aliases are other names for the same entry (a nickname, title, short form or spelling), never pronouns. All other string values must be written in {response_language}, regardless of the language of the source text.]],
     },
     -- X-Ray (Simple): Prose companion from AI knowledge (no text extraction)
     xray_simple = {
@@ -2393,7 +2536,7 @@ Actions.special = {
         description = _("Translates the selected text into your configured translation language. This action also controls the Translate Current Page function."),
         context = "highlight",  -- Only for highlighted text
         behavior_variant = "translator_direct",  -- Use built-in translation behavior
-        in_highlight_menu = 1,  -- Default in highlight menu
+        in_highlight_menu = 2,  -- Default in highlight menu (after the model button)
         prompt = "Translate this to {translation_language}: {highlighted_text}",
         include_book_context = false,
         reasoning_config = "off",  -- Translations don't benefit from reasoning
@@ -2416,7 +2559,7 @@ Actions.special = {
         behavior_variant = "dictionary_direct",  -- Use built-in dictionary behavior
         use_surrounding_context = false,  -- {context_section} channel already carries the passage
         in_dictionary_popup = 2,  -- Default order in dictionary popup
-        in_highlight_menu = 5,    -- A9 pare-down 2026-08-17: dict pair joins the menu
+        in_highlight_menu = 6,    -- A9 pare-down 2026-08-17: dict pair joins the menu
         prompt = [[Define "{highlighted_text}"
 
 Write entirely in {dictionary_language}. Only the headword stays in original language.
@@ -2449,7 +2592,7 @@ One line only. No etymology, no synonyms. No headers.]],
         behavior_variant = "dictionary_direct",  -- Use built-in dictionary behavior
         use_surrounding_context = false,  -- {context_section} channel already carries the passage
         in_dictionary_popup = 1,  -- Default order in dictionary popup
-        in_highlight_menu = 6,    -- A9 pare-down 2026-08-17: dict pair joins the menu
+        in_highlight_menu = 7,    -- A9 pare-down 2026-08-17: dict pair joins the menu
         prompt = [[Dictionary entry for "{highlighted_text}"
 
 Write entirely in {dictionary_language}. Only the headword, lemma, and synonyms stay in original language.

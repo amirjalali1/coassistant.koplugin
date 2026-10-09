@@ -38,6 +38,25 @@ end
 local SettingsSchema = {
     -- Menu items in display order (flat structure matching main menu)
     items = {
+        -- The two panels the gestures open, for readers without a gesture
+        -- (B350); both rows close the menu, so the panel shows over the book
+        {
+            id = "quick_settings_panel",
+            type = "action",
+            text = _("Quick Settings"),
+            emoji = "\u{1F39B}\u{FE0F}",
+            callback = "openQuickSettingsFromMenu",
+        },
+        {
+            id = "quick_actions_panel",
+            type = "action",
+            text = _("Quick Actions"),
+            emoji = "\u{1F680}",
+            callback = "onKOAssistantQuickActions",
+            visible_func = function(plugin)
+                return plugin.ui and plugin.ui.document ~= nil
+            end,
+        },
         -- Quick actions
         {
             id = "chat_about_book",
@@ -963,12 +982,20 @@ local SettingsSchema = {
                             help_text = _("When building X-Ray checkpoints, place each checkpoint at the nearest chapter end (within a few percent) instead of an exact percentage; checkpoints then read as \"up to the end of a chapter\", and the versions list shows the chapter names. Needs a table of contents. Checkpoint spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones."),
                         },
                         {
+                            id = "xray_default_preset_picker",
+                            type = "action",
+                            text = _("Preset for New X-Rays"),
+                            callback = "showXrayDefaultPresetPicker",
+                            keep_menu_open = true,
+                            help_text = _("One tap for the three settings below it: what a new X-Ray tracks, whether it keeps the status block (\"Where things stand\"), and how much each entry carries. Characters only is the cheapest (the cast, no status block); Reference is the default (people, places, ideas and terms); Everything adds the story arc; Light companion and Deep study change the depth as well. Each setting can still be changed on its own; the preset then reads Custom. A book can pick its own preset in Book Settings and a group in its Group Settings. Applies when an X-Ray is created or rebuilt."),
+                        },
+                        {
                             id = "xray_default_categories_picker",
                             type = "action",
                             text = _("Categories for New X-Rays"),
                             callback = "showXrayDefaultCategoriesPicker",
                             keep_menu_open = true,
-                            help_text = _("Which category groups a new X-Ray tracks by default. Reference (everything except the timeline) unless changed here; All categories adds the timeline or argument development, Characters only is the lightest. Applies when an X-Ray is created or rebuilt; individual books can pick their own categories in Book Settings."),
+                            help_text = _("Which category groups a new X-Ray tracks by default. Reference (everything except the timeline) unless changed here; All categories adds the timeline or argument development, Characters only is the lightest. The last checkbox, \"Where things stand\", is the status block (current state, or the conclusion of a whole-book X-Ray): every update rewrites it, so an X-Ray without it has shorter updates. Applies when an X-Ray is created or rebuilt; individual books can pick their own categories in Book Settings."),
                         },
                         {
                             id = "xray_default_depth_picker",
@@ -977,6 +1004,22 @@ local SettingsSchema = {
                             callback = "showXrayDefaultDepthPicker",
                             keep_menu_open = true,
                             help_text = _("How much each X-Ray entry carries by default. Light: one line per entry, only recurring figures and turning points, about half the cost. Standard: a few sentences per entry, everything the reader meets. Deep: longer entries, every figure and development, richer connections. Applies when an X-Ray is created or rebuilt; checkpoints and updates keep the depth the X-Ray was started with. Individual books can pick their own depth in Book Settings."),
+                        },
+                        {
+                            id = "xray_default_type_picker",
+                            type = "action",
+                            text = _("Type of New X-Rays"),
+                            callback = "showXrayDefaultTypePicker",
+                            keep_menu_open = true,
+                            help_text = _("Whether a new X-Ray uses the fiction schema (characters, places, story), the nonfiction one (people, concepts, argument) or the academic one (concepts, methods, findings, cited works). Auto, the default, lets the AI decide from the work. Applies when an X-Ray is created or rebuilt; updates keep the X-Ray's own type. Individual books can pick their own type in Book Settings, which is where a book whose X-Ray came out as the wrong type is fixed."),
+                        },
+                        {
+                            id = "xray_carried_entries_picker",
+                            type = "action",
+                            text = _("Carried Entries"),
+                            callback = "showXrayDefaultCarriedPicker",
+                            keep_menu_open = true,
+                            help_text = _("In a series or project group, entries from the group's other books that have not appeared in the open book yet are carried along (in a series: from the earlier books only). They always have their own list, \"Carried from earlier books\". This sets whether they are also listed inside the X-Ray's own categories, after the book's own entries, with the book each one comes from beside it (the default), or on that list only. A group can set this for all its books in its Group Settings, and a book in Book Settings. It changes the lists only: nothing is sent and no X-Ray is rebuilt."),
                         },
                         {
                             id = "xray_selection_intercept",
@@ -1459,6 +1502,14 @@ local SettingsSchema = {
                         local f = plugin.settings:readSetting("features") or {}
                         return f.dictionary_context_mode == "characters"
                     end,
+                },
+                {
+                    id = "dictionary_show_excerpt",
+                    type = "toggle",
+                    text = _("Show Excerpt"),
+                    path = "features.dictionary_show_excerpt",
+                    default = false,
+                    help_text = _("Show a short excerpt of the text around the looked-up word above the answer, with the word in bold. Only for lookups that send context (Context Mode is not None). Nothing extra is sent. Also on the gear menu of dictionary windows."),
                 },
                 {
                     id = "dictionary_disable_auto_save",
@@ -2282,10 +2333,20 @@ local SettingsSchema = {
                     default = false,
                     help_text = _("Add an 'Add to notebook' button to the highlight menu, saving the selected text directly to this book's notebook. Takes effect the next time the menu opens."),
                 },
+                -- (The model button (#86) is the model_switch entry of the two
+                -- action editors below, not a toggle: added there, it goes first.)
                 -- (The old "Show Generate Image button" toggle is retired:
                 -- image generation is the image_gen ACTION since 2026-08-13 —
                 -- visibility/order via Highlight Menu Actions below; an
                 -- explicit old OFF was migrated to a menu dismissal.)
+                {
+                    id = "show_koa_suffix_in_highlight",
+                    type = "toggle",
+                    text = _("Show (KOA) on KOAssistant's buttons"),
+                    path = "features.show_koa_suffix_in_highlight",
+                    default = true,
+                    help_text = _("Mark KOAssistant's buttons in the highlight menu with '(KOA)', to tell them apart from KOReader's own. Takes effect the next time the menu opens."),
+                },
                 {
                     id = "highlight_menu_actions",
                     type = "action",
@@ -2308,6 +2369,15 @@ local SettingsSchema = {
                     path = "features.enable_dictionary_hook",
                     default = true,
                     help_text = _("Add AI buttons to KOReader's dictionary popup."),
+                },
+                {
+                    id = "show_koa_suffix_in_dictionary",
+                    type = "toggle",
+                    text = _("Show (KOA) on KOAssistant's buttons"),
+                    path = "features.show_koa_suffix_in_dictionary",
+                    default = true,
+                    depends_on = { id = "enable_dictionary_hook", value = true },
+                    help_text = _("Mark KOAssistant's buttons in the dictionary popup with '(KOA)', to tell them apart from KOReader's own. Takes effect on the next lookup."),
                 },
                 {
                     id = "dictionary_popup_actions",
@@ -2443,6 +2513,14 @@ local SettingsSchema = {
                     path = "features.show_book_settings_in_file_browser",
                     default = true,
                     help_text = _("Show 'Book Settings' button when long-pressing books in the file browser."),
+                },
+                {
+                    id = "show_koa_suffix_in_file_browser",
+                    type = "toggle",
+                    text = _("Show (KOA) on KOAssistant's buttons"),
+                    path = "features.show_koa_suffix_in_file_browser",
+                    default = true,
+                    help_text = _("Mark KOAssistant's buttons in the file browser's long-press menu with '(KOA)', to tell them apart from KOReader's own."),
                 },
                 {
                     id = "file_browser_actions",
@@ -3206,11 +3284,19 @@ local SettingsSchema = {
                 },
                 {
                     id = "tool_whole_text",
-                    type = "toggle",
+                    type = "dropdown",
                     text = _("AI Book Tools: Read Short Texts Whole"),
-                    help_text = _("On by default. When the readable text (up to your position while spoiler protection is on) is short enough, the AI gets it in one piece instead of searching it: about 64,000 characters at Quick and Standard effort, 128,000 at Thorough (non-Latin scripts count two to three bytes per character). Off: always search, whatever the length."),
+                    help_text = _("When the readable text (up to your position while spoiler protection is on) is no longer than this, the AI gets it in one piece instead of searching it. Small: about 16,000 characters (some 4,000 tokens). Medium: 64,000, the default. Large: 128,000. Non-Latin scripts count two to three bytes per character. The text goes with every message of a chat, placed so that providers which cache prompts charge the repeats at a fraction; when the model's known limits cannot take it, the book is searched instead. Off: always search, whatever the length."),
                     path = "features.tool_whole_text",
+                    -- false and true are the old on/off switch's values, kept as Off and
+                    -- Medium so a stored choice reads right (B402; koassistant_book_tool_runner.lua wholeTextLimit)
                     default = true,
+                    options = {
+                        { value = false, label = _("Off") },
+                        { value = "small", label = _("Small (16,000 characters)") },
+                        { value = true, label = _("Medium (64,000 characters)") },
+                        { value = "large", label = _("Large (128,000 characters)") },
+                    },
                 },
                 {
                     id = "show_book_tools_indicator",

@@ -12,27 +12,28 @@ local function getDefaultModel(provider)
     -- This is intentional duplication for reliability (don't remove!)
     -- Primary source of truth remains: koassistant_model_lists.lua
     local fallbacks = {
-        anthropic = "claude-sonnet-5",
+        anthropic = "claude-sonnet-5-5",
         openai = "gpt-5.5",
-        deepseek = "deepseek-v4-pro",
-        gemini = "gemini-3.5-flash",
+        deepseek = "deepseek-flash",
+        gemini = "gemini-3.8-flash",
         ollama = "llama4",
         groq = "openai/gpt-oss-120b",
         mistral = "mistral-large-latest",
-        xai = "grok-4.5",
-        openrouter = "anthropic/claude-sonnet-5",
+        xai = "grok-4.7",
+        openrouter = "anthropic/claude-sonnet-5.5",
         requesty = "openai/gpt-4o-mini",
         opencode = "deepseek-v4-flash",
         opencode_go = "kimi-k3",
+        a2agent = "deepseek-v4-flash",
         qwen = "qwen3-max",
         kimi = "kimi-k2.6",
-        together = "deepseek-ai/DeepSeek-V4-Pro",
-        fireworks = "accounts/fireworks/models/deepseek-v4-pro",
+        together = "deepseek-ai/DeepSeek-V4-Pro-0813",
+        fireworks = "accounts/fireworks/models/gpt-oss-120b",
         sambanova = "gpt-oss-120b",
         cohere = "command-a-plus-05-2026",
         doubao = "doubao-seed-2.0-pro-32k",
         zai = "glm-5.2",
-        perplexity = "sonar-pro",
+        perplexity = "perplexity/sonar",
     }
     return fallbacks[provider] or "unknown"
 end
@@ -236,7 +237,8 @@ local ProviderDefaults = {
     perplexity = {
         provider = "perplexity",
         model = getDefaultModel("perplexity"),
-        base_url = "https://api.perplexity.ai/chat/completions",
+        -- Agent API (B078): the Sonar chat completions wire retired 2026-09-27
+        base_url = "https://api.perplexity.ai/v1/agent",
         additional_parameters = {
             temperature = 0.7,
             max_tokens = 16384
@@ -299,7 +301,10 @@ local ProviderDefaults = {
         provider = "nvidia",
         model = getDefaultModel("nvidia"),
         base_url = "https://integrate.api.nvidia.com/v1/chat/completions",
-        additional_parameters = { temperature = 0.7, max_tokens = 4096 }
+        -- 16384 like the other curated providers (was the community 4096): the curated
+        -- Nemotron models reason by default, and reasoning shares this budget with the
+        -- answer; all three accepted a 10M ask (clamped silently, 2026-09-30)
+        additional_parameters = { temperature = 0.7, max_tokens = 16384 }
     },
     nebius = {
         provider = "nebius",
@@ -341,6 +346,14 @@ local ProviderDefaults = {
         provider = "opencode_go",
         model = getDefaultModel("opencode_go"),
         base_url = "https://opencode.ai/zen/go/v1/chat/completions",
+        additional_parameters = { temperature = 0.7, max_tokens = 16384 }
+    },
+    -- A2Agent (#108): a gateway relaying DeepSeek, GLM, Kimi, Qwen and MiniMax
+    -- on the OpenAI chat wire; /v1/models is public.
+    a2agent = {
+        provider = "a2agent",
+        model = getDefaultModel("a2agent"),
+        base_url = "https://api.a2agent.me/v1/chat/completions",
         additional_parameters = { temperature = 0.7, max_tokens = 16384 }
     },
 }

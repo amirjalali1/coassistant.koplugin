@@ -126,6 +126,27 @@ local function harvestWebSources(event, prov)
         end
     end
 
+    -- Perplexity Agent API: the search runs as response.reasoning.* events (its
+    -- queries, then results with url + title; pages it read alike). The terminal
+    -- sweep below reads the search_results output items as well.
+    if event.type == "response.reasoning.search_queries" and type(event.queries) == "table" then
+        for _idx, q in ipairs(event.queries) do
+            addQuery(q)
+        end
+    elseif event.type == "response.reasoning.search_results" and type(event.results) == "table" then
+        for _idx, item in ipairs(event.results) do
+            if type(item) == "table" then
+                addSource(item.url, item.title)
+            end
+        end
+    elseif event.type == "response.reasoning.fetch_url_results" and type(event.contents) == "table" then
+        for _idx, page in ipairs(event.contents) do
+            if type(page) == "table" then
+                addSource(page.url, page.title)
+            end
+        end
+    end
+
     -- Z.AI: web_search results array ({link, title, content, refer, ...}) rides the
     -- FINAL chunk of a streamed response (alongside usage) — harvested once at end
     if type(event.web_search) == "table" then
@@ -151,6 +172,18 @@ local function harvestWebSources(event, prov)
             if type(item) == "table" then
                 if item.type == "web_search_call" and type(item.action) == "table" then
                     addQuery(item.action.query)
+                elseif item.type == "search_results" and type(item.results) == "table" then
+                    -- Perplexity Agent API
+                    if type(item.queries) == "table" then
+                        for _j, q in ipairs(item.queries) do
+                            addQuery(q)
+                        end
+                    end
+                    for _j, result in ipairs(item.results) do
+                        if type(result) == "table" then
+                            addSource(result.url, result.title)
+                        end
+                    end
                 elseif item.type == "message" and type(item.content) == "table" then
                     for _j, part in ipairs(item.content) do
                         if type(part) == "table" and type(part.annotations) == "table" then
@@ -873,6 +906,18 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
             end
         end
 
+        -- Orphan </think> (template-opened reasoning: no opener ever streamed, so
+        -- the think machine never engaged and the reasoning streamed as answer
+        -- text). Split it off before any notice is appended.
+        if #reasoning_buffer == 0 and not think_tag_active then
+            local answer, orphan_reasoning = require("koassistant_api.response_parser")
+                .splitOrphanThink(result)
+            if answer ~= result then
+                result = answer
+                if orphan_reasoning then reasoning_buffer[1] = orphan_reasoning end
+            end
+        end
+
         -- Append the incomplete-response notice, naming the actual cause
         if interrupted_detail then
             local ResponseParser = require("koassistant_api.response_parser")
@@ -890,6 +935,11 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
         if perplexity_citations then
             local ResponseParser = require("koassistant_api.response_parser")
             result = result .. ResponseParser.formatCitations(perplexity_citations)
+        end
+        -- Perplexity Agent API: normalize its citation markers, list the cited results
+        if web_prov.agent_results then
+            local ResponseParser = require("koassistant_api.response_parser")
+            result = ResponseParser.agentCitations(result, web_prov.agent_results)
         end
 
         -- Debug: Print token usage from accumulated SSE events
@@ -1331,8 +1381,28 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
         })
     end
 
+    -- Title: the action being run, else the generic state line. Capped so the
+    -- title stays on one line: InputDialog's title bar wraps, and the dialog
+    -- height above is sized for a single title line. The cap counts display
+    -- width, a 3- or 4-byte character (CJK, kana, Hangul) as two units.
+    local stream_title = _("AI is responding")
+    local req_title = settings and settings.request_title
+    if type(req_title) == "string" and req_title:find("%S") then
+        req_title = req_title:gsub("%s+", " "):match("^%s*(.-)%s*$")
+        local units, kept = 0, {}
+        stream_title = req_title
+        for ch in req_title:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+            units = units + (#ch >= 3 and 2 or 1)
+            if units > 32 then
+                stream_title = table.concat(kept) .. "…"
+                break
+            end
+            kept[#kept + 1] = ch
+        end
+    end
+
     streamDialog = InputDialog:new{
-        title = _("AI is responding"),
+        title = stream_title,
         inputtext_class = StreamText,
         input_face = Font:getFace("infofont", font_size),
 
@@ -1835,6 +1905,30 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
                                 if in_web_search_phase then scheduleUIUpdate() end
                             end
 
+                            -- Perplexity Agent API: its queries arrive complete on their own
+                            -- event (display-only), and each finished search_results item
+                            -- holds the ids its inline citations point at (footnotes at the
+                            -- end; kept on web_prov, not a new local: closure upvalue cap)
+                            if event.type == "response.reasoning.search_queries"
+                                    and type(event.queries) == "table" then
+                                for _idx, q in ipairs(event.queries) do
+                                    if type(q) == "string" and q ~= "" then
+                                        table.insert(web_queries, q)
+                                    end
+                                end
+                                rebuildWebSearchStatus()
+                                if in_web_search_phase then scheduleUIUpdate() end
+                            elseif event.type == "response.output_item.done"
+                                    and type(event.item) == "table"
+                                    and event.item.type == "search_results"
+                                    and type(event.item.results) == "table" then
+                                web_prov.agent_results = web_prov.agent_results or {}
+                                for _idx, result in ipairs(event.item.results) do
+                                    table.insert(web_prov.agent_results, result)
+                                end
+                                if #event.item.results > 0 then web_search_used = true end
+                            end
+
                             -- Handle reasoning content (displayed with header, saved separately)
                             if type(reasoning) == "string" and #reasoning > 0 then
                                 table.insert(reasoning_buffer, reasoning)
@@ -2178,6 +2272,10 @@ function StreamHandler:extractContentFromSSE(event)
         end
         if ev_type == "response.output_item.added" and type(event.item) == "table"
                 and event.item.type == "web_search_call" then
+            return "__WEB_SEARCH_START__", nil
+        end
+        -- Perplexity Agent API: a search starts with its queries event
+        if ev_type == "response.reasoning.search_queries" then
             return "__WEB_SEARCH_START__", nil
         end
         return nil, nil

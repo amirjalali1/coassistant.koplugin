@@ -616,7 +616,7 @@ function ImageGenerator._generateImpl(word, config_table, settings, book_info, o
                 responseModalities = { "IMAGE", "TEXT" },
             },
         }
-        request_body_str = json.encode(request_body)
+        request_body_str = BaseHandler.encodeBody(request_body)
     else
         -- OpenAI-style images/generations request. Parameter support diverges
         -- (verified live 2026-07-16): OpenAI's gpt-image models reject
@@ -640,7 +640,7 @@ function ImageGenerator._generateImpl(word, config_table, settings, book_info, o
                 if aspect and aspect ~= "default" then request_body.aspect_ratio = aspect end
             end
         end
-        request_body_str = json.encode(request_body)
+        request_body_str = BaseHandler.encodeBody(request_body)
     end
 
     -- Progress window: the tool-status dialog (setText handle + Stop button)

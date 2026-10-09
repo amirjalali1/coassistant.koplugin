@@ -25,14 +25,32 @@
 --                                                      # reasoning default? temp rule still right?
 --   lua tests/model_audit.lua --recheck --ceilings     # + output-ceiling check (3rd request/model;
 --                                                      # gemini rides free metadata instead)
+--   lua tests/model_audit.lua --pins [providers]       # the largest action max_tokens pin (the
+--                                                      # X-Ray's 65536) to every listed model,
+--                                                      # curated and community, that no ceiling
+--                                                      # clamps (LIVE, 1 request each); a refusal
+--                                                      # must parse (B355, the Cohere class)
+--   lua tests/model_audit.lua --keys [providers]       # ONE request per keyed provider on its
+--                                                      # default model: which keys work, which
+--                                                      # accounts are empty or on a plan without it
+--   Every mode that sends requests ends with SPEND: the tokens each reply reported,
+--   per provider, and an estimate at OpenRouter's list prices (its public catalog,
+--   free). Discovery also lists where a NEW direct id is served but not curated
+--   (OpenRouter, Perplexity, Requesty, the OpenCode doors, A2Agent) and, on a full
+--   run, OpenRouter's releases of the last 30 days from vendors we curate that no
+--   list carries. A 429 stating a zero allowance (x-ratelimit-limit-*: 0) is the
+--   key's plan: never retried, graded as the key's limitation, never as drift.
 --   Options: --verbose   full error bodies + ignored-id lists
+--   Env: KOA_PROBE_MAX_TOKENS=900  cap chat-wire token asks (free per-minute output buckets)
+--        KOA_KEY_ALIAS_<PROVIDER>  pick a key entry by alias (default: the first)
 --
--- Probes make real API micro-requests (max_tokens 32..1024); a full battery is
+-- Probes make real API micro-requests (max_tokens 32..4096); a full battery is
 -- ~20-30 requests (T7 hardening 2026-08-14 added the temperature-value sweep,
 -- the real-dispatch-shape leg incl. the Anthropic cache-engagement pair, and
 -- the two-round tool replay through the plugin's own ToolWire adapters with
 -- the runner's real specs), fractions of a cent on most providers. Perplexity
--- caveat: every request also bills one web search.
+-- (Agent API battery, bodies from the real handler): every web-on request also
+-- bills one search.
 --
 -- Requires luarocks modules (luasocket, luasec, dkjson). Run this FIRST:
 --   eval "$(luarocks --lua-version 5.5 path)"
@@ -105,6 +123,7 @@ ModelAudit.NOISE = {
     openai = {
         "davinci", "babbage", "text-", "realtime", "computer-use", "codex",
         "search-preview", "chatgpt", "instruct", "-pro",
+        "gpt-live",  -- voice model: "not a chat model" on /v1/chat/completions (2026-09-28)
     },
     gemini = {
         "gemma", "aqa", "learnlm", "-live", "banana", "robotics", "computer-use",
@@ -116,6 +135,13 @@ ModelAudit.NOISE = {
         "codestral", "devstral", "-code", "fim", "vibe", "leanstral",  -- coding/agent side products
     },
     xai = { "imagine" },  -- image/video gen
+    -- Model Studio lists speech, realtime, translation, omni-modal and
+    -- vision-language variants beside the chat models (catalog 2026-09-28).
+    qwen = {
+        "asr", "tts", "livetranslate", "realtime", "omni", "qwen-mt", "character",
+        "s2s", "tingwu", "captioner", "wan2", "z-image", "-vl-", "qvq",
+    },
+    together = { "lora", "-base" },  -- LoRA adapters and base (non-instruct) weights
 }
 
 -- Returns the matching fragment (truthy) when the id should be ignored.
@@ -169,6 +195,37 @@ ModelAudit.DELIBERATE_SKIPS = {
     xai = {
         ["grok-4.20-multi-agent-0309"] = "specialised multi-agent variant",
     },
+    -- Model refresh 2026-09-28 (docs/model_refresh_2026-09.md):
+    fireworks = {
+        ["accounts/fireworks/models/qwen3p8-2p4t-a95b"] = "battery green 2026-09-28; qwen3p8-max holds the Qwen slot",
+        ["accounts/fireworks/routers/glm-5p3-fast"] = "speed-routed duplicate of curated glm-5p3 (battery green)",
+        ["accounts/fireworks/routers/kimi-k3-fast"] = "speed-routed duplicate of curated kimi-k3 (battery green)",
+        ["accounts/fireworks/routers/glm-5p2-fast"] = "speed-routed duplicate of curated glm-5p2",
+        ["accounts/fireworks/models/deepseek-v4-pro-0813"] = "listed but 'not deployed' on request 2026-09-28",
+        ["accounts/fireworks/models/deepseek-v4-flash-vision-exp"] = "vision experiment of the flash line",
+        -- Retired 2026-09-28/29 (still listed, "not deployed" on request; _retired moves saved picks)
+        ["accounts/fireworks/models/deepseek-v4-pro"] = "listed but 'not deployed' on request 2026-09-28 (retired)",
+        ["accounts/fireworks/models/deepseek-v4-flash-0731"] = "listed but 'not deployed' on request 2026-09-28 (retired)",
+        ["accounts/fireworks/models/kimi-k2p6"] = "listed but 'not deployed' on request 2026-09-28 (retired)",
+        ["accounts/fireworks/models/glm-5p2"] = "listed but 'not found' on request 2026-09-29 (retired)",
+    },
+    kimi = {
+        ["kimi-k2.7-code"] = "coding model; forced tool calls need thinking off (2026-09-28)",
+        ["kimi-k2.7-code-highspeed"] = "coding model; forced tool calls need thinking off (2026-09-28)",
+    },
+    qwen = {
+        ["qwen3.8-2.4t-a95b"] = "battery green 2026-09-28; qwen3.8-max holds the flagship slot",
+        ["qwen3.8-27b"] = "battery green 2026-09-28; small open-weight sibling of the curated 3.8 pair",
+        ["qwen3.7-plus"] = "battery green 2026-09-28; superseded by the curated 3.8 pair",
+    },
+    cohere = {
+        ["command-a-03-2025"] = "previous default, superseded by command-a-plus-05-2026",
+        ["command-r-08-2024"] = "older generation",
+        ["command-r-plus-08-2024"] = "older generation",
+        ["command-a-vision-07-2025"] = "vision model",
+        ["c4ai-aya-vision-32b"] = "vision model",
+        ["north-mini-code-1-0"] = "coding model",
+    },
 }
 
 -- Announcement watch: ids we KNOW exist (announcements, direct probes) that
@@ -178,11 +235,126 @@ ModelAudit.DELIBERATE_SKIPS = {
 -- prints a standing reminder per entry and upgrades it to "NOW LISTED - probe"
 -- / "now curated - delete" as state changes; delete an entry once the id is
 -- curated or abandoned.
-ModelAudit.WATCH = {
-    zai = {
-        ["glm-5.3"] = "released 2026-08-14; probe got 'no permission' (staged rollout) - re-probe",
-    },
+ModelAudit.WATCH = {}
+
+-- Providers whose no_sampling_params rows follow a vendor's documented deprecation
+-- while the models still accept a temperature: the strip is deliberate, so the
+-- recheck does not grade it "possibly stale" on every model.
+ModelAudit.SAMPLING_DEPRECATED = {
+    gemini = "Google deprecated sampling params for every Gemini 3 model (changelog 2026-07-21)",
 }
+
+-- Reviewed catalogs, for lists that carry no release dates (every id shares
+-- one `created` value: Perplexity 0, NVIDIA 1993, A2Agent one constant). Such a
+-- list cannot split new from old, so everything uncurated would print as NEW
+-- on every run. Ids named here were looked at on `date` (probed or judged by
+-- name) and print as one count line (--verbose lists them); an id added to the
+-- catalog since prints as NEW. Refresh an entry at each review.
+ModelAudit.REVIEWED = {
+    -- #108 seed rule (docs/a2agent_provider_plan.md): the newest model per family
+    -- was probed and curated; these older ones stay reachable via Fetch models.
+    a2agent = { date = "2026-09-27", ids = {
+            "Kimi-K2.5", "MiniMax-M2.5", "MiniMax-M2.7", "glm-5", "glm-5.1", "glm-5.2",
+            "kimi-k2.7-code", "qwen3.5-plus", "qwen3.6-flash", "qwen3.7-flash", "qwen3.7-max",
+            "qwen3.7-plus",
+    } },
+    -- Catalog probes 2026-08-20/29 plus the 2026-09-28 round: kimi-k3, glm-5.3,
+    -- glm-5.3-flash and deepseek-v4.1-flash time out, nemotron-nano-3-30b-a3b
+    -- 404s, nemotron-3.5-lightning hangs on constraint prompts (see the model
+    -- list note); the rest are older generations or not chat models (reward,
+    -- parse, safety, translation, vision, clip, video detection).
+    nvidia = { date = "2026-09-28", ids = {
+            "01-ai/yi-large", "adept/fuyu-8b", "ai21labs/jamba-1.5-large-instruct",
+            "aisingapore/sea-lion-7b-instruct", "bigcode/starcoder2-15b",
+            "databricks/dbrx-instruct", "deepseek-ai/deepseek-coder-6.7b-instruct",
+            "deepseek-ai/deepseek-v4.1-flash", "google/codegemma-1.1-7b",
+            "google/codegemma-7b", "google/deplot", "google/diffusiongemma-26b-a4b-it",
+            "google/gemma-2b", "google/gemma-3-12b-it", "google/gemma-3-4b-it",
+            "google/gemma-4-31b-it", "google/recurrentgemma-2b",
+            "ibm/granite-3.0-3b-a800m-instruct", "ibm/granite-3.0-8b-instruct",
+            "ibm/granite-34b-code-instruct", "ibm/granite-8b-code-instruct",
+            "meta/codellama-70b", "meta/llama-3.2-11b-vision-instruct",
+            "meta/llama-3.2-90b-vision-instruct", "meta/llama2-70b", "meta/muse-glimmer-30b",
+            "microsoft/kosmos-2", "microsoft/phi-3-vision-128k-instruct",
+            "microsoft/phi-3.5-moe-instruct", "mistralai/codestral-22b-instruct-v0.1",
+            "mistralai/mistral-7b-instruct-v0.3", "mistralai/mistral-large",
+            "mistralai/mistral-large-2-instruct", "mistralai/mixtral-8x22b-v0.1",
+            "moonshotai/kimi-k2.6", "moonshotai/kimi-k3",
+            "nv-mistralai/mistral-nemo-12b-instruct", "nvidia/ai-synthetic-video-detector",
+            "nvidia/cosmos-reason2-8b", "nvidia/ising-calibration-1.5-31b",
+            "nvidia/llama-3.1-nemotron-51b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct",
+            "nvidia/llama-3.1-nemotron-ultra-253b-v1", "nvidia/llama3-chatqa-1.5-70b",
+            "nvidia/mistral-nemo-minitron-8b-8k-instruct",
+            "nvidia/nemotron-3.5-content-safety", "nvidia/nemotron-3.5-lightning-30b-a3b",
+            "nvidia/nemotron-4-340b-instruct", "nvidia/nemotron-4-340b-reward",
+            "nvidia/nemotron-nano-3-30b-a3b", "nvidia/nemotron-parse",
+            "nvidia/nemotron-parse-2.0", "nvidia/neva-22b", "nvidia/nvclip",
+            "nvidia/riva-translate-4b-instruct", "nvidia/riva-translate-4b-instruct-v1.1",
+            "nvidia/riva-translate-4b-instruct-v2", "nvidia/vila", "poolside/laguna-xs-2.1",
+            "writer/palmyra-creative-122b", "writer/palmyra-fin-70b-32k",
+            "writer/palmyra-med-70b", "writer/palmyra-med-70b-32k", "z-ai/glm-5.3",
+            "z-ai/glm-5.3-flash", "zyphra/zamba2-7b-instruct",
+    } },
+    -- The whole /v1/models catalog probed through the handler 2026-09-28
+    -- (docs/perplexity_agent_plan.md, round 2); exceptions live in
+    -- capabilities.perplexity.
+    -- Model Studio: the other vendors' models it hosts (maintainer 2026-09-30: not
+    -- curated here, the gateways carry them) and older or dated Qwen variants the
+    -- curated 3.8 pair supersedes. A new id still prints as NEW.
+    qwen = { date = "2026-09-30", ids = {
+            "ZHIPU/GLM-5.3", "deepseek-v3.2", "deepseek-v4-flash", "deepseek-v4-flash-0731",
+            "deepseek-v4-pro", "deepseek-v4-pro-0813", "deepseek-v4.1-flash", "glm-5.1",
+            "glm-5.2", "glm-5.2-fast-preview", "glm-5.3", "glm-5.3-prime", "kimi-k2.7-code",
+            "kimi-k3", "kimi/kimi-k3", "qwen-flash", "qwen-max", "qwen-plus",
+            "qwen3-235b-a22b-thinking-2507", "qwen3-coder-480b-a35b-instruct",
+            "qwen3-coder-flash", "qwen3-coder-next", "qwen3.5-122b-a10b", "qwen3.5-35b-a3b",
+            "qwen3.5-397b-a17b", "qwen3.6-27b", "qwen3.6-35b-a3b", "qwen3.6-flash",
+            "qwen3.6-flash-2026-04-16", "qwen3.6-max-preview", "qwen3.6-plus",
+            "qwen3.6-plus-2026-04-02", "qwen3.7-flash", "qwen3.7-flash-2026-07-15", "qwen3.7-max",
+            "qwen3.7-max-2026-05-17", "qwen3.7-max-2026-05-20", "qwen3.7-max-2026-06-08",
+            "qwen3.7-max-preview", "qwen3.7-plus-2026-05-26"
+    } },
+    perplexity = { date = "2026-09-28", ids = {
+            "anthropic/claude-fable-5", "anthropic/claude-fable-5-1",
+            "anthropic/claude-haiku-4-5", "anthropic/claude-opus-4-5",
+            "anthropic/claude-opus-4-6", "anthropic/claude-opus-4-7",
+            "anthropic/claude-opus-4-8", "anthropic/claude-opus-5",
+            "anthropic/claude-opus-5-5", "anthropic/claude-sonnet-4-5",
+            "anthropic/claude-sonnet-4-6",
+            "anthropic/claude-sonnet-5",   -- listed until 2026-09-29, replaced by sonnet-5-5
+            "google/gemini-3-flash-preview",
+            "google/gemini-3.1-flash-lite", "google/gemini-3.1-pro-preview",
+            "google/gemini-3.5-flash", "google/gemini-3.5-flash-lite",
+            "google/gemini-3.6-flash", "google/gemini-3.7-flash", "openai/gpt-5",
+            "openai/gpt-5-mini", "openai/gpt-5-nano", "openai/gpt-5.1", "openai/gpt-5.2",
+            "openai/gpt-5.3-codex", "openai/gpt-5.4", "openai/gpt-5.4-mini",
+            "openai/gpt-5.4-nano", "openai/gpt-5.5", "openai/gpt-5.6-luna",
+            "openai/gpt-5.6-sol", "openai/gpt-5.6-terra", "openai/gpt-6-astra",
+            "perplexity/deepseek-v4-pro-0813", "perplexity/glm-5.3",
+            "perplexity/glm-5.3-flash", "perplexity/kimi-k3",
+            "perplexity/nemotron-3-ultra-550b-a55b", "xai/grok-4.20-multi-agent",
+            "xai/grok-4.20-non-reasoning", "xai/grok-4.20-reasoning", "xai/grok-4.3",
+            "xai/grok-4.5", "xai/grok-4.6",
+    } },
+}
+
+-- Pure: true when a fetched list's timestamps carry no release information
+-- (two or more dated entries, all sharing one value).
+function ModelAudit.undatedList(fetched)
+    local first, count = nil, 0
+    for _id, meta in pairs(fetched or {}) do
+        local ts = ModelAudit.modelTimestamp(meta)
+        if ts then
+            count = count + 1
+            if first == nil then
+                first = ts
+            elseif ts ~= first then
+                return false
+            end
+        end
+    end
+    return count >= 2
+end
 
 -- Pure: classify a watched id against the curated array and the fetched list.
 function ModelAudit.watchStatus(id, curated_set, fetched)
@@ -274,14 +446,21 @@ end
 ModelAudit.RECENT_SECONDS = 180 * 86400  -- uncurated ids older than this go to `stale`
 
 -- curated: array of ids; fetched: map id -> meta; now: os.time() (nil = no
--- staleness split, everything uncurated lands in `new`).
--- Returns { new={}, stale={}, removed={}, snapshots={}, ignored={}, deliberate={}, known=n }.
-function ModelAudit.diffLists(provider, curated, fetched, now)
+-- staleness split, everything uncurated lands in `new`). opts.unlisted(id) =
+-- true for curated ids the list never carries (Perplexity presets): they are
+-- never reported removed.
+-- Returns { new={}, stale={}, removed={}, snapshots={}, ignored={}, deliberate={},
+-- reviewed={}, known=n }.
+function ModelAudit.diffLists(provider, curated, fetched, now, opts)
     local result = { new = {}, stale = {}, removed = {}, snapshots = {}, ignored = {},
-                     deliberate = {}, known = 0 }
+                     deliberate = {}, reviewed = {}, known = 0 }
     local curated_set = {}
     for _i, id in ipairs(curated) do curated_set[id] = true end
     local skips = ModelAudit.DELIBERATE_SKIPS[provider] or {}
+    local reviewed_set = {}
+    local reviewed = ModelAudit.REVIEWED[provider]
+    for _i, id in ipairs(reviewed and reviewed.ids or {}) do reviewed_set[id] = true end
+    local unlisted = opts and opts.unlisted
 
     local fetched_ids = {}
     for id in pairs(fetched) do table.insert(fetched_ids, id) end
@@ -296,6 +475,8 @@ function ModelAudit.diffLists(provider, curated, fetched, now)
             table.insert(result.ignored, id)
         elseif skips[id] then
             table.insert(result.deliberate, { id = id, reason = skips[id] })
+        elseif reviewed_set[id] then
+            table.insert(result.reviewed, id)
         else
             -- No timestamp = assume recent (loud beats silent for a discovery tool)
             local ts = ModelAudit.modelTimestamp(fetched[id])
@@ -307,7 +488,9 @@ function ModelAudit.diffLists(provider, curated, fetched, now)
         end
     end
     for _i, id in ipairs(curated) do
-        if not fetched[id] then table.insert(result.removed, id) end
+        if not fetched[id] and not (unlisted and unlisted(id)) then
+            table.insert(result.removed, id)
+        end
     end
     return result
 end
@@ -331,12 +514,41 @@ end
 -- largest-number rule would return 20480, not the bound, so the stated
 -- context length is checked FIRST (same order as the runtime's
 -- parseMaxTokensError; T7 P1 fix 2026-08-14).
+-- Pure: is this refusal about the CONTEXT window rather than the output cap?
+function ModelAudit.isContextRefusal(err)
+    local text = tostring(err):lower()
+    return text:find("context length", 1, true) ~= nil or text:find("context window", 1, true) ~= nil
+end
+
+-- Pure: the largest max_completion_tokens across OpenRouter endpoints, or nil
+-- when none publishes one. Largest, not smallest: OpenRouter answers an ask
+-- above an endpoint's cap (32768 on gpt-oss-120b, whose smallest endpoint caps
+-- at 4096; 200000 on a model capped at 128000, 2026-09-29), so a small endpoint
+-- never refuses a request and must not shrink our default.
+function ModelAudit.endpointsCeiling(endpoints)
+    local cap
+    for _i, ep in ipairs(type(endpoints) == "table" and endpoints or {}) do
+        local n = type(ep) == "table" and ep.max_completion_tokens
+        if type(n) == "number" and n > 0 and (not cap or n > cap) then cap = n end
+    end
+    return cap
+end
+
 function ModelAudit.parseCeiling(err, sent)
     local text = tostring(err)
     -- A per-minute admission refusal ("Limit 8000, Requested 10000211") states
     -- the PLAN's allowance, not the model's ceiling (#106; a strict Groq plan
     -- answers the oversized request this way): never draft it as a ceiling.
     if RateLimits.hasPerMinuteSignature(text) then return nil end
+    -- Request ids carry digit runs ("request_id: 99eb16e0-7318-...": a
+    -- deepseek-flash run drafted 1605698 out of one, 2026-09-28).
+    text = text:gsub("[Rr]equest[_ ]?[Ii][Dd][^%)%]\n]*", "")
+    -- A stated range ("the valid range of max_tokens is [1, 393216]") is the bound.
+    local range_max = text:match("%[%s*%d+%s*,%s*(%d+)%s*%]")
+    if range_max then
+        local n = tonumber(range_max)
+        if n and n >= 1024 and n < sent then return n end
+    end
     local ctx = text:match("context length[^%d]*(%d+)")
         or text:match("context window[^%d]*(%d+)")
     if ctx then
@@ -393,11 +605,254 @@ function ModelAudit.isTransient(code, text)
     if code == nil then return true end
     local n = tonumber(code)
     if n == 429 or (n and n >= 500 and n < 600) then return true end
+    -- A refused key or an empty account never clears by retrying, whatever the
+    -- wording invites (Together's 402 ends "... and try again", 2026-09-30).
+    if n == 401 or n == 402 then return false end
     local lower = tostring(text or ""):lower()
+    -- A validation refusal stays a verdict even when its wording invites a
+    -- retry (Gemini's MINIMAL rejection: "is not supported ... Please retry
+    -- with other thinking levels" drew two useless retries, 2026-09-28).
+    if lower:find("not supported", 1, true) or lower:find("unsupported", 1, true)
+            or lower:find("invalid", 1, true) then
+        return false
+    end
     for _i, frag in ipairs(ModelAudit.TRANSIENT_FRAGMENTS) do
         if lower:find(frag, 1, true) then return true end
     end
     return false
+end
+
+-- Pure: the rate-limit header stating a ZERO allowance, or nil. A plan with no
+-- access to a model answers 429 with x-ratelimit-limit-req-minute: 0 (Mistral's
+-- medium, small and magistral on our key, 2026-09-28 and -30): the key's plan,
+-- not a busy server, so the seam never retries it (it cost ~45 s a model) and
+-- the recheck grades it the key's limitation, not drift.
+function ModelAudit.planLimitHeader(headers)
+    if type(headers) ~= "table" then return nil end
+    local names = {}
+    for name in pairs(headers) do names[#names + 1] = tostring(name) end
+    table.sort(names)
+    for _i, name in ipairs(names) do
+        local lname = name:lower()
+        if lname:find("^x%-ratelimit%-limit") and tostring(headers[name]):match("^%s*0%s*$") then
+            return lname
+        end
+    end
+    return nil
+end
+
+local function tokenCount(v)
+    return type(v) == "number" and v or 0
+end
+
+-- The usage one decoded reply (or one stream event) reports: input, output; nil
+-- when it reports none.
+local function usageFields(t)
+    if type(t) ~= "table" then return nil end
+    local u = t.usage
+    if type(u) ~= "table" and type(t.response) == "table" then u = t.response.usage end  -- Responses stream event
+    if type(u) ~= "table" and type(t.message) == "table" then u = t.message.usage end    -- Anthropic message_start
+    if type(u) == "table" then
+        -- Cohere bills billed_units (tokens = what ran); the rest report flat fields
+        local b = type(u.billed_units) == "table" and u.billed_units
+            or type(u.tokens) == "table" and u.tokens or u
+        local tin = tokenCount(b.prompt_tokens) + tokenCount(b.input_tokens)
+            + tokenCount(u.cache_creation_input_tokens) + tokenCount(u.cache_read_input_tokens)
+        local tout = tokenCount(b.completion_tokens) + tokenCount(b.output_tokens)
+        -- xAI counts reasoning outside completion_tokens (total = prompt + completion
+        -- + reasoning), OpenAI inside (total = prompt + completion)
+        local beyond = tokenCount(u.total_tokens) - tokenCount(b.prompt_tokens) - tokenCount(b.completion_tokens)
+        if tokenCount(b.completion_tokens) > 0 and beyond > 0 then tout = tout + beyond end
+        if tin > 0 or tout > 0 then return tin, tout end
+    end
+    local m = t.usageMetadata   -- Gemini: thoughts bill as output
+    if type(m) == "table" then
+        return tokenCount(m.promptTokenCount), tokenCount(m.candidatesTokenCount) + tokenCount(m.thoughtsTokenCount)
+    end
+    return nil
+end
+
+-- Pure: input and output tokens one reply reports (0, 0 when none): a JSON
+-- body, or a stream's events, keeping the largest value each field reaches
+-- (OpenAI's final chunk, Anthropic's message_start + message_delta, Gemini's
+-- running counts, the Responses completed event).
+function ModelAudit.usageOf(decoded, raw)
+    local tin, tout = usageFields(decoded)
+    if tin then return tin, tout end
+    tin, tout = 0, 0
+    if type(raw) ~= "string" or not JSON_OK then return tin, tout end
+    for line in raw:gmatch("[^\r\n]+") do
+        local payload = line:match("^data:%s*(%{.*%})%s*$")
+        if payload then
+            local ok, ev = pcall(json.decode, payload)
+            local i, o = usageFields(ok and ev or nil)
+            if i then
+                if i > tin then tin = i end
+                if o > tout then tout = o end
+            end
+        end
+    end
+    return tin, tout
+end
+
+-- Adds one request to the spend tally: provider -> { requests, input, output,
+-- searches, models = { [id] = { input, output } } }.
+function ModelAudit.tallyAdd(tally, provider, model, tin, tout, searched)
+    local row = tally[provider]
+    if not row then
+        row = { requests = 0, input = 0, output = 0, searches = 0, models = {} }
+        tally[provider] = row
+    end
+    row.requests = row.requests + 1
+    row.input, row.output = row.input + (tin or 0), row.output + (tout or 0)
+    if searched then row.searches = row.searches + 1 end
+    local key = tostring(model or "?")
+    local m = row.models[key] or { input = 0, output = 0 }
+    m.input, m.output = m.input + (tin or 0), m.output + (tout or 0)
+    row.models[key] = m
+end
+
+-- An id's last path segment, folded the way OpenRouter spells versions (5.5 and
+-- 5-5 alike; Fireworks' 5p3 = 5.3).
+local function tailKey(id)
+    local tail = tostring(id):match("([^/]+)$") or tostring(id)
+    return (orNormalize(tail):gsub("(%d)p(%d)", "%1-%2"))
+end
+
+-- Pure: OpenRouter's per-token list prices (input, output) for provider/model,
+-- or nil: the id itself (OpenRouter, and gateways that spell ids its way), the
+-- vendor/model spelling (OPENROUTER_PREFIX), then the id's last segment against
+-- the catalog's (hosts with their own spellings). Variable prices (-1) are nil.
+function ModelAudit.priceFor(or_models, provider, model)
+    if type(or_models) ~= "table" or type(model) ~= "string" then return nil end
+    local meta = or_models[model]
+    if not meta then
+        local _slug
+        _slug, meta = ModelAudit.openrouterLookup(or_models, provider, model)
+    end
+    if not meta then
+        local want, ids = tailKey(model), {}
+        for id in pairs(or_models) do
+            if not id:find(":", 1, true) and tailKey(id) == want then ids[#ids + 1] = id end
+        end
+        table.sort(ids)
+        meta = ids[1] and or_models[ids[1]]
+    end
+    local p = type(meta) == "table" and type(meta.pricing) == "table" and meta.pricing
+    local pin, pout = p and tonumber(p.prompt), p and tonumber(p.completion)
+    if pin and pout and pin >= 0 and pout >= 0 then return pin, pout end
+    return nil
+end
+
+-- Pure: the SPEND rows (per provider: requests, tokens, searches, an estimated
+-- cost or nil when no model it ran is priced), the run's total, and how many
+-- models with tokens the catalog does not price.
+function ModelAudit.spendRows(tally, or_models)
+    local rows, total, unpriced, names = {}, 0, 0, {}
+    for p in pairs(tally or {}) do names[#names + 1] = p end
+    table.sort(names)
+    for _i, p in ipairs(names) do
+        local row = tally[p]
+        local cost, priced = 0, false
+        for model, t in pairs(row.models) do
+            local pin, pout = ModelAudit.priceFor(or_models, p, model)
+            if pin then
+                cost = cost + t.input * pin + t.output * pout
+                priced = true
+            elseif t.input + t.output > 0 then
+                unpriced = unpriced + 1
+            end
+        end
+        local r = { provider = p, requests = row.requests, input = row.input, output = row.output,
+                    searches = row.searches }
+        if priced then
+            r.cost = cost
+            total = total + cost
+        end
+        rows[#rows + 1] = r
+    end
+    return rows, total, unpriced
+end
+
+-- Gateways that carry other vendors' models under their own spellings.
+ModelAudit.GATEWAYS = { "openrouter", "perplexity", "requesty", "opencode", "opencode_go", "a2agent" }
+ModelAudit.GATEWAY_SET = {}
+for _i, g in ipairs(ModelAudit.GATEWAYS) do ModelAudit.GATEWAY_SET[g] = true end
+
+-- Pure: where a vendor's NEW id is served but not curated: "gateway id" entries
+-- from each gateway's fetched list (id -> meta) whose last segment matches and
+-- whose prefix is the vendor's (or the gateway's own, or none): a host's copy
+-- under a gateway ("deepinfra/...") is not the vendor's release. Variants
+-- (":batch", ":free") skipped.
+function ModelAudit.mirrorsOf(provider, model, gateways, lists)
+    local want, hits, names = tailKey(model), {}, {}
+    for g in pairs(gateways or {}) do names[#names + 1] = g end
+    table.sort(names)
+    for _i, g in ipairs(names) do
+        local curated = {}
+        for _j, id in ipairs(type(lists[g]) == "table" and lists[g] or {}) do curated[id] = true end
+        local ids = {}
+        for id in pairs(type(gateways[g]) == "table" and gateways[g] or {}) do
+            local vendor = id:match("^([^/]+)/")
+            if not id:find(":", 1, true) and not curated[id] and tailKey(id) == want
+                    and (vendor == nil or vendor == g or ModelAudit.VENDOR_PROVIDER[vendor] == provider) then
+                ids[#ids + 1] = id
+            end
+        end
+        table.sort(ids)
+        for _j, id in ipairs(ids) do hits[#hits + 1] = g .. " " .. id end
+    end
+    return hits
+end
+
+-- Vendor prefix -> the direct provider that curates the vendor: OpenRouter's
+-- spellings, then Perplexity's and Requesty's own (xai, zai, moonshot, alibaba).
+ModelAudit.VENDOR_PROVIDER = {
+    anthropic = "anthropic", openai = "openai", google = "gemini", mistralai = "mistral",
+    ["x-ai"] = "xai", deepseek = "deepseek", ["z-ai"] = "zai", moonshotai = "kimi", qwen = "qwen",
+    xai = "xai", zai = "zai", mistral = "mistral", moonshot = "kimi", alibaba = "qwen",
+}
+-- The vendors' own providers (hosts such as Fireworks or Together serve copies).
+ModelAudit.VENDOR_SET = {}
+for _vendor, provider in pairs(ModelAudit.VENDOR_PROVIDER) do ModelAudit.VENDOR_SET[provider] = true end
+ModelAudit.RELEASE_DAYS = 30
+
+-- Pure: OpenRouter catalog ids from a vendor we curate, created within `days`
+-- of `now`, on no list (OpenRouter's, Perplexity's, Requesty's, or the vendor's
+-- own provider's, under any spelling), not noise there, variants and dated
+-- snapshots of a curated id skipped: the releases a keyless or skipped
+-- discovery would hide. Newest first.
+function ModelAudit.vendorReleases(or_models, lists, now, days)
+    local listed = {}
+    for _i, g in ipairs({ "openrouter", "perplexity", "requesty" }) do
+        for _j, id in ipairs(type(lists[g]) == "table" and lists[g] or {}) do listed[orNormalize(id)] = true end
+    end
+    local direct, out = {}, {}
+    for id, meta in pairs(type(or_models) == "table" and or_models or {}) do
+        local vendor, tail = id:match("^([^/]+)/(.+)$")
+        local provider = vendor and ModelAudit.VENDOR_PROVIDER[vendor]
+        local created = ModelAudit.modelTimestamp(meta)
+        if provider and created and now - created <= days * 86400 and not id:find(":", 1, true)
+                and not listed[orNormalize(id)] and not ModelAudit.isNoise(provider, tail) then
+            local d = direct[provider]
+            if not d then
+                d = { keys = {}, set = {} }
+                for _j, cid in ipairs(type(lists[provider]) == "table" and lists[provider] or {}) do
+                    d.keys[tailKey(cid)] = true
+                    d.set[cid] = true
+                end
+                direct[provider] = d
+            end
+            if not d.keys[tailKey(tail)] and not ModelAudit.isSnapshotOf(tail, d.set) then
+                out[#out + 1] = { id = id, created = created }
+            end
+        end
+    end
+    table.sort(out, function(a, b)
+        if a.created ~= b.created then return a.created > b.created end
+        return a.id < b.id
+    end)
+    return out
 end
 
 --------------------------------------------------------------------------------
@@ -446,7 +901,14 @@ local function httpGet(url, headers)
     return text, err
 end
 
--- POST JSON; returns http_code (number|string), decoded (table|nil), raw text.
+-- What the mode loops are checking (the seam sees only URLs and bodies), the
+-- last POST's zero-allowance header, and the run's spend tally.
+local RUN = { provider = nil, model = nil }
+local LAST = { plan_limit = nil }
+local TALLY = {}
+
+-- POST JSON; returns http_code (number|string), decoded (table|nil), raw text,
+-- response headers.
 local function httpPostJsonOnce(url, headers, body_tbl)
     local https = require("ssl.https")
     local ltn12 = require("ltn12")
@@ -455,7 +917,7 @@ local function httpPostJsonOnce(url, headers, body_tbl)
     local hdrs = { ["Content-Type"] = "application/json",
                    ["Content-Length"] = tostring(#payload) }
     for k, v in pairs(headers or {}) do hdrs[k] = v end
-    local ok, code = https.request({
+    local ok, code, rheaders = https.request({
         url = url, method = "POST", headers = hdrs,
         source = ltn12.source.string(payload),
         sink = ltn12.sink.table(chunks),
@@ -467,14 +929,21 @@ local function httpPostJsonOnce(url, headers, body_tbl)
         local dok, d = pcall(json.decode, text)
         if dok and type(d) == "table" then decoded = d end
     end
-    return tonumber(code) or code, decoded, text
+    if RUN.provider then
+        local tin, tout = ModelAudit.usageOf(decoded, text)
+        local searched = RUN.provider == "perplexity" and (ModelAudit.agentSearchFacts(decoded))
+        ModelAudit.tallyAdd(TALLY, RUN.provider, body_tbl.model or RUN.model, tin, tout, searched)
+    end
+    return tonumber(code) or code, decoded, text, rheaders
 end
 
 local function httpPostJson(url, headers, body_tbl)
-    local code, decoded, raw
+    local code, decoded, raw, rheaders
     for attempt = 1, #RETRY_DELAYS + 1 do
-        code, decoded, raw = httpPostJsonOnce(url, headers, body_tbl)
-        if code == 200 or not ModelAudit.isTransient(code, raw) then
+        code, decoded, raw, rheaders = httpPostJsonOnce(url, headers, body_tbl)
+        LAST.plan_limit = nil
+        if code == 429 then LAST.plan_limit = ModelAudit.planLimitHeader(rheaders) end
+        if code == 200 or LAST.plan_limit or not ModelAudit.isTransient(code, raw) then
             return code, decoded, raw
         end
         local delay = RETRY_DELAYS[attempt]
@@ -506,6 +975,57 @@ local function parseOpenAIShapedList(data)
     return out
 end
 
+-- OpenRouter's public catalog (id -> meta), fetched once per run without a key
+-- (free) unless discovery already fetched it (seed): prices for the spend
+-- estimate, mirrors of NEW ids, vendor releases. nil when unreachable.
+local OR_CATALOG
+function ModelAudit.orCatalog(seed)
+    if seed then OR_CATALOG = seed end
+    if OR_CATALOG == nil then
+        local text = httpGet(ModelLists._docs.openrouter.api_list)
+        local ok, data = pcall(json.decode, text or "")
+        OR_CATALOG = ok and parseOpenAIShapedList(data) or false
+    end
+    return OR_CATALOG or nil
+end
+
+-- A list endpoint that needs no key (Requesty, the OpenCode doors, A2Agent),
+-- parsed OpenAI-shaped; nil when unreachable.
+local function publicList(provider)
+    local docs = ModelLists._docs[provider]
+    local text = docs and docs.api_list and httpGet(docs.api_list)
+    local ok, data = pcall(json.decode, text or "")
+    return ok and parseOpenAIShapedList(data) or nil
+end
+
+-- Together: a BARE array, every entry typed (chat, language, image, embedding,
+-- ...); only chat models are curation targets.
+function ModelAudit.parseTogetherList(data)
+    if type(data) ~= "table" or type(data[1]) ~= "table" then
+        return nil, "unexpected response shape"
+    end
+    local out = {}
+    for _i, m in ipairs(data) do
+        if type(m) == "table" and type(m.id) == "string" and m.type == "chat" then
+            out[m.id] = m
+        end
+    end
+    return out
+end
+
+-- Cohere: {models=[{name=...}]}, no timestamps; the ?endpoint=chat query
+-- already drops embed/rerank models.
+function ModelAudit.parseCohereList(data)
+    if type(data) ~= "table" or type(data.models) ~= "table" then
+        return nil, "unexpected response shape"
+    end
+    local out = {}
+    for _i, m in ipairs(data.models) do
+        if type(m) == "table" and type(m.name) == "string" then out[m.name] = m end
+    end
+    return out
+end
+
 local DISCOVERY = {
     anthropic = {
         query = "?limit=1000",
@@ -516,8 +1036,12 @@ local DISCOVERY = {
     },
     openai   = { headers = bearerHeaders, parse = parseOpenAIShapedList },
     deepseek = { headers = bearerHeaders, parse = parseOpenAIShapedList },
+    -- Mistral's list leaves out what the key's plan cannot run (2026-10-08: no Large
+    -- model listed, while mistral-large-latest, -2512 and Large 4 all answered 403
+    -- "not available in your subscription tier", not "invalid model").
     mistral  = {
         headers = bearerHeaders,
+        incomplete_list = true,
         parse = function(data)
             local models, err = parseOpenAIShapedList(data)
             if not models then return nil, err end
@@ -575,6 +1099,22 @@ local DISCOVERY = {
     -- only on the Responses/Messages doors — "+ NEW" is a candidate, --probe it.
     opencode = { headers = bearerHeaders, parse = parseOpenAIShapedList, marketplace = true },
     opencode_go = { headers = bearerHeaders, parse = parseOpenAIShapedList },
+    -- A2Agent (#108): /models is public, 22 ids across five families.
+    a2agent = { headers = bearerHeaders, parse = parseOpenAIShapedList },
+    -- Keyed providers listed since 2026-09-28 (B334 and the model refresh).
+    together = { headers = bearerHeaders, parse = ModelAudit.parseTogetherList },
+    sambanova = { headers = bearerHeaders, parse = parseOpenAIShapedList },
+    fireworks = { headers = bearerHeaders, parse = parseOpenAIShapedList },
+    kimi = { headers = bearerHeaders, parse = parseOpenAIShapedList },
+    -- Model Studio hosts other vendors' models too (DeepSeek, GLM, Kimi): they
+    -- print as NEW like any other id; curating them is a human call.
+    qwen = { headers = bearerHeaders, parse = parseOpenAIShapedList },
+    cohere = { query = "?endpoint=chat&page_size=1000", headers = bearerHeaders,
+               parse = ModelAudit.parseCohereList },
+    -- /v1/models lists DIRECT models only ("provider/model"); the presets we
+    -- curate (bare ids) never appear there.
+    perplexity = { headers = bearerHeaders, parse = parseOpenAIShapedList,
+                   unlisted = function(id) return not id:find("/", 1, true) end },
 }
 
 -- One key per provider entry, no sharing (maintainer 2026-09-05: OpenCode
@@ -667,13 +1207,25 @@ local function runDiscovery(provider, api_key, verbose)
                 end
             end
         end
-        return { new = {}, removed = {} }
+        return { new = {}, removed = {} }, fetched
     end
 
-    local diff = ModelAudit.diffLists(provider, curated, fetched, os.time())
+    local undated = ModelAudit.undatedList(fetched)
+    local diff = ModelAudit.diffLists(provider, curated, fetched, (not undated) and os.time() or nil,
+        { unlisted = DISCOVERY[provider].unlisted })
     printf("  fetched %d chat-relevant ids - curated %d - older uncurated %d - snapshots %d - ignored %d",
-        diff.known + #diff.new + #diff.stale + #diff.snapshots, #curated,
+        diff.known + #diff.new + #diff.stale + #diff.snapshots + #diff.reviewed, #curated,
         #diff.stale, #diff.snapshots, #diff.ignored)
+    if undated then
+        printf("  %sthe list carries no release dates (one shared `created` value): every " ..
+               "uncurated id not in ModelAudit.REVIEWED counts as new%s", C.dim, C.off)
+    end
+    if #diff.reviewed > 0 then
+        local reviewed = ModelAudit.REVIEWED[provider]
+        printf("  %sreviewed %s, uncurated: %d ids%s%s", C.dim, tostring(reviewed and reviewed.date),
+            #diff.reviewed, verbose and (": " .. table.concat(diff.reviewed, ", ")) or " (--verbose lists them)",
+            C.off)
+    end
     if #diff.new > 0 then
         printf("  %sNEW%s (not in koassistant_model_lists.lua):", C.green, C.off)
         for _i, id in ipairs(diff.new) do
@@ -739,7 +1291,7 @@ local function runDiscovery(provider, api_key, verbose)
             printf("  %signored (noise filter): %s%s", C.dim, table.concat(diff.ignored, ", "), C.off)
         end
     end
-    return diff
+    return diff, fetched
 end
 
 --------------------------------------------------------------------------------
@@ -751,7 +1303,23 @@ local PROBE_PROMPT = "Reply with only: ok"
 -- models skip thinking on trivial prompts, which would misread as "default OFF"
 -- (bit the first claude-opus-5 probe run - it thinks by default, but not for "ok").
 local REASONING_PROBE_PROMPT = "If a book has 300 pages and I read 40 percent and then 25 more pages, what page am I on? Reply with only the number."
+-- ...and some skip it on the math prompt too: claude-sonnet-5-5 (2026-09-29) thought
+-- on neither the math prompt nor a three-book page count, yet thinks unasked on this
+-- one, directly and through OpenRouter. A baseline with no reasoning evidence asks
+-- this before reading the model as off by default.
+local HARD_REASONING_PROBE_PROMPT = "Find the number of ordered pairs of positive integers (a, b) with a <= b such that 1/a + 1/b = 1/2026. Reply with only the number."
 local ABSURD_MAX_TOKENS = 10000000
+
+-- Free tiers with a small per-minute OUTPUT bucket (Groq: OTPM 1000 on
+-- qwen/qwen3.8-27b, B290 class) refuse the battery's 1024-token asks outright.
+-- KOA_PROBE_MAX_TOKENS=<n> caps every chat-wire leg's ask except the ceiling leg.
+local PROBE_TOKEN_CAP = tonumber(os.getenv("KOA_PROBE_MAX_TOKENS"))
+local function probeTokens(n)
+    if PROBE_TOKEN_CAP and n ~= ABSURD_MAX_TOKENS and n > PROBE_TOKEN_CAP then
+        return PROBE_TOKEN_CAP
+    end
+    return n
+end
 
 -- One dummy property everywhere: dkjson encodes EMPTY tables as [], which
 -- providers reject where an object is required (properties/input_schema).
@@ -902,9 +1470,13 @@ end
 -- (bit a gemini-3.5-flash battery: free-tier per-minute quota mid-ladder).
 local function verdict(code)
     if code == 200 then return true end
-    if code == 429 then return nil end
+    -- A rate limit, a server error the retries could not outlast, or no answer at
+    -- all says nothing about the request: only a 4xx is a refusal (NVIDIA's 503
+    -- "Service temporarily overloaded" read as a refused temperature, 2026-10-08).
+    if code == 429 or code == nil or (tonumber(code) or 0) >= 500 then return nil end
     return false
 end
+ModelAudit.verdict = verdict
 
 local function recordProbe(facts, name, ok, detail)
     table.insert(facts.probes, { name = name, ok = ok, detail = detail })
@@ -912,7 +1484,7 @@ local function recordProbe(facts, name, ok, detail)
     if ok then
         mark = C.green .. "OK" .. C.off
     elseif ok == nil then
-        mark = C.yellow .. "INCONCLUSIVE (quota/rate limit - retry)" .. C.off
+        mark = C.yellow .. "INCONCLUSIVE (rate limit or server error - retry)" .. C.off
     else
         mark = C.red .. "REJECTED" .. C.off
     end
@@ -944,9 +1516,47 @@ local function recordStreamProbe(facts, code, decoded, raw)
     end
 end
 
+-- Round 1 of the tool replay forces a call. A 200 carrying no tool call is a
+-- PROSE answer under a forced tool_choice, which the gather phase cannot
+-- consume (the NVIDIA grant rule, 2026-08-20): a failed leg, not a pass.
+-- auto = round 1 ran with tool_choice auto because the model refuses a forced
+-- call (the no_forced_tool_choice class): prose there is allowed by the runner,
+-- but it means the gather round would not look anything up.
+local function recordForcedMiss(facts, code, decoded, raw, auto)
+    local ok = verdict(code)
+    if code == 200 then
+        ok = false
+        if auto then facts.auto_prose = true else facts.forced_prose = true end
+    end
+    recordProbe(facts, auto and "tool replay round 1 (auto: forced refused)"
+            or "tool replay round 1 (forced call)", ok,
+        code ~= 200 and ModelAudit.errText(decoded, raw)
+            or ("200 but no tool call: prose under " .. (auto and "auto" or "a forced tool_choice")))
+end
+
+-- Round 1 of the replay runs with auto when a forced call was refused and
+-- dropping thinking does not help (Opus 5.5 / Fable 5.1 refuse it outright:
+-- "type tool and any are not supported for this model", 2026-09-28).
+local function replayWithAuto(facts)
+    return facts.tool_choice_any_ok == false and not facts.tool_choice_any_thinking_off
+end
+
+local function recordAutoCall(facts)
+    facts.auto_tool_calls = true
+    recordProbe(facts, "tool replay round 1 (auto: forced refused)", true, "tool call under auto")
+end
+
 -- ---- Anthropic wire ---------------------------------------------------------
 
 local ANTHROPIC_LADDER = { "low", "medium", "high", "xhigh", "max" }
+
+local function anthropicThinks(decoded)
+    for _i, block in ipairs(type(decoded) == "table" and type(decoded.content) == "table"
+            and decoded.content or {}) do
+        if type(block) == "table" and block.type == "thinking" then return true end
+    end
+    return false
+end
 
 local function probeAnthropic(model, api_key, verbose)
     local facts = newFacts("anthropic", "anthropic", model)
@@ -968,12 +1578,18 @@ local function probeAnthropic(model, api_key, verbose)
         return facts
     end
     facts.reachable = true
-    local has_thinking = false
-    for _i, block in ipairs(type(decoded.content) == "table" and decoded.content or {}) do
-        if type(block) == "table" and block.type == "thinking" then has_thinking = true end
+    local has_thinking = anthropicThinks(decoded)
+    facts.evidence = has_thinking and "thinking block in bare response" or "no thinking block"
+    if not has_thinking then
+        local hcode, hdec = req(nil, 4096, HARD_REASONING_PROBE_PROMPT)
+        if hcode == 200 and anthropicThinks(hdec) then
+            has_thinking = true
+            facts.evidence = "thinking block on the harder prompt only"
+        elseif hcode == 200 then
+            facts.evidence = "no thinking block (math and harder prompt)"
+        end
     end
     facts.default_reasoning = has_thinking
-    facts.evidence = has_thinking and "thinking block in bare response" or "no thinking block"
     recordProbe(facts, "baseline (bare request)", true,
         facts.evidence .. " -> default " .. (has_thinking and "ON" or "OFF"))
 
@@ -988,6 +1604,27 @@ local function probeAnthropic(model, api_key, verbose)
     facts.disable_ok = verdict(dcode)
     if not facts.disable_ok then facts.disable_err = ModelAudit.errText(ddec, draw) end
     recordProbe(facts, 'thinking={type="disabled"}', facts.disable_ok, facts.disable_err)
+
+    -- 3b. a refusal that names the model's lowest setting (claude-sonnet-5-5: 'Use
+    -- "thinking.type.between_tools" for the lowest thinking setting'): it becomes the
+    -- profile's off_option only if the harder prompt then shows no thinking block.
+    facts.lowest_type = facts.disable_err and ModelAudit.lowestThinkingType(facts.disable_err)
+    if facts.lowest_type then
+        local lcode, ldec, lraw = req({ thinking = { type = facts.lowest_type } }, 4096,
+            HARD_REASONING_PROBE_PROMPT)
+        facts.lowest_ok = verdict(lcode)
+        local detail
+        if lcode ~= 200 then
+            detail = ModelAudit.errText(ldec, lraw)
+        elseif anthropicThinks(ldec) then
+            facts.lowest_ok = false
+            detail = "still thinks on the harder prompt - not an off"
+        else
+            detail = "no thinking block on the harder prompt -> off_option"
+        end
+        recordProbe(facts, string.format('thinking={type="%s"} (named lowest)', facts.lowest_type),
+            facts.lowest_ok, detail)
+    end
 
     -- 4. adaptive + effort ladder
     facts.ladder = ANTHROPIC_LADDER
@@ -1113,13 +1750,14 @@ local function probeAnthropic(model, api_key, verbose)
     -- round 2 must accept the replayed turn. Every known round-2 failure class
     -- is invisible to the single-call legs above.
     if facts.tools_ok and real_specs then
+        local auto = replayWithAuto(facts)
         local t1code, t1dec, t1raw = req({ tools = probe_tools,
-            tool_choice = { type = "any" } }, 1024, TOOL_REPLAY_PROMPT)
+            tool_choice = { type = auto and "auto" or "any" } }, 1024, TOOL_REPLAY_PROMPT)
         local parsed = t1code == 200 and parseToolCalls(t1dec, "anthropic") or nil
         if not parsed then
-            recordProbe(facts, "tool replay round 1 (forced call)", verdict(t1code),
-                t1code ~= 200 and ModelAudit.errText(t1dec, t1raw) or "no tool call parsed")
+            recordForcedMiss(facts, t1code, t1dec, t1raw, auto)
         else
+            if auto then recordAutoCall(facts) end
             local messages = { { role = "user", content = TOOL_REPLAY_PROMPT } }
             appendReplayTurn("anthropic", messages, parsed)
             local t2code, t2dec, t2raw = req({ messages = messages,
@@ -1142,8 +1780,7 @@ local OPENAI_LADDER = { "none", "minimal", "low", "medium", "high", "xhigh", "ma
 local OPENAI_FAMILY = {
     openai     = { effort_key = "reasoning_effort" },
     xai        = { effort_key = "reasoning_effort" },
-    perplexity = { effort_key = "reasoning_effort",
-                   cost_note = "every Perplexity request also bills one web search" },
+    -- perplexity: Agent API since 2026-09-27, its own battery (probePerplexity)
     groq       = { effort_key = "reasoning_effort" },
     together   = { effort_key = "reasoning_effort" },
     fireworks  = { effort_key = "reasoning_effort" },
@@ -1151,6 +1788,7 @@ local OPENAI_FAMILY = {
                    extra_headers = { ["x-opencode-session"] = "koassistant-model-audit" } },
     opencode_go = { effort_key = "reasoning_effort",
                    extra_headers = { ["x-opencode-session"] = "koassistant-model-audit" } },
+    a2agent    = { effort_key = "reasoning_effort" },   -- #108: gateway to five families; the probe decides what each backend honors
     deepseek   = { binary_key = "thinking" },   -- {type="enabled"/"disabled"}
     zai        = { binary_key = "thinking" },
     mistral    = {},                            -- no reasoning params (magistral always-on)
@@ -1160,6 +1798,9 @@ local OPENAI_FAMILY = {
     openrouter = { reasoning_obj = true,        -- reasoning={effort=..}/{enabled=false}
                    extra_headers = { ["HTTP-Referer"] = "https://github.com/zeeyado/koassistant.koplugin",
                                      ["X-Title"] = "KOAssistant model audit" } },
+    nvidia     = { effort_key = "reasoning_effort" },   -- honoured on nemotron-3 (2026-08-20); a forced
+                                                        -- call answered in prose fails round 1 (grant rule)
+    sambanova  = { effort_key = "reasoning_effort" },   -- gpt-oss; enable_thinking models: not probed here
 }
 
 -- Providers whose web search (and gpt-5.x tools) ride the /v1/responses wire -
@@ -1185,7 +1826,7 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
     local function req(extra, max_toks, prompt)
         local body = { model = model,
                        messages = { { role = "user", content = prompt or PROBE_PROMPT } } }
-        body[token_key] = max_toks or 256
+        body[token_key] = probeTokens(max_toks or 256)
         for k, v in pairs(extra or {}) do body[k] = v end
         return httpPostJson(url, headers, body)
     end
@@ -1207,13 +1848,20 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
     end
     facts.reachable = true
     facts.evidence = ModelAudit.reasoningEvidence(decoded)
+    local hard_only = false
+    if facts.evidence == nil then
+        local hcode, hdec = req(nil, 4096, HARD_REASONING_PROBE_PROMPT)
+        facts.evidence = hcode == 200 and ModelAudit.reasoningEvidence(hdec) or nil
+        hard_only = facts.evidence ~= nil
+    end
     facts.default_reasoning = facts.evidence ~= nil
     -- A handful of reasoning tokens on a math prompt is a weak ON signal
     -- (could be bookkeeping overhead rather than a reasoning default).
     local rt = facts.evidence and tonumber(facts.evidence:match("^reasoning_tokens=(%d+)$"))
     facts.weak_reasoning_evidence = (rt ~= nil and rt < 64) or nil
     recordProbe(facts, "baseline (bare request)", true,
-        (facts.evidence or "no reasoning evidence") ..
+        (facts.evidence or "no reasoning evidence (math and harder prompt)") ..
+        (hard_only and " on the harder prompt only" or "") ..
         " -> default " .. (facts.default_reasoning and "ON" or "OFF") ..
         (facts.weak_reasoning_evidence and " (weak signal - verify)" or "") ..
         (facts.needs_max_completion_tokens and " (needs max_completion_tokens)" or ""))
@@ -1276,9 +1924,17 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
             ModelAudit.errText(cdec, craw))
     elseif ccode ~= 200 then
         local err = ModelAudit.errText(cdec, craw)
-        facts.ceiling = ModelAudit.parseCeiling(err, ABSURD_MAX_TOKENS)
-        recordProbe(facts, "output ceiling (oversized " .. token_key .. ")",
-            facts.ceiling ~= nil, facts.ceiling and ("ceiling=" .. facts.ceiling) or err)
+        if provider == "openrouter" and ModelAudit.isContextRefusal(err) then
+            -- OpenRouter states the endpoint's CONTEXT length here and clamps the
+            -- output itself (200000 accepted on a 128K model, 2026-09-29): the cap
+            -- comes from its endpoints metadata (section 8), never from this text.
+            recordProbe(facts, "output ceiling (oversized " .. token_key .. ")", true,
+                "context-length refusal - the cap comes from the endpoints metadata below")
+        else
+            facts.ceiling = ModelAudit.parseCeiling(err, ABSURD_MAX_TOKENS)
+            recordProbe(facts, "output ceiling (oversized " .. token_key .. ")",
+                facts.ceiling ~= nil, facts.ceiling and ("ceiling=" .. facts.ceiling) or err)
+        end
     else
         recordProbe(facts, "output ceiling (oversized " .. token_key .. ")", false,
             "accepted (provider may clamp silently) - check docs")
@@ -1344,6 +2000,12 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
                 for p in pairs(union) do table.insert(names, p) end
                 table.sort(names)
                 printf("  %ssupported_parameters: %s%s", C.dim, table.concat(names, ", "), C.off)
+                local cap = ModelAudit.endpointsCeiling(endpoints)
+                if cap then
+                    facts.ceiling = cap
+                    recordProbe(facts, "output ceiling (endpoints metadata)", true,
+                        "ceiling=" .. cap .. " (largest endpoint cap)")
+                end
             end
         end
     end
@@ -1382,25 +2044,10 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
     end
 
     -- 11. real dispatch shape (T7 P1.1): system message + consecutive user
-    -- turns + the real resolved token ask. Perplexity gets the handler-merged
-    -- shape (perplexity.lua merges consecutive same-role turns — the known
-    -- rejecter's accommodation is itself under test); everyone else gets the
-    -- raw shape dispatch actually sends.
+    -- turns + the real resolved token ask, the raw shape dispatch sends.
     do
         local history = { { role = "system", content = realSystemText() } }
         for _i, msg in ipairs(realHistory()) do table.insert(history, msg) end
-        if provider == "perplexity" then
-            local merged = { history[1] }
-            for i = 2, #history do
-                local prev = merged[#merged]
-                if history[i].role == prev.role then
-                    prev.content = prev.content .. "\n\n" .. history[i].content
-                else
-                    table.insert(merged, history[i])
-                end
-            end
-            history = merged
-        end
         local real_max = ModelConstraints.clampMaxTokens(provider, model,
             ModelConstraints.resolveMaxTokens(provider, model, 4096))
         local rcode, rdec, rraw = req({ messages = history }, real_max)
@@ -1414,14 +2061,15 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
     -- sessions; reasoning_content stays on the replayed turn — V3.2+ 400s
     -- without it); other providers get the handler-stripped shape.
     if facts.tools_ok and real_specs then
-        local tool_extra = { tools = probe_tools, tool_choice = "required" }
+        local auto = replayWithAuto(facts)
+        local tool_extra = { tools = probe_tools, tool_choice = auto and "auto" or "required" }
         if provider == "deepseek" then tool_extra.thinking = { type = "disabled" } end
         local t1code, t1dec, t1raw = req(tool_extra, 1024, TOOL_REPLAY_PROMPT)
         local parsed = t1code == 200 and parseToolCalls(t1dec, provider) or nil
         if not parsed then
-            recordProbe(facts, "tool replay round 1 (forced call)", verdict(t1code),
-                t1code ~= 200 and ModelAudit.errText(t1dec, t1raw) or "no tool call parsed")
+            recordForcedMiss(facts, t1code, t1dec, t1raw, auto)
         else
+            if auto then recordAutoCall(facts) end
             local messages = { { role = "user", content = TOOL_REPLAY_PROMPT } }
             appendReplayTurn("openai", messages, parsed)
             for _i, m in ipairs(messages) do
@@ -1590,8 +2238,7 @@ local function probeGemini(model, api_key, verbose)
             toolConfig = { functionCallingConfig = { mode = "ANY" } } }, 1024, TOOL_REPLAY_PROMPT)
         local parsed = t1code == 200 and parseToolCalls(t1dec, "gemini") or nil
         if not parsed then
-            recordProbe(facts, "tool replay round 1 (forced call)", verdict(t1code),
-                t1code ~= 200 and ModelAudit.errText(t1dec, t1raw) or "no tool call parsed")
+            recordForcedMiss(facts, t1code, t1dec, t1raw)
         else
             local messages = { { role = "user",
                 parts = { { text = TOOL_REPLAY_PROMPT } } } }
@@ -1635,7 +2282,7 @@ end
 local AUDIT_CAPS = {
     "tools", "reasoning", "reasoning_gated", "thinking", "adaptive_thinking",
     "extended_thinking", "thinking_budget", "no_sampling_params",
-    "responses_web_search",
+    "responses_web_search", "reasoning_mandatory", "no_search_preset", "no_forced_tool_choice",
 }
 
 function ModelAudit.currentResolution(provider, model)
@@ -1645,13 +2292,57 @@ function ModelAudit.currentResolution(provider, model)
     end
     local params = { temperature = 0.7 }
     params = ModelConstraints.apply(provider, model, params)
+    -- What the Minimal stance puts on the wire today (applyReasoningParams' keys)
+    local minimal_params = {}
+    ModelConstraints.applyReasoningParams(provider, minimal_params,
+        ModelConstraints.resolveReasoning(provider, model, { global_stance = "minimal" }))
     return {
         profile = ModelConstraints.getReasoningProfile(provider, model),
         caps = caps,
         temp_after_apply = params and params.temperature,
+        sampling_deprecated = caps.no_sampling_params and ModelAudit.SAMPLING_DEPRECATED[provider] or nil,
         clamped = ModelConstraints.clampMaxTokens(provider, model, ABSURD_MAX_TOKENS),
         resolved_default = ModelConstraints.resolveMaxTokens(provider, model, 8192),
+        minimal_params = minimal_params,
     }
+end
+
+-- Pure: the thinking type an Anthropic refusal names as the model's lowest
+-- setting ('Use "thinking.type.between_tools" for the lowest thinking setting',
+-- claude-sonnet-5-5 2026-09-29), or nil.
+function ModelAudit.lowestThinkingType(err)
+    if type(err) ~= "string" then return nil end
+    return err:match('thinking%.type%.([%w_]+)"?%s+for the lowest')
+end
+
+-- Pure: does the Minimal stance send a shape the battery saw refused? A new id
+-- that inherits a sibling's prefix profile is the main 400 source (opus-5-5 under
+-- claude-opus-5 and grok-4.7 under grok-4 on 2026-09-28, sonnet-5-5 under
+-- claude-sonnet-5 on 2026-09-29), and the axis/default-state comparison cannot
+-- see it. Only shapes a battery leg sent verbatim are judged; the rest is nil.
+function ModelAudit.minimalRefused(minimal_params, facts)
+    if type(minimal_params) ~= "table" or type(facts) ~= "table" then return nil end
+    for _i, key in ipairs(ModelConstraints.REASONING_WIRE_KEYS) do
+        local v = minimal_params[key]
+        local shape, ok
+        if type(v) == "table" then
+            if v.enabled == false then
+                -- only OpenRouter's battery sends this shape (a2agent/requesty translate it)
+                if key == "openrouter_reasoning" then shape, ok = "enabled=false", facts.disable_ok end
+            elseif v.type == "disabled" then
+                shape, ok = 'type "disabled"', facts.disable_ok
+            elseif v.type and v.type ~= "adaptive" and v.type ~= "enabled" then
+                shape = string.format('type "%s"', v.type)
+                if facts.lowest_type == v.type then ok = facts.lowest_ok end
+            elseif v.effort and type(facts.efforts) == "table" then
+                shape, ok = string.format('effort "%s"', v.effort), facts.efforts[v.effort]
+            end
+        end
+        if ok == false then
+            return string.format("Minimal sends %s %s, which the model refused", key, shape)
+        end
+    end
+    return nil
 end
 
 local function orderedAccepted(facts, exclude)
@@ -1686,6 +2377,41 @@ function ModelAudit.draftStanzas(facts, current)
 
     add("%s-- DRAFT for model_constraints.lua (REVIEW - never auto-applied) ------------%s",
         C.bold, C.off)
+
+    -- Perplexity: presets carry no profile; a direct model's facts are the
+    -- three exception lists the handler reads, plus its output ceiling.
+    if facts.family == "perplexity" then
+        if facts.is_preset then
+            add("-- preset: nothing to curate (the preset is the depth dial; no profile)")
+            return lines
+        end
+        local needs = {}
+        for _i, cap in ipairs(facts.isolated or {}) do needs[cap] = true end
+        if facts.temp_ok == false or facts.web_off_needs_no_temp then needs.no_sampling_params = true end
+        if facts.web_off_needs_no_temp and not current.caps.no_sampling_params then
+            add("%s-- NOTE: web-off requests 400 today (the handler sends a temperature the model refuses)%s",
+                C.yellow, C.off)
+        end
+        add("-- capabilities.perplexity:")
+        for _i, cap in ipairs({ "no_sampling_params", "reasoning_mandatory", "no_search_preset" }) do
+            if needs[cap] then
+                add('--   %-20s += "%s"%s', cap, model, mark(not current.caps[cap]))
+            elseif current.caps[cap] then
+                add('--   %-20s currently resolves TRUE but the probe answered without it %s<-- investigate%s',
+                    cap, C.red, C.off)
+            end
+        end
+        if not next(needs) then add("--   (none: the handler's default body answers)") end
+        if facts.searched == false or facts.cited == false then
+            add("%s-- NOTE: the web-on answer did not search and cite - check before listing it%s",
+                C.yellow, C.off)
+        end
+        if facts.ceiling then
+            add("-- _max_output_tokens.perplexity:%s", mark(current.clamped ~= facts.ceiling))
+            add('    ["%s"] = %d,', model, facts.ceiling)
+        end
+        return lines
+    end
 
     -- Capability list deltas
     add("-- capabilities.%s:", provider)
@@ -1741,6 +2467,23 @@ function ModelAudit.draftStanzas(facts, current)
                 C.yellow, C.off)
         end
     end
+    if facts.forced_prose then
+        add("%s-- NOTE: the forced tool call came back as PROSE - no tools grant (gather cannot consume it)%s",
+            C.yellow, C.off)
+    end
+    if facts.auto_tool_calls then
+        add("-- capabilities.%s:", provider)
+        add('--   %-20s += "%s"  (forced refused; auto called the tool%s)%s', "no_forced_tool_choice", model,
+            facts.tool_replay_ok and ", replay accepted" or ", replay NOT accepted",
+            mark(not current.caps.no_forced_tool_choice))
+        if facts.family == "gemini" or provider == "openai" or provider == "xai" then
+            add("%s--   (read by anthropic_request.lua and openai_compatible.lua only; this provider's%s",
+                C.yellow, C.off)
+            add("%s--   own tool builder still forces the call)%s", C.yellow, C.off)
+        end
+    elseif facts.auto_prose then
+        add("%s-- NOTE: forced refused and auto answered in PROSE - no tools grant%s", C.yellow, C.off)
+    end
     if facts.tools_ok and facts.tool_choice_none_ok == false then
         add("%s-- NOTE: tool_choice none/NONE REJECTED - runner final pass needs an accommodation%s",
             C.yellow, C.off)
@@ -1771,8 +2514,14 @@ function ModelAudit.draftStanzas(facts, current)
             or (facts.family == "gemini" and facts.budget_ok and "budget") or "none"
     end
 
+    local refused_off = ModelAudit.minimalRefused(current.minimal_params, facts)
     local profile_differs = (profile.axis or "none") ~= axis
         or (axis ~= "none" and (profile.default_state == "on") ~= (facts.default_reasoning == true))
+        or refused_off ~= nil
+    if refused_off then
+        add("%s-- NOTE: %s today (the inherited profile 400s on Minimal and on an action's off)%s",
+            C.yellow, refused_off, C.off)
+    end
     if axis == "none" then
         add("-- reasoning profile: no controls accepted -> axis \"none\" / passthrough%s",
             mark(profile_differs))
@@ -1780,14 +2529,17 @@ function ModelAudit.draftStanzas(facts, current)
         add("-- reasoning_profiles.%s - insert BEFORE any family fallback entries:%s",
             provider, mark(profile_differs))
         if facts.family == "anthropic" and facts.adaptive_ok and not facts.default_reasoning then
-            add('-- CAUTION: default_state "off" inferred from one prompt; adaptive models may')
-            add("-- skip thinking even on the math probe - verify against the model announcement")
+            add('-- CAUTION: default_state "off" inferred from two prompts; adaptive models may')
+            add("-- skip thinking on both - verify against the model announcement")
         end
         if facts.weak_reasoning_evidence then
             add('-- CAUTION: default_state "on" rests on a small reasoning-token count - verify')
         end
         local default_state = facts.default_reasoning and "on" or "off"
-        local can_disable = facts.disable_ok and true or false
+        -- A model that refuses "disabled" but names a working lowest setting turns
+        -- off with it (the profile's off_option; applyReasoningParams sends it).
+        local off_type = facts.family == "anthropic" and facts.lowest_ok and facts.lowest_type or nil
+        local can_disable = (facts.disable_ok or off_type) and true or false
         if axis == "binary" then
             add('    { match = "%s", axis = "binary", default_state = "%s",', model, default_state)
             add('      can_disable = %s, can_enable = %s },',
@@ -1811,6 +2563,9 @@ function ModelAudit.draftStanzas(facts, current)
             end
             if facts.efforts and facts.efforts.none and facts.family ~= "anthropic" then
                 table.insert(flags, 'off_option = "none"')
+            end
+            if off_type then
+                table.insert(flags, string.format('off_option = "%s"', off_type))
             end
             add('      %s},', #flags > 0 and (table.concat(flags, ", ") .. " ") or "")
         end
@@ -2041,12 +2796,214 @@ local function probeOllama(model, _verbose)
     return facts
 end
 
+-- ---- Perplexity Agent API (/v1/agent) --------------------------------------
+--
+-- The Sonar chat wire retired 2026-09-27 (B078). Every body comes from the
+-- REAL handler (PerplexityHandler:buildRequestBody), so presets, the search
+-- preset a direct model rides with, and the per-model exception lists
+-- (no_sampling_params, reasoning_mandatory, no_search_preset) are under test
+-- exactly as dispatch sends them. A refused direct model is isolated the way
+-- the 2026-09-28 catalog sweep did it, and the draft names the list it
+-- belongs in. Web-on requests bill a search each.
+
+local SEARCH_PROBE_PROMPT = "Who won the 2022 FIFA World Cup? Answer in one sentence."
+local PERPLEXITY_EFFORTS = { "none", "low", "medium", "high" }
+
+-- Reasoning evidence in an Agent API (Responses-shaped) success body.
+function ModelAudit.agentReasoningEvidence(decoded)
+    if type(decoded) ~= "table" then return nil end
+    local usage = decoded.usage
+    local det = type(usage) == "table" and usage.output_tokens_details
+    if type(det) == "table" and type(det.reasoning_tokens) == "number" and det.reasoning_tokens > 0 then
+        return "reasoning_tokens=" .. det.reasoning_tokens
+    end
+    for _i, item in ipairs(type(decoded.output) == "table" and decoded.output or {}) do
+        if type(item) == "table" and item.type == "reasoning" then return "reasoning output item" end
+    end
+    return nil
+end
+
+-- Did the answer search (search_results item) and cite ([n] / [web:n] markers)?
+function ModelAudit.agentSearchFacts(decoded)
+    local searched, cited = false, false
+    for _i, item in ipairs(type(decoded) == "table" and type(decoded.output) == "table"
+                           and decoded.output or {}) do
+        if type(item) == "table" then
+            if item.type == "search_results" then searched = true end
+            if item.type == "message" and type(item.content) == "table" then
+                for _j, part in ipairs(item.content) do
+                    local text = type(part) == "table" and part.text
+                    if type(text) == "string" and (text:find("%[%d+%]") or text:find("%[web:%d+%]")) then
+                        cited = true
+                    end
+                end
+            end
+        end
+    end
+    return searched, cited
+end
+
+local function perplexityBuilt(model, api_key, opts)
+    opts = opts or {}
+    local Handler = require("koassistant_api.perplexity")
+    return Handler:buildRequestBody(
+        opts.history or { { role = "user", content = opts.prompt or PROBE_PROMPT } },
+        { model = model, api_key = api_key, enable_web_search = opts.web ~= false,
+          features = {}, api_params = opts.api_params or {}, system = opts.system })
+end
+
+local function perplexitySend(built, mutate)
+    if mutate then mutate(built.body) end
+    return httpPostJson(built.url, built.headers, built.body)
+end
+
+-- Variants that isolate why the handler-built web-on body was refused, in the
+-- order the catalog sweep tried them; caps = the lists the fix implies.
+local PERPLEXITY_ISOLATION = {
+    { name = "without temperature", caps = { "no_sampling_params" },
+      mutate = function(b) b.temperature = nil end },
+    { name = "reasoning effort low on the preset", caps = { "reasoning_mandatory" },
+      mutate = function(b) b.reasoning = { effort = "low" } end },
+    { name = "without temperature, effort low", caps = { "no_sampling_params", "reasoning_mandatory" },
+      mutate = function(b) b.temperature = nil; b.reasoning = { effort = "low" } end },
+    { name = "alone with the web_search tool", caps = { "no_search_preset" },
+      mutate = function(b) b.preset = nil; b.reasoning = nil; b.tools = { { type = "web_search" } } end },
+    { name = "alone, without temperature", caps = { "no_search_preset", "no_sampling_params" },
+      mutate = function(b)
+          b.preset = nil; b.reasoning = nil; b.temperature = nil
+          b.tools = { { type = "web_search" } }
+      end },
+}
+
+local function probePerplexity(model, api_key, verbose)
+    local facts = newFacts("perplexity", "perplexity", model)
+    local is_preset = not model:find("/", 1, true)
+    facts.is_preset = is_preset
+    printf("  %snote: web-on legs bill one search each; bodies built by the real handler%s",
+        C.yellow, C.off)
+    local small = { max_tokens = 512 }
+
+    -- 1. web on, as dispatch sends it (preset, or model + search preset)
+    local fix  -- the isolating mutation, reapplied to the later web-on legs
+    local code, decoded, raw = perplexitySend(perplexityBuilt(model, api_key,
+        { prompt = SEARCH_PROBE_PROMPT, api_params = small }))
+    if code ~= 200 and not is_preset then
+        local first_err = ModelAudit.errText(decoded, raw)
+        recordProbe(facts, "web on (handler body)", false, first_err)
+        for _i, variant in ipairs(PERPLEXITY_ISOLATION) do
+            local vcode, vdec, vraw = perplexitySend(perplexityBuilt(model, api_key,
+                { prompt = SEARCH_PROBE_PROMPT, api_params = small }), variant.mutate)
+            if vcode == 200 then
+                facts.isolated = variant.caps
+                fix = variant.mutate
+                code, decoded, raw = vcode, vdec, vraw
+                recordProbe(facts, "isolation: " .. variant.name, true,
+                    "fix implies " .. table.concat(variant.caps, " + "))
+                break
+            end
+        end
+        if not facts.isolated then
+            printf("  %sno variant answered - aborting battery (bad model id / key?)%s", C.red, C.off)
+            return facts
+        end
+    elseif code ~= 200 then
+        recordProbe(facts, "web on (handler body)", false, ModelAudit.errText(decoded, raw))
+        printf("  %sbaseline failed - aborting battery (bad preset / key?)%s", C.red, C.off)
+        return facts
+    else
+        recordProbe(facts, "web on (handler body)", true, nil)
+    end
+    facts.reachable = true
+    facts.searched, facts.cited = ModelAudit.agentSearchFacts(decoded)
+    recordProbe(facts, "searched + cited", facts.searched and facts.cited,
+        string.format("search_results=%s, [n] markers=%s", tostring(facts.searched), tostring(facts.cited)))
+
+    -- 2. web off (a preset goes to WEB_OFF_MODEL; a direct model goes alone).
+    -- A direct model refused here is retried without the handler's temperature:
+    -- reasoning models refuse one while they reason (gpt-6-sol, probed
+    -- 2026-09-28: fine with the preset, which turns reasoning off).
+    local web_off = { web = false, prompt = REASONING_PROBE_PROMPT, api_params = { max_tokens = 1024 } }
+    local ocode, odec, oraw = perplexitySend(perplexityBuilt(model, api_key, web_off))
+    facts.web_off_ok = verdict(ocode)
+    recordProbe(facts, "web off (handler body)", facts.web_off_ok,
+        ocode ~= 200 and ModelAudit.errText(odec, oraw) or nil)
+    if ocode ~= 200 and ocode ~= 429 and not is_preset then
+        local ncode, ndec = perplexitySend(perplexityBuilt(model, api_key, web_off),
+            function(b) b.temperature = nil end)
+        if ncode == 200 then
+            facts.web_off_needs_no_temp = true
+            ocode, odec = ncode, ndec
+            recordProbe(facts, "isolation: web off without temperature", true,
+                "fix implies no_sampling_params")
+        end
+    end
+    if ocode == 200 and not is_preset then
+        facts.evidence = ModelAudit.agentReasoningEvidence(odec)
+        facts.default_reasoning = facts.evidence ~= nil
+        printf("  %salone: %s%s", C.dim, facts.evidence or "no reasoning evidence", C.off)
+    end
+
+    if not is_preset then
+        local function noTemp(b) b.temperature = nil end
+        -- 3. temperature on the model alone (the handler's choice is under test in legs 1-2)
+        local tcode, tdec, traw = perplexitySend(perplexityBuilt(model, api_key,
+            { web = false, api_params = { max_tokens = 32 } }), function(b) b.temperature = 0.7 end)
+        facts.temp_ok = verdict(tcode)
+        if not facts.temp_ok then facts.temp_err = ModelAudit.errText(tdec, traw) end
+        recordProbe(facts, "temperature=0.7 (alone)", facts.temp_ok, facts.temp_err)
+
+        -- 4. reasoning effort ladder on the model alone, no temperature
+        facts.ladder = PERPLEXITY_EFFORTS
+        for _i, effort in ipairs(PERPLEXITY_EFFORTS) do
+            local ecode, edec, eraw = perplexitySend(perplexityBuilt(model, api_key,
+                { web = false, api_params = { max_tokens = 64 } }),
+                function(b) noTemp(b); b.reasoning = { effort = effort } end)
+            facts.efforts[effort] = verdict(ecode)
+            recordProbe(facts, "reasoning.effort=" .. effort .. " (alone)", verdict(ecode),
+                ecode ~= 200 and ModelAudit.errText(edec, eraw) or nil)
+        end
+
+        -- 5. output ceiling (alone, no temperature, oversized max_output_tokens)
+        local ccode, cdec, craw = perplexitySend(perplexityBuilt(model, api_key, { web = false }),
+            function(b) noTemp(b); b.max_output_tokens = ABSURD_MAX_TOKENS end)
+        if ccode == 429 then
+            recordProbe(facts, "output ceiling (oversized max_output_tokens)", nil,
+                ModelAudit.errText(cdec, craw))
+        elseif ccode ~= 200 then
+            local err = ModelAudit.errText(cdec, craw)
+            facts.ceiling = ModelAudit.parseCeiling(err, ABSURD_MAX_TOKENS)
+            recordProbe(facts, "output ceiling (oversized max_output_tokens)", facts.ceiling ~= nil,
+                facts.ceiling and ("ceiling=" .. facts.ceiling) or err)
+        else
+            recordProbe(facts, "output ceiling (oversized max_output_tokens)", false,
+                "accepted (provider may clamp silently) - check docs")
+        end
+    end
+
+    -- 6. streaming smoke (web on, handler body + the isolated fix)
+    local scode, sdec, sraw = perplexitySend(perplexityBuilt(model, api_key,
+        { prompt = PROBE_PROMPT, api_params = { max_tokens = 64 } }),
+        function(b) if fix then fix(b) end; b.stream = true end)
+    recordStreamProbe(facts, scode, sdec, sraw)
+
+    -- 7. real dispatch shape: system item + consecutive user turns, real token ask
+    local rcode, rdec, rraw = perplexitySend(perplexityBuilt(model, api_key,
+        { history = realHistory(), system = { text = realSystemText() } }), fix)
+    facts.real_shape_ok = verdict(rcode)
+    recordProbe(facts, "real shape (system+consecutive users)", facts.real_shape_ok,
+        rcode ~= 200 and ModelAudit.errText(rdec, rraw) or nil)
+
+    if verbose and facts.temp_err then printf("  %stemp error: %s%s", C.dim, facts.temp_err, C.off) end
+    return facts
+end
+
 --------------------------------------------------------------------------------
 -- Probe dispatch
 --------------------------------------------------------------------------------
 
 local function probeModel(provider, model, api_key, verbose)
     banner("PROBE " .. provider .. " / " .. model)
+    RUN.provider, RUN.model = provider, model
     -- Ollama: local + keyless; capabilities are derived at runtime, no stanzas
     if provider == "ollama" then
         local facts = probeOllama(model, verbose)
@@ -2061,21 +3018,27 @@ local function probeModel(provider, model, api_key, verbose)
         printf("  %sno API key for %s in apikeys.lua%s", C.red, provider, C.off)
         return nil
     end
-    printf("  %s~13-19 micro-requests (max_tokens 32..1024) - fractions of a cent%s", C.dim, C.off)
+    printf("  %s~13-19 micro-requests (max_tokens 32..4096) - fractions of a cent%s", C.dim, C.off)
 
     local facts
     if provider == "anthropic" then
         facts = probeAnthropic(model, api_key, verbose)
     elseif provider == "gemini" then
         facts = probeGemini(model, api_key, verbose)
+    elseif provider == "perplexity" then
+        facts = probePerplexity(model, api_key, verbose)
     elseif OPENAI_FAMILY[provider] then
         facts = probeOpenAIFamily(provider, model, api_key, verbose)
     else
-        printf("  %sno probe adapter for %q yet%s (have: anthropic, gemini, %s)",
-            C.red, provider, C.off, "openai/deepseek/xai/zai/mistral/perplexity/openrouter/groq/together/fireworks/qwen/kimi/opencode")
+        printf("  %sno probe adapter for %q yet%s (have: anthropic, gemini, perplexity, %s)",
+            C.red, provider, C.off, "openai/deepseek/xai/zai/mistral/openrouter/groq/together/fireworks/qwen/kimi/opencode/a2agent/nvidia/sambanova")
         return nil
     end
 
+    if LAST.plan_limit then
+        printf("  %sthe last refusal states a zero allowance (%s: 0): this key's plan has no access to %s%s",
+            C.yellow, LAST.plan_limit, model, C.off)
+    end
     if facts and facts.reachable then
         print("")
         local current = ModelAudit.currentResolution(provider, model)
@@ -2088,11 +3051,13 @@ end
 
 --------------------------------------------------------------------------------
 -- Recheck (curated-constraints drift sweep): 2 micro-requests per CURATED
--- model - baseline (math prompt, reasoning-default evidence) + temperature=0.7
+-- model - baseline (math prompt, reasoning-default evidence; the harder prompt
+-- too when a default-on profile shows none) + temperature=0.7, + the Minimal
+-- stance's request through the real handler where it sends a reasoning setting
 -- - compared against the resolution layer. The cheap standing answer to the
 -- pre-freeze "recheck constraints" checklist item: catches delisted-and-dead
--- ids, reasoning-default flips, and temperature rules that would 400 in the
--- field, without the full 13-19-request battery per model.
+-- ids, reasoning-default flips, and temperature and off rules that would 400
+-- in the field, without the full 13-19-request battery per model.
 --------------------------------------------------------------------------------
 
 -- Pure: compare a recheck observation against the current resolution layer.
@@ -2102,13 +3067,28 @@ end
 -- the model accepts) is only a WARN.
 function ModelAudit.recheckCompare(obs, current)
     if not obs.served then
+        if obs.plan_limit then
+            return "warn", { "not probeable with this key: its plan allows no requests here ("
+                .. obs.plan_limit .. ": 0)" }
+        end
         -- Key-tier limitations (free-tier quota on paid-only models, staged
-        -- rollouts) are about OUR key, not the curation - warn, don't drift.
-        local err = tostring(obs.err or "?")
+        -- rollouts, a lapsed plan, a new account locked out of an old family,
+        -- spent credits, a refused key) are about OUR key, not the curation -
+        -- warn, don't drift. Redacted: SambaNova's refusal echoes a masked key.
+        local err = ModelAudit.redact(obs.err or "?", 400)
         local lower = err:lower()
-        if lower:find("quota", 1, true) or lower:find("permission", 1, true)
-                or lower:find("billing", 1, true) then
-            return "warn", { "not probeable with this key (quota/permission): " .. err:sub(1, 100) }
+        for _i, frag in ipairs({ "quota", "permission", "billing", "subscription",
+                                  "new users", "credit", "api key" }) do
+            if lower:find(frag, 1, true) then
+                return "warn", { "not probeable with this key (quota/permission): " .. err:sub(1, 100) }
+            end
+        end
+        -- Busy, a server error the retries could not outlast, or no answer: says
+        -- nothing about whether the model is served (Z.AI's glm-4.7-flash 429
+        -- "temporarily overloaded" read as not served, 2026-10-08; it answered next).
+        if (obs.code ~= nil and ModelAudit.verdict(obs.code) == nil) or lower:find("^network:") then
+            return "warn", { "inconclusive (busy, server error or no answer: " .. tostring(obs.code) .. "): "
+                .. err:sub(1, 100) }
         end
         return "drift", { "not served: " .. err:sub(1, 120) }
     end
@@ -2133,10 +3113,22 @@ function ModelAudit.recheckCompare(obs, current)
     elseif pstate == "on" then
         -- Some wires report no reasoning evidence even when thinking ran, so
         -- absence alone never claims drift.
-        warn("no reasoning evidence on math prompt (profile default on) - verify")
+        warn("no reasoning evidence on " .. (obs.hard_prompt and "the math or harder prompt" or "math prompt")
+            .. " (profile default on) - verify")
     elseif obs.weak_evidence then
         warn("weak reasoning evidence (" .. tostring(obs.weak_evidence)
             .. " tokens) on a default-off profile - verify")
+    end
+    -- The Minimal stance's request through the real handler (runRecheck): a
+    -- refusal is a field 400 on Minimal, the Quick chip and reasoning-off actions.
+    local m = obs.minimal
+    if m and m.code ~= 200 then
+        if m.code == 400 or m.code == 404 or m.code == 422 then
+            drift("Minimal request refused (" .. tostring(m.code) .. "): "
+                .. tostring(m.err or "?"):sub(1, 120))
+        else
+            warn("Minimal request inconclusive (" .. tostring(m.code) .. ")")
+        end
     end
     -- "What we'd send": apply() passing 0.7 through, UNLESS the handler strips
     -- sampling params entirely (no_sampling_params lives in the request
@@ -2149,11 +3141,13 @@ function ModelAudit.recheckCompare(obs, current)
         end
         -- rejected while constraints strip/force it = consistent
     elseif obs.temp_ok == true then
-        if not we_send_temp then
+        -- (a strip that follows a documented deprecation is deliberate, not stale)
+        if not we_send_temp and not current.sampling_deprecated then
             warn("temperature accepted but constraints modify/strip it (possibly stale)")
         end
-    else
-        warn("temperature probe inconclusive (rate limit)")
+    elseif not obs.temp_skipped then
+        -- (skipped = nothing to compare: a Perplexity preset never takes one)
+        warn("temperature probe inconclusive (rate limit or server error)")
     end
     -- Output-ceiling comparison (--ceilings leg). Only the harmful directions:
     -- a clamp BELOW the stated ceiling is often a deliberate known-good floor
@@ -2173,6 +3167,57 @@ function ModelAudit.recheckCompare(obs, current)
     return level, reasons
 end
 
+-- Pure: the --ceilings leg's draft for a model with NO output ceiling on record
+-- (nil when it has one, or the leg saw nothing conclusive): the stated ceiling,
+-- OpenRouter's largest published endpoint cap, or a note that the oversized ask
+-- was accepted (the provider clamps silently: nothing to record, and no pin can
+-- 400 there).
+function ModelAudit.ceilingDraft(model, obs, has_ceiling)
+    if has_ceiling or type(obs) ~= "table" then return nil end
+    if obs.ceiling then
+        return string.format('["%s"] = %d,   -- stated in %s', model, obs.ceiling,
+            obs.ceiling_source or "the refusal")
+    elseif obs.catalog_ceiling then
+        return string.format('["%s"] = %d,   -- the largest published endpoint cap', model, obs.catalog_ceiling)
+    elseif obs.ceiling_accepted then
+        return string.format("-- %s: accepted a %d-token ask (clamps silently; nothing to record)",
+            model, ABSURD_MAX_TOKENS)
+    end
+    return nil
+end
+
+-- The Minimal stance's request, built by the provider's REAL handler from the
+-- api_params dispatch computes for this curated model (resolveReasoning +
+-- applyReasoningParams). Sent once by the recheck: a refusal is the 400 that
+-- Minimal, the Quick chip and reasoning-off actions hit in the field, the class
+-- the 2026-09-28 round found by hand (a new id on a sibling's prefix profile).
+-- nil when Minimal sends no reasoning setting (the baseline covers that body).
+function ModelAudit.minimalBuilt(provider, model, api_key)
+    local api_params = {}
+    ModelConstraints.applyReasoningParams(provider, api_params,
+        ModelConstraints.resolveReasoning(provider, model, { global_stance = "minimal" }))
+    if next(api_params) == nil then return nil end
+    local ok, Handler = pcall(require, "koassistant_api." .. provider)
+    if not ok or type(Handler) ~= "table" or type(Handler.buildRequestBody) ~= "function" then
+        return nil
+    end
+    api_params.max_tokens = 1024
+    local bok, built = pcall(Handler.buildRequestBody, Handler,
+        { { role = "user", content = PROBE_PROMPT } },
+        { provider = provider, model = model, api_key = api_key, api_params = api_params,
+          system = { text = "Answer briefly." }, features = { enable_streaming = false } })
+    if not bok or type(built) ~= "table" or not built.url or type(built.body) ~= "table" then
+        return nil
+    end
+    return built
+end
+
+-- A curated "thinks by default" with no evidence on the math prompt gets the
+-- harder prompt before the sweep warns (adaptive models skip easy prompts).
+local function profileSaysOn(provider, model)
+    return ModelConstraints.getReasoningProfile(provider, model).default_state == "on"
+end
+
 local function recheckObserve(provider, model, api_key, opts)
     local obs = { model = model }
     if provider == "anthropic" then
@@ -2180,11 +3225,14 @@ local function recheckObserve(provider, model, api_key, opts)
         local headers = { ["x-api-key"] = api_key, ["anthropic-version"] = "2023-06-01" }
         local code, decoded, raw = httpPostJson(url, headers, { model = model, max_tokens = 1024,
             messages = { { role = "user", content = REASONING_PROBE_PROMPT } } })
-        if code ~= 200 then obs.err = ModelAudit.errText(decoded, raw); return obs end
+        if code ~= 200 then obs.err = ModelAudit.errText(decoded, raw); obs.code = code; return obs end
         obs.served = true
-        obs.default_reasoning = false
-        for _i, block in ipairs(type(decoded.content) == "table" and decoded.content or {}) do
-            if type(block) == "table" and block.type == "thinking" then obs.default_reasoning = true end
+        obs.default_reasoning = anthropicThinks(decoded)
+        if not obs.default_reasoning and profileSaysOn(provider, model) then
+            obs.hard_prompt = true
+            local hcode, hdec = httpPostJson(url, headers, { model = model, max_tokens = 4096,
+                messages = { { role = "user", content = HARD_REASONING_PROBE_PROMPT } } })
+            obs.default_reasoning = hcode == 200 and anthropicThinks(hdec)
         end
         local tcode, tdec, traw = httpPostJson(url, headers, { model = model, max_tokens = 32,
             temperature = 0.7, messages = { { role = "user", content = PROBE_PROMPT } } })
@@ -2197,6 +3245,7 @@ local function recheckObserve(provider, model, api_key, opts)
             if ccode ~= 200 and ccode ~= 429 then
                 obs.ceiling = ModelAudit.parseCeiling(ModelAudit.errText(cdec, craw), ABSURD_MAX_TOKENS)
             end
+            obs.ceiling_accepted = ccode == 200
         end
         return obs
     elseif provider == "gemini" then
@@ -2205,7 +3254,7 @@ local function recheckObserve(provider, model, api_key, opts)
         local code, decoded, raw = httpPostJson(url, nil, {
             contents = { { parts = { { text = REASONING_PROBE_PROMPT } } } },
             generationConfig = { maxOutputTokens = 1024 } })
-        if code ~= 200 then obs.err = ModelAudit.errText(decoded, raw); return obs end
+        if code ~= 200 then obs.err = ModelAudit.errText(decoded, raw); obs.code = code; return obs end
         obs.served = true
         local um = type(decoded.usageMetadata) == "table" and decoded.usageMetadata
         local thoughts = um and type(um.thoughtsTokenCount) == "number" and um.thoughtsTokenCount or 0
@@ -2223,8 +3272,36 @@ local function recheckObserve(provider, model, api_key, opts)
                 if mok and type(mdata) == "table"
                         and type(mdata.outputTokenLimit) == "number" then
                     obs.ceiling = mdata.outputTokenLimit
+                    obs.ceiling_source = "the model's metadata"
                 end
             end
+        end
+        return obs
+    elseif provider == "perplexity" then
+        -- Served = the handler's web-on body answers (the request dispatch
+        -- sends). No reasoning comparison: Perplexity's models carry no profile
+        -- by design (with web on the search preset turns reasoning off, alone
+        -- they reason by default). A preset never takes a temperature, so only
+        -- a direct model gets the temperature/ceiling legs, on the model alone.
+        local code, decoded, raw = perplexitySend(perplexityBuilt(model, api_key,
+            { prompt = SEARCH_PROBE_PROMPT, api_params = { max_tokens = 512 } }))
+        if code ~= 200 then obs.err = ModelAudit.errText(decoded, raw); obs.code = code; return obs end
+        obs.served = true
+        if not model:find("/", 1, true) then
+            obs.temp_skipped = true
+            return obs
+        end
+        local tcode, tdec, traw = perplexitySend(perplexityBuilt(model, api_key,
+            { web = false, api_params = { max_tokens = 32 } }), function(b) b.temperature = 0.7 end)
+        obs.temp_ok = verdict(tcode)
+        if obs.temp_ok == false then obs.temp_err = ModelAudit.errText(tdec, traw) end
+        if opts and opts.ceilings then
+            local ccode, cdec, craw = perplexitySend(perplexityBuilt(model, api_key, { web = false }),
+                function(b) b.max_output_tokens = ABSURD_MAX_TOKENS end)
+            if ccode ~= 200 and ccode ~= 429 then
+                obs.ceiling = ModelAudit.parseCeiling(ModelAudit.errText(cdec, craw), ABSURD_MAX_TOKENS)
+            end
+            obs.ceiling_accepted = ccode == 200
         end
         return obs
     elseif OPENAI_FAMILY[provider] then
@@ -2238,7 +3315,7 @@ local function recheckObserve(provider, model, api_key, opts)
         local function req(extra, max_toks, prompt)
             local body = { model = model,
                            messages = { { role = "user", content = prompt or PROBE_PROMPT } } }
-            body[token_key] = max_toks or 32
+            body[token_key] = probeTokens(max_toks or 32)
             for k, v in pairs(extra or {}) do body[k] = v end
             return httpPostJson(url, headers, body)
         end
@@ -2247,11 +3324,18 @@ local function recheckObserve(provider, model, api_key, opts)
             token_key = "max_completion_tokens"
             code, decoded, raw = req(nil, 1024, REASONING_PROBE_PROMPT)
         end
-        if code ~= 200 then obs.err = ModelAudit.errText(decoded, raw); return obs end
+        if code ~= 200 then obs.err = ModelAudit.errText(decoded, raw); obs.code = code; return obs end
         obs.served = true
         -- Same weak-signal rule as the full battery: a handful of reasoning
         -- tokens on a math prompt is bookkeeping noise, not a reasoning default.
         local evidence = ModelAudit.reasoningEvidence(decoded)
+        local rt0 = evidence and tonumber(evidence:match("^reasoning_tokens=(%d+)$"))
+        if (evidence == nil or (rt0 and rt0 < 64)) and profileSaysOn(provider, model) then
+            -- none, or a weak count: the harder prompt settles a default-on profile
+            obs.hard_prompt = true
+            local hcode, hdec = req(nil, 4096, HARD_REASONING_PROBE_PROMPT)
+            evidence = hcode == 200 and ModelAudit.reasoningEvidence(hdec) or nil
+        end
         local rt = evidence and tonumber(evidence:match("^reasoning_tokens=(%d+)$"))
         if rt and rt < 64 then
             obs.weak_evidence = rt
@@ -2262,11 +3346,22 @@ local function recheckObserve(provider, model, api_key, opts)
         local tcode, tdec, traw = req({ temperature = 0.7 }, 32)
         obs.temp_ok = verdict(tcode)
         if obs.temp_ok == false then obs.temp_err = ModelAudit.errText(tdec, traw) end
-        if opts and opts.ceilings then
+        -- Not on OpenRouter: it answers asks above any cap (see endpointsCeiling), so
+        -- no output size 400s there, and its refusal states the context length.
+        if opts and opts.ceilings and provider ~= "openrouter" then
             local ccode, cdec, craw = req(nil, ABSURD_MAX_TOKENS)
             if ccode ~= 200 and ccode ~= 429 then
                 obs.ceiling = ModelAudit.parseCeiling(ModelAudit.errText(cdec, craw), ABSURD_MAX_TOKENS)
             end
+            obs.ceiling_accepted = ccode == 200
+        elseif opts and opts.ceilings then
+            -- OpenRouter: the largest published endpoint cap (a free GET), for the
+            -- draft only (never compared: asks above it are answered there)
+            local text = httpGet("https://openrouter.ai/api/v1/models/" .. model .. "/endpoints", headers)
+            local dok, data = pcall(json.decode, text or "")
+            local endpoints = dok and type(data) == "table" and type(data.data) == "table"
+                and data.data.endpoints
+            obs.catalog_ceiling = ModelAudit.endpointsCeiling(endpoints)
         end
         return obs
     end
@@ -2286,32 +3381,320 @@ local function runRecheck(provider, api_key, verbose, opts)
         return nil
     end
     local fam = OPENAI_FAMILY[provider]
-    if provider ~= "anthropic" and provider ~= "gemini" and not fam then
+    if provider ~= "anthropic" and provider ~= "gemini" and provider ~= "perplexity" and not fam then
         printf("  %sskipped: no probe adapter%s", C.dim, C.off)
         return nil
     end
     if fam and fam.cost_note then printf("  %snote: %s%s", C.yellow, fam.cost_note, C.off) end
-    printf("  %s%d micro-requests per curated model (%d models)%s", C.dim,
-        (opts and opts.ceilings) and 3 or 2, #curated, C.off)
+    if provider == "perplexity" then
+        printf("  %snote: every served check bills one search%s", C.yellow, C.off)
+    end
+    printf("  %s%d micro-requests per curated model, +1 where Minimal sends a reasoning setting (%d models)%s",
+        C.dim, (opts and opts.ceilings) and 3 or 2, #curated, C.off)
     local counts = { ok = 0, warn = 0, drift = 0 }
+    local drafts = {}
     for _i, model in ipairs(curated) do
+        RUN.provider, RUN.model = provider, model
         local obs = recheckObserve(provider, model, api_key, opts)
+        if not obs.served then obs.plan_limit = LAST.plan_limit end
+        -- (Perplexity's models carry no reasoning profile: Minimal sends nothing there)
+        local built = obs.served and provider ~= "perplexity"
+            and ModelAudit.minimalBuilt(provider, model, api_key) or nil
+        if built then
+            local mcode, mdec, mraw = httpPostJson(built.url, built.headers, built.body)
+            obs.minimal = { code = mcode, err = mcode ~= 200 and ModelAudit.errText(mdec, mraw) or nil }
+        end
         local level, reasons =
             ModelAudit.recheckCompare(obs, ModelAudit.currentResolution(provider, model))
         counts[level] = counts[level] + 1
         if level == "ok" then
             printf("  %sOK%s     %-38s%s", C.green, C.off, model,
                 verbose and (C.dim .. (obs.default_reasoning and "reasons by default"
-                    or "no default reasoning") .. C.off) or "")
+                    or "no default reasoning") .. (obs.minimal and ", Minimal accepted" or "")
+                    .. C.off) or "")
         else
             printf("  %s%-6s%s %-38s %s", level == "drift" and C.red or C.yellow,
                 level:upper(), C.off, model, table.concat(reasons, "; "))
+        end
+        if opts and opts.ceilings then
+            local line = ModelAudit.ceilingDraft(model, obs,
+                ModelConstraints.resolveMaxTokens(provider, model, -1) ~= -1)
+            if line then drafts[#drafts + 1] = line end
         end
     end
     printf("  %ssummary: %d ok, %d warn, %d drift%s",
         counts.drift > 0 and C.red or (counts.warn > 0 and C.yellow or C.green),
         counts.ok, counts.warn, counts.drift, C.off)
+    if #drafts > 0 then
+        printf("  %sNo output ceiling on record (review, then add to _max_output_tokens.%s):%s",
+            C.bold, provider, C.off)
+        for _i, line in ipairs(drafts) do printf("      %s", line) end
+    end
     return counts
+end
+
+--------------------------------------------------------------------------------
+-- Action pins (B355, 2026-09-29)
+--------------------------------------------------------------------------------
+-- B351 reached users because nothing sent an action's max_tokens pin to a
+-- model with no recorded output ceiling: the X-Ray's 65536 went out as is to
+-- every Cohere model, and Cohere refused it in words the one-time resend could
+-- not read. This leg sends the largest pin, built by each provider's REAL
+-- handler, to every listed model (curated and community) that no ceiling
+-- clamps, and grades the reply. A refusal must parse (parseMaxTokensError);
+-- one that states its limit in a new wording belongs in the corpus
+-- (tests/unit/test_error_wordings.lua).
+
+--- The largest max_tokens a built-in action pins (scanned: a new pin is
+--- covered without editing this file).
+function ModelAudit.largestActionPin()
+    local Actions = require("prompts.actions")
+    local best = 0
+    for _idx, ctx in ipairs({ "highlight", "book", "library", "general", "special" }) do
+        for _id, a in pairs(type(Actions[ctx]) == "table" and Actions[ctx] or {}) do
+            local n = type(a) == "table" and type(a.api_params) == "table"
+                and tonumber(a.api_params.max_tokens)
+            if n and n > best then best = n end
+        end
+    end
+    local mok, Merge = pcall(require, "koassistant_xray_merge")
+    local m = mok and type(Merge) == "table" and type(Merge.API_PARAMS) == "table"
+        and tonumber(Merge.API_PARAMS.max_tokens)
+    if m and m > best then best = m end
+    return best
+end
+
+--- Grade one pinned request's reply. Pure.
+--- @return string "ok" (accepted) | "heals" (refused in words the resend reads)
+---   | "drift" (refused over the output length in words it cannot read: every
+---   such request fails in the field) | "stale" (the listed model is gone)
+---   | "inconclusive" (account: key, credits, rate) | "error" (anything else)
+--- @return table|nil parseMaxTokensError's reading, for "heals"
+function ModelAudit.pinVerdict(code, err_text)
+    if code == 200 then return "ok" end
+    local n = tonumber(code)
+    if not n or n == 401 or n == 402 or n == 403 or n == 429 then return "inconclusive" end
+    local text = tostring(err_text or "")
+    local parsed = ModelConstraints.parseMaxTokensError(text)
+    if parsed then return "heals", parsed end
+    local lower = text:lower()
+    for _idx, sig in ipairs({ "max_tokens", "max tokens", "maxtokens", "max_completion_tokens",
+            "max_output_tokens", "maxoutputtokens", "output tokens", "output length",
+            "too many tokens" }) do
+        if lower:find(sig, 1, true) then return "drift" end
+    end
+    if n == 404 or lower:find("not found", 1, true) or lower:find("decommission", 1, true)
+            or lower:find("does not exist", 1, true) or lower:find("no longer", 1, true) then
+        return "stale"
+    end
+    return "error"
+end
+
+local function runPins(providers, apikeys, verbose)
+    local pin = ModelAudit.largestActionPin()
+    banner(string.format("ACTION PINS: max_tokens %d to every listed model with no recorded ceiling", pin))
+    local counts = { ok = 0, heals = 0, drift = 0, stale = 0, inconclusive = 0, error = 0, skipped = 0 }
+    local stanzas = {}
+    local Base = require("koassistant_api.base")
+    for _i, p in ipairs(providers) do
+        local todo = {}
+        for _j, m in ipairs(type(ModelLists[p]) == "table" and ModelLists[p] or {}) do
+            if type(m) == "string" and ModelConstraints.clampMaxTokens(p, m, pin) == pin then
+                todo[#todo + 1] = m
+            end
+        end
+        local key = keyFor(apikeys, p)
+        local hok, Handler = pcall(require, "koassistant_api." .. p)
+        if #todo == 0 then
+            if verbose then printf("  %s%s: every model has a ceiling%s", C.dim, p, C.off) end
+        elseif not TestConfig.isValidApiKey(key) then
+            printf("  %s%s: %d without a ceiling, skipped (no API key)%s", C.dim, p, #todo, C.off)
+            counts.skipped = counts.skipped + #todo
+        elseif not hok or type(Handler) ~= "table" or type(Handler.buildRequestBody) ~= "function" then
+            printf("  %s%s: %d without a ceiling, skipped (no request builder)%s", C.dim, p, #todo, C.off)
+            counts.skipped = counts.skipped + #todo
+        else
+            printf("%s%s%s: %d without a ceiling", C.bold, p, C.off, #todo)
+            for _j, m in ipairs(todo) do
+                RUN.provider, RUN.model = p, m
+                local bok, built = pcall(Handler.buildRequestBody, Handler,
+                    { { role = "user", content = PROBE_PROMPT } },
+                    { provider = p, model = m, api_key = key, system = { text = "Answer briefly." },
+                      api_params = { max_tokens = pin }, conversation_id = "koa-model-audit",
+                      features = { enable_streaming = false, enable_web_search = false } })
+                local verdict, parsed, err
+                if not bok or type(built) ~= "table" or not built.url or type(built.body) ~= "table" then
+                    verdict, err = "error", "request not built: " .. tostring(built)
+                else
+                    if built.body.stream then built.body.stream = false end
+                    -- Cloudflare answers 1010 to a library's own User-Agent
+                    local code, dec, raw = httpPostJson(built.url, Base.withUserAgent(built.headers), built.body)
+                    err = code ~= 200 and ModelAudit.errText(dec, raw) or nil
+                    verdict, parsed = ModelAudit.pinVerdict(code, err)
+                    if err then err = "HTTP " .. tostring(code) .. ": " .. err end
+                    if err and LAST.plan_limit then err = err .. " (plan: " .. LAST.plan_limit .. " 0)" end
+                end
+                counts[verdict] = counts[verdict] + 1
+                local color = (verdict == "ok" and C.green) or (verdict == "drift" and C.red)
+                    or (verdict == "inconclusive" and C.dim) or C.yellow
+                local note = ""
+                if verdict == "heals" then
+                    local limit = parsed.cap or parsed.retry_at
+                    note = string.format("refused, resend reads %s %d", parsed.kind, limit)
+                    if parsed.cap then
+                        stanzas[#stanzas + 1] = string.format('-- _max_output_tokens.%s\n    ["%s"] = %d,', p, m, parsed.cap)
+                    end
+                elseif verdict == "drift" then
+                    note = "refused in words the resend cannot read (add the wording to the corpus): "
+                        .. tostring(err):sub(1, verbose and 400 or 160)
+                elseif verdict ~= "ok" then
+                    note = tostring(err):sub(1, verbose and 400 or 120)
+                end
+                printf("  %s%-12s%s %-44s %s", color, verdict:upper(), C.off, m, note)
+            end
+        end
+    end
+    printf("\n  %ssummary: %d ok, %d heal on the resend, %d drift, %d stale, %d inconclusive, %d other, %d skipped%s",
+        counts.drift > 0 and C.red or ((counts.heals + counts.stale + counts.error) > 0 and C.yellow or C.green),
+        counts.ok, counts.heals, counts.drift, counts.stale, counts.inconclusive, counts.error,
+        counts.skipped, C.off)
+    if #stanzas > 0 then
+        printf("\n  %sCeilings the refusals stated (review, then add to model_constraints.lua so the first request lands):%s",
+            C.bold, C.off)
+        for _idx, s in ipairs(stanzas) do print("  " .. s:gsub("\n", "\n  ")) end
+    end
+    return counts
+end
+
+--------------------------------------------------------------------------------
+-- Key health (--keys, 2026-09-30)
+--------------------------------------------------------------------------------
+-- One request per keyed provider on its default model, built by the provider's
+-- REAL handler (max_tokens 256, web off, no stream): which keys work, which
+-- accounts are empty, which plans exclude the default. About 20 tiny requests
+-- (cents); the error text prints with anything key-shaped redacted.
+
+--- The model a provider sends when the reader never picked one (the first listed).
+function ModelAudit.defaultModel(provider)
+    local list = ModelLists[provider]
+    if type(list) == "table" and type(list[1]) == "string" then return list[1] end
+    local pd = Defaults.ProviderDefaults[provider]
+    return pd and pd.model or nil
+end
+
+--- Grade one key-health reply. Pure.
+--- @return string "ok" | "key" (the key is refused) | "credits" (the account is
+---   empty) | "plan" (the plan or subscription excludes the model) | "rate" (busy:
+---   retry later) | "model" (the DEFAULT model is refused: a curation defect, every
+---   reader who never picked a model hits it) | "error" (anything else)
+function ModelAudit.keyVerdict(code, err_text, plan_limit)
+    if code == 200 then return "ok" end
+    local n = tonumber(code)
+    local lower = tostring(err_text or ""):lower()
+    local function has(list)
+        for _i, frag in ipairs(list) do
+            if lower:find(frag, 1, true) then return true end
+        end
+        return false
+    end
+    if n == 401 or has({ "api key", "api_key", "apikey", "unauthorized", "authentication" }) then
+        return "key"
+    end
+    if n == 402 or has({ "credit", "balance", "billing", "payment", "insufficient funds" }) then
+        return "credits"
+    end
+    if plan_limit or n == 403 or has({ "subscription", "tier" }) then return "plan" end
+    if n == 429 then return "rate" end
+    if n == 404 or (lower:find("model", 1, true) and has({ "not found", "does not exist", "not exist",
+            "no longer", "decommission", "deprecated", "unknown", "invalid model" })) then
+        return "model"
+    end
+    return "error"
+end
+
+--- Key-shaped runs out of an error text (a provider may echo a masked key:
+--- SambaNova, 2026-09-30). Pure.
+function ModelAudit.redact(text, max)
+    local s = tostring(text or "")
+    s = s:gsub("sk%-[%w%-_%*%.]+", "<key>")
+    s = s:gsub("[%w]*%*+[%w]*", "<key>")
+    s = s:gsub("[%w%-_]+", function(w) if #w >= 28 then return "<id>" end end)
+    s = s:gsub("%s+", " ")
+    return (s:sub(1, max or 170))
+end
+
+local KEY_LABEL = { ok = "OK", key = "KEY", credits = "CREDITS", plan = "PLAN", rate = "BUSY",
+                    model = "MODEL", error = "ERROR" }
+
+local function runKeys(providers, apikeys, verbose)
+    banner("KEYS: one request per keyed provider, on its default model")
+    local Base = require("koassistant_api.base")
+    local counts = { ok = 0, key = 0, credits = 0, plan = 0, rate = 0, model = 0, error = 0 }
+    for _i, p in ipairs(providers) do
+        local key, model = keyFor(apikeys, p), ModelAudit.defaultModel(p)
+        local hok, Handler = pcall(require, "koassistant_api." .. p)
+        local verdict, note
+        if not TestConfig.isValidApiKey(key) then
+            note = "no API key"
+        elseif not model or not hok or type(Handler) ~= "table" or type(Handler.buildRequestBody) ~= "function" then
+            verdict, note = "error", "no request builder or default model"
+        else
+            RUN.provider, RUN.model = p, model
+            local bok, built = pcall(Handler.buildRequestBody, Handler,
+                { { role = "user", content = PROBE_PROMPT } },
+                { provider = p, model = model, api_key = key, system = { text = "Answer briefly." },
+                  api_params = { max_tokens = 256 }, conversation_id = "koa-model-audit",
+                  enable_web_search = false,
+                  features = { enable_streaming = false, enable_web_search = false } })
+            if not bok or type(built) ~= "table" or not built.url or type(built.body) ~= "table" then
+                verdict, note = "error", "request not built: " .. tostring(built)
+            else
+                if built.body.stream then built.body.stream = false end
+                -- Cloudflare answers 1010 to a library's own User-Agent
+                local code, dec, raw = httpPostJson(built.url, Base.withUserAgent(built.headers), built.body)
+                local err = code ~= 200 and ModelAudit.errText(dec, raw) or nil
+                verdict = ModelAudit.keyVerdict(code, err, LAST.plan_limit)
+                if err then note = "HTTP " .. tostring(code) .. ": " .. err end
+            end
+        end
+        if verdict then
+            counts[verdict] = counts[verdict] + 1
+            local color = (verdict == "ok" and C.green) or (verdict == "model" and C.red) or C.yellow
+            printf("  %s%-8s%s %-12s %-40s %s", color, KEY_LABEL[verdict], C.off, p, tostring(model),
+                note and ModelAudit.redact(note, verbose and 400 or 150) or "")
+        else
+            printf("  %s%-8s %-12s %s%s", C.dim, "-", p, note, C.off)
+        end
+    end
+    printf("\n  %ssummary: %d ok, %d key refused, %d empty account, %d plan, %d busy, %d default model refused, %d other%s",
+        counts.model > 0 and C.red
+            or ((counts.key + counts.credits + counts.plan + counts.error) > 0 and C.yellow or C.green),
+        counts.ok, counts.key, counts.credits, counts.plan, counts.rate, counts.model, counts.error, C.off)
+    if counts.model > 0 then
+        printf("  %sa refused DEFAULT model fails for every reader of that provider who never picked one%s",
+            C.red, C.off)
+    end
+    return counts
+end
+
+-- The SPEND block that ends every run that sent requests.
+local function printSpend()
+    if next(TALLY) == nil then return end
+    local rows, total, unpriced = ModelAudit.spendRows(TALLY, ModelAudit.orCatalog())
+    banner("SPEND (this run)")
+    printf("  %-12s %8s %10s %10s %11s", "provider", "requests", "input", "output", "est. cost")
+    for _i, r in ipairs(rows) do
+        local cost = "?"
+        if r.cost then
+            cost = string.format("$%.4f", r.cost)
+        elseif r.input + r.output == 0 then
+            cost = "-"
+        end
+        printf("  %-12s %8d %10d %10d %11s%s", r.provider, r.requests, r.input, r.output, cost,
+            r.searches > 0 and string.format("  + %d searches, billed per request", r.searches) or "")
+    end
+    printf("  %sabout $%.4f at OpenRouter's list prices%s (cache discounts and a provider's own prices differ)%s",
+        C.bold, total, unpriced > 0 and string.format(", %d model(s) it does not price", unpriced) or "", C.off)
 end
 
 --------------------------------------------------------------------------------
@@ -2330,7 +3713,7 @@ local function main()
         local a = arg[i]
         if a == "--help" or a == "-h" then
             print("Usage: lua tests/model_audit.lua [providers...] [--probe <provider> <model>] " ..
-                  "[--probe-new] [--recheck [--ceilings]] [--verbose]")
+                  "[--probe-new] [--recheck [--ceilings]] [--pins] [--keys] [--verbose]")
             os.exit(0)
         elseif a == "--verbose" or a == "-v" then
             verbose = true
@@ -2348,6 +3731,10 @@ local function main()
             mode = "recheck"
         elseif a == "--ceilings" then
             recheck_ceilings = true
+        elseif a == "--pins" then
+            mode = "pins"
+        elseif a == "--keys" then
+            mode = "keys"
         elseif a:match("^%-") then
             printf("unknown option: %s (see --help)", a)
             os.exit(1)
@@ -2368,9 +3755,45 @@ local function main()
 
     local apikeys = TestConfig.loadApiKeys()
 
+    local function finish(code)
+        printSpend()
+        os.exit(code)
+    end
+
     if mode == "probe" then
         local facts = probeModel(probe_provider, probe_model, keyFor(apikeys, probe_provider), verbose)
-        os.exit((facts and facts.reachable) and 0 or 1)
+        finish((facts and facts.reachable) and 0 or 1)
+    end
+
+    if mode == "keys" then
+        if #providers == 0 then
+            -- Every provider with a key, except ollama (local) and the OpenAI
+            -- Subscription (OAuth, not a key)
+            for _i, p in ipairs(ModelLists.getAllProviders()) do
+                if p ~= "ollama" and p ~= "openai_codex" and TestConfig.isValidApiKey(keyFor(apikeys, p)) then
+                    table.insert(providers, p)
+                end
+            end
+            table.sort(providers)
+        end
+        local counts = runKeys(providers, apikeys, verbose)
+        finish(counts.model > 0 and 1 or 0)
+    end
+
+    if mode == "pins" then
+        if #providers == 0 then
+            -- Every built-in list except ollama (local), the OpenAI
+            -- Subscription (OAuth, not a key) and openrouter (31 mirror ids:
+            -- name it to include it)
+            for _i, p in ipairs(ModelLists.getAllProviders()) do
+                if p ~= "ollama" and p ~= "openai_codex" and p ~= "openrouter" then
+                    table.insert(providers, p)
+                end
+            end
+            table.sort(providers)
+        end
+        local counts = runPins(providers, apikeys, verbose)
+        finish(counts.drift > 0 and 1 or 0)
     end
 
     if mode == "recheck" then
@@ -2379,7 +3802,7 @@ local function main()
             -- openrouter (31 marketplace mirror ids - run --recheck openrouter
             -- explicitly when you mean it).
             for _i, p in ipairs(ModelLists.getAllProviders()) do
-                if (p == "anthropic" or p == "gemini" or OPENAI_FAMILY[p])
+                if (p == "anthropic" or p == "gemini" or p == "perplexity" or OPENAI_FAMILY[p])
                         and p ~= "openrouter"
                         and TestConfig.isValidApiKey(keyFor(apikeys, p)) then
                     table.insert(providers, p)
@@ -2394,10 +3817,11 @@ local function main()
             local counts = runRecheck(p, keyFor(apikeys, p), verbose, { ceilings = recheck_ceilings })
             if counts and counts.drift > 0 then any_drift = true end
         end
-        os.exit(any_drift and 1 or 0)
+        finish(any_drift and 1 or 0)
     end
 
     -- discovery (both "discover" and "probe-new" start here)
+    local full_run = #providers == 0
     if #providers == 0 then
         local skipped = {}
         for _i, p in ipairs(ModelLists.getAllProviders()) do
@@ -2413,7 +3837,7 @@ local function main()
             C.dim, table.concat(skipped, ", "), C.off)
     end
 
-    local to_probe = {}
+    local to_probe, fetched_lists = {}, {}
     for _i, provider in ipairs(providers) do
         if not DISCOVERY[provider] then
             banner(provider)
@@ -2426,7 +3850,8 @@ local function main()
                 printf("  %swatching: %-24s %s%s", C.yellow, id, note, C.off)
             end
         else
-            local diff = runDiscovery(provider, keyFor(apikeys, provider), verbose)
+            local diff, fetched = runDiscovery(provider, keyFor(apikeys, provider), verbose)
+            if fetched then fetched_lists[provider] = fetched end
             if diff then
                 for _j, id in ipairs(diff.new) do
                     table.insert(to_probe, { provider = provider, model = id })
@@ -2435,23 +3860,77 @@ local function main()
         end
     end
 
-    -- Enrich NEW ids with marketplace pricing/context (tier proposals). One
-    -- extra GET; skipped without an openrouter key or when nothing is new.
-    if #to_probe > 0 and TestConfig.isValidApiKey(apikeys.openrouter) then
-        local or_models = fetchProviderList("openrouter", apikeys.openrouter)
-        if or_models then
+    -- Enrich NEW ids with marketplace pricing/context (tier proposals): the public
+    -- catalog (discovery's own fetch when openrouter ran), no key needed.
+    if #to_probe > 0 then
+        local or_models = ModelAudit.orCatalog(fetched_lists.openrouter)
+        local mappable = false
+        for _i, entry in ipairs(to_probe) do
+            if ModelAudit.OPENROUTER_PREFIX[entry.provider] then mappable = true end
+        end
+        if or_models and mappable then
             printf("\n%sNEW-id metadata via the OpenRouter marketplace (tier proposals - human places tiers):%s",
                 C.bold, C.off)
             for _i, entry in ipairs(to_probe) do
-                local slug, meta = ModelAudit.openrouterLookup(or_models, entry.provider, entry.model)
-                local note = slug and ModelAudit.openrouterAnnotation(meta)
-                if note then
-                    printf("  %s/%s: %s  %s(%s)%s",
-                        entry.provider, entry.model, note, C.dim, slug, C.off)
-                else
-                    printf("  %s%s/%s: no marketplace match%s",
-                        C.dim, entry.provider, entry.model, C.off)
+                -- Hosts without a marketplace prefix mapping can never match
+                if ModelAudit.OPENROUTER_PREFIX[entry.provider] then
+                    local slug, meta = ModelAudit.openrouterLookup(or_models, entry.provider, entry.model)
+                    local note = slug and ModelAudit.openrouterAnnotation(meta)
+                    if note then
+                        printf("  %s/%s: %s  %s(%s)%s",
+                            entry.provider, entry.model, note, C.dim, slug, C.off)
+                    else
+                        printf("  %s%s/%s: no marketplace match%s",
+                            C.dim, entry.provider, entry.model, C.off)
+                    end
                 end
+            end
+        end
+    end
+
+    -- Where each NEW direct id is also served but not curated (gpt-6.1-sol on
+    -- OpenRouter and Perplexity was found by hand, 2026-09-30).
+    if #to_probe > 0 then
+        local function gatewayList(g)
+            if g == "openrouter" then return ModelAudit.orCatalog(fetched_lists.openrouter) end
+            if fetched_lists[g] then return fetched_lists[g] end
+            local key = keyFor(apikeys, g)
+            if DISCOVERY[g] and TestConfig.isValidApiKey(key) then return (fetchProviderList(g, key)) end
+            return publicList(g)
+        end
+        local gateways = {}
+        for _i, g in ipairs(ModelAudit.GATEWAYS) do gateways[g] = gatewayList(g) end
+        local shown = false
+        for _i, entry in ipairs(to_probe) do
+            if ModelAudit.VENDOR_SET[entry.provider] then
+                local hits = ModelAudit.mirrorsOf(entry.provider, entry.model, gateways, ModelLists)
+                if #hits > 0 then
+                    if not shown then
+                        printf("\n%sAlso served, not curated there (curate the mirror too, or note why not):%s",
+                            C.bold, C.off)
+                        shown = true
+                    end
+                    printf("  %s/%s: %s", entry.provider, entry.model, table.concat(hits, ", "))
+                end
+            end
+        end
+    end
+
+    -- Vendor releases no list carries (a keyless direct provider, or one this run
+    -- skipped, would hide them): full runs, or when openrouter was named.
+    if full_run or fetched_lists.openrouter then
+        local or_models = ModelAudit.orCatalog(fetched_lists.openrouter)
+        if or_models then
+            local releases = ModelAudit.vendorReleases(or_models, ModelLists, os.time(), ModelAudit.RELEASE_DAYS)
+            if #releases > 0 then
+                printf("\n%sOpenRouter: releases of the last %d days from vendors we curate, on no list:%s",
+                    C.bold, ModelAudit.RELEASE_DAYS, C.off)
+                for _i, r in ipairs(releases) do
+                    printf("  %s  %s", os.date("%Y-%m-%d", r.created), r.id)
+                end
+            else
+                printf("\n%sOpenRouter: every release of the last %d days from a vendor we curate is on a list%s",
+                    C.dim, ModelAudit.RELEASE_DAYS, C.off)
             end
         end
     end
@@ -2474,6 +3953,7 @@ local function main()
         printf("\n%sTip:%s probe new ids with --probe (or all at once with --probe-new).",
             C.bold, C.off)
     end
+    printSpend()
 end
 
 -- Run main() only when executed directly (unit tests require this file as a

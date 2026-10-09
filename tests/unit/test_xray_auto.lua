@@ -119,6 +119,55 @@ TestRunner:test("outcome flags: idle close doesn't poison; cancel/discard consum
     TestRunner:assertEqual(d, false, "consumed once")
 end)
 
+TestRunner:test("cancelForSleep: kills once, marks slept (not cancelled), idle is a no-op", function()
+    XrayAuto.consumeOutcomeFlags()
+    -- Idle: nothing to stop, no flag
+    TestRunner:assertEqual(XrayAuto.cancelForSleep(), false, "idle returns false")
+    local c, d, s = XrayAuto.consumeOutcomeFlags()
+    TestRunner:assertEqual(s, false, "idle sleep marks nothing")
+    -- In flight: the handle fires once, the flight clears, the outcome is a sleep
+    local calls = 0
+    XrayAuto.beginFlight("/books/a.epub")
+    XrayAuto.registerCancel(function() calls = calls + 1 end)
+    TestRunner:assertEqual(XrayAuto.cancelForSleep(), true, "in-flight returns true")
+    TestRunner:assertEqual(XrayAuto.cancelForSleep(), false, "second call is idle")
+    TestRunner:assertEqual(calls, 1, "handle fired once")
+    TestRunner:assertEqual(XrayAuto.isInFlight(), false, "flight cleared")
+    TestRunner:assertEqual(XrayAuto.inFlightFile(), nil, "flight file cleared")
+    c, d, s = XrayAuto.consumeOutcomeFlags()
+    TestRunner:assertEqual(c, false, "a sleep is not a user cancel")
+    TestRunner:assertEqual(d, false, "nothing discarded")
+    TestRunner:assertEqual(s, true, "sleep recorded")
+    c, d, s = XrayAuto.consumeOutcomeFlags()
+    TestRunner:assertEqual(s, false, "consumed once")
+    -- A real cancel never reads as a sleep
+    XrayAuto.beginFlight()
+    XrayAuto.cancelInFlight()
+    c, d, s = XrayAuto.consumeOutcomeFlags()
+    TestRunner:assertEqual(c, true, "cancel recorded")
+    TestRunner:assertEqual(s, false, "cancel is not a sleep")
+    -- A step still being prepared (in flight, no handle yet: the large-request
+    -- warning waiting for the reader) is left alone: nothing killed, no flag,
+    -- the flight stays so the reader's answer after waking proceeds normally
+    XrayAuto.beginFlight("/books/a.epub")
+    TestRunner:assertEqual(XrayAuto.cancelForSleep(), false, "nothing sent = nothing killed")
+    TestRunner:assertEqual(XrayAuto.isInFlight(), true, "preparing flight untouched")
+    c, d, s = XrayAuto.consumeOutcomeFlags()
+    TestRunner:assertEqual(s, false, "no stale sleep flag")
+    XrayAuto.endFlight()
+end)
+
+TestRunner:test("chainBusy: a build parked for the network is not busy", function()
+    TestRunner:assertEqual(XrayAuto.chainBusy(), false, "idle")
+    XrayAuto.beginLadderBuild("/books/a.epub", { 0.2, 0.4 }, nil, { silent = true })
+    TestRunner:assertEqual(XrayAuto.chainBusy(), true, "active chain is busy")
+    XrayAuto.setAwaitingNetwork(true)
+    TestRunner:assertEqual(XrayAuto.chainBusy(), false, "parked chain lets installs run")
+    TestRunner:assertEqual(XrayAuto.ladderBuild() ~= nil, true, "still the active build")
+    XrayAuto.endLadderBuild()
+    TestRunner:assertEqual(XrayAuto.chainBusy(), false, "ended")
+end)
+
 TestRunner:test("flight file scopes the display (watchdog retired 2026-08-05)", function()
     XrayAuto.consumeOutcomeFlags()
     XrayAuto.beginFlight("/books/a.epub")
@@ -139,6 +188,74 @@ TestRunner:test("failure trace is per-file and cleared by success", function()
     TestRunner:assertEqual(XrayAuto.lastFailure("/books/b.epub"), nil, "other file unaffected")
     XrayAuto.recordSuccess("/books/a.epub")
     TestRunner:assertEqual(XrayAuto.lastFailure("/books/a.epub"), nil, "success clears failure")
+end)
+
+TestRunner:test("on_state_change: every transition a window shows calls the slot", function()
+    local calls = 0
+    XrayAuto.on_state_change = function() calls = calls + 1 end
+    local function expect(label, fn)
+        local before = calls
+        fn()
+        TestRunner:assertEqual(calls > before, true, label)
+    end
+    expect("beginFlight", function() XrayAuto.beginFlight("/books/a.epub") end)
+    expect("endFlight", function() XrayAuto.endFlight() end)
+    expect("beginLadderBuild", function()
+        XrayAuto.beginLadderBuild("/books/a.epub", { 0.2, 0.4 }, nil, { intro = true })
+    end)
+    expect("completeIntro", function() XrayAuto.completeIntro() end)
+    expect("advanceLadderBuild", function() XrayAuto.advanceLadderBuild() end)
+    expect("setAwaitingNetwork", function() XrayAuto.setAwaitingNetwork(true) end)
+    expect("requestLadderCancel", function() XrayAuto.requestLadderCancel() end)
+    expect("recordLadderStop", function()
+        XrayAuto.recordLadderStop("/books/a.epub", { step = 2, total = 3, kind = "network" })
+    end)
+    expect("endLadderBuild", function() XrayAuto.endLadderBuild() end)
+    expect("recordFailure", function() XrayAuto.recordFailure("/books/a.epub", "boom") end)
+    expect("recordSuccess", function() XrayAuto.recordSuccess("/books/a.epub") end)
+    expect("clearFailure", function() XrayAuto.clearFailure() end)
+    XrayAuto.beginFlight("/books/a.epub")
+    expect("cancelInFlight", function() XrayAuto.cancelInFlight() end)
+    XrayAuto.beginFlight("/books/a.epub")
+    XrayAuto.registerCancel(function() end)
+    expect("cancelForSleep", function() XrayAuto.cancelForSleep() end)
+    XrayAuto.consumeOutcomeFlags()
+    -- A throwing slot never breaks the transition it rides
+    XrayAuto.on_state_change = function() error("boom") end
+    XrayAuto.beginFlight("/books/a.epub")
+    TestRunner:assertEqual(XrayAuto.isInFlight(), true, "transition applied despite the slot")
+    XrayAuto.endFlight()
+    XrayAuto.on_state_change = nil
+    -- Leave no chain stop behind for the file (a restart clears it)
+    XrayAuto.beginLadderBuild("/books/a.epub", { 0.5 })
+    XrayAuto.endLadderBuild()
+end)
+
+TestRunner:test("stateStamp: changes with what the windows show, not with a step's flight", function()
+    XrayAuto.clearFailure()
+    local idle = XrayAuto.stateStamp()
+    XrayAuto.beginFlight("/books/a.epub")
+    TestRunner:assertEqual(XrayAuto.stateStamp() ~= idle, true, "an update in flight shows")
+    XrayAuto.endFlight()
+    TestRunner:assertEqual(XrayAuto.stateStamp(), idle, "and its end shows")
+    XrayAuto.beginLadderBuild("/books/a.epub", { 0.2, 0.4, 0.6 })
+    local step1 = XrayAuto.stateStamp()
+    TestRunner:assertEqual(step1 ~= idle, true, "a build shows")
+    XrayAuto.beginFlight("/books/a.epub")
+    TestRunner:assertEqual(XrayAuto.stateStamp(), step1, "a step's flight does not (the build row stands in)")
+    XrayAuto.endFlight()
+    XrayAuto.advanceLadderBuild()
+    local step2 = XrayAuto.stateStamp()
+    TestRunner:assertEqual(step2 ~= step1, true, "the next step shows")
+    XrayAuto.setAwaitingNetwork(true)
+    TestRunner:assertEqual(XrayAuto.stateStamp() ~= step2, true, "parking for Wi-Fi shows")
+    XrayAuto.setAwaitingNetwork(false)
+    TestRunner:assertEqual(XrayAuto.stateStamp(), step2, "and so does the release")
+    XrayAuto.endLadderBuild()
+    TestRunner:assertEqual(XrayAuto.stateStamp(), idle, "the build's end shows")
+    XrayAuto.recordFailure("/books/a.epub", "boom")
+    TestRunner:assertEqual(XrayAuto.stateStamp() ~= idle, true, "a failure shows")
+    XrayAuto.clearFailure()
 end)
 
 print("")
@@ -1079,6 +1196,98 @@ TestRunner:test("promoteXrayLadderRung: outgoing-only ledger stubs survive the i
     ActionCache.clear(DOC_PATH, "xray")
 end)
 
+TestRunner:test("promoteXrayLadderRung: a hand-added entry stays an entry, a hand-linked one keeps its history (B400)", function()
+    local XrayParser = require("koassistant_xray_parser")
+    ActionCache.clearXrayLadder(DOC_PATH)
+    ActionCache.clearXrayCheckpoints(DOC_PATH)
+    ActionCache.clearXrayCache(DOC_PATH)
+    ActionCache.clear(DOC_PATH, "xray")
+    ActionCache.setUserAliases(DOC_PATH, {})
+
+    -- The checkpoint built ahead: its own copy of the carried list (Fenna,
+    -- "the boy"), an entry for Tobias, nothing about Fenna in the text
+    local rung_json = [[{
+      "type": "fiction",
+      "characters": [
+        {"name": "Tamsin", "description": "rung"},
+        {"name": "Tobias Renn", "description": "Named in this stretch."}
+      ],
+      "__dormant": [
+        {"name": "Fenna", "category": "characters", "role": "Letter carrier", "source": "Vol 2",
+         "description": "Rows the mail."},
+        {"name": "the boy", "category": "characters", "source": "Vol 1",
+         "description": "A stowaway nobody named."}
+      ]
+    }]]
+    -- Live: the reader added Fenna as an entry and linked "the boy" onto Tobias
+    local live = XrayParser.parse([[{
+      "type": "fiction",
+      "characters": [
+        {"name": "Tamsin", "description": "live"},
+        {"name": "Tobias Renn", "description": "Named early."}
+      ],
+      "__dormant": [
+        {"name": "Fenna", "category": "characters", "role": "Letter carrier", "source": "Vol 2",
+         "description": "Rows the mail."},
+        {"name": "the boy", "category": "characters", "source": "Vol 1",
+         "description": "A stowaway nobody named."}
+      ]
+    }]])
+    TestRunner:assertTrue(XrayParser.promoteStub(live, 1, "Fenna"), "Add as a new entry")
+    TestRunner:assertTrue(XrayParser.wakeStubInto(live, 1, "the boy", "characters", "Tobias Renn"),
+        "Link to an entry of this book")
+    local live_json = XrayParser.serialize(live)
+    local function plant()
+        ActionCache.clearXrayLadder(DOC_PATH)
+        ActionCache.setXrayCache(DOC_PATH, live_json, 0.4,
+            { model = "m-live", used_book_text = true, progress_page = 40 })
+        ActionCache.set(DOC_PATH, "xray", live_json, 0.4, { model = "m-live" })
+        ActionCache.pushXrayLadderRung(DOC_PATH, {
+            result = rung_json, progress_decimal = 0.7, progress_page = 70,
+            timestamp = 1700000070, used_book_text = true, model = "m-70",
+        })
+    end
+    local function installed()
+        TestRunner:assertEqual(ActionCache.promoteXrayLadderRung(
+            DOC_PATH, ActionCache.getXrayLadder(DOC_PATH)[1], 5), true, "install succeeds")
+        local data = XrayParser.parse(ActionCache.getXrayCache(DOC_PATH).result)
+        local by_name = {}
+        for _i, c in ipairs(data.characters or {}) do by_name[c.name] = c end
+        return data, by_name
+    end
+
+    -- Without the record (X-Rays edited before this build): parked again, text kept
+    plant()
+    local data, by_name = installed()
+    TestRunner:assertEqual(by_name["Fenna"], nil, "no record: the hand-added entry is carried again")
+    local stub = XrayParser.findDormantByIdentity(data, { "Fenna" })
+    TestRunner:assertEqual(stub and stub.description, "Rows the mail.", "with its text")
+    -- The link holds either way: the history is back on the checkpoint's entry
+    local tobias = by_name["Tobias Renn"]
+    TestRunner:assertEqual(tobias and tobias.description, "Named in this stretch.", "the checkpoint's text")
+    TestRunner:assertEqual(tobias and tobias.background and tobias.background[1].source, "Vol 1",
+        "the linked history rides onto the checkpoint's entry")
+    TestRunner:assertEqual(XrayParser.findDormantByIdentity(data, { "the boy" }), nil,
+        "and the checkpoint's own copy of the row does not come back")
+
+    -- With the record: the entry is an entry after the install
+    plant()
+    ActionCache.addPromotedStub(DOC_PATH, "Fenna")
+    data, by_name = installed()
+    TestRunner:assertTrue(by_name["Fenna"] ~= nil, "the hand-added entry is still an entry")
+    TestRunner:assertEqual(by_name["Fenna"].description, "Rows the mail.", "as it was")
+    TestRunner:assertEqual(by_name["Fenna"].role, "Letter carrier", "role kept")
+    TestRunner:assertEqual(XrayParser.findDormantByIdentity(data, { "Fenna" }), nil, "not carried as well")
+    TestRunner:assertEqual(ActionCache.getXrayLadder(DOC_PATH)[1].result, rung_json,
+        "the ladder still holds the pure checkpoint")
+
+    ActionCache.setUserAliases(DOC_PATH, {})
+    ActionCache.clearXrayLadder(DOC_PATH)
+    ActionCache.clearXrayCheckpoints(DOC_PATH)
+    ActionCache.clearXrayCache(DOC_PATH)
+    ActionCache.clear(DOC_PATH, "xray")
+end)
+
 TestRunner:test("promoteXrayLadderRung: copy semantics, conditional ring push, flag fallback", function()
     ActionCache.clearXrayLadder(DOC_PATH)
     ActionCache.clearXrayCheckpoints(DOC_PATH)
@@ -1164,6 +1373,16 @@ TestRunner:test("classifyStopReason: transient classes vs terminal ones (item 45
         { "could not connect to server", "network", true },
         { "response is not a valid X-Ray JSON structure", "bad_json", false },
         { "rung not saved", "bad_json", false },
+        -- #111: nothing came back at all. Transient by nature (a dropped
+        -- connection, a child that died before writing, a proxy answering 200
+        -- with no body), so the one retry is the thing most likely to heal it.
+        -- Decorated and undecorated both, since the message reaches the ladder
+        -- straight from the router today.
+        { "Empty response from custom_test. Please try again.", "empty_response", true },
+        { "openai/gpt-5.5: Empty response from openai. Please try again.", "empty_response", true },
+        -- A body that arrived but could not be read is NOT this class: it stays
+        -- terminal with the rest of the unusable-response family.
+        { "Failed to parse response from custom_test", "other", false },
         { "some entirely novel failure", "other", false },
         { nil, "other", false },
     }
@@ -1286,6 +1505,15 @@ TestRunner:test("matchAnyXrayExact: carried stubs route without the ahead peek (
     TestRunner:assertEqual(ActionCache.matchAnyXrayExact(DOC_PATH, "Nobody Here"), false, "miss stays a miss")
     TestRunner:assertEqual(ActionCache.matchAnyXrayExact(DOC_PATH, "Carried Gal", { include_ahead = false }),
         true, "Upcoming Entities off keeps the carried route (Q8)")
+    -- opts.also (the dictionary wrapper's cleaned word): the second spelling
+    -- is tried against the same index and reported back
+    local ok, form = ActionCache.matchAnyXrayExact(DOC_PATH, "Live Guy's", { also = "Live Guy" })
+    TestRunner:assertEqual(ok, true, "cleaned spelling routes")
+    TestRunner:assertEqual(form, "Live Guy", "the matching spelling is returned")
+    ok, form = ActionCache.matchAnyXrayExact(DOC_PATH, "Live Guy", { also = "Guy" })
+    TestRunner:assertEqual(form, "Live Guy", "the raw spelling wins when both could match")
+    TestRunner:assertEqual(ActionCache.matchAnyXrayExact(DOC_PATH, "Nobody's", { also = "Nobody" }),
+        false, "both spellings missing stays a miss")
 end)
 
 TestRunner:test("skippedBuiltRung (B282): the swing guard fires only past a skipped built rung", function()
@@ -1297,6 +1525,399 @@ TestRunner:test("skippedBuiltRung (B282): the swing guard fires only past a skip
     TestRunner:assertEqual(XrayAuto.skippedBuiltRung({ rung(0.7, 1) }, 0.4, 0.72), false,
         "wide spacing: the next rung is still the next rung")
     TestRunner:assertEqual(XrayAuto.skippedBuiltRung(ladder, 0.4, 0.45), false, "nothing promotable: nothing to guard")
+end)
+
+TestRunner:test("nextRetryWait (B322): two retries per step, the second after twice the wait", function()
+  TestRunner:assertEqual(XrayAuto.nextRetryWait(0, 60), 60, "first retry: the wait as named")
+  TestRunner:assertEqual(XrayAuto.nextRetryWait(1, 60), 120, "second retry: twice the wait")
+  TestRunner:assertEqual(XrayAuto.nextRetryWait(2, 60), nil, "the budget is spent: the chain stops")
+  TestRunner:assertEqual(XrayAuto.nextRetryWait(1, 400), XrayAuto.RETRY_MAX_WAIT_S, "capped")
+  TestRunner:assertEqual(XrayAuto.nextRetryWait(0, nil), nil, "no wait named or allowed: no retry")
+end)
+
+TestRunner:test("updateBaseFor (B336): a checkpoint step never falls back to the live X-Ray", function()
+  local live = { result = "{}", intro = true }
+  local asked = 0
+  local function getLive() asked = asked + 1; return live end
+  local base = { result = "{}", progress_decimal = 0.2 }
+  TestRunner:assertEqual(XrayAuto.updateBaseFor({ _ladder_build = true, _ladder_base = base }, getLive),
+    base, "the base the fire path chose")
+  TestRunner:assertEqual(XrayAuto.updateBaseFor({ _ladder_build = true, _ladder_intro = true }, getLive),
+    nil, "the introduction creates from scratch")
+  TestRunner:assertEqual(XrayAuto.updateBaseFor({ _ladder_build = true }, getLive),
+    nil, "rung 1 after an installed introduction creates from scratch")
+  TestRunner:assertEqual(XrayAuto.updateBaseFor({ _ladder_fresh = true }, getLive), nil, "a pre-swap rebuild step")
+  TestRunner:assertEqual(asked, 0, "the live X-Ray is never read for a checkpoint step")
+  TestRunner:assertEqual(XrayAuto.updateBaseFor({}, getLive), live, "an ordinary update continues the live X-Ray")
+end)
+
+TestRunner:test("stepWritten (B354): only a checkpoint the step saved itself counts", function()
+  local started = 1000
+  -- A rebuild before its swap: the old lineage (to 90%, with an intro) is on disk
+  local old = {
+    { result = "{}", intro = true, progress_decimal = 0, timestamp = 900 },
+    { result = "{}", progress_decimal = 0.5, timestamp = 900 },
+    { result = "{}", progress_decimal = 0.9, timestamp = 950 },
+  }
+  TestRunner:assertEqual(XrayAuto.stepWritten(old, 0.1, false, started), false,
+    "a refused step does not pass on the old lineage")
+  TestRunner:assertEqual(XrayAuto.stepWritten(old, 0.1, true, started), false,
+    "nor a refused introduction on the old one")
+  local landed = { old[1], { result = "{}", progress_decimal = 0.1, timestamp = 1000 }, old[3] }
+  TestRunner:assertEqual(XrayAuto.stepWritten(landed, 0.1, false, started), true, "its own rung, same second")
+  TestRunner:assertEqual(XrayAuto.stepWritten(landed, 0.2, false, started), false, "a rung short of the target")
+  local intro = { { result = "{}", intro = true, progress_decimal = 0, timestamp = 1003 } }
+  TestRunner:assertEqual(XrayAuto.stepWritten(intro, 0.1, true, started), true, "its own introduction")
+  TestRunner:assertEqual(XrayAuto.stepWritten(intro, 0.1, false, started), false,
+    "an introduction is not a rung")
+  TestRunner:assertEqual(XrayAuto.stepWritten({ { progress_decimal = 0.1, timestamp = 1001 } }, 0.1, false, started),
+    false, "a rung without a result")
+end)
+
+TestRunner:test("skipFrontMatterStep (B353): the plan loses the step, the next reads further", function()
+  -- A build to 30%: the 10% step was front matter only
+  XrayAuto.beginLadderBuild("/books/a.epub", { 0.1, 0.2, 0.3 }, { [1] = "Intro", [3] = "III" })
+  TestRunner:assertEqual(XrayAuto.skipFrontMatterStep(), true, "skipped")
+  local b = XrayAuto.ladderBuild()
+  TestRunner:assertEqual(table.concat(b.rungs, ","), "0.2,0.3", "10% left the plan")
+  TestRunner:assertEqual(b.total, 2, "one step fewer")
+  TestRunner:assertEqual(b.labels[2], "III", "labels follow their rungs")
+  TestRunner:assertEqual(b.labels[1], nil, "the dropped rung's label went with it")
+  TestRunner:assertEqual(XrayAuto.currentLadderStep().target, 0.2, "the next step reads to 20%")
+  -- The build's goal is still front matter: nothing to build
+  XrayAuto.beginLadderBuild("/books/a.epub", { 0.3 })
+  TestRunner:assertEqual(XrayAuto.skipFrontMatterStep(), false, "no skip past the goal")
+  TestRunner:assertEqual(XrayAuto.currentLadderStep().target, 0.3, "plan untouched")
+  XrayAuto.endLadderBuild()
+end)
+
+TestRunner:test("skipFrontMatterStep (B353): a follow chain takes its next grid point; the intro reads it", function()
+  XrayAuto.beginLadderBuild("/books/a.epub", { 0.1 }, nil,
+    { intro = true, grid = { 0.1, 0.176, 0.3 }, grid_labels = { [2] = "Chapter 1" } })
+  TestRunner:assertEqual(XrayAuto.skipFrontMatterStep(), true, "the introduction's slice was front matter")
+  local step = XrayAuto.currentLadderStep()
+  TestRunner:assertEqual(step.intro, true, "the introduction still comes first")
+  TestRunner:assertEqual(step.target, 0.176, "and reads the next grid point's slice")
+  local b = XrayAuto.ladderBuild()
+  TestRunner:assertEqual(b.total, 2, "introduction + one checkpoint, as before")
+  TestRunner:assertEqual(b.labels[1], "Chapter 1", "the grid point keeps its chapter")
+  XrayAuto.endLadderBuild()
+end)
+
+TestRunner:test("skipFrontMatterStep (B353): bounded (half the book, three skips)", function()
+  XrayAuto.beginLadderBuild("/books/a.epub", { 0.5, 0.6 })
+  TestRunner:assertEqual(XrayAuto.skipFrontMatterStep(), false, "half the book is never front matter only")
+  XrayAuto.beginLadderBuild("/books/a.epub", { 0.05, 0.1, 0.15, 0.2, 0.25 })
+  for i = 1, XrayAuto.FRONT_MATTER_SKIPS do
+    TestRunner:assertEqual(XrayAuto.skipFrontMatterStep(), true, "skip " .. i)
+  end
+  TestRunner:assertEqual(XrayAuto.skipFrontMatterStep(), false, "the budget is spent")
+  TestRunner:assertEqual(XrayAuto.currentLadderStep().target, 0.2, "the chain keeps its place")
+  XrayAuto.endLadderBuild()
+  TestRunner:assertEqual(XrayAuto.skipFrontMatterStep(), false, "no build, no skip")
+  local kind, transient = XrayAuto.classifyStopReason("nothing to build from")
+  TestRunner:assertEqual(kind, "nothing_built", "a stop that cannot skip is named")
+  TestRunner:assertEqual(transient, false, "never retried")
+end)
+
+TestRunner:test("skipFrontMatterStep (B353): a chain that shrinks to one step still reads as a chain", function()
+  -- Rebuild as you read at 4%: a checkpoint at your position and one ahead;
+  -- the first held only front matter
+  XrayAuto.beginLadderBuild("/books/a.epub", { 0.038, 0.1 }, nil, { rebuild = true })
+  TestRunner:assertEqual(XrayAuto.ladderBuild().single_step, nil, "planned as a chain")
+  TestRunner:assertEqual(XrayAuto.skipFrontMatterStep(), true, "skipped")
+  TestRunner:assertEqual(XrayAuto.ladderBuild().total, 1, "one step left")
+  TestRunner:assertEqual(XrayAuto.ladderBuild().single_step, nil,
+    "still a chain (its end notice is not \"X-Ray ready.\" with nothing installed)")
+  XrayAuto.beginLadderBuild("/books/a.epub", { 0.1 }, nil, { grid = { 0.1, 0.2 } })
+  TestRunner:assertEqual(XrayAuto.ladderBuild().single_step, true, "planned as one request")
+  TestRunner:assertEqual(XrayAuto.skipFrontMatterStep(), true, "takes the next grid point")
+  TestRunner:assertEqual(XrayAuto.ladderBuild().single_step, true, "and stays one request")
+  XrayAuto.beginLadderBuild("/books/a.epub", { 0.1 }, nil, { intro = true })
+  TestRunner:assertEqual(XrayAuto.ladderBuild().single_step, nil, "an introduction + one checkpoint is a chain")
+  XrayAuto.endLadderBuild()
+  -- Every surface words the build by its planned kind, never by the steps left
+  local here = debug.getinfo(1, "S").source:match("@?(.*)")
+  local plugin_dir = here:match("(.+)/tests/unit/[^/]+$") or "."
+  for _idx, rel in ipairs({ "main.lua", "koassistant_dialogs.lua" }) do
+    local f = assert(io.open(plugin_dir .. "/" .. rel, "r"))
+    local src = f:read("*a")
+    f:close()
+    TestRunner:assertEqual(src:find("%.total == 1"), nil, rel .. ": a build's kind read from its steps left")
+  end
+end)
+
+TestRunner:test("B001: the dedup ask waits for a running checkpoint build (source guard)", function()
+  local here = debug.getinfo(1, "S").source:match("@?(.*)")
+  local plugin_dir = here:match("(.+)/tests/unit/[^/]+$") or "."
+  local f = assert(io.open(plugin_dir .. "/main.lua", "r"))
+  local main = f:read("*a")
+  f:close()
+  local body = main:match("function AskGPT:maybeOfferDedupAsk%(file%)(.-)\nend\n")
+  TestRunner:assertTrue(body, "the ask found")
+  local gate = body:find("build.dedup_pending = true", 1, true)
+  local stamp = body:find("ActionCache.addDedupOfferedPairs(file, fresh)", 1, true)
+  TestRunner:assertTrue(gate and stamp and gate < stamp, "deferred before any pair is stamped")
+  TestRunner:assertTrue(main:find("if cur.dedup_pending then", 1, true), "a finished build asks once")
+end)
+
+TestRunner:test("B359: a paused automatic build keeps Extend and Rebuild in the popup (source guard)", function()
+  local here = debug.getinfo(1, "S").source:match("@?(.*)")
+  local plugin_dir = here:match("(.+)/tests/unit/[^/]+$") or "."
+  local f = assert(io.open(plugin_dir .. "/main.lua", "r"))
+  local main = f:read("*a")
+  f:close()
+  local paused = main:find("      if c_auto_on and XrayAuto.isAutoSuppressed(sx_file) then\n", 1, true)
+  -- The authoring rows sit at the paused branch's own level, after it closes
+  local rows = main:find("\n      local a_mode, a_base = self:_xrayAuthoringMode(sx_file)\n", 1, true)
+  TestRunner:assertTrue(paused and rows and paused < rows, "the authoring rows follow the paused branch, outside it")
+end)
+
+TestRunner:test("B361: a rebuild's introduction skips front matter like a create's", function()
+  -- Rebuild as you read at 4%: introduction + a checkpoint at your position +
+  -- one ahead; the first two slices hold only front matter
+  XrayAuto.beginLadderBuild("/books/a.epub", { 0.038, 0.1 }, nil,
+    { intro = true, rebuild = true, grid = { 0.038, 0.1, 0.2, 0.3 } })
+  TestRunner:assertEqual(XrayAuto.ladderBuild().total, 3, "introduction + two checkpoints")
+  TestRunner:assertEqual(XrayAuto.skipFrontMatterStep(), true, "4% was front matter")
+  TestRunner:assertEqual(XrayAuto.skipFrontMatterStep(), true, "10% too")
+  local step = XrayAuto.currentLadderStep()
+  TestRunner:assertEqual(step.intro, true, "the introduction still comes first")
+  TestRunner:assertEqual(step.target, 0.2, "reading the first slice with the story in it")
+  TestRunner:assertEqual(XrayAuto.ladderBuild().single_step, nil, "still a chain")
+  XrayAuto.endLadderBuild()
+end)
+
+TestRunner:test("B361: a rebuild plans the introduction like a create, which swaps in first (source guard)", function()
+  local here = debug.getinfo(1, "S").source:match("@?(.*)")
+  local plugin_dir = here:match("(.+)/tests/unit/[^/]+$") or "."
+  local function src(rel)
+    local f = assert(io.open(plugin_dir .. "/" .. rel, "r"))
+    local s = f:read("*a")
+    f:close()
+    return s
+  end
+  local main, dialogs = src("main.lua"), src("koassistant_dialogs.lua")
+  -- Every planner agrees, or a confirm's count and the build differ by one
+  TestRunner:assertTrue(main:find("if chain_rebuild then\n    resume, has_intro = false, false\n  end", 1, true),
+    "the checkpoint build: a rebuild's intro is its own")
+  TestRunner:assertTrue(main:find("local plan_intro = chain_rebuild or work.plan_intro", 1, true),
+    "the automatic engine")
+  TestRunner:assertTrue(main:find("return #rungs + ((rebuild or work.plan_intro) and 1 or 0)", 1, true),
+    "the as-I-read confirm's count")
+  local form = main:match("local function planIntroStep%(%)(.-)\n  end\n")
+  TestRunner:assertTrue(form, "the form's count found")
+  local pos = form:find('if cr.coverage == "position" then return false end', 1, true)
+  local reb = form:find("if pickIsRebuild() then return true end", 1, true)
+  TestRunner:assertTrue(pos and reb and pos < reb, "the form: a rebuild plans one, except to your position")
+  -- The step runs it over the old lineage, and its save is the swap
+  TestRunner:assertTrue(main:find("if is_intro and not (build.rebuild and not build.rebuild_swapped) then", 1, true),
+    "a rebuild's intro is not skipped for the old X-Ray")
+  TestRunner:assertTrue(dialogs:find("if xa_build and xa_build.rebuild and not xa_build.rebuild_swapped\n%s*and cache_answer then"),
+    "the first saved part swaps, the intro included")
+  -- With automatic building on nothing is resumed by hand: it builds on as you read
+  TestRunner:assertTrue(main:find("elseif not nc_auto_on and not nc_xa.isAutoSuppressed(self.ui.document.file)", 1, true),
+    "the Resume row waits for automatic building to be off")
+end)
+
+TestRunner:test("a tap outside the spacing picker is Back: the form comes back (source guard)", function()
+  local here = debug.getinfo(1, "S").source:match("@?(.*)")
+  local plugin_dir = here:match("(.+)/tests/unit/[^/]+$") or "."
+  local f = assert(io.open(plugin_dir .. "/main.lua", "r"))
+  local main = f:read("*a")
+  f:close()
+  local body = main:match("function AskGPT:_showXraySpacingPicker%(opts%)(.-)\nend\n")
+  TestRunner:assertTrue(body, "spacing picker found")
+  TestRunner:assertTrue(body:find("tap_close_callback = function()\n      if opts.on_back then opts.on_back() end",
+    1, true), "tap outside runs on_back")
+end)
+
+TestRunner:test("B362: a checkpoint cut off at its length limit stops with the reason named", function()
+  local kind, transient = XrayAuto.classifyStopReason("answer cut off at the length limit")
+  TestRunner:assertEqual(kind, "cut_off", "named")
+  TestRunner:assertEqual(transient, false, "never retried: the same step cuts off again")
+  local here = debug.getinfo(1, "S").source:match("@?(.*)")
+  local plugin_dir = here:match("(.+)/tests/unit/[^/]+$") or "."
+  local f = assert(io.open(plugin_dir .. "/main.lua", "r"))
+  local main = f:read("*a")
+  f:close()
+  -- The step names it from the reply, which keeps the notice under the rendered part
+  TestRunner:assertTrue(main:find('or (cut and "answer cut off at the length limit")', 1, true),
+    "the step's stop text")
+  TestRunner:assertTrue(main:find('if kind == "cut_off" then return _(', 1, true), "the label")
+end)
+
+TestRunner:test("B362: the popup names a checkpoint still being built and when it installs (source guard)", function()
+  local here = debug.getinfo(1, "S").source:match("@?(.*)")
+  local plugin_dir = here:match("(.+)/tests/unit/[^/]+$") or "."
+  local f = assert(io.open(plugin_dir .. "/main.lua", "r"))
+  local main = f:read("*a")
+  f:close()
+  local ahead = main:find("is already built and installs when you reach it.", 1, true)
+  local building = main:find("elseif ladder_building and not ladder_building.awaiting_network\n"
+    .. "          and not ladder_building.one_shot\n"
+    .. "          and not (xr_posture == \"full\" and not xr_hold) then", 1, true)
+  local line = main:find("is being built and installs when you reach it.", 1, true)
+  TestRunner:assertTrue(ahead and building and line and ahead < building and building < line,
+    "after a built checkpoint, before the plain position line; a one-request build installs when done, so it is left out")
+  local branch = main:sub(building or 1, (line or 1) + 200)
+  TestRunner:assertTrue(branch:find("not bs.intro", 1, true), "an introduction step installs at once: not named")
+  TestRunner:assertTrue(branch:find("bt > (current_progress.decimal or 0) + 0.005", 1, true),
+    "only a checkpoint past the reader")
+end)
+
+TestRunner:test("B389: a stop keeps its build's goal, and Resume re-plans that build", function()
+  -- A to-position build that stops at its only step
+  XrayAuto.beginLadderBuild("/books/r.epub", { 0.048 }, nil, { to_position = true })
+  local b = XrayAuto.ladderBuild()
+  TestRunner:assertEqual(b.to_position, true, "the build knows it runs to the reader's position")
+  XrayAuto.endLadderBuild()
+  XrayAuto.recordLadderStop("/books/r.epub", { step = 1, total = 1, kind = "network" }, b)
+  local stop = XrayAuto.lastLadderStop("/books/r.epub")
+  TestRunner:assertEqual(stop.goal, 0.048, "the goal")
+  local opts = XrayAuto.resumeOpts(stop)
+  TestRunner:assertEqual(opts.target, 0.048, "Resume plans to the same goal, not the whole book")
+  TestRunner:assertEqual(opts.to_position, true, "and the same way (no introduction step)")
+  -- A bounded chain to a section's end, a pre-swap rebuild
+  XrayAuto.beginLadderBuild("/books/r.epub", { 0.1, 0.2, 0.31 }, { [3] = "Part One" }, { rebuild = true })
+  b = XrayAuto.ladderBuild()
+  XrayAuto.endLadderBuild()
+  XrayAuto.recordLadderStop("/books/r.epub", { step = 2, total = 3, kind = "cancelled", rebuild = true }, b)
+  opts = XrayAuto.resumeOpts(XrayAuto.lastLadderStop("/books/r.epub"))
+  TestRunner:assertEqual(opts.target, 0.31, "the section's end")
+  TestRunner:assertEqual(opts.target_label, "Part One", "with its label")
+  TestRunner:assertEqual(opts.rebuild, true, "a pre-swap rebuild stays a rebuild")
+  -- A one-request build of the whole book
+  XrayAuto.beginLadderBuild("/books/r.epub", { 1.0 }, nil, { one_shot = true })
+  b = XrayAuto.ladderBuild()
+  XrayAuto.endLadderBuild()
+  XrayAuto.recordLadderStop("/books/r.epub", { step = 1, total = 1, kind = "timeout" }, b)
+  opts = XrayAuto.resumeOpts(XrayAuto.lastLadderStop("/books/r.epub"))
+  TestRunner:assertEqual(opts.one_shot, true, "one request again")
+  TestRunner:assertEqual(opts.target, nil, "the whole book needs no target")
+  -- No stop on record: continue to the end, as before
+  TestRunner:assertEqual(next(XrayAuto.resumeOpts(nil)), nil, "no stop: plain continue")
+end)
+
+TestRunner:test("B389: no Resume after a stop the same plan cannot get past", function()
+  for _i, kind in ipairs({ "nothing_built", "no_text" }) do
+    TestRunner:assertEqual(XrayAuto.resumeOpts({ kind = kind, goal = 0.048 }), nil, kind .. ": no Resume")
+  end
+  for _i, kind in ipairs({ "cut_off", "billing", "network", "cancelled", "step_too_large" }) do
+    TestRunner:assertTrue(XrayAuto.resumeOpts({ kind = kind }) ~= nil, kind .. ": Resume stays")
+  end
+  -- The classifier's kind for the step the model built nothing from is one of them
+  TestRunner:assertEqual(XrayAuto.resumeOpts({ kind = (XrayAuto.classifyStopReason("nothing to build from")) }), nil,
+    "the real stop kind")
+end)
+
+TestRunner:test("B389: every Resume goes through resumeOpts, and every stop records its build (source guard)", function()
+  local here = debug.getinfo(1, "S").source:match("@?(.*)")
+  local plugin_dir = here:match("(.+)/tests/unit/[^/]+$") or "."
+  local f = assert(io.open(plugin_dir .. "/main.lua", "r"))
+  local main = f:read("*a")
+  f:close()
+  -- The notice and both popup rows
+  TestRunner:assertTrue(main:find("local resume = XrayAuto.resumeOpts(XrayAuto.lastLadderStop(file))", 1, true),
+    "the stop notice")
+  TestRunner:assertTrue(main:find("self_ref:_startXrayLadderBuild(nc_xa.resumeOpts(nc_stop))", 1, true), "the no-X-Ray popup row")
+  TestRunner:assertTrue(main:find("self_ref:_startXrayLadderBuild(XrayAuto.resumeOpts(sx_stop))", 1, true), "the X-Ray popup row")
+  TestRunner:assertFalse(main:find("_startXrayLadderBuild%([%w_%s%.]-and { rebuild = true } or nil%)"),
+    "no Resume builds its own options")
+  -- Every stop record passes the stopping build
+  local records, with_build = 0, 0
+  for call in main:gmatch("XrayAuto%.recordLadderStop%((.-)%)\n") do
+    records = records + 1
+    if call:find("}, [%w_]+$") then with_build = with_build + 1 end
+  end
+  TestRunner:assertTrue(records >= 4, "the stop records are found (" .. records .. ")")
+  TestRunner:assertEqual(with_build, records, "each one passes its build")
+end)
+
+TestRunner:test("B362: a stop the same step would hit again pauses automatic building", function()
+  for _i, err in ipairs({ "answer cut off at the length limit",
+      "gemini/x: HTTP 400: insufficient_quota: your credit balance is too low" }) do
+    local kind = XrayAuto.classifyStopReason(err)
+    TestRunner:assertEqual(XrayAuto.stopPausesAuto(kind), true, kind .. " pauses")
+  end
+  for _i, kind in ipairs({ "cut_off", "too_large", "billing", "step_too_large" }) do
+    TestRunner:assertEqual(XrayAuto.stopPausesAuto(kind), true, kind .. " pauses")
+  end
+  -- A wait can heal these, reading on can, or the reader stopped it themselves
+  for _i, kind in ipairs({ "network", "rate_limited", "overloaded", "timeout", "nothing_built",
+      "no_text", "bad_json", "other", "cancelled", "interrupted" }) do
+    TestRunner:assertEqual(XrayAuto.stopPausesAuto(kind), false, kind .. " does not")
+  end
+  TestRunner:assertEqual(XrayAuto.stopPausesAuto(nil), false, "no kind")
+end)
+
+TestRunner:test("B362: a stop's pause outlives a book close; a cancel's does not", function()
+  XrayAuto.suppressAuto("/s", "stopped")
+  XrayAuto.suppressAuto("/c")
+  TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/s"), true, "stopped: paused")
+  TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/c"), true, "cancelled: paused")
+  XrayAuto.liftPauseOnClose("/s")
+  XrayAuto.liftPauseOnClose("/c")
+  TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/s"), true, "the stop's pause stays past the close")
+  TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/c"), false, "reopening after a cancel starts fresh")
+  XrayAuto.clearAutoSuppression("/s")
+  TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/s"), false, "an explicit start lifts either")
+  XrayAuto.liftPauseOnClose(nil)
+end)
+
+-- The decision itself, cut from main.lua and run against a fake plugin
+TestRunner:test("B362: the pause after a stop comes only with automatic building on, for the open book", function()
+  local here = debug.getinfo(1, "S").source:match("@?(.*)")
+  local plugin_dir = here:match("(.+)/tests/unit/[^/]+$") or "."
+  local f = assert(io.open(plugin_dir .. "/main.lua", "r"))
+  local main = f:read("*a")
+  f:close()
+  local body = main:match("\nfunction AskGPT:_pauseXrayAutoAfterStop%(file, kind%)\n(.-)\nend\n")
+  TestRunner:assertTrue(body ~= nil, "the decision found")
+  local auto_on = true
+  local env = setmetatable({
+    logger = { dbg = function() end },
+    require = function(name)
+      if name == "koassistant_book_settings" then
+        return { resolveXrayAuto = function() return auto_on end }
+      end
+      return require(name)
+    end,
+  }, { __index = _G })
+  local pause = assert(load("return function(self, file, kind)\n" .. body .. "\nend", "pause", "t", env))()
+  local function plugin(open_file)
+    return { ui = { document = { file = open_file }, doc_settings = {} },
+      settings = { readSetting = function() return {} end } }
+  end
+  pause(plugin("/p1"), "/p1", "cut_off")
+  TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/p1"), true, "automatic building on: paused")
+  XrayAuto.liftPauseOnClose("/p1")
+  TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/p1"), true, "as a stop, past the close")
+  XrayAuto.clearAutoSuppression("/p1")
+  pause(plugin("/p1"), "/p1", "network")
+  TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/p1"), false, "a stop a wait can heal: no pause")
+  pause(plugin("/other"), "/p1", "cut_off")
+  TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/p1"), false, "another book open: nothing to pause")
+  auto_on = false
+  pause(plugin("/p1"), "/p1", "cut_off")
+  TestRunner:assertEqual(XrayAuto.isAutoSuppressed("/p1"), false,
+    "automatic building off: no pause, the manual Resume row stays")
+end)
+
+TestRunner:test("B362: both failure stops pause, a close keeps a stop's pause, the row says why (source guard)", function()
+  local here = debug.getinfo(1, "S").source:match("@?(.*)")
+  local plugin_dir = here:match("(.+)/tests/unit/[^/]+$") or "."
+  local f = assert(io.open(plugin_dir .. "/main.lua", "r"))
+  local main = f:read("*a")
+  f:close()
+  TestRunner:assertTrue(main:find('kind = "step_too_large",\n            rebuild = (cur.rebuild and not cur.rebuild_swapped) or nil }, cur)\n'
+    .. '          self_ref:_pauseXrayAutoAfterStop(file, "step_too_large")', 1, true), "the large step held for review")
+  TestRunner:assertTrue(main:find("          kind = kind,\n          rebuild = (cur.rebuild and not cur.rebuild_swapped) or nil }, cur)\n"
+    .. "        self_ref:_pauseXrayAutoAfterStop(file, kind)", 1, true), "every classified stop")
+  TestRunner:assertTrue(main:find("XrayAuto.liftPauseOnClose(self.ui.document.file)", 1, true), "the book close")
+  local _n, rows = main:gsub("self:_xrayAutoPausedLabel%(", "")
+  TestRunner:assertEqual(rows, 2, "both popups' paused rows")
+  TestRunner:assertTrue(main:find('T(_("Resume automatic building (paused: %1)…"), why)', 1, true), "the reason")
 end)
 
 os.execute(string.format("rm -rf %q", TMP_ROOT))

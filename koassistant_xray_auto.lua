@@ -26,8 +26,21 @@ XrayAuto.CATCHUP_DELAY_S = 30    -- session-start catch-up delay (update-checker
 -- models; big one-shots). True hangs are rare and covered: the child's own
 -- socket timeouts self-resolve dead connections, every in-progress state has
 -- a tap-to-cancel row, and book close cancels the flight.)
-XrayAuto.RETRY_DELAY_S = 60      -- item 45: single transient-failure retry per ladder step.
+XrayAuto.RETRY_DELAY_S = 60      -- item 45: transient-failure retry wait per ladder step.
 XrayAuto.RETRY_MAX_WAIT_S = 600  -- a provider-named wait past this holds no build session
+XrayAuto.STEP_RETRIES = 2        -- B322: silent retries per step before the chain stops
+
+--- The wait before the next retry of a failed step, or nil when the step's
+--- budget is spent (the chain stops with its notice). The second retry waits
+--- twice as long (B322: a reporter saw 1-3 stops per 40 checkpoints, each
+--- healing on a later resume). Pure.
+--- @param retried number retries already made for this step
+--- @param wait number|nil the first wait (retryDelayFor); nil = no retry
+--- @return number|nil seconds
+function XrayAuto.nextRetryWait(retried, wait)
+  if not wait or retried >= XrayAuto.STEP_RETRIES then return nil end
+  return math.min(wait * (retried + 1), XrayAuto.RETRY_MAX_WAIT_S)
+end
 
 --- Seconds the one retry waits: the provider's own delay when it named one
 --- (the wording, or the retry-after header: RateLimits.retryAfter), plus a
@@ -59,6 +72,18 @@ local last_ladder_stop = nil -- { file, step, total, kind } — why the chain la
 local session_updates = 0
 local cancelled = false    -- set when an actual flight was cancelled (close/tap-to-cancel)
 local discarded = false    -- set by the completion guard when it rejects the write
+local slept = false        -- set when a flight was stopped because the device went to sleep
+
+-- Windows that show this state (the X-Ray popup's build and update rows, the
+-- shared version rows, the version cards) redraw when it changes: main.lua
+-- sets the slot, and every transition below calls it. The slot only
+-- schedules; nothing runs inside the transition.
+XrayAuto.on_state_change = nil
+local function changed()
+  if type(XrayAuto.on_state_change) == "function" then
+    pcall(XrayAuto.on_state_change)
+  end
+end
 
 --- Resolve the user dials (schema: Reading & Library → X-Ray) into gate values.
 --- Pure; fallbacks MUST match the schema defaults (5% / 25% / 15 min). An inverted
@@ -130,12 +155,14 @@ end
 function XrayAuto.beginFlight(file)
   in_flight = true
   in_flight_file = file
+  changed()
 end
 
 function XrayAuto.endFlight()
   in_flight = false
   in_flight_file = nil
   cancel_fn = nil
+  changed()
 end
 
 function XrayAuto.isInFlight()
@@ -171,6 +198,28 @@ function XrayAuto.cancelInFlight()
   end
   in_flight = false
   in_flight_file = nil
+  changed()
+end
+
+--- The device is going to sleep with a request on the wire (AskGPT:onSuspend,
+--- only where KOReader turns Wi-Fi off for the sleep, so the request can never
+--- complete): the same kill as cancelInFlight, marked as a sleep instead of a
+--- cancel, so the fire callbacks keep a checkpoint build alive for the
+--- reconnect rather than ending it or recording a failure. Only a SENT
+--- request (its cancel handle registered) is killed: a step still being
+--- prepared (in flight, no handle yet: the large-request warning waiting for
+--- the reader) is left alone and returns false.
+--- @return boolean true when a request was killed
+function XrayAuto.cancelForSleep()
+  if not cancel_fn then return false end
+  slept = true
+  local fn = cancel_fn
+  cancel_fn = nil
+  pcall(fn)
+  in_flight = false
+  in_flight_file = nil
+  changed()
+  return true
 end
 
 --- Consume-once outcome markers so the fire callback classifies results honestly
@@ -180,18 +229,21 @@ function XrayAuto.markDiscarded()
   discarded = true
 end
 
+--- @return boolean cancelled, boolean discarded, boolean slept
 function XrayAuto.consumeOutcomeFlags()
-  local c, d = cancelled, discarded
-  cancelled, discarded = false, false
-  return c, d
+  local c, d, s = cancelled, discarded, slept
+  cancelled, discarded, slept = false, false, false
+  return c, d, s
 end
 
 function XrayAuto.recordFailure(file, message)
   last_failure = { file = file, message = message }
+  changed()
 end
 
 function XrayAuto.clearFailure()
   last_failure = nil
+  changed()
 end
 
 --- Session-scoped "last auto-update failed" trace for the scope popup.
@@ -209,6 +261,7 @@ function XrayAuto.recordSuccess(file)
   if last_failure and last_failure.file == file then
     last_failure = nil
   end
+  changed()
 end
 
 --- Classify a request-failure message into a short reason kind (item 45).
@@ -225,7 +278,7 @@ end
 --- and a context/output-cap 400 are deterministic, so transient is false: the
 --- retry would be a guaranteed second failure.
 --- @param err string|nil The error text (handler-formatted, e.g. "gemini/…: HTTP 503: …")
---- @return string kind "aborted"|"billing"|"too_large"|"overloaded"|"rate_limited"|"server_error"|"timeout"|"network"|"bad_json"|"other"
+--- @return string kind "aborted"|"no_text"|"nothing_built"|"cut_off"|"billing"|"too_large"|"overloaded"|"rate_limited"|"server_error"|"timeout"|"network"|"bad_json"|"other"
 --- @return boolean transient True when a short wait plausibly heals it (retry-worthy)
 function XrayAuto.classifyStopReason(err)
   local text = type(err) == "string" and err:lower() or ""
@@ -235,8 +288,17 @@ function XrayAuto.classifyStopReason(err)
   -- "background: delta truncated" matched the bare "truncated" below and was
   -- reported to the reader as an "unusable response" for a request never sent.
   if text:find("^background:") then
+    -- B335: a step whose range holds no book text (a scanned file, pages of
+    -- images) is named, so the reader knows no retry will help
+    if text:find("^background: no book text") then return "no_text", false end
     return "aborted", false
   end
+  -- B353/B378: the model built nothing from a create step's text and the
+  -- step could not be skipped (the build's goal, or the skip budget spent)
+  if text:find("^nothing to build from") then return "nothing_built", false end
+  -- B362: the answer ran past its length limit; the same step cuts off
+  -- again, so no retry
+  if text:find("^answer cut off") then return "cut_off", false end
   -- Inline requires: both modules are pure and loadable from here, and this file
   -- deliberately keeps no file-level dependency on the api/constraints layer.
   local RateLimits = require("koassistant_rate_limits")
@@ -285,6 +347,16 @@ function XrayAuto.classifyStopReason(err)
       or text:find("wifi", 1, true) or text:find("resolve host", 1, true) then
     return "network", true
   end
+  -- The plugin's own "Empty response from <provider>" (#111): nothing came back
+  -- at all. Every cause is an aberration of one attempt rather than a property
+  -- of the request — a connection dropped mid-answer, a child that died before
+  -- writing, a proxy that answered 200 with no body — so the same request sent
+  -- again is the one thing likely to heal it. Matched on the three-word plugin
+  -- wording, not a bare "empty response", and unanchored because the string can
+  -- arrive decorated with a provider/model prefix.
+  if text:find("empty response from", 1, true) then
+    return "empty_response", true
+  end
   if text:find("not a valid x%-ray json") or text:find("json", 1, true)
       or text:find("truncated", 1, true) or text:find("rung not saved", 1, true) then
     return "bad_json", false
@@ -295,21 +367,51 @@ end
 --- Session-scoped "why the checkpoint chain last paused" (item 45): recorded
 --- on failure stops AND (2026-08-15, A5) explicit cancels and book-close
 --- interruptions; cleared when a chain (re)starts for the file.
-function XrayAuto.recordLadderStop(file, info)
+--- @param build table|nil the stopping build session: its goal rides along, so
+---   a Resume re-plans that build, not the whole book (B389)
+function XrayAuto.recordLadderStop(file, info, build)
   -- rebuild (2026-08-15): a PRE-SWAP rebuild chain that stops must resume as a
   -- rebuild — without the flag the resume row restarted it as a plain extend
   -- of the very lineage the rebuild was replacing
+  local rungs = type(build) == "table" and build.rungs or nil
   last_ladder_stop = { file = file, step = info and info.step,
     total = info and info.total, kind = info and info.kind,
-    rebuild = info and info.rebuild }
+    rebuild = info and info.rebuild,
+    goal = rungs and rungs[#rungs] or nil,
+    goal_label = rungs and build.labels and build.labels[#rungs] or nil,
+    one_shot = build and build.one_shot or nil,
+    to_position = build and build.to_position or nil }
+  changed()
 end
 
---- @return table|nil { step, total, kind } for this file
+--- @return table|nil { step, total, kind, rebuild, goal, ... } for this file
 function XrayAuto.lastLadderStop(file)
   if last_ladder_stop and last_ladder_stop.file == file then
     return last_ladder_stop
   end
   return nil
+end
+
+--- B389: what a Resume starts, from the stop it resumes: the stopped build
+--- again (its goal, one request or a chain, to the reader's position or not;
+--- a pre-swap rebuild stays a rebuild). Before, every Resume planned to the
+--- end of the book. nil = no Resume: the same plan cannot get past this stop
+--- (the text up to its goal gave the model nothing to build from, or has no
+--- text), only reading on changes that. No stop = continue to the end.
+--- @param stop table|nil lastLadderStop(file)
+--- @return table|nil opts for AskGPT:_startXrayLadderBuild
+function XrayAuto.resumeOpts(stop)
+  if not stop then return {} end
+  if stop.kind == "nothing_built" or stop.kind == "no_text" then return nil end
+  local goal = tonumber(stop.goal)
+  local bounded = goal and goal < 1.0 - 0.005
+  return {
+    rebuild = stop.rebuild or nil,
+    target = bounded and goal or nil,
+    target_label = bounded and stop.goal_label or nil,
+    one_shot = stop.one_shot or nil,
+    to_position = stop.to_position or nil,
+  }
 end
 
 function XrayAuto.sessionUpdateCount()
@@ -727,6 +829,43 @@ function XrayAuto.pickAheadRung(ladder, live_progress, position)
   return best
 end
 
+--- Whether a chain step landed (B354): only a checkpoint the step saved
+--- itself counts, a rung at its target (or an introduction for the intro
+--- step) stamped at or after the step started. The highest rung on disk was
+--- not enough: before a rebuild's swap the old lineage is still there, and a
+--- step the model refused passed on it. Pure.
+--- @param ladder table rung array (ActionCache.getXrayLadder)
+--- @param target number the step's target
+--- @param is_intro boolean the introduction step
+--- @param started number os.time() when the step fired
+--- @return boolean
+function XrayAuto.stepWritten(ladder, target, is_intro, started)
+  for _idx, r in ipairs(ladder or {}) do
+    if r.result and (tonumber(r.timestamp) or 0) >= started then
+      if is_intro then
+        if r.intro then return true end
+      elseif not r.intro
+          and (tonumber(r.progress_decimal) or 0) >= target - XrayAuto.LADDER_TOLERANCE then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+--- The update base of a cached request (B336). A checkpoint step continues
+--- from the base its fire path chose (the newest built rung or the live
+--- X-Ray, never an introduction) and creates from scratch without one; any
+--- other request continues from the live entry.
+--- @param message_data table the request's markers (_ladder_build, _ladder_base, _ladder_fresh)
+--- @param get_live function returns the live cache entry (called only when it may serve)
+--- @return table|nil entry
+function XrayAuto.updateBaseFor(message_data, get_live)
+  if message_data._ladder_base then return message_data._ladder_base end
+  if message_data._ladder_build or message_data._ladder_fresh then return nil end
+  return get_live()
+end
+
 -- Build-chain session state (module-local, survives instance teardown like the
 -- flight state — though a book close cancels the chain anyway). One build at a
 -- time, plugin-wide.
@@ -735,6 +874,38 @@ local ladder_build = nil  -- { file, rungs = {targets}, idx, total, cancel_reque
 --- @return table|nil the active build state (nil when idle)
 function XrayAuto.ladderBuild()
   return ladder_build
+end
+
+--- A chain that is actually working: an active build not parked for the
+--- network (onSuspend sets awaiting_network). A parked build has nothing in
+--- flight and fires nothing until the reconnect, so the automatic installs
+--- (page-turn promotion) may run around it; on a Kobo, Wi-Fi stays off after
+--- waking unless the reader restores it, and the parking can last the session.
+--- @return boolean
+function XrayAuto.chainBusy()
+  return ladder_build ~= nil and not ladder_build.awaiting_network
+end
+
+--- Everything the windows showing this state display, as one string (a window
+--- redraws only when it differs): while a chain runs, its step and parking
+--- (the build row stands in for the update rows, so a step's flight is not
+--- shown); otherwise the book the update in flight belongs to; the last
+--- failure and chain stop always.
+--- @return string
+function XrayAuto.stateStamp()
+  local b = ladder_build
+  local run = "-"
+  if b then
+    run = table.concat({ "b", tostring(b.file), tostring(b.step or b.idx), tostring(b.total),
+      b.awaiting_network and "w" or "", b.cancel_requested and "c" or "" }, ":")
+  elseif in_flight then
+    run = "f:" .. tostring(in_flight_file)
+  end
+  local f, st = last_failure, last_ladder_stop
+  return table.concat({ run,
+    f and (tostring(f.file) .. ":" .. tostring(f.message)) or "-",
+    st and table.concat({ tostring(st.file), tostring(st.kind), tostring(st.step) }, ":") or "-",
+  }, "|")
 end
 
 --- @param labels table|nil sparse array parallel to rungs (snapLadderRungs output):
@@ -756,8 +927,13 @@ end
 --- live X-Ray and an unarchived checkpoint on a build the user then DECLINED
 --- (device 2026-08-14) — nothing may be destroyed before a run completes.
 function XrayAuto.beginLadderBuild(file, rungs, labels, opts)
+  local total = #rungs + ((opts and opts.intro) and 1 or 0)
   ladder_build = { file = file, rungs = rungs, labels = labels, idx = 1,
-    total = #rungs + ((opts and opts.intro) and 1 or 0),
+    total = total,
+    -- Planned as ONE request: every surface words it as a background
+    -- generation, never a chain. Fixed here, because total shrinks when a
+    -- front-matter step leaves the plan (B353) and a chain stays a chain.
+    single_step = (total == 1) or nil,
     intro_pending = (opts and opts.intro) or nil,
     silent = (opts and opts.silent) or nil,
     rebuild = (opts and opts.rebuild) or nil,
@@ -765,11 +941,21 @@ function XrayAuto.beginLadderBuild(file, rungs, labels, opts)
     -- regardless of the promotion posture (the user explicitly asked for that
     -- coverage) — the completion handler keys off this flag
     one_shot = (opts and opts.one_shot) or nil,
+    -- A run option (B345) on a one-shot build: its rung runs on that model
+    run_variant = (opts and opts.one_shot and opts.run_variant) or nil,
+    -- Planned to the reader's position (no introduction step): a Resume
+    -- re-plans it the same way (B389)
+    to_position = (opts and opts.to_position) or nil,
+    -- B353: a follow chain's whole grid (the rungs are its prefix to one
+    -- ahead of the reader); a front-matter skip takes its next point
+    grid = (opts and opts.grid) or nil,
+    grid_labels = (opts and opts.grid_labels) or nil,
     step = 1 }
   -- A (re)start supersedes the last pause reason (item 45)
   if last_ladder_stop and last_ladder_stop.file == file then
     last_ladder_stop = nil
   end
+  changed()
 end
 
 --- The step the chain should fire next: { target, intro } or nil when done.
@@ -788,7 +974,53 @@ function XrayAuto.completeIntro()
   if ladder_build and ladder_build.intro_pending then
     ladder_build.intro_pending = nil
     ladder_build.step = (ladder_build.step or 1) + 1
+    changed()
   end
+end
+
+XrayAuto.FRONT_MATTER_MAX = 0.5   -- B353: no slice past half the book is front matter only
+XrayAuto.FRONT_MATTER_SKIPS = 3   -- B353: skips per chain (each one is a paid request)
+
+--- B353: skip a create step the model built nothing from (its error answer
+--- or no entries, B378; at a book's start, front matter). Its target leaves
+--- the plan, so the next step reads a longer slice from the start; an
+--- introduction step drops the rung it reads and reads the next slice. A
+--- chain with nothing after the dropped target takes the next point of its
+--- grid (a follow chain), else it cannot skip: a build's goal with nothing to
+--- build from stays that way. False too past FRONT_MATTER_MAX or
+--- FRONT_MATTER_SKIPS.
+--- @return boolean skipped
+function XrayAuto.skipFrontMatterStep()
+  local b = ladder_build
+  if not b then return false end
+  local idx = b.idx
+  local dropped = b.rungs[idx]
+  if not dropped or dropped >= XrayAuto.FRONT_MATTER_MAX
+      or (b.front_matter_skips or 0) >= XrayAuto.FRONT_MATTER_SKIPS then
+    return false
+  end
+  local next_gi
+  if b.rungs[idx + 1] == nil then
+    for gi, t in ipairs(b.grid or {}) do
+      if t > dropped + XrayAuto.LADDER_TOLERANCE then next_gi = gi break end
+    end
+    if not next_gi then return false end
+  end
+  table.remove(b.rungs, idx)
+  local labels = {}
+  for i, l in pairs(b.labels or {}) do
+    if i < idx then labels[i] = l elseif i > idx then labels[i - 1] = l end
+  end
+  b.labels = labels
+  if next_gi then
+    b.rungs[idx] = b.grid[next_gi]
+    labels[idx] = b.grid_labels and b.grid_labels[next_gi] or nil
+  else
+    b.total = b.total - 1
+  end
+  b.front_matter_skips = (b.front_matter_skips or 0) + 1
+  changed()
+  return true
 end
 
 --- Advance to the next rung. Returns the next target ratio, or nil when done.
@@ -796,17 +1028,31 @@ function XrayAuto.advanceLadderBuild()
   if not ladder_build then return nil end
   ladder_build.idx = ladder_build.idx + 1
   ladder_build.step = (ladder_build.step or ladder_build.idx) + 1
+  changed()
   return ladder_build.rungs[ladder_build.idx]
 end
 
 function XrayAuto.endLadderBuild()
   ladder_build = nil
+  changed()
 end
 
 --- Ask the chain to stop after the current rung completes (a rung mid-network
 --- additionally gets cancelInFlight from the caller).
 function XrayAuto.requestLadderCancel()
-  if ladder_build then ladder_build.cancel_requested = true end
+  if ladder_build then
+    ladder_build.cancel_requested = true
+    changed()
+  end
+end
+
+--- Park the build for the network (on = true: the device slept and KOReader
+--- turned Wi-Fi off, so nothing fires until the reconnect) or release it.
+function XrayAuto.setAwaitingNetwork(on)
+  if ladder_build then
+    ladder_build.awaiting_network = on or nil
+    changed()
+  end
 end
 
 -- Round 22 (D3): an explicit user cancel must mean something distinct from
@@ -818,8 +1064,10 @@ end
 -- rationale as the flight state above.
 local auto_suppressed = {}
 
-function XrayAuto.suppressAuto(file)
-  if file then auto_suppressed[file] = true end
+--- @param why string|nil "cancelled" (the default: the reader's cancel) or
+---   "stopped" (a stop the same step would hit again, B362)
+function XrayAuto.suppressAuto(file, why)
+  if file then auto_suppressed[file] = why or "cancelled" end
 end
 
 function XrayAuto.clearAutoSuppression(file)
@@ -827,7 +1075,28 @@ function XrayAuto.clearAutoSuppression(file)
 end
 
 function XrayAuto.isAutoSuppressed(file)
-  return file ~= nil and auto_suppressed[file] == true
+  return file ~= nil and auto_suppressed[file] ~= nil
+end
+
+--- A book close lifts a cancel's pause (reopening the book starts fresh) and
+--- keeps a stop's: the step that stopped would fail the same way. Either ends
+--- with the session (B362).
+function XrayAuto.liftPauseOnClose(file)
+  if file and auto_suppressed[file] == "cancelled" then auto_suppressed[file] = nil end
+end
+
+-- B362: the stops the same step would hit again (the answer cut off at its
+-- length limit, a request too large for the model or the plan, the account's
+-- credit, a step held for review as too large). With automatic building on, the
+-- next page turn after the cooldown planned that step again and paid for the
+-- same failure each time; such a stop pauses it for the book until the reader
+-- acts (the popup's Resume row, any explicit start).
+local PAUSING_STOPS = { cut_off = true, too_large = true, billing = true, step_too_large = true }
+
+--- @param kind string|nil a stop kind (classifyStopReason, or "step_too_large")
+--- @return boolean
+function XrayAuto.stopPausesAuto(kind)
+  return PAUSING_STOPS[kind] == true
 end
 
 return XrayAuto

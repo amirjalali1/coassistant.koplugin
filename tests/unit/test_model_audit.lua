@@ -399,6 +399,34 @@ TestRunner:check("temp rejected while constraints force 1.0 -> consistent ok (gp
 TestRunner:check("temp accepted while constraints strip it -> warn (over-strict, not harmful)",
     rlevel({ served = true, default_reasoning = false, temp_ok = true },
         { profile = { axis = "none" }, temp_after_apply = nil }) == "warn")
+TestRunner:check("temp accepted, stripped after a vendor deprecation -> ok (Gemini 3 class)",
+    rlevel({ served = true, default_reasoning = true, temp_ok = true },
+        { profile = { axis = "effort", default_state = "on" }, temp_after_apply = 0.7,
+          caps = { no_sampling_params = true }, sampling_deprecated = "deprecated" }) == "ok")
+TestRunner:check("the Gemini 3 strip is marked deliberate in the resolution",
+    ModelAudit.currentResolution("gemini", "gemini-3.8-flash").sampling_deprecated ~= nil
+    and ModelAudit.currentResolution("gemini", "gemini-2.5-flash").sampling_deprecated == nil)
+TestRunner:check("a refused key is the key's limitation, never drift, and its echo is redacted",
+    (function()
+        local level, reasons = ModelAudit.recheckCompare(
+            { served = nil, err = "Incorrect API key provided: ab12cd*****9z8y." }, {})
+        return level == "warn" and not reasons[1]:find("ab12cd", 1, true)
+    end)())
+TestRunner:check("a busy or failing server is inconclusive, never 'not served'",
+    (function()
+        local busy = ModelAudit.recheckCompare({ served = nil, code = 429,
+            err = "The service may be temporarily overloaded, please try again later" }, {})
+        local down = ModelAudit.recheckCompare({ served = nil, code = 503,
+            err = "Service temporarily overloaded" }, {})
+        local gone = ModelAudit.recheckCompare({ served = nil, code = 404,
+            err = "model_not_found" }, {})
+        local silent = ModelAudit.recheckCompare({ served = nil, err = "network: timeout" }, {})
+        return busy == "warn" and down == "warn" and gone == "drift" and silent == "warn"
+    end)())
+TestRunner:check("only a 4xx is a refusal: 429, 5xx and no answer are inconclusive",
+    ModelAudit.verdict(200) == true and ModelAudit.verdict(400) == false
+    and ModelAudit.verdict(404) == false and ModelAudit.verdict(429) == nil
+    and ModelAudit.verdict(503) == nil and ModelAudit.verdict(nil) == nil)
 TestRunner:check("temp inconclusive (quota) -> warn, never drift",
     rlevel({ served = true, default_reasoning = false, temp_ok = nil },
         { profile = { axis = "none" }, temp_after_apply = 0.7 }) == "warn")
@@ -504,6 +532,381 @@ rfacts_rej.responses_stream_ok = nil
 local rtext_rej = table.concat(ModelAudit.draftStanzas(rfacts_rej, rcurrent), "\n")
 TestRunner:check("Responses rejection drafts the cannot-route note",
     rtext_rej:find("Responses wire REJECTED", 1, true) ~= nil)
+
+--------------------------------------------------------------------------------
+TestRunner:suite("Undated lists, reviewed catalogs, never-listed ids (2026-09-28)")
+
+TestRunner:check("one shared created value = undated (Perplexity 0, NVIDIA 1993)",
+    ModelAudit.undatedList({ a = { created = 0 }, b = { created = 0 }, c = { created = 0 } }))
+TestRunner:check("real release dates = dated",
+    not ModelAudit.undatedList({ a = { created = 100 }, b = { created = 200 } }))
+TestRunner:check("a single dated entry proves nothing",
+    not ModelAudit.undatedList({ a = { created = 100 }, b = {} }))
+TestRunner:check("no timestamps at all = not undated (the no-`now` rule already applies)",
+    not ModelAudit.undatedList({ a = {}, b = {} }))
+
+local saved_reviewed = ModelAudit.REVIEWED.probe_host
+ModelAudit.REVIEWED.probe_host = { date = "2026-09-28", ids = { "old-model" } }
+local rdiff = ModelAudit.diffLists("probe_host", { "cur" },
+    { cur = {}, ["old-model"] = {}, ["brand-new"] = {} }, nil)
+ModelAudit.REVIEWED.probe_host = saved_reviewed
+TestRunner:check("reviewed id leaves the new bucket",
+    #rdiff.reviewed == 1 and rdiff.reviewed[1] == "old-model")
+TestRunner:check("unreviewed id still prints as new",
+    #rdiff.new == 1 and rdiff.new[1] == "brand-new")
+
+local udiff = ModelAudit.diffLists("perplexity", { "fast", "perplexity/sonar", "perplexity/gone" },
+    { ["perplexity/sonar"] = {} }, nil,
+    { unlisted = function(id) return not id:find("/", 1, true) end })
+TestRunner:check("never-listed preset is not reported removed",
+    #udiff.removed == 1 and udiff.removed[1] == "perplexity/gone")
+
+local together = ModelAudit.parseTogetherList({
+    { id = "org/chat-model", type = "chat" },
+    { id = "org/embed-model", type = "embedding" },
+    { id = "org/base-model", type = "language" },
+})
+TestRunner:check("Together: bare array parsed, chat entries only",
+    together and together["org/chat-model"] ~= nil and together["org/embed-model"] == nil
+    and together["org/base-model"] == nil)
+TestRunner:check("Together: an object body is rejected",
+    ModelAudit.parseTogetherList({ data = {} }) == nil)
+local cohere = ModelAudit.parseCohereList({ models = { { name = "command-x" }, { id = "no-name" } } })
+TestRunner:check("Cohere: models keyed by name",
+    cohere and cohere["command-x"] ~= nil and cohere["no-name"] == nil)
+
+TestRunner:check("qwen speech/realtime/vision-language ids are noise",
+    ModelAudit.isNoise("qwen", "qwen3-tts-flash") ~= nil
+    and ModelAudit.isNoise("qwen", "qwen3.5-omni-plus-realtime") ~= nil
+    and ModelAudit.isNoise("qwen", "qwen3-vl-plus") ~= nil)
+TestRunner:check("qwen chat and coder ids are not noise (coder is curated)",
+    ModelAudit.isNoise("qwen", "qwen3.8-flash") == nil
+    and ModelAudit.isNoise("qwen", "qwen3-coder-plus") == nil)
+TestRunner:check("together LoRA and base weights are noise",
+    ModelAudit.isNoise("together", "Qwen/Qwen3.5-2B-Lora") ~= nil
+    and ModelAudit.isNoise("together", "Qwen/Qwen3-8B-Base") ~= nil
+    and ModelAudit.isNoise("together", "zai-org/GLM-5.3") == nil)
+
+TestRunner:check("request-id digits are never a ceiling; the stated range wins",
+    ModelAudit.parseCeiling("Invalid max_tokens value, the valid range of max_tokens is [1, 393216] "
+        .. "(request_id: fe922218-5da4-4ae2-a51b-1605698c5c50)", 10000000) == 393216)
+TestRunner:check("a bare request id alone yields no ceiling",
+    ModelAudit.parseCeiling("Bad request (request_id: 12345678-1605698)", 10000000) == nil)
+TestRunner:check("a validation 400 inviting a retry is not transient",
+    not ModelAudit.isTransient(400, "Thinking level MINIMAL is not supported. Please retry with other thinking levels"))
+TestRunner:check("429 and 5xx stay transient",
+    ModelAudit.isTransient(429, "") and ModelAudit.isTransient(503, "") and ModelAudit.isTransient(nil, ""))
+TestRunner:check("openai voice model is noise", ModelAudit.isNoise("openai", "gpt-live-1") ~= nil)
+
+--------------------------------------------------------------------------------
+TestRunner:suite("recheck: key limitations and skipped temperature")
+
+TestRunner:check("new-account lockout is a key limitation, not drift",
+    rlevel({ served = nil, err = "This model models/gemini-2.5-flash is no longer available to new users." },
+        {}) == "warn")
+TestRunner:check("lapsed subscription is a key limitation",
+    rlevel({ served = nil, err = "An active OpenCode Go subscription is required to use Go models." },
+        {}) == "warn")
+TestRunner:check("spent credits are a key limitation",
+    rlevel({ served = nil, err = "Credit limit exceeded, please add credits" }, {}) == "warn")
+TestRunner:check("a skipped temperature leg (preset) is not 'inconclusive'",
+    rlevel({ served = true, temp_skipped = true }, { temp_after_apply = 0.7, caps = {} }) == "ok")
+
+--------------------------------------------------------------------------------
+TestRunner:suite("Perplexity Agent API facts")
+
+local agent_ok = {
+    output = {
+        { type = "search_results", results = { { url = "https://example.org" } } },
+        { type = "message", content = { { type = "output_text", text = "Argentina won [1]." } } },
+    },
+    usage = { output_tokens_details = { reasoning_tokens = 120 } },
+}
+local searched, cited = ModelAudit.agentSearchFacts(agent_ok)
+TestRunner:check("search_results item + [n] marker detected", searched and cited)
+local _s2, cited2 = ModelAudit.agentSearchFacts({ output = {
+    { type = "message", content = { { type = "output_text", text = "Argentina [web:2]." } } } } })
+TestRunner:check("[web:n] marker counts as a citation", cited2)
+TestRunner:check("reasoning tokens are evidence",
+    ModelAudit.agentReasoningEvidence(agent_ok) == "reasoning_tokens=120")
+TestRunner:check("a reasoning output item is evidence",
+    ModelAudit.agentReasoningEvidence({ output = { { type = "reasoning" } } }) ~= nil)
+TestRunner:check("plain answer: no evidence",
+    ModelAudit.agentReasoningEvidence({ output = {}, usage = {} }) == nil)
+
+local pfacts = { family = "perplexity", provider = "perplexity", model = "newvendor/model-1",
+    efforts = {}, probes = {}, reachable = true, searched = true, cited = true,
+    isolated = { "reasoning_mandatory" }, temp_ok = false, ceiling = 65536 }
+local ptext = table.concat(ModelAudit.draftStanzas(pfacts,
+    ModelAudit.currentResolution("perplexity", "newvendor/model-1")), "\n")
+TestRunner:check("draft names both exception lists the probe implies",
+    ptext:find('reasoning_mandatory%s+%+= "newvendor/model%-1"') ~= nil
+    and ptext:find('no_sampling_params%s+%+= "newvendor/model%-1"') ~= nil)
+TestRunner:check("draft carries the probed ceiling", ptext:find("65536", 1, true) ~= nil)
+local covered = table.concat(ModelAudit.draftStanzas(
+    { family = "perplexity", provider = "perplexity", model = "openai/gpt-6-astra",
+      efforts = {}, probes = {}, reachable = true, searched = true, cited = true,
+      isolated = { "no_sampling_params", "reasoning_mandatory" } },
+    ModelAudit.currentResolution("perplexity", "openai/gpt-6-astra")), "\n")
+TestRunner:check("already-listed model reads as covered",
+    covered:find("NEEDS CURATION", 1, true) == nil and covered:find("already covered", 1, true) ~= nil)
+TestRunner:check("preset drafts nothing",
+    table.concat(ModelAudit.draftStanzas({ family = "perplexity", provider = "perplexity",
+        model = "fast", is_preset = true, efforts = {}, probes = {} },
+        ModelAudit.currentResolution("perplexity", "fast")), "\n"):find("nothing to curate", 1, true) ~= nil)
+
+--------------------------------------------------------------------------------
+TestRunner:suite("Inherited off shapes and the named lowest setting (2026-09-29)")
+
+local SONNET55_DISABLE_ERR = '"thinking.type.disabled" is not supported for this model. Use '
+    .. '"thinking.type.between_tools" for the lowest thinking setting, or "thinking.type.adaptive" '
+    .. 'and "output_config.effort" to control thinking behavior.'
+TestRunner:check("lowest setting parsed from the refusal",
+    ModelAudit.lowestThinkingType(SONNET55_DISABLE_ERR) == "between_tools")
+TestRunner:check("a refusal naming no lowest setting -> nil",
+    ModelAudit.lowestThinkingType('"thinking.type.disabled" is not supported for this model. Use '
+        .. '"thinking.type.adaptive" and "output_config.effort" to control thinking behavior.') == nil
+    and ModelAudit.lowestThinkingType(nil) == nil)
+
+TestRunner:check("disabled refused -> Minimal flagged",
+    ModelAudit.minimalRefused({ thinking = { type = "disabled" } }, { disable_ok = false }) ~= nil)
+TestRunner:check("the named lowest setting accepted -> not flagged",
+    ModelAudit.minimalRefused({ thinking = { type = "between_tools" } },
+        { lowest_type = "between_tools", lowest_ok = true }) == nil)
+TestRunner:check("OpenRouter enabled=false refused -> flagged",
+    ModelAudit.minimalRefused({ openrouter_reasoning = { enabled = false } }, { disable_ok = false }) ~= nil)
+TestRunner:check("a translated enabled=false (a2agent) is not judged",
+    ModelAudit.minimalRefused({ a2agent_reasoning = { enabled = false } }, { disable_ok = false }) == nil)
+TestRunner:check("effort none refused -> flagged",
+    ModelAudit.minimalRefused({ xai_reasoning = { effort = "none" } }, { efforts = { none = false } }) ~= nil)
+TestRunner:check("adaptive low accepted -> not flagged",
+    ModelAudit.minimalRefused({ thinking = { type = "adaptive" }, output_config = { effort = "low" } },
+        { efforts = { low = true } }) == nil)
+TestRunner:check("not probed -> not flagged",
+    ModelAudit.minimalRefused({ thinking = { type = "disabled" } }, {}) == nil)
+
+-- A new id under claude-sonnet-5's profile (disable accepted there) that refuses
+-- disabled and names between_tools: the sonnet-5-5 case, read right.
+local lfacts = {
+    family = "anthropic", provider = "anthropic", model = "claude-sonnet-5-9",
+    reachable = true, default_reasoning = true, temp_ok = false,
+    disable_ok = false, disable_err = SONNET55_DISABLE_ERR,
+    lowest_type = "between_tools", lowest_ok = true,
+    adaptive_ok = true, budget_ok = false,
+    ladder = { "low", "medium", "high", "xhigh", "max" },
+    efforts = { low = true, medium = true, high = true, xhigh = true, max = true },
+    tools_ok = true, probes = {},
+}
+local ltext = table.concat(ModelAudit.draftStanzas(lfacts,
+    ModelAudit.currentResolution("anthropic", "claude-sonnet-5-9")), "\n")
+TestRunner:check("inherited disable named in a NOTE",
+    ltext:find('NOTE: Minimal sends thinking type "disabled"', 1, true) ~= nil)
+TestRunner:check("profile flagged although axis and default state match the sibling",
+    (ltext:match("[^\n]*reasoning_profiles%.anthropic[^\n]*") or ""):find("NEEDS CURATION", 1, true) ~= nil)
+TestRunner:check("drafted off is the named lowest setting",
+    ltext:find('off_option = "between_tools"', 1, true) ~= nil
+    and ltext:find("can_disable = true", 1, true) ~= nil
+    and ltext:find('minimal = { state = "off" }', 1, true) ~= nil)
+
+--------------------------------------------------------------------------------
+TestRunner:suite("OpenRouter output caps and the recheck's Minimal request (2026-09-29)")
+
+TestRunner:check("OpenRouter's oversized-max_tokens answer is a context refusal",
+    ModelAudit.isContextRefusal("This endpoint's maximum context length is 1000000 tokens. However, "
+        .. "you requested about 10000005 tokens (5 of text input, 10000000 in the output)."))
+TestRunner:check("an output-cap refusal is not",
+    not ModelAudit.isContextRefusal("max_tokens: 10000000 > 128000, which is the maximum allowed "
+        .. "number of output tokens for claude-sonnet-5-5"))
+TestRunner:check("largest published endpoint cap wins (OpenRouter answers above a small one)",
+    ModelAudit.endpointsCeiling({ { max_completion_tokens = 4096 }, { max_completion_tokens = 131072 },
+        { max_completion_tokens = false }, {} }) == 131072)
+TestRunner:check("no published cap -> nil",
+    ModelAudit.endpointsCeiling({ {}, { max_completion_tokens = 0 } }) == nil
+    and ModelAudit.endpointsCeiling(nil) == nil)
+
+local function minimalBody(provider, model)
+    local built = ModelAudit.minimalBuilt(provider, model, "test-key")
+    return built and built.body
+end
+TestRunner:check("Sonnet 5.5's Minimal request carries between_tools (real handler)",
+    (minimalBody("anthropic", "claude-sonnet-5-5") or {}).thinking
+    and minimalBody("anthropic", "claude-sonnet-5-5").thinking.type == "between_tools")
+TestRunner:check("Sonnet 5 keeps disabled",
+    ((minimalBody("anthropic", "claude-sonnet-5") or {}).thinking or {}).type == "disabled")
+TestRunner:check("OpenRouter Sonnet 5.5: the lowest effort",
+    ((minimalBody("openrouter", "anthropic/claude-sonnet-5.5") or {}).reasoning or {}).effort == "low")
+TestRunner:check("GPT-6 Sol: effort none on the OpenAI wire",
+    (minimalBody("openai", "gpt-6-sol") or {}).reasoning_effort == "none")
+TestRunner:check("nothing to send -> no request (Fable 5.1 off, gpt-5.6 off by default)",
+    ModelAudit.minimalBuilt("anthropic", "claude-fable-5-1", "k") == nil
+    and ModelAudit.minimalBuilt("openai", "gpt-5.6-terra", "k") == nil)
+
+local mcur = { profile = { axis = "effort", default_state = "on" }, temp_after_apply = 0.7 }
+TestRunner:check("a refused Minimal request is drift",
+    ModelAudit.recheckCompare({ served = true, default_reasoning = true, temp_ok = true,
+        minimal = { code = 400, err = "Reasoning is mandatory" } }, mcur) == "drift")
+TestRunner:check("an accepted one changes nothing",
+    ModelAudit.recheckCompare({ served = true, default_reasoning = true, temp_ok = true,
+        minimal = { code = 200 } }, mcur) == "ok")
+TestRunner:check("a rate-limited one only warns",
+    ModelAudit.recheckCompare({ served = true, default_reasoning = true, temp_ok = true,
+        minimal = { code = 429 } }, mcur) == "warn")
+
+TestRunner:suite("action pins (B355): the largest pin, and a refusal must parse")
+TestRunner:check("the largest pin is the X-Ray's",
+    ModelAudit.largestActionPin() == 65536)
+TestRunner:check("accepted", ModelAudit.pinVerdict(200) == "ok")
+local cohere = "too many tokens: max tokens must be less than or equal to 64000, the maximum output length for this model - received 65536."
+local v, parsed = ModelAudit.pinVerdict(400, cohere)
+TestRunner:check("Cohere's wording now heals, and states its cap",
+    v == "heals" and parsed.kind == "output_cap" and parsed.cap == 64000)
+TestRunner:check("an output-length refusal the resend cannot read is drift",
+    ModelAudit.pinVerdict(400, "too many tokens: the maximum output length for this model is lower") == "drift")
+TestRunner:check("a gone model is stale",
+    ModelAudit.pinVerdict(404, "The model `x` does not exist") == "stale"
+        and ModelAudit.pinVerdict(400, "model has been decommissioned") == "stale")
+TestRunner:check("the account's refusals are inconclusive",
+    ModelAudit.pinVerdict(401, "invalid key") == "inconclusive"
+        and ModelAudit.pinVerdict(402, "credits") == "inconclusive"
+        and ModelAudit.pinVerdict(403, "error code: 1010") == "inconclusive"
+        and ModelAudit.pinVerdict(429, "slow down") == "inconclusive"
+        and ModelAudit.pinVerdict(nil, "network: timeout") == "inconclusive")
+TestRunner:check("anything else is shown as is",
+    ModelAudit.pinVerdict(500, "internal error") == "error")
+
+TestRunner:suite("plan limits, the spend tally, --keys, ceiling drafts, mirrors (2026-09-30)")
+TestRunner:check("a refused key or an empty account is never retried, whatever the wording",
+    ModelAudit.isTransient(402, "Credit limit exceeded ... please wait up to 5 minutes and try again") == false
+        and ModelAudit.isTransient(401, "unauthorized, please retry") == false)
+TestRunner:check("a zero allowance is the key's plan",
+    ModelAudit.planLimitHeader({ ["x-ratelimit-limit-req-minute"] = "0",
+        ["x-ratelimit-remaining-req-minute"] = "0" }) == "x-ratelimit-limit-req-minute")
+TestRunner:check("a real allowance, or no headers, is not",
+    ModelAudit.planLimitHeader({ ["x-ratelimit-limit-req-minute"] = "60" }) == nil
+        and ModelAudit.planLimitHeader(nil) == nil)
+TestRunner:check("the recheck grades a plan limit as the key's, not drift",
+    ModelAudit.recheckCompare({ served = false, err = "Rate limit exceeded",
+        plan_limit = "x-ratelimit-limit-req-minute" }, mcur) == "warn"
+    and ModelAudit.recheckCompare({ served = false, err = "Rate limit exceeded" }, mcur) == "drift")
+
+local function usage(decoded, raw) return table.concat({ ModelAudit.usageOf(decoded, raw) }, ",") end
+TestRunner:check("usage: chat completions",
+    usage({ usage = { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } }) == "10,5")
+TestRunner:check("usage: reasoning counted outside completion_tokens (xAI) is output",
+    usage({ usage = { prompt_tokens = 32, completion_tokens = 9, total_tokens = 135 } }) == "32,103")
+TestRunner:check("usage: Anthropic cache reads and writes are input",
+    usage({ usage = { input_tokens = 5, cache_creation_input_tokens = 100,
+        cache_read_input_tokens = 50, output_tokens = 7 } }) == "155,7")
+TestRunner:check("usage: Gemini thoughts are output",
+    usage({ usageMetadata = { promptTokenCount = 8, candidatesTokenCount = 2, thoughtsTokenCount = 40 } }) == "8,42")
+TestRunner:check("usage: Cohere bills billed_units",
+    usage({ usage = { billed_units = { input_tokens = 4, output_tokens = 3 },
+        tokens = { input_tokens = 90, output_tokens = 3 } } }) == "4,3")
+TestRunner:check("usage: a stream keeps the largest value each field reaches",
+    usage(nil, table.concat({
+        "event: message_start",
+        'data: {"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":1}}}',
+        'data: {"type":"content_block_delta","delta":{"text":"a { brace"}}',
+        'data: {"type":"message_delta","usage":{"output_tokens":30}}',
+    }, "\n")) == "12,30")
+TestRunner:check("usage: a Responses stream's completed event",
+    usage(nil, 'data: {"type":"response.completed","response":{"usage":{"input_tokens":20,"output_tokens":6}}}') == "20,6")
+TestRunner:check("usage: none reported",
+    usage({ error = { message = "x" } }, "{}") == "0,0")
+
+local cat = {
+    ["anthropic/claude-sonnet-5.5"] = { pricing = { prompt = "0.000003", completion = "0.000015" } },
+    ["z-ai/glm-5.3"] = { pricing = { prompt = "0.000001", completion = "0.000004" } },
+    ["openai/gpt-6.1-sol"] = { pricing = { prompt = "0.000002", completion = "0.00001" } },
+    ["openai/gpt-6.1-sol:batch"] = { pricing = { prompt = "0.000001", completion = "0.000005" } },
+    ["perplexity/sonar"] = { pricing = { prompt = "-1", completion = "-1" } },
+}
+TestRunner:check("price: the vendor spelling (5-5 = 5.5)",
+    select(1, ModelAudit.priceFor(cat, "anthropic", "claude-sonnet-5-5")) == 0.000003)
+TestRunner:check("price: the id itself on a gateway",
+    select(2, ModelAudit.priceFor(cat, "perplexity", "openai/gpt-6.1-sol")) == 0.00001)
+TestRunner:check("price: a host's own spelling by its last segment (Fireworks 5p3)",
+    select(1, ModelAudit.priceFor(cat, "fireworks", "accounts/fireworks/models/glm-5p3")) == 0.000001)
+TestRunner:check("price: variable pricing, or no match, is unpriced",
+    ModelAudit.priceFor(cat, "perplexity", "perplexity/sonar") == nil
+        and ModelAudit.priceFor(cat, "kimi", "kimi-k3") == nil)
+
+local tally = {}
+ModelAudit.tallyAdd(tally, "openai", "gpt-6.1-sol", 1000, 500)
+ModelAudit.tallyAdd(tally, "openai", "gpt-6.1-sol", 0, 0)
+ModelAudit.tallyAdd(tally, "kimi", "kimi-k3", 100, 100)
+local rows, total, unpriced = ModelAudit.spendRows(tally, cat)
+TestRunner:check("spend: one row per provider, sorted, with requests and tokens",
+    #rows == 2 and rows[1].provider == "kimi" and rows[2].requests == 2 and rows[2].input == 1000)
+TestRunner:check("spend: the cost at list prices, unpriced models counted",
+    math.abs(rows[2].cost - (1000 * 0.000002 + 500 * 0.00001)) < 1e-12 and rows[1].cost == nil
+        and math.abs(total - rows[2].cost) < 1e-12 and unpriced == 1)
+
+for _idx, case in ipairs({
+    { 200, nil, nil, "ok" },
+    { 401, "Incorrect API key provided", nil, "key" },
+    { 400, "API key not valid. Please pass a valid API key.", nil, "key" },
+    { 402, "Credit limit exceeded", nil, "credits" },
+    { 429, "You exceeded your current quota, please check your plan and billing details", nil, "credits" },
+    { 403, "An active OpenCode Go subscription is required to use Go models.", nil, "plan" },
+    { 429, "Rate limit exceeded", "x-ratelimit-limit-req-minute", "plan" },
+    { 429, "Rate limit exceeded", nil, "rate" },
+    { 404, "The model `x` does not exist", nil, "model" },
+    { 400, "model not found: foo", nil, "model" },
+    { 500, "internal error", nil, "error" },
+}) do
+    TestRunner:check("key verdict " .. case[4] .. ": " .. tostring(case[2] or case[1]),
+        ModelAudit.keyVerdict(case[1], case[2], case[3]) == case[4])
+end
+TestRunner:check("the default model is the first listed",
+    ModelAudit.defaultModel("openai") == "gpt-5.6-terra"
+        and ModelAudit.defaultModel("together") == "deepseek-ai/DeepSeek-V4-Pro-0813")
+TestRunner:check("a masked key echoed in an error is redacted",
+    not ModelAudit.redact("Incorrect API key provided: 1a2b****9f8e."):find("1a2b", 1, true))
+TestRunner:check("an sk- key and a long id are redacted",
+    ModelAudit.redact("key sk-ant-api03-abcDEF123 id 0123456789abcdef0123456789abcdef") == "key <key> id <id>")
+
+TestRunner:check("ceiling draft: a stated ceiling",
+    ModelAudit.ceilingDraft("m", { ceiling = 131072 }, false) == '["m"] = 131072,   -- stated in the refusal')
+TestRunner:check("ceiling draft: OpenRouter's catalog cap",
+    (ModelAudit.ceilingDraft("a/b", { catalog_ceiling = 128000 }, false) or ""):find("128000", 1, true) ~= nil)
+TestRunner:check("ceiling draft: an accepted oversized ask notes the silent clamp",
+    (ModelAudit.ceilingDraft("m", { ceiling_accepted = true }, false) or ""):find("clamps silently", 1, true) ~= nil)
+TestRunner:check("ceiling draft: none when a ceiling is on record, or nothing was seen",
+    ModelAudit.ceilingDraft("m", { ceiling = 1 }, true) == nil and ModelAudit.ceilingDraft("m", {}, false) == nil)
+
+local gw = {
+    openrouter = { ["openai/gpt-6.1-sol"] = {}, ["openai/gpt-6.1-sol:batch"] = {}, ["openai/gpt-6-sol"] = {} },
+    perplexity = { ["openai/gpt-6.1-sol"] = {}, ["perplexity/glm-5.4"] = {} },
+    requesty = { ["openai/gpt-6.1-sol"] = {}, ["deepinfra/gpt-6.1-sol"] = {}, ["zai/glm-5.4"] = {} },
+    a2agent = { ["glm-5.4"] = {} },
+}
+TestRunner:check("mirrors: a vendor's NEW id under its own spelling, variants and host copies skipped",
+    table.concat(ModelAudit.mirrorsOf("openai", "gpt-6.1-sol", gw, { openrouter = { "openai/gpt-6-sol" } }), "|")
+        == "openrouter openai/gpt-6.1-sol|perplexity openai/gpt-6.1-sol|requesty openai/gpt-6.1-sol")
+TestRunner:check("mirrors: a bare id, a gateway's own prefix and Requesty's vendor spelling count",
+    table.concat(ModelAudit.mirrorsOf("zai", "glm-5.4", gw, {}), "|")
+        == "a2agent glm-5.4|perplexity perplexity/glm-5.4|requesty zai/glm-5.4")
+TestRunner:check("mirrors: one already curated is not listed",
+    #ModelAudit.mirrorsOf("openai", "gpt-6.1-sol", gw, { openrouter = { "openai/gpt-6.1-sol" },
+        perplexity = { "openai/gpt-6.1-sol" }, requesty = { "openai/gpt-6.1-sol" } }) == 0)
+TestRunner:check("mirrors: only the vendors' own providers are checked",
+    ModelAudit.VENDOR_SET.openai and ModelAudit.VENDOR_SET.qwen and not ModelAudit.VENDOR_SET.fireworks
+        and not ModelAudit.VENDOR_SET.together)
+
+local now = os.time({ year = 2026, month = 9, day = 30, hour = 12 })
+local rel = ModelAudit.vendorReleases({
+    ["openai/gpt-6.1-sol"] = { created = now - 86400 },
+    ["openai/gpt-6.1-sol-pro"] = { created = now - 86400 },          -- noise for openai (-pro)
+    ["openai/gpt-6.1-sol:batch"] = { created = now - 86400 },        -- a variant
+    ["anthropic/claude-sonnet-5.5"] = { created = now - 2 * 86400 },  -- curated directly as 5-5
+    ["google/gemini-3.9-flash"] = { created = now - 3 * 86400 },
+    ["mistralai/mistral-old"] = { created = now - 90 * 86400 },       -- too old
+    ["somevendor/new-model"] = { created = now - 86400 },             -- a vendor we do not curate
+    ["qwen/qwen3.8-max-0902"] = { created = now - 86400 },           -- a dated snapshot of a curated id
+}, { openai = { "gpt-6-sol" }, anthropic = { "claude-sonnet-5-5" }, qwen = { "qwen3.8-max" } }, now, 30)
+TestRunner:check("vendor releases: recent, on no list, noise, variants and snapshots skipped, newest first",
+    #rel == 2 and rel[1].id == "openai/gpt-6.1-sol" and rel[2].id == "google/gemini-3.9-flash")
 
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))

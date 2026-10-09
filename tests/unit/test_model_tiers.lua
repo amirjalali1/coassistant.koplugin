@@ -103,7 +103,8 @@ end
 -- router's curated ladder would hop sub-vendors on a tier hint, so openrouter
 -- (curated) and requesty (community) carry NO curated placements — asserted
 -- absent below; users add router tiers via the GUI/custom_models override layer.
-local META_ROUTERS = { openrouter = true, requesty = true, opencode = true, opencode_go = true }  -- opencode Zen/Go: curated 2026-09-05, meta routers
+local META_ROUTERS = { openrouter = true, requesty = true, opencode = true, opencode_go = true, a2agent = true,
+    perplexity = true }  -- opencode Zen/Go: curated 2026-09-05, meta routers; a2agent #108; perplexity: Agent API gateway 2026-09-28
 for _idx, tier_name in ipairs({ "flagship", "standard", "fast", "ultrafast" }) do
     for _pidx, provider in ipairs(ModelLists.getAllProviders()) do
         if not ModelLists.isCommunity(provider) and not META_ROUTERS[provider] then
@@ -151,23 +152,25 @@ TestRunner.assert(ModelLists.normalizeTier(nil) == "standard", "nil tier -> stan
 print("== getModelForTier ==")
 
 -- Direct hits
-TestRunner.assert(ModelLists.getModelForTier("anthropic", "frontier", false) == "claude-fable-5",
-    "anthropic frontier = claude-fable-5")
-TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", false) == "claude-opus-5",
-    "anthropic flagship = claude-opus-5")
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "frontier", false) == "claude-fable-5-1",
+    "anthropic frontier = claude-fable-5-1")
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", false) == "claude-opus-5-5",
+    "anthropic flagship = claude-opus-5-5")
+TestRunner.assert(ModelLists.getModelForTier("openai", "frontier", false) == "gpt-6-astra",
+    "openai frontier = gpt-6-astra")
 
 -- Legacy "reasoning" request resolves to the flagship entry, never frontier
-TestRunner.assert(ModelLists.getModelForTier("anthropic", "reasoning", true) == "claude-opus-5",
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "reasoning", true) == "claude-opus-5-5",
     "reasoning alias resolves to flagship model")
 
 -- Fallback only DESCENDS: providers without frontier fall to flagship...
-TestRunner.assert(ModelLists.getModelForTier("openai", "frontier", true) == "gpt-5.6-sol",
-    "openai frontier request falls back to flagship")
+TestRunner.assert(ModelLists.getModelForTier("deepseek", "frontier", true) == "deepseek-v4-pro",
+    "deepseek frontier request falls back to flagship")
 -- ...and without fallback a sparse tier returns nil
-TestRunner.assert(ModelLists.getModelForTier("openai", "frontier", false) == nil,
-    "openai has no frontier entry")
+TestRunner.assert(ModelLists.getModelForTier("deepseek", "frontier", false) == nil,
+    "deepseek has no frontier entry")
 -- A flagship request never climbs into frontier
-TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", true) ~= "claude-fable-5",
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", true) ~= "claude-fable-5-1",
     "flagship request must not climb to frontier")
 
 -- Unknown provider (e.g. custom without overrides) resolves to nothing
@@ -192,7 +195,7 @@ TestRunner.assert(ModelLists.getModelForTier("custom_lm_studio", "ultrafast", tr
     "ultrafast is the floor — no upward fallback")
 TestRunner.assert(ModelLists.getModelForTier("anthropic", "ultrafast", false) == "claude-haiku-x",
     "user tier overrides curated entry")
-TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", false) == "claude-opus-5",
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", false) == "claude-opus-5-5",
     "unrelated curated tiers unaffected by user override")
 TestRunner.assert(ModelOverrides.tierOverride("anthropic", "flagship") == nil,
     "tierOverride returns nil where the user has no opinion")
@@ -208,7 +211,8 @@ TestRunner.assert(fastest ~= nil, "fastest resolves for a curated provider")
 TestRunner.assert(fastest == ModelLists.getModelForTier("anthropic", "ultrafast", false)
     or fastest == ModelLists.getModelForTier("anthropic", "fast", false),
     "fastest picks the quickest listed tier")
-TestRunner.assert(fastest ~= "claude-fable-5", "fastest never lands on frontier")
+TestRunner.assert(fastest ~= ModelLists.getModelForTier("anthropic", "frontier", false),
+    "fastest never lands on frontier")
 
 -- Named tiers are EXACT (2026-08-14): a tier is a class pick, not a direction —
 -- a miss returns nil (caller keeps the current/default model); only "fastest"
@@ -262,7 +266,7 @@ print("== GUI tier placements (tier GUI, features.tier_overrides) ==")
 ModelOverrides.setGuiTiers({ anthropic = { ultrafast = "claude-haiku-gui" } })
 TestRunner.assert(ModelLists.getModelForTier("anthropic", "ultrafast", false) == "claude-haiku-gui",
     "GUI placement overrides curated entry")
-TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", false) == "claude-opus-5",
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "flagship", false) == "claude-opus-5-5",
     "unrelated tiers unaffected by GUI placement")
 
 -- GUI layer beats the custom_models.lua file layer on the same slot
@@ -284,7 +288,7 @@ ModelOverrides._setUserForTests(false)
 
 -- Clearing re-exposes curated
 ModelOverrides.setGuiTiers(nil)
-TestRunner.assert(ModelLists.getModelForTier("anthropic", "ultrafast", false) == "claude-haiku-4-5-20251001",
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "ultrafast", false) == "claude-haiku-5-5",
     "setGuiTiers(nil) clears the GUI layer")
 
 -- Custom provider with only a GUI placement: tier hints + fastest walk work
@@ -298,7 +302,7 @@ TestRunner.assert(ModelLists.resolveTierModel("custom_lm_studio", "fastest") == 
 ModelOverrides.setGuiTiers({ anthropic = { ultrafast = "claude-haiku-gui" } })
 TestRunner.assert(ModelLists.getTierForModel("anthropic", "claude-haiku-gui") == "ultrafast",
     "getTierForModel labels a GUI-placed model with its tier")
-TestRunner.assert(ModelLists.getTierForModel("anthropic", "claude-haiku-4-5-20251001") == "fast",
+TestRunner.assert(ModelLists.getTierForModel("anthropic", "claude-haiku-5-5") == "fast",
     "model in two tiers labels as the higher one (TIER_ORDER walk)")
 ModelOverrides.setGuiTiers(nil)
 
@@ -321,7 +325,7 @@ TestRunner.assert(p == "anthropic",
 -- Walk order: each STEP consults pin then ladder — an ultrafast LADDER hit
 -- beats a fast PIN in the fastest walk (ultrafast step resolves first)
 p, m = ModelLists.resolveTierTarget("anthropic", "fastest")
-TestRunner.assert(p == "anthropic" and m == "claude-haiku-4-5-20251001",
+TestRunner.assert(p == "anthropic" and m == "claude-haiku-5-5",
     "fastest: anthropic's own ultrafast beats a later-step fast pin")
 ModelOverrides.setGlobalTierPins({ ultrafast = { provider = "groq", model = "llama-3.1-8b-instant" } })
 p, m = ModelLists.resolveTierTarget("anthropic", "fastest")
@@ -331,7 +335,7 @@ TestRunner.assert(p == "groq",
 -- Key checker gates pins (revoked key → pin invisible, ladder applies)
 ModelOverrides.setKeyChecker(function(pid) return pid ~= "groq" end)
 p, m = ModelLists.resolveTierTarget("anthropic", "fastest")
-TestRunner.assert(p == "anthropic" and m == "claude-haiku-4-5-20251001",
+TestRunner.assert(p == "anthropic" and m == "claude-haiku-5-5",
     "unusable pin is invisible — ladder fallback")
 ModelOverrides.setKeyChecker(nil)
 
@@ -360,11 +364,33 @@ TestRunner.assert(ModelLists.resolveTierTarget("anthropic", "none") == nil,
 
 -- The ladder-only resolvers never see pins
 ModelOverrides.setGlobalTierPins({ ultrafast = { provider = "groq", model = "llama-3.1-8b-instant" } })
-TestRunner.assert(ModelLists.resolveTierModel("anthropic", "fastest") == "claude-haiku-4-5-20251001",
+TestRunner.assert(ModelLists.resolveTierModel("anthropic", "fastest") == "claude-haiku-5-5",
     "resolveTierModel stays ladder-only (per-provider GUI default rows depend on it)")
-TestRunner.assert(ModelLists.getModelForTier("anthropic", "ultrafast", false) == "claude-haiku-4-5-20251001",
+TestRunner.assert(ModelLists.getModelForTier("anthropic", "ultrafast", false) == "claude-haiku-5-5",
     "getModelForTier stays ladder-only")
 ModelOverrides.setGlobalTierPins(nil)
+
+print("== The model menu's tier tags follow the tiers requests use (B362) ==")
+
+-- The tags ("· fast/ultrafast") read the curated table only, so a reader's own
+-- tier pick showed in the action editor and the Fast button but the tag stayed
+-- on the curated model, and the two screens disagreed
+do
+    local plugin_dir = select(1, setupPaths())
+    local f = assert(io.open(plugin_dir .. "/main.lua", "r"))
+    local main_src = f:read("*a")
+    f:close()
+    local loop = main_src:match('local model_tiers = {}\n(.-)\n  end\n')
+    TestRunner.assert(loop ~= nil, "the tag loop is found")
+    TestRunner.assert(loop and loop:find("ModelLists.getModelForTier(provider, tier_name, false)", 1, true) ~= nil,
+        "the tags resolve through getModelForTier (GUI and custom_models.lua picks included)")
+    TestRunner.assert(loop and not loop:find("ModelLists._tiers", 1, true),
+        "the tags never read the curated table directly")
+end
+ModelOverrides.setGuiTiers({ gemini = { fast = "gemini-gui-fast" } })
+TestRunner.assert(ModelLists.getModelForTier("gemini", "fast", false) == "gemini-gui-fast",
+    "a GUI tier pick is what the tag names")
+ModelOverrides.setGuiTiers(nil)
 
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))

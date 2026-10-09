@@ -84,15 +84,22 @@ local CASES = {
     { "xai",        "koassistant_api.xai",               "grok-4.5",                  32768 },
     { "zai",        "koassistant_api.zai",               "glm-5.2",                  128000 },
     { "openrouter", "koassistant_api.openrouter",        "anthropic/claude-sonnet-5",128000 },
-    { "cohere",     "koassistant_api.cohere",            "command-a-plus-05-2026",      nil },
+    -- Cohere: each model's own refusal, probed 2026-09-29 (every X-Ray failed on
+    -- the 65536 pin, and every request on R7B / A 03-2025 on the 16384 default)
+    { "cohere",     "koassistant_api.cohere",            "command-a-plus-05-2026",    64000 },
+    { "cohere",     "koassistant_api.cohere",            "command-r7b-12-2024",        4096 },
     { "groq",       "koassistant_api.groq",              "llama-3.3-70b-versatile",   32768 },
-    { "perplexity", "koassistant_api.perplexity",        "sonar-pro",                  8192 },
+    -- Perplexity Agent API (B078): no curated ceiling for its default model; the
+    -- 16384 fallback was probed accepted (and 65536/131072 on Sonar)
+    { "perplexity", "koassistant_api.perplexity",        "perplexity/sonar",            nil },
     -- No curated ceiling: NVIDIA states none and any real cap is learned by the
     -- max_tokens self-heal. Exercises the no-ceiling resolve+clamp path.
     { "nvidia",     "koassistant_api.nvidia",            "nvidia/nemotron-3-super-120b-a12b", nil },
     -- OpenCode (#107): no curated ceiling either; the 16384 fallback was probed accepted.
     { "opencode",   "koassistant_api.opencode",          "glm-5.3-flash",               nil },
     { "opencode_go", "koassistant_api.opencode_go",      "glm-5.3-flash",               nil },
+    -- A2Agent (#108): no curated ceiling; oversized asks were accepted and clamped upstream.
+    { "a2agent",    "koassistant_api.a2agent",           "deepseek-v4-flash",           nil },
 }
 
 for _idx, case in ipairs(CASES) do

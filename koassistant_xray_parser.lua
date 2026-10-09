@@ -832,118 +832,20 @@ local function getItemSearchName(item)
     return item.name or item.term or item.event
 end
 
---- Count occurrences of a single item (name + aliases) in pre-lowered text.
---- Finds all match spans from name and aliases, merges overlapping spans,
---- and returns the total unique matches (union semantics, same as regex OR).
+--- Count occurrences of a single item (name + aliases) in normalized text.
+--- The one matcher (matchTermSet + occurrencesIn): spans of every form,
+--- overlapping ones merged (union semantics, same as regex OR), hits inside
+--- another entity's longer form dropped.
 --- @param item table An X-Ray item entry (must have name/term/event and optionally aliases)
---- @param text_lower string Already-lowered text to search
---- @param exclude_handles table|nil XrayParser.containingHandles output: spans inside an
+--- @param text_lower string matchNormalize'd text (plain lowered text works for Latin)
+--- @param exclude_handles table|nil XrayParser.containingMatchHandles output: spans inside an
 ---   occurrence of another entity's longer handle are not counted (B266)
 --- @return number count Unique match count across name and all aliases (0 if not found or name ≤2 chars)
 function XrayParser.countItemOccurrences(item, text_lower, exclude_handles)
-    local name = getItemSearchName(item)
-    if not name or #name <= 2 then return 0 end
-
-    local name_lower = name:lower()
-
-    -- Collect all search terms
-    local terms = {}
-
-    -- Handle parenthetical names: "Theosis (Deification)" → "theosis" + "deification"
-    local clean_name = name_lower:gsub("%s*%(.-%)%s*", "")
-    clean_name = clean_name:match("^%s*(.-)%s*$") or clean_name  -- trim
-    local paren_content = name_lower:match("%((.-)%)")
-
-    terms[#terms + 1] = (#clean_name > 2) and clean_name or name_lower
-
-    if paren_content and #paren_content > 2 and not paren_content:match("^%d+$") then
-        terms[#terms + 1] = paren_content
-    end
-
-    local item_aliases = ensure_array(item.aliases)
-    if item_aliases then
-        for _idx, alias in ipairs(item_aliases) do
-            if #alias > 2 then
-                terms[#terms + 1] = alias:lower()
-            end
-        end
-    end
-
-    -- Normalize terms for Arabic diacritics matching
-    for i = 1, #terms do
-        terms[i] = XrayParser.normalizeArabic(terms[i])
-    end
-
-    -- Arabic: also try matching without ال (definite article) on each word.
-    -- "النادي" won't substring-match "ناديه" but "نادي" will.
-    local term_count = #terms
-    for i = 1, term_count do
-        local t = terms[i]
-        if XrayParser.containsArabic(t) then
-            local stripped = stripArabicArticle(t)
-            if stripped ~= t and #stripped > 4 then
-                terms[#terms + 1] = stripped
-            end
-        end
-    end
-
-    -- Collect all match spans from all terms
-    local all_spans = {}
-    for _idx, term in ipairs(terms) do
-        local spans = XrayParser._collectMatchSpans(text_lower, term)
-        for _idx2, span in ipairs(spans) do
-            all_spans[#all_spans + 1] = span
-        end
-    end
-
-    -- Cross-entity containment (B266): a span sitting inside an occurrence
-    -- of another entity's longer handle is that entity's mention
-    if exclude_handles and #exclude_handles > 0 and #all_spans > 0 then
-        local ex = {}
-        for _idx, h in ipairs(exclude_handles) do
-            for _idx2, span in ipairs(XrayParser._collectMatchSpans(text_lower, h)) do
-                ex[#ex + 1] = span
-            end
-        end
-        if #ex > 0 then
-            local kept = {}
-            for _idx, span in ipairs(all_spans) do
-                local inside = false
-                for _idx2, x in ipairs(ex) do
-                    if span[1] >= x[1] and span[2] <= x[2] then
-                        inside = true
-                        break
-                    end
-                end
-                if not inside then kept[#kept + 1] = span end
-            end
-            all_spans = kept
-        end
-    end
-
-    if #all_spans == 0 then return 0 end
-    if #all_spans == 1 then return 1 end
-
-    -- Sort by start position
-    table.sort(all_spans, function(a, b)
-        return a[1] < b[1]
-    end)
-
-    -- Merge overlapping spans and count unique matches
-    local count = 1
-    local current_end = all_spans[1][2]
-    for i = 2, #all_spans do
-        if all_spans[i][1] > current_end then
-            -- No overlap: new distinct match
-            count = count + 1
-            current_end = all_spans[i][2]
-        elseif all_spans[i][2] > current_end then
-            -- Overlapping: extend current span (don't increment count)
-            current_end = all_spans[i][2]
-        end
-    end
-
-    return count
+    if type(text_lower) ~= "string" or text_lower == "" then return 0 end
+    local set = XrayParser.matchTermSet(item)
+    if not set then return 0 end
+    return #XrayParser.occurrencesIn(text_lower, set, exclude_handles)
 end
 
 --- Singleton categories not useful for chapter text matching
@@ -1147,6 +1049,18 @@ function XrayParser.getCategories(data)
         end
         return cats
     end
+end
+
+--- Is a model answer an EMPTY JSON object, bare or inside a code fence (B271)?
+--- What an update of an X-Ray without a status block answers when its slice
+--- adds nothing: an empty delta, which parse() rightly rejects as "no X-Ray
+--- key" for every other caller.
+--- @param text any
+--- @return boolean
+function XrayParser.isEmptyObject(text)
+    if type(text) ~= "string" then return false end
+    local body = text:gsub("^%s*```%w*%s*", ""):gsub("%s*```%s*$", "")
+    return body:match("^%s*{%s*}%s*$") ~= nil
 end
 
 -- Categories that never count as browsable X-Ray content
@@ -1864,6 +1778,10 @@ function XrayParser.searchAll(data, query, opts)
     -- descriptions never match
     local exact = opts and opts.exact
     if exact then skip_description = true end
+    -- One exact rule with the route index and the marks (B338): a bracketed
+    -- name answers to the name without its gloss and to a bracketed name in
+    -- another script
+    local qkeys = exact and XrayParser.exactQueryKeys(query)
 
     local categories = XrayParser.getCategories(data)
     -- A pasted "_" spelling finds the dotted entry (#90)
@@ -1886,32 +1804,34 @@ function XrayParser.searchAll(data, query, opts)
                 -- Check primary name/term/event
                 local name = item.name or item.term or item.event or ""
                 if name ~= "" then
-                    local n = normalize(name:lower())
                     if exact then
-                        if n == query_lower
-                            or (query_stripped and n == query_stripped) then
+                        if XrayParser.exactHandleHit(name, qkeys) then
                             match_field = "name"
                         end
-                    elseif n:find(query_lower, 1, true)
-                        or (query_stripped and n:find(query_stripped, 1, true)) then
-                        match_field = "name"
+                    else
+                        local n = normalize(name:lower())
+                        if n:find(query_lower, 1, true)
+                            or (query_stripped and n:find(query_stripped, 1, true)) then
+                            match_field = "name"
+                        end
                     end
                 end
                 -- Check aliases
                 local i_aliases = ensure_array(item.aliases)
                 if not match_field and i_aliases then
                     for _idx3, alias in ipairs(i_aliases) do
-                        local a = normalize(alias:lower())
                         if exact then
-                            if a == query_lower
-                                or (query_stripped and a == query_stripped) then
+                            if XrayParser.exactHandleHit(alias, qkeys) then
                                 match_field = "alias"
                                 break
                             end
-                        elseif a:find(query_lower, 1, true)
-                            or (query_stripped and a:find(query_stripped, 1, true)) then
-                            match_field = "alias"
-                            break
+                        else
+                            local a = normalize(alias:lower())
+                            if a:find(query_lower, 1, true)
+                                or (query_stripped and a:find(query_stripped, 1, true)) then
+                                match_field = "alias"
+                                break
+                            end
                         end
                     end
                 end
@@ -1971,13 +1891,11 @@ function XrayParser.searchLedger(data, query, opts)
         local s = stripArabicArticle(query_lower)
         if s ~= query_lower and #s > 4 then query_stripped = s end
     end
+    local qkeys = exact and XrayParser.exactQueryKeys(query)
     local function matches(text)
         if type(text) ~= "string" or text == "" then return false end
+        if exact then return XrayParser.exactHandleHit(text, qkeys) end
         local t = normalize(text:lower())
-        if exact then
-            if t == query_lower then return true end
-            return (query_stripped and t == query_stripped) and true or false
-        end
         if t:find(query_lower, 1, true) then return true end
         return (query_stripped and t:find(query_stripped, 1, true)) and true or false
     end
@@ -2032,9 +1950,9 @@ local function exactKey(s)
 end
 
 --- Fold every exact-matchable handle (name/term/event + aliases) of data's
---- entities into `set`. Each handle folds BOTH its raw form and its
---- parenthetical-stripped form — the SAME reduction collectSearchTerms
---- applies for marking/searching, so anything the marks layer underlines is
+--- entities into `set`. Each handle folds its exactKeys: the raw form, the
+--- form without its bracketed gloss and a bracketed name in another script,
+--- the names the marks match, so anything the marks layer underlines is
 --- reachable by selecting exactly the underlined words (device 2026-08-14:
 --- a parenthetical-suffixed entity was marked via its stripped form but the
 --- raw-handle-only set refused the selection). Skips the
@@ -2044,15 +1962,7 @@ end
 --- @param set table Accumulator: normalized handle -> true
 function XrayParser.foldExactHandles(data, set)
     local function fold(h)
-        if type(h) ~= "string" or h == "" then return end
-        local k = exactKey(h)
-        if k ~= "" then set[k] = true end
-        -- Parenthetical-stripped variant: "Theosis (Deification)" → "Theosis"
-        local stripped = h:gsub("%s*%(.-%)%s*", " ")
-        if stripped ~= h then
-            k = exactKey(stripped)
-            if k ~= "" then set[k] = true end
-        end
+        for _i, k in ipairs(XrayParser.exactKeys(h)) do set[k] = true end
     end
     for _idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
         if cat.key ~= "current_state" and cat.key ~= "current_position"
@@ -2078,13 +1988,8 @@ end
 --- @param query string Raw query text
 --- @return boolean
 function XrayParser.matchExactHandle(set, query)
-    if type(query) ~= "string" or query == "" then return false end
-    local q = exactKey(query)
-    if q == "" then return false end
-    if set[q] then return true end
-    if XrayParser.containsArabic(q) then
-        local s = stripArabicArticle(q)
-        if s ~= q and #s > 4 and set[s] then return true end
+    for _i, k in ipairs(XrayParser.exactQueryKeys(query)) do
+        if set[k] then return true end
     end
     return false
 end
@@ -2100,14 +2005,7 @@ function XrayParser.foldLedgerHandles(data, set)
     local ledger = type(data) == "table" and data[XrayParser.DORMANT_KEY]
     if type(ledger) ~= "table" then return end
     local function fold(h)
-        if type(h) ~= "string" or h == "" then return end
-        local k = exactKey(h)
-        if k ~= "" then set[k] = true end
-        local stripped = h:gsub("%s*%(.-%)%s*", " ")
-        if stripped ~= h then
-            k = exactKey(stripped)
-            if k ~= "" then set[k] = true end
-        end
+        for _i, k in ipairs(XrayParser.exactKeys(h)) do set[k] = true end
     end
     for _idx, stub in ipairs(ledger) do
         if type(stub) == "table" then
@@ -2212,6 +2110,10 @@ function XrayParser.buildMarkEntities(data)
                         category_key = cat.key,
                         family = XrayParser.CATEGORY_FAMILY[cat.key] or cat.key,
                         terms = terms,
+                        -- The page matcher's forms (round 4): what the
+                        -- marks match and paint; `terms` stays the
+                        -- identity key for the cross-source claim
+                        set = XrayParser.matchTermSet(item),
                     })
                 end
             end
@@ -2250,6 +2152,7 @@ function XrayParser.buildLedgerMarkEntities(data)
                         category_key = cat_key,
                         family = XrayParser.CATEGORY_FAMILY[cat_key] or cat_key,
                         terms = terms,
+                        set = XrayParser.matchTermSet(stub),
                         carried = true,
                     })
                 end
@@ -2307,14 +2210,14 @@ function XrayParser.findItemsInChapter(data, chapter_text)
     local categories = XrayParser.getCategories(data)
     if not categories or #categories == 0 then return {} end
 
-    local text_lower = XrayParser.normalizeArabic(chapter_text:lower())
+    local text_lower = XrayParser.matchNormalize(chapter_text)
     local results = {}
 
     for _idx, cat in ipairs(categories) do
         if not TEXT_MATCH_EXCLUDED[cat.key] then
             for _idx2, item in ipairs(cat.items) do
                 local count = XrayParser.countItemOccurrences(item, text_lower,
-                    XrayParser.containingHandles(data, item))
+                    XrayParser.containingMatchHandles(data, item))
                 if count > 0 then
                     table.insert(results, {
                         item = item,
@@ -2345,12 +2248,12 @@ function XrayParser.findCharactersInChapter(data, chapter_text)
     local characters = XrayParser.getCharacters(data)
     if not characters or #characters == 0 then return {} end
 
-    local text_lower = XrayParser.normalizeArabic(chapter_text:lower())
+    local text_lower = XrayParser.matchNormalize(chapter_text)
     local results = {}
 
     for _idx, char in ipairs(characters) do
         local best_count = XrayParser.countItemOccurrences(char, text_lower,
-            XrayParser.containingHandles(data, char))
+            XrayParser.containingMatchHandles(data, char))
         if best_count > 0 then
             table.insert(results, { item = char, count = best_count })
         end
@@ -2449,9 +2352,67 @@ local function skipBoundaryCheck(str)
     return false
 end
 
+--- True when the two bytes at p are an Arabic letter (marks, digits and
+--- punctuation are not: the matcher's text has its marks stripped).
+local function isArabicLetterAt(t, p)
+    local b1, b2 = t:byte(p, p + 1)
+    if not b1 or b1 < 0xD8 or b1 > 0xDB or not b2 then return false end
+    local cp = (b1 - 0xC0) * 64 + (b2 - 0x80)
+    return (cp >= 0x0620 and cp <= 0x064A) or (cp >= 0x066E and cp <= 0x06D3)
+end
+
+--- The Arabic letters in s (0 for text in any other script).
+local function arabicLetterCount(s)
+    local n = 0
+    for p = 1, #s - 1 do
+        if isArabicLetterAt(s, p) then n = n + 1 end
+    end
+    return n
+end
+
+-- What an Arabic word may carry before a name, in order: the question alef,
+-- a conjunction (و ف), a preposition or the future marker (ب ك ل س), the
+-- article (ال, written لل after ل). Skeleton letters, alef forms unified.
+local ARABIC_PREFIXES = {}
+do
+    local ALIF, LAM = "\216\167", "\217\132"
+    for _i, q in ipairs({ "", ALIF }) do
+        for _j, c in ipairs({ "", "\217\136", "\217\129" }) do
+            for _k, p in ipairs({ "", "\216\168", "\217\131", "\216\179", LAM }) do
+                for _m, a in ipairs({ "", ALIF .. LAM }) do
+                    if p == LAM and a ~= "" then
+                        ARABIC_PREFIXES[q .. c .. LAM .. LAM] = true
+                    else
+                        ARABIC_PREFIXES[q .. c .. p .. a] = true
+                    end
+                end
+            end
+        end
+    end
+end
+-- Letters a word may carry after a name: a pronoun or a plural ending
+local MAX_ARABIC_SUFFIX = 3
+
+--- An Arabic match counts where a word starts (after its allowed prefixes)
+--- and ends within MAX_ARABIC_SUFFIX letters of the word's end (B339: "رض"
+--- from "الأرض" matched inside "معرضون").
+local function arabicWordMatch(text, s, e)
+    local ws = s
+    while ws > 2 and isArabicLetterAt(text, ws - 2) do ws = ws - 2 end
+    if not ARABIC_PREFIXES[text:sub(ws, s - 1)] then return false end
+    local we, letters = e, 0
+    while isArabicLetterAt(text, we + 1) do
+        we = we + 2
+        letters = letters + 1
+        if letters > MAX_ARABIC_SUFFIX then return false end
+    end
+    return true
+end
+
 --- Collect match spans of a substring in text (plain search).
 --- For Latin/Cyrillic/Greek: uses word-boundary matching to prevent false positives.
---- For CJK/Thai/Arabic/Hebrew: skips boundary matching (see skipBoundaryCheck).
+--- For Arabic: the start of a word, allowed prefixes and short endings (arabicWordMatch).
+--- For CJK/Thai/Hebrew: skips boundary matching (see skipBoundaryCheck).
 --- @param text string Haystack (already lowered)
 --- @param needle string Needle (already lowered)
 --- @return table spans Array of {start, end_pos} pairs
@@ -2461,11 +2422,16 @@ function XrayParser._collectMatchSpans(text, needle)
     local needle_len = #needle
     local text_len = #text
     local skip_boundaries = skipBoundaryCheck(needle)
+    local arabic = skip_boundaries and XrayParser.containsArabic(needle)
     while true do
         local start = text:find(needle, pos, true)
         if not start then break end
         local end_pos = start + needle_len - 1
-        if skip_boundaries then
+        if arabic then
+            if arabicWordMatch(text, start, end_pos) then
+                spans[#spans + 1] = {start, end_pos}
+            end
+        elseif skip_boundaries then
             spans[#spans + 1] = {start, end_pos}
         else
             -- Check word boundaries: character before/after must be non-word
@@ -2486,6 +2452,586 @@ end
 --- @return number count
 function XrayParser._countOccurrences(text, needle)
     return #XrayParser._collectMatchSpans(text, needle)
+end
+
+-- ── The one text matcher (docs/xray_marks_freeze_plan.md, round 4) ─────────
+-- The marks, the Mentions view, Chapter Appearances and the per-book name
+-- index (koassistant_xray_index.lua) all match X-Ray names against book text
+-- through matchNormalize + matchTermSet + _collectMatchSpans, so an
+-- underline, a count and a mention list agree. Latin, Cyrillic and Greek
+-- names match whole words; Hebrew, CJK and Thai match substrings (particles,
+-- no spaces between words). Arabic names match where a word starts, after
+-- the prefixes a word carries (و ف ب ك ل س, the article), with at most three
+-- letters after them (B339): every combining mark of the text is optional,
+-- the dagger alef included (Uthmani spelling writes a long vowel as a mark),
+-- an alef inside a word of the name is optional, the article may drop, and
+-- a form needs three letters.
+
+-- Case fold: KOReader's utf8proc NFKC case fold (Cyrillic, Greek and
+-- accented Latin fold like ASCII; ligatures, superscripts and presentation
+-- forms become plain characters; format characters drop) when it loads,
+-- string.lower otherwise (unit tests). Only pure ASCII takes the cheap path:
+-- the fold must not depend on what else is in the string, or a page read
+-- whole (the index) and word by word (the marks) would disagree ("adam¹").
+local foldCase = string.lower
+do
+    local ok, Utf8Proc = pcall(require, "ffi/utf8proc")
+    if ok and type(Utf8Proc) == "table" and type(Utf8Proc.lowercase) == "function" then
+        foldCase = function(text)
+            if not text:find("[\128-\255]") then return text:lower() end
+            local folded_ok, folded = pcall(Utf8Proc.lowercase, text, true)
+            if folded_ok and type(folded) == "string" then return folded end
+            return text:lower()
+        end
+    end
+end
+
+--- Arabic for matching: marks stripped (the dagger alef too, unlike
+--- normalizeArabic, which keeps it as a letter for exact-name identity),
+--- tatweel dropped, alef forms unified.
+local function arabicMatchSkeleton(str)
+    if not str:find(ARABIC_QUICK_CHECK_D8, 1, true)
+        and not str:find(ARABIC_QUICK_CHECK_D9, 1, true)
+        and not str:find(ARABIC_QUICK_CHECK_DB, 1, true) then
+        return str
+    end
+    str = str:gsub(TANWIN_FATHAH_ALEF, "")
+    str = str:gsub(TASHKEEL_PAT, "")
+    str = str:gsub(SIGN_PAT, "")
+    str = str:gsub(QURAN_MARK_PAT1, "")
+    str = str:gsub(QURAN_MARK_PAT2, "")
+    str = str:gsub(SUPERSCRIPT_ALEF, "")
+    str = str:gsub(TATWEEL, "")
+    str = str:gsub(ALEF_WASLA, ALEF)
+    str = str:gsub(ALEF_MADDA, ALEF)
+    str = str:gsub(ALEF_HAMZA_ABOVE, ALEF)
+    str = str:gsub(ALEF_HAMZA_BELOW, ALEF)
+    return str
+end
+
+--- Normalize text for matching: page text, chapter text and names alike.
+--- Case folded, invisible format characters dropped (soft hyphen, zero-width
+--- space/joiners, direction marks, word joiner, BOM), Arabic skeleton, every
+--- whitespace run (no-break space included) one space.
+--- @param s string
+--- @return string
+function XrayParser.matchNormalize(s)
+    if type(s) ~= "string" or s == "" then return "" end
+    s = foldCase(s)
+    s = s:gsub("\194\173", ""):gsub("\226\128[\139-\143]", "")
+        :gsub("\226\129\160", ""):gsub("\239\187\191", "")
+    s = arabicMatchSkeleton(s)
+    return (s:gsub("\194\160", " "):gsub("%s+", " "))
+end
+
+-- Alef-optional forms of an Arabic name: each alef inside a word kept or
+-- dropped (Uthmani spelling writes a long vowel as a dagger alef, which the
+-- skeleton drops). A word's first alef is always written, so it stays (B339:
+-- "رض" from "الأرض" matched inside other words). More alefs than this keep
+-- only the all-kept and all-dropped forms (16 forms at most).
+local ALEF_VARIANT_CAP = 4
+local function alefVariants(term)
+    local positions = {}
+    local from = 1
+    while true do
+        local s = term:find(ALEF, from, true)
+        if not s then break end
+        if s > 1 and term:byte(s - 1) ~= 32 then positions[#positions + 1] = s end
+        from = s + #ALEF
+    end
+    if #positions == 0 then return { term } end
+    if #positions > ALEF_VARIANT_CAP then
+        local parts, last = {}, 1
+        for _k, pos in ipairs(positions) do
+            parts[#parts + 1] = term:sub(last, pos - 1)
+            last = pos + #ALEF
+        end
+        parts[#parts + 1] = term:sub(last)
+        return { term, table.concat(parts) }
+    end
+    local out = {}
+    for mask = 0, 2 ^ #positions - 1 do
+        local parts, last, m = {}, 1, mask
+        for _k, pos in ipairs(positions) do
+            if m % 2 == 1 then
+                parts[#parts + 1] = term:sub(last, pos - 1)
+                last = pos + #ALEF
+            end
+            m = math.floor(m / 2)
+        end
+        parts[#parts + 1] = term:sub(last)
+        out[#out + 1] = table.concat(parts)
+    end
+    return out
+end
+
+local function trimSpaces(s)
+    return s:match("^%s*(.-)%s*$") or s
+end
+
+-- The writing system of a letter, coarse (Latin-1 and Latin Extended count
+-- as Latin; the Indic scripts share one entry). Digits, punctuation and
+-- symbols belong to none.
+local LETTER_SCRIPTS = {
+    { 0x00C0, 0x024F, "latin" }, { 0x1E00, 0x1EFF, "latin" },
+    { 0x0370, 0x03FF, "greek" }, { 0x1F00, 0x1FFF, "greek" },
+    { 0x0400, 0x052F, "cyrillic" }, { 0x0531, 0x058A, "armenian" },
+    { 0x05D0, 0x05F2, "hebrew" },
+    { 0x0620, 0x065F, "arabic" }, { 0x066E, 0x06D5, "arabic" }, { 0x06FA, 0x06FF, "arabic" },
+    { 0x0750, 0x077F, "arabic" }, { 0x08A0, 0x08FF, "arabic" },
+    { 0xFB50, 0xFDFF, "arabic" }, { 0xFE70, 0xFEFF, "arabic" },
+    { 0x0900, 0x0DFF, "indic" }, { 0x0E00, 0x0EFF, "thai" },
+    { 0x0F00, 0x0FFF, "tibetan" }, { 0x1000, 0x109F, "myanmar" },
+    { 0x10A0, 0x10FF, "georgian" }, { 0x1200, 0x139F, "ethiopic" },
+    { 0x1780, 0x17FF, "khmer" },
+    { 0x1100, 0x11FF, "hangul" }, { 0x3130, 0x318F, "hangul" }, { 0xAC00, 0xD7AF, "hangul" },
+    { 0x3041, 0x30FF, "kana" }, { 0x31F0, 0x31FF, "kana" },
+    { 0x3400, 0x4DBF, "han" }, { 0x4E00, 0x9FFF, "han" }, { 0xF900, 0xFAFF, "han" },
+    { 0x20000, 0x3FFFF, "han" },
+}
+
+--- The scripts a text's letters are written in: { latin = true, ... }.
+local function letterScripts(s)
+    local out = {}
+    local i, n = 1, #s
+    while i <= n do
+        local c = s:byte(i)
+        if c < 0x80 then
+            if (c >= 65 and c <= 90) or (c >= 97 and c <= 122) then out.latin = true end
+            i = i + 1
+        else
+            local len = c >= 0xF0 and 4 or c >= 0xE0 and 3 or c >= 0xC0 and 2 or 1
+            local cp = c % (len == 4 and 8 or len == 3 and 16 or 32)
+            for k = 1, len - 1 do cp = cp * 64 + (s:byte(i + k) or 0x80) % 64 end
+            for _r, r in ipairs(LETTER_SCRIPTS) do
+                if cp >= r[1] and cp <= r[2] then
+                    out[r[3]] = true
+                    break
+                end
+            end
+            i = i + len
+        end
+    end
+    return out
+end
+
+--- The names one name or alias stands for: the text without its bracketed
+--- parts, plus each bracketed part that is the name in another script. A
+--- bracketed part tells entries apart ("Anna (the elder)", "(archetype)",
+--- "(Norse tale)") and would match every use of its words; other names are
+--- aliases. It is a name only when every letter is in a script the rest of
+--- the name does not use ("The Old City (<Arabic>)", "Tokyo (東京)", an Arabic
+--- name followed by its transliteration).
+--- @param t string a name or alias as written
+--- @return table names, the bracket-less one first (trimmed, not normalized)
+local function handleNames(t)
+    local outside = trimSpaces((t:gsub("%s*%(.-%)%s*", " ")))
+    local names = { outside }
+    if not t:find("(", 1, true) then return names end
+    local own = letterScripts(outside)
+    for inner in t:gmatch("%((.-)%)") do
+        local scripts = letterScripts(inner)
+        local other = next(scripts) ~= nil
+        for s in pairs(scripts) do
+            if own[s] then
+                other = false
+                break
+            end
+        end
+        if other then names[#names + 1] = trimSpaces(inner) end
+    end
+    return names
+end
+
+--- The exact-lookup keys of one name or alias: the text as written and each
+--- of its names (handleNames), through the one exactKey rule. Exact search,
+--- the route index and the carried list read the same keys, so a tap on
+--- anything the marks underline finds its entry (B338).
+--- @param h string
+--- @return table keys, deduplicated and non-empty
+function XrayParser.exactKeys(h)
+    local keys, seen = {}, {}
+    if type(h) ~= "string" or h == "" then return keys end
+    local function add(s)
+        local k = exactKey(s)
+        if k ~= "" and not seen[k] then
+            seen[k] = true
+            keys[#keys + 1] = k
+        end
+    end
+    add(h)
+    for _i, n in ipairs(handleNames(h)) do add(n) end
+    return keys
+end
+
+--- The query side of exact matching: the query's key, plus the ال-stripped
+--- variant for Arabic (query side only: a handle is never article-stripped).
+--- @param query string
+--- @return table keys (empty for an empty query)
+function XrayParser.exactQueryKeys(query)
+    if type(query) ~= "string" or query == "" then return {} end
+    local q = exactKey(query)
+    if q == "" then return {} end
+    local keys = { q }
+    if XrayParser.containsArabic(q) then
+        local s = stripArabicArticle(q)
+        if s ~= q and #s > 4 then keys[2] = s end
+    end
+    return keys
+end
+
+--- True when one of a handle's exact keys is one of the query's keys.
+--- @param h string a name or alias as written
+--- @param qkeys table XrayParser.exactQueryKeys(query)
+function XrayParser.exactHandleHit(h, qkeys)
+    for _i, k in ipairs(XrayParser.exactKeys(h)) do
+        for _j, q in ipairs(qkeys) do
+            if k == q then return true end
+        end
+    end
+    return false
+end
+
+-- matchTermSet memo: the same item table asks many times per view (every
+-- other entity's containment check), keyed weakly with a name+aliases
+-- signature so an alias edited in place is never served stale
+local term_set_memo = setmetatable({}, { __mode = "k" })
+
+--- The match forms of one entity: its name, a bracketed part of it written
+--- in another script (the name in the book's other language), and every
+--- alias, normalized, plus the article-dropped (Arabic; English "the" while
+--- two words remain) and Arabic alef-optional forms. `all` is longest first (the widest form present paints), `minimal`
+--- the forms that contain no other form, `source` maps each form to the name
+--- or alias as written (what a tap on it opens). nil when the name is two
+--- bytes or shorter (the counting rule since the Mentions view shipped).
+--- @param item table X-Ray entry
+--- @param item_title string|nil name fallback
+--- @return table|nil { all, minimal, source }
+function XrayParser.matchTermSet(item, item_title)
+    if type(item) ~= "table" then return nil end
+    local name = getItemSearchName(item) or item_title
+    if type(name) ~= "string" or #name <= 2 then return nil end
+    local aliases = ensure_array(item.aliases)
+    local sig = name .. "\0" .. (aliases and table.concat(aliases, "\0") or "")
+    local memo = term_set_memo[item]
+    if memo and memo.sig == sig then return memo.set end
+
+    local all, seen, source = {}, {}, {}
+    local function addForm(text)
+        local norm = trimSpaces(XrayParser.matchNormalize(text))
+        if #norm <= 2 then return end
+        local forms = { norm }
+        if XrayParser.containsArabic(norm) then
+            local stripped = trimSpaces(stripArabicArticle(norm))
+            if stripped ~= norm and #stripped > 4 then forms[2] = stripped end
+            -- li- + al- drops the article's alef ("للأرض"), and three lams
+            -- in a row are written as two ("لله", "لليل"). B339: the first
+            -- alef of a word is otherwise never optional.
+            if norm:sub(1, AL_PREFIX_LEN) == AL_PREFIX then
+                local lil = "\217\132" .. norm:sub(#ALEF + 1)
+                if lil:sub(1, 6) == "\217\132\217\132\217\132" then lil = lil:sub(3) end
+                forms[#forms + 1] = lil
+            end
+        else
+            -- A leading English article: "The Wise Old Man" is as often "a
+            -- wise old man" or "this wise old man". The phrase without it
+            -- matches too while two words or more remain ("The Sun" keeps
+            -- its article: "sun" alone would match every sun).
+            local rest = norm:match("^the (.+)$")
+            if rest and rest:find(" ", 1, true) then forms[#forms + 1] = rest end
+        end
+        for _f, form in ipairs(forms) do
+            for _v, v in ipairs(alefVariants(form)) do
+                v = trimSpaces(v)
+                -- An Arabic form of two letters sits inside countless words
+                -- (a pronoun, a dropped-alef skeleton): three letters at least
+                local letters = arabicLetterCount(v)
+                if #v > 2 and not seen[v] and (letters == 0 or letters >= 3) then
+                    seen[v] = true
+                    all[#all + 1] = v
+                    source[v] = text
+                end
+            end
+        end
+    end
+    local function addName(t)
+        if type(t) ~= "string" then return end
+        for _i, n in ipairs(handleNames(t)) do addForm(n) end
+    end
+    addName(name)
+    if aliases then
+        for _idx, a in ipairs(aliases) do addName(a) end
+    end
+    local set
+    if #all > 0 then
+        table.sort(all, function(a, b)
+            if #a ~= #b then return #a > #b end
+            return a < b
+        end)
+        local minimal = {}
+        for i, t in ipairs(all) do
+            local contains = false
+            for j, u in ipairs(all) do
+                if i ~= j and XrayParser.handleContainsWord(t, u) then
+                    contains = true
+                    break
+                end
+            end
+            if not contains then minimal[#minimal + 1] = t end
+        end
+        set = { all = all, minimal = minimal, source = source }
+    end
+    term_set_memo[item] = { sig = sig, set = set }
+    return set
+end
+
+--- Cross-entity containment for the matcher (B266): the forms of OTHER
+--- entries that contain one of this entry's forms ("vivian kubrick" for the
+--- entry "Kubrick"). An occurrence inside one of them is that entry's
+--- mention. Minimized: a form containing another listed form is dropped.
+--- @param data table Parsed X-Ray data
+--- @param item table The entry
+--- @return table|nil forms (normalized strings), nil when none
+function XrayParser.containingMatchHandles(data, item)
+    local own_set = XrayParser.matchTermSet(item)
+    if not (data and own_set) then return nil end
+    local own = {}
+    for _idx, t in ipairs(own_set.all) do own[t] = true end
+    local found, seen = {}, {}
+    for _idx, cat in ipairs(XrayParser.getCategories(data) or {}) do
+        if not TEXT_MATCH_EXCLUDED[cat.key] then
+            for _idx2, other in ipairs(cat.items) do
+                local oset = other ~= item and XrayParser.matchTermSet(other)
+                if oset then
+                    for _idx3, h in ipairs(oset.all) do
+                        if not own[h] and not seen[h] then
+                            for _idx4, t in ipairs(own_set.minimal) do
+                                if XrayParser.handleContainsWord(h, t) then
+                                    seen[h] = true
+                                    found[#found + 1] = h
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if #found == 0 then return nil end
+    local minimal = {}
+    for i, h in ipairs(found) do
+        local contains_other = false
+        for j, u in ipairs(found) do
+            if i ~= j and XrayParser.handleContainsWord(h, u) then
+                contains_other = true
+                break
+            end
+        end
+        if not contains_other then minimal[#minimal + 1] = h end
+    end
+    return minimal
+end
+
+--- Occurrences of one entity in a normalized text: the spans of every form,
+--- minus those inside an occurrence of a containing form (B266), merged so a
+--- longer form covering a shorter one is one occurrence. Each occurrence
+--- keeps its widest form (`form`) for the tap text.
+--- @param norm string matchNormalize output
+--- @param set table matchTermSet output
+--- @param handles table|nil containing forms
+--- @return table array of { s, e, form = string } in text order
+function XrayParser.occurrencesIn(norm, set, handles)
+    local spans = {}
+    for _idx, t in ipairs(set.all) do
+        if norm:find(t, 1, true) then
+            for _idx2, sp in ipairs(XrayParser._collectMatchSpans(norm, t)) do
+                spans[#spans + 1] = { sp[1], sp[2], t }
+            end
+        end
+    end
+    if #spans == 0 then return spans end
+    if handles and #handles > 0 then
+        local ex = {}
+        for _idx, h in ipairs(handles) do
+            if norm:find(h, 1, true) then
+                for _idx2, sp in ipairs(XrayParser._collectMatchSpans(norm, h)) do
+                    ex[#ex + 1] = sp
+                end
+            end
+        end
+        if #ex > 0 then
+            local kept = {}
+            for _idx, sp in ipairs(spans) do
+                local inside = false
+                for _idx2, x in ipairs(ex) do
+                    if sp[1] >= x[1] and sp[2] <= x[2] then
+                        inside = true
+                        break
+                    end
+                end
+                if not inside then kept[#kept + 1] = sp end
+            end
+            spans = kept
+        end
+    end
+    return XrayParser.mergeSpans(spans)
+end
+
+--- Merge overlapping { s, e, form } spans into occurrences (the union rule
+--- countItemOccurrences has always used), keeping each one's widest form.
+function XrayParser.mergeSpans(spans)
+    table.sort(spans, function(a, b)
+        if a[1] ~= b[1] then return a[1] < b[1] end
+        return a[2] > b[2]
+    end)
+    local out, cur = {}, nil
+    for _idx, sp in ipairs(spans) do
+        if cur and sp[1] <= cur[2] then
+            if sp[2] > cur[2] then cur[2] = sp[2] end
+            if sp[2] - sp[1] > cur.width then
+                cur.width = sp[2] - sp[1]
+                cur.form = sp[3]
+            end
+        else
+            cur = { sp[1], sp[2], form = sp[3], width = sp[2] - sp[1] }
+            out[#out + 1] = cur
+        end
+    end
+    return out
+end
+
+--- Incremental builder of one normalized match string over a run of text
+--- pieces (the words of a page with the separators the book has after or
+--- before them), recording each piece's byte range in it, so a span found in
+--- the string maps back to whole words. Whitespace runs collapse across
+--- pieces exactly as matchNormalize collapses them in one string.
+--- @return table builder: add(text, sep) → { first, last } or false (the
+---   piece normalizes to nothing, e.g. a lone Quranic sign); len; result()
+function XrayParser.newPieceNormalizer()
+    local b = { out = {}, len = 0, ends_space = true }
+    local function push(chunk)
+        if chunk == "" then return end
+        if b.ends_space and chunk:byte(1) == 32 then chunk = chunk:sub(2) end
+        if chunk == "" then return end
+        b.out[#b.out + 1] = chunk
+        b.len = b.len + #chunk
+        b.ends_space = chunk:byte(-1) == 32
+    end
+    function b.add(text, sep)
+        if sep and sep ~= "" then
+            if sep:find("^%s+$") then push(" ") else push(XrayParser.matchNormalize(sep)) end
+        end
+        text = text or ""
+        -- Fast path: ASCII (most pieces of Latin-script books)
+        if not text:find("[\128-\255]") then
+            text = text:lower():gsub("%s+", " ")
+        else
+            text = XrayParser.matchNormalize(text)
+        end
+        local before = b.len
+        push(text)
+        return b.len > before and { before + 1, b.len } or false
+    end
+    function b.result()
+        return table.concat(b.out)
+    end
+    return b
+end
+
+--- One normalized match string over a run of text pieces, with each piece's
+--- byte range in it (see newPieceNormalizer). The separators are the book's
+--- own: none between CJK characters, an apostrophe inside "friend’s".
+--- @param pieces array of { text = word (and the separator after it),
+---   sep = text before it (optional) }
+--- @return string norm, table ranges
+function XrayParser.normalizePieces(pieces)
+    local b = XrayParser.newPieceNormalizer()
+    local ranges = {}
+    for i, p in ipairs(pieces) do ranges[i] = b.add(p.text, p.sep) end
+    return b.result(), ranges
+end
+
+--- Pieces of a raw text the way crengine walks it, for the matcher and the
+--- mention snippets: a word with the whitespace after it, and CJK, kana,
+--- Hangul and Thai one character each (the scripts written without spaces).
+--- @param text string
+--- @return table array of { text }
+function XrayParser.textPieces(text)
+    local pieces = {}
+    for token, ws in text:gmatch("(%S+)(%s*)") do
+        if not token:find("[\224\227-\237\239]") then
+            pieces[#pieces + 1] = { text = token .. ws }
+        else
+            -- One piece per CJK/Thai character; runs of anything else stay whole
+            local run = {}
+            local i, len = 1, #token
+            while i <= len do
+                local c = token:byte(i)
+                local n = c < 0x80 and 1 or c < 0xE0 and 2 or c < 0xF0 and 3 or 4
+                local ch = token:sub(i, i + n - 1)
+                if n >= 3 and (c == 0xE0 or (c >= 0xE3 and c <= 0xED) or c == 0xEF) then
+                    if #run > 0 then
+                        pieces[#pieces + 1] = { text = table.concat(run) }
+                        run = {}
+                    end
+                    pieces[#pieces + 1] = { text = ch }
+                else
+                    run[#run + 1] = ch
+                end
+                i = i + n
+            end
+            if #run > 0 then pieces[#pieces + 1] = { text = table.concat(run) } end
+            pieces[#pieces].text = pieces[#pieces].text .. ws
+        end
+    end
+    return pieces
+end
+
+--- A mention snippet around pieces [f, l]: up to `budget` bytes of context
+--- each side, whitespace runs as single spaces.
+--- @return string before, string match, string after
+function XrayParser.snippetFromPieces(pieces, f, l, budget)
+    budget = budget or 80
+    local a, used = f, 0
+    while a > 1 and used < budget do
+        a = a - 1
+        used = used + #pieces[a].text
+    end
+    local b = l
+    used = 0
+    while b < #pieces and used < budget do
+        b = b + 1
+        used = used + #pieces[b].text
+    end
+    local parts = {}
+    for i = a, f - 1 do parts[#parts + 1] = pieces[i].text end
+    local before = table.concat(parts)
+    parts = {}
+    for i = f, l do parts[#parts + 1] = pieces[i].text end
+    -- The match's own trailing whitespace goes after the bold
+    local match, match_ws = table.concat(parts):match("^(.-)(%s*)$")
+    parts = { match_ws }
+    for i = l + 1, b do parts[#parts + 1] = pieces[i].text end
+    local after = table.concat(parts)
+    return (before:gsub("%s+", " ")), (match:gsub("%s+", " ")), (after:gsub("%s+", " "))
+end
+
+--- The pieces an occurrence covers: first and last piece index whose range
+--- overlaps [s, e], or nil when it covers none (text between pieces only).
+function XrayParser.piecesForSpan(ranges, s, e)
+    local first, last
+    for i, r in ipairs(ranges) do
+        if r then
+            if r[2] >= s and r[1] <= e then
+                first = first or i
+                last = i
+            elseif r[1] > e then
+                break
+            end
+        end
+    end
+    return first, last
 end
 
 --- Handle normalization shared by the cross-entity containment layer (B266):
@@ -2600,7 +3146,53 @@ local INDEX_EXCLUDED_CATEGORIES = {
     argument_development = true,
 }
 
-function XrayParser.buildEntityIndex(data)
+-- How many carried names the index lists at most: the backstop behind the
+-- occurrence filter below (B394 slice 4).
+local DORMANT_INDEX_CAP = 300
+
+--- "Can this name occur in the text?" for many names against one text (B394
+--- slice 4): the text is normalized once and every 4-byte sequence in it
+--- recorded, so a name is searched for only when its first four bytes are
+--- there at all. Thousands of carried names against a book-sized slice cost
+--- one pass over the text plus a handful of searches. A plain substring test
+--- (no word boundaries): a few names too many in the index are harmless, a
+--- missing one loses its bridge.
+--- @param text string
+--- @return function probe(name) -> boolean
+local function textNameProbe(text)
+    local hay = XrayParser.matchNormalize(text)
+    local grams = {}
+    local b1, b2, b3 = 0, 0, 0
+    local byte = string.byte
+    for i = 1, #hay do
+        local b = byte(hay, i)
+        if i >= 4 then grams[((b1 * 256 + b2) * 256 + b3) * 256 + b] = true end
+        b1, b2, b3 = b2, b3, b
+    end
+    return function(name)
+        if type(name) ~= "string" or name == "" then return false end
+        local norm
+        if not name:find("[\128-\255]") then
+            norm = trimSpaces((name:lower():gsub("%s+", " ")))
+        else
+            norm = trimSpaces(XrayParser.matchNormalize(name))
+        end
+        -- The matcher's own floor: a name of two bytes or fewer never matches
+        if #norm <= 2 then return false end
+        if #norm >= 4 then
+            local c1, c2, c3, c4 = byte(norm, 1, 4)
+            if not grams[((c1 * 256 + c2) * 256 + c3) * 256 + c4] then return false end
+        end
+        return hay:find(norm, 1, true) ~= nil
+    end
+end
+
+--- @param opts table|nil { text = string }: the text the request sends beside
+---   this index (an update's new slice, a merge's input X-Rays). With it, the
+---   carried names listed are only the ones that text mentions, by name or
+---   by any alias: a carried name the text never mentions cannot be bridged
+---   in that request. Without it every carried name is listed (up to the cap).
+function XrayParser.buildEntityIndex(data, opts)
     local categories = XrayParser.getCategories(data)
     if not categories or #categories == 0 then return "" end
 
@@ -2633,26 +3225,61 @@ function XrayParser.buildEntityIndex(data)
     -- join the index so the model can bridge naming drift wherever it already
     -- runs (updates, merges): it lists a dormant name among an entity's
     -- aliases, and the mechanical wake-pass connects them in the same write.
+    -- B394 slice 4: the bridge used to list EVERY carried name in every
+    -- update and merge request (about 50 KB per checkpoint step at 2,000
+    -- carried entries, growing with each volume). A name the request's text
+    -- never mentions cannot be bridged there, so only the mentioned ones are
+    -- listed, each with the aliases that occur shown first; the cap is the
+    -- backstop (a merge's input can mention most of them).
     local ledger = data[XrayParser.DORMANT_KEY]
     if type(ledger) == "table" and #ledger > 0 then
-        local names = {}
+        local text = opts and opts.text
+        local probe = type(text) == "string" and text ~= "" and textNameProbe(text) or nil
+        local names, total, mentioned = {}, 0, 0
         for _idx, stub in ipairs(ledger) do
             if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= "" then
-                local name = stub.name
-                local stub_aliases = ensure_array(stub.aliases)
-                if stub_aliases and #stub_aliases > 0 then
-                    local shown = {}
+                total = total + 1
+                local stub_aliases = ensure_array(stub.aliases) or {}
+                local shown = {}
+                local listed = true
+                if probe then
+                    local rest = {}
+                    for _a, alias in ipairs(stub_aliases) do
+                        if probe(alias) then
+                            if #shown < 2 then shown[#shown + 1] = alias end
+                        else
+                            rest[#rest + 1] = alias
+                        end
+                    end
+                    listed = #shown > 0 or probe(stub.name)
+                    for _a, alias in ipairs(rest) do
+                        if #shown >= 2 then break end
+                        shown[#shown + 1] = alias
+                    end
+                else
                     for i = 1, math.min(2, #stub_aliases) do
                         shown[i] = stub_aliases[i]
                     end
-                    name = name .. " (" .. table.concat(shown, ", ") .. ")"
                 end
-                names[#names + 1] = name
+                if listed then
+                    mentioned = mentioned + 1
+                    if #names < DORMANT_INDEX_CAP then
+                        local name = stub.name
+                        if #shown > 0 then
+                            name = name .. " (" .. table.concat(shown, ", ") .. ")"
+                        end
+                        names[#names + 1] = name
+                    end
+                end
             end
         end
         if #names > 0 then
             lines[#lines + 1] = "dormant (from related books, not yet in this one): "
                 .. table.concat(names, "; ")
+        end
+        if #names < total then
+            logger.dbg("KOAssistant XrayParser: entity index lists", #names, "of", total,
+                "carried names (", mentioned, probe and "mentioned in the text )" or "in all )")
         end
     end
     return table.concat(lines, "\n")
@@ -3244,28 +3871,22 @@ function XrayParser.foldLedger(data, never_pairs)
     return folded
 end
 
---- Wake-pass (carry layer 2): any ledger stub whose name/alias matches an
---- ACTIVE entity folds its carried knowledge into that entity's background —
---- fill-gaps-only, an existing entry from the same source book wins (same
---- rule as the transitive carry) — brings its names along as aliases, and
---- leaves the ledger. Runs on EVERY write-back (merge, incremental update,
---- deepen), so an entity entering by any route wakes its history. Mutates
---- data in place. Pure.
+--- Fold carried stubs onto the ACTIVE entities they name: the shared middle
+--- of the wake-pass and of the seed's enrichment of entries already in this
+--- book. Fill-gaps-only background (an existing line from the same source
+--- book wins), the stub's names join the entity's aliases. Mutates the
+--- entities only, never the ledger. Pure.
 --- @param data table Parsed X-Ray
---- @param opts table|nil { never_pairs } for the ledger fold that runs first
---- @return table woken Array of { name, source } for logging/toasts
-function XrayParser.wakeDormant(data, opts)
-    local woken = {}
-    if type(data) ~= "table" then return woken end
-    local ledger = data[XrayParser.DORMANT_KEY]
-    if type(ledger) ~= "table" or #ledger == 0 then
-        if ledger ~= nil and (type(ledger) ~= "table" or #ledger == 0) then
-            data[XrayParser.DORMANT_KEY] = nil
-        end
-        return woken
-    end
-    -- One entity under two carried names folds before it can wake twice
-    XrayParser.foldLedger(data, opts and opts.never_pairs)
+--- @param stubs table Array of stubs
+--- @param strict boolean|nil A NAME must be on one side of the match (the
+---   stub's name equals the entity's name or alias, or a stub alias equals
+---   the entity's name), never alias to alias: two people sharing a nickname
+---   or a one-character alias are not one person (the ledger fold's rule).
+--- @return table woken Array of { name, source }
+--- @return table remaining The stubs that matched no entity
+--- @return number changed Entities that actually gained a line or a name
+local function wakeStubsOnto(data, stubs, strict)
+    local woken, changed = {}, 0
     -- name/alias (lowercased) → active item
     -- Round 26: matching is FAMILY-SCOPED. It used to be a single flat
     -- name→item map over every category, so a dormant CHARACTER woke into a
@@ -3274,13 +3895,20 @@ function XrayParser.wakeDormant(data, opts)
     -- Within a family the drift is real and must still bridge (a figure is
     -- `characters` in a novel and `key_figures` in a companion volume).
     local lookup, family_lookup = {}, {}
-    local function learn(key, item, family)
+    -- Entity NAMES only (no aliases), for the strict rule
+    local name_lookup, family_names = {}, {}
+    local function learn(key, item, family, is_name)
         if type(key) ~= "string" or key == "" then return end
         local norm = key:lower()
         if lookup[norm] == nil then lookup[norm] = item end
+        if is_name and name_lookup[norm] == nil then name_lookup[norm] = item end
         if family then
             family_lookup[family] = family_lookup[family] or {}
             if family_lookup[family][norm] == nil then family_lookup[family][norm] = item end
+            if is_name then
+                family_names[family] = family_names[family] or {}
+                if family_names[family][norm] == nil then family_names[family][norm] = item end
+            end
         end
     end
     for _idx, cat in ipairs(XrayParser.getCategories(data)) do
@@ -3294,7 +3922,7 @@ function XrayParser.wakeDormant(data, opts)
             local family = XrayParser.CATEGORY_FAMILY[cat.key] or cat.key
             for _idx2, item in ipairs(cat.items) do
                 if type(item) == "table" then
-                    learn(XrayParser.getItemName(item, cat.key), item, family)
+                    learn(XrayParser.getItemName(item, cat.key), item, family, true)
                     if type(item.aliases) == "table" then
                         for _idx3, alias in ipairs(item.aliases) do learn(alias, item, family) end
                     end
@@ -3303,7 +3931,7 @@ function XrayParser.wakeDormant(data, opts)
         end
     end
     local remaining = {}
-    for _idx, stub in ipairs(ledger) do
+    for _idx, stub in ipairs(stubs) do
         local hit
         if type(stub) == "table" then
             -- A stub that knows its category may only wake inside its family
@@ -3317,18 +3945,26 @@ function XrayParser.wakeDormant(data, opts)
             hit = type(stub.name) == "string" and stub.name ~= ""
                 and scope[stub.name:lower()] or nil
             if not hit and type(stub.aliases) == "table" then
+                -- A stub alias meets entity names and aliases (the wake), or
+                -- entity names only (strict)
+                local alias_scope = scope
+                if strict then
+                    alias_scope = stub_family and (family_names[stub_family] or {}) or name_lookup
+                end
                 for _idx2, alias in ipairs(stub.aliases) do
-                    if type(alias) == "string" and alias ~= "" and scope[alias:lower()] then
-                        hit = scope[alias:lower()]
+                    if type(alias) == "string" and alias ~= "" and alias_scope[alias:lower()] then
+                        hit = alias_scope[alias:lower()]
                         break
                     end
                 end
             end
         end
         if hit then
+            local gained = false
             local additions = stubBackgroundAdditions(stub, hit.background)
             if #additions > 0 then
                 hit.background = XrayParser.mergeBackground(hit.background, additions)
+                gained = true
             end
             -- A stub matched by alias brings the other book's names along
             local function foldAlias(name)
@@ -3339,18 +3975,115 @@ function XrayParser.wakeDormant(data, opts)
                 arr[#arr + 1] = name
                 hit.aliases = arr
                 lookup[norm] = hit
+                gained = true
             end
             foldAlias(stub.name)
             if type(stub.aliases) == "table" then
                 for _idx2, a in ipairs(stub.aliases) do foldAlias(a) end
             end
+            if gained then changed = changed + 1 end
             woken[#woken + 1] = { name = stub.name, source = stub.source }
         else
             remaining[#remaining + 1] = stub
         end
     end
+    return woken, remaining, changed
+end
+
+--- Wake-pass (carry layer 2): any ledger stub whose name/alias matches an
+--- ACTIVE entity folds its carried knowledge into that entity's background —
+--- fill-gaps-only, an existing entry from the same source book wins (same
+--- rule as the transitive carry) — brings its names along as aliases, and
+--- leaves the ledger. Runs on EVERY write-back (merge, incremental update,
+--- deepen), so an entity entering by any route wakes its history. Mutates
+--- data in place. Pure.
+--- @param data table Parsed X-Ray
+--- @param opts table|nil { never_pairs } for the ledger fold that runs first
+--- @return table woken Array of { name, source } for logging/toasts
+function XrayParser.wakeDormant(data, opts)
+    if type(data) ~= "table" then return {} end
+    local ledger = data[XrayParser.DORMANT_KEY]
+    if type(ledger) ~= "table" or #ledger == 0 then
+        if ledger ~= nil and (type(ledger) ~= "table" or #ledger == 0) then
+            data[XrayParser.DORMANT_KEY] = nil
+        end
+        return {}
+    end
+    -- One entity under two carried names folds before it can wake twice
+    XrayParser.foldLedger(data, opts and opts.never_pairs)
+    local woken, remaining = wakeStubsOnto(data, data[XrayParser.DORMANT_KEY])
     data[XrayParser.DORMANT_KEY] = #remaining > 0 and remaining or nil
     return woken
+end
+
+--- The free carry for entries ALREADY in this book (B394 slice 3): what an
+--- earlier book says about an entity this book holds too is attached as a
+--- labeled background line, exactly as the wake-pass does for an entity that
+--- arrives later. `stubs` are transient rows in the ledger's shape (never
+--- stored); the ones matching no entity are ignored (the seed parks them).
+--- Fill-gaps-only per source book, so a re-seed adds nothing and a line an
+--- AI merge wrote for that book is never replaced. Stricter than the wake:
+--- a name must be on one side of the match, because this runs over every
+--- entry two books share, where an alias-to-alias match would attach one
+--- person's history to another. Pure.
+--- @param data table Parsed X-Ray (its entities are mutated)
+--- @param stubs table Array of { name, aliases, category, description, source, file, background }
+--- @return number changed Entities that gained a line or a name
+function XrayParser.enrichFromStubs(data, stubs)
+    if type(data) ~= "table" or type(stubs) ~= "table" or #stubs == 0 then return 0 end
+    local _woken, _remaining, changed = wakeStubsOnto(data, stubs, true)
+    return changed
+end
+
+--- The carried ledger grouped under THIS X-Ray's own categories (#116, B393):
+--- what the category pages and the carried list's category rows show. A stub
+--- is filed by category FAMILY (characters / key_figures = people, lexicon /
+--- terminology / technical_terms = terms, ...), so volumes of different types
+--- still land their people in this X-Ray's people category. A stub whose
+--- family has no category in this X-Ray's type (a nonfiction concept in a
+--- fiction X-Ray, a person in an academic one) is `other`. Rows are in name
+--- order and keep their raw ledger index for the edit ops. Event lists and
+--- status blocks never host a stub (none is ever carried there). Pure.
+--- @param data table Parsed X-Ray
+--- @return table by_key { [category_key] = { { idx, stub }, ... } }
+--- @return table other Rows with no category in this X-Ray's type
+--- @return number total Rows in all
+function XrayParser.ledgerByCategory(data)
+    local by_key, other, total = {}, {}, 0
+    local ledger = type(data) == "table" and data[XrayParser.DORMANT_KEY]
+    if type(ledger) ~= "table" then return by_key, other, total end
+    local home = {}
+    for _idx, cat in ipairs(XrayParser.getCategories(data)) do
+        if not SINGLETON_CATEGORIES[cat.key] and not APPEND_CATEGORIES[cat.key] then
+            local family = XrayParser.CATEGORY_FAMILY[cat.key] or cat.key
+            if home[family] == nil then home[family] = cat.key end
+        end
+    end
+    for i, stub in ipairs(ledger) do
+        if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= "" then
+            -- A stub with no category recorded reads as a person, the rule
+            -- the fold and the marks already use
+            local cat = type(stub.category) == "string" and stub.category ~= ""
+                and stub.category or "characters"
+            local key = home[XrayParser.CATEGORY_FAMILY[cat] or cat]
+            local list = other
+            if key then
+                by_key[key] = by_key[key] or {}
+                list = by_key[key]
+            end
+            list[#list + 1] = { idx = i, stub = stub }
+            total = total + 1
+        end
+    end
+    local function byName(a, b)
+        local an, bn = a.stub.name:lower(), b.stub.name:lower()
+        if an ~= bn then return an < bn end
+        if a.stub.name ~= b.stub.name then return a.stub.name < b.stub.name end
+        return a.idx < b.idx
+    end
+    for _key, list in pairs(by_key) do table.sort(list, byName) end
+    table.sort(other, byName)
+    return by_key, other, total
 end
 
 --- Find an ACTIVE entity by any of several identity handles (round 25, cross-
@@ -3518,6 +4251,52 @@ function XrayParser.addStubAlias(data, stub_name, alias)
     return true
 end
 
+--- Link two carried rows the reader says are one thing (B314, the review of
+--- likely matches): the second row's name becomes an alias of the first, and
+--- the ledger fold makes them one row, exactly as it does for two source
+--- books that name each other. The nearest book's row keeps the name; the
+--- other's name and aliases join it and its description stays as that book's
+--- line. An alias on a row survives every re-seed, so the link holds.
+--- Positional identity verified by name; a row that moved is found by name
+--- only when the name is unambiguous. Mutates data.
+--- @param data table Parsed X-Ray
+--- @param idx_a number Ledger index of the first row at scan time
+--- @param name_a string Its expected name
+--- @param idx_b number Ledger index of the second row at scan time
+--- @param name_b string Its expected name
+--- @return boolean ok False = a row is gone, or the two cannot be one row
+---   (different kinds of thing)
+function XrayParser.linkStubs(data, idx_a, name_a, idx_b, name_b)
+    if type(data) ~= "table" then return false end
+    local ledger = data[XrayParser.DORMANT_KEY]
+    if type(ledger) ~= "table" then return false end
+    local function locate(idx, name)
+        local stub = ledger[idx]
+        if type(stub) == "table" and stub.name == name then return stub end
+        local found
+        for _idx, s in ipairs(ledger) do
+            if type(s) == "table" and s.name == name then
+                if found then return nil end -- ambiguous name: refuse
+                found = s
+            end
+        end
+        return found
+    end
+    local a, b = locate(idx_a, name_a), locate(idx_b, name_b)
+    if not a or not b or a == b then return false end
+    -- The fold never joins two kinds of thing: say so before touching a row
+    local function family(stub)
+        local cat = type(stub.category) == "string" and stub.category ~= ""
+            and stub.category or "characters"
+        return XrayParser.CATEGORY_FAMILY[cat] or cat
+    end
+    if family(a) ~= family(b) then return false end
+    local aliases = ensure_array(a.aliases) or {}
+    aliases[#aliases + 1] = b.name
+    a.aliases = aliases
+    return XrayParser.foldLedger(data) > 0
+end
+
 --- Manual wake INTO an existing entity (series-identity round, 2026-08-06):
 --- reader-asserted identity — the chosen ACTIVE item gains the stub's carried
 --- background (fill-gaps-only per source) and its names as aliases; the stub
@@ -3625,6 +4404,56 @@ function XrayParser.promoteStub(data, stub_idx, stub_name)
     end
     arr[#arr + 1] = item
     return true
+end
+
+--- The reader's "Add as a new entry" holds across a checkpoint install and a
+--- rebuild (B400). Either one replaces the entries with what the model built
+--- from the text, so a hand-added entry is parked on the carried list again
+--- by the carry; this puts it back. Runs AFTER the wake-pass: a row still on
+--- the list is one the incoming X-Ray does not name by itself (an entity it
+--- does name woke already and is left alone). The entry is rebuilt from the
+--- carried row, the earlier book's own text, never copied from the outgoing
+--- X-Ray, so an install that moves BACK to an earlier checkpoint cannot
+--- bring a later description with it. A kept name that matches a row's alias
+--- (the reader renamed the entry after adding it) keeps the reader's name.
+--- Pure.
+--- @param data table Parsed X-Ray, after its wake-pass (mutated)
+--- @param keep table Lowercased name -> stored spelling (ActionCache.getPromotedStubs)
+--- @return number kept
+function XrayParser.keepPromoted(data, keep)
+    if type(data) ~= "table" or type(keep) ~= "table" or next(keep) == nil then return 0 end
+    local ledger = data[XrayParser.DORMANT_KEY]
+    if type(ledger) ~= "table" then return 0 end
+    local wanted = {}
+    for _idx, stub in ipairs(ledger) do
+        if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= "" then
+            local spelling = keep[stub.name:lower()]
+            if not spelling and type(stub.aliases) == "table" then
+                for _idx2, a in ipairs(stub.aliases) do
+                    if type(a) == "string" and keep[a:lower()] then
+                        spelling = keep[a:lower()]
+                        break
+                    end
+                end
+            end
+            if spelling then
+                wanted[#wanted + 1] = { name = stub.name, category = stub.category, spelling = spelling }
+            end
+        end
+    end
+    local kept = 0
+    for _idx, w in ipairs(wanted) do
+        -- Index 0 matches no row, so promoteStub finds this one by its name
+        -- (and refuses a name two rows share, as every ledger edit does)
+        if XrayParser.promoteStub(data, 0, w.name) then
+            kept = kept + 1
+            if type(w.spelling) == "string" and w.spelling ~= ""
+                    and w.spelling:lower() ~= w.name:lower() then
+                XrayParser.renameItem(data, w.category, w.name, w.spelling)
+            end
+        end
+    end
+    return kept
 end
 
 --- The inverse of promoteStub: a visible entry goes back to the carried list.

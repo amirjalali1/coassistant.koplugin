@@ -33,6 +33,24 @@ local function getPluginDir()
     return data_dir .. "/../plugins/koassistant.koplugin"
 end
 
+-- Did an os.execute() call succeed?
+-- LuaJIT is Lua 5.1: os.execute returns ONE number (0 = success, 256 = the
+-- shell's exit 1). Lua 5.2+ returns (true|nil, "exit"|"signal", code). Checking
+-- only the 5.2 shape reads 256 as truthy, so every failed command on device
+-- reported success (issue #110).
+local function shellOk(a, b, c)
+    if type(a) == "number" then
+        return a == 0
+    end
+    if not a then
+        return false
+    end
+    if b == "exit" and c ~= 0 then
+        return false
+    end
+    return true
+end
+
 local BackupManager = {
     BACKUP_DIR = DataStorage:getDataDir() .. "/koassistant_backups",
     BACKUP_VERSION = "1.0",
@@ -264,9 +282,8 @@ function BackupManager:_copyFile(src, dest)
         return false, "Invalid destination path: " .. err_dest
     end
 
-    local success, err = os.execute(string.format('cp "%s" "%s"', safe_src, safe_dest))
-    if not success then
-        logger.warn("BackupManager: Failed to copy file: " .. src .. " -> " .. dest .. " : " .. (err or "unknown error"))
+    if not shellOk(os.execute(string.format('cp "%s" "%s"', safe_src, safe_dest))) then
+        logger.warn("BackupManager: Failed to copy file: " .. src .. " -> " .. dest)
         return false
     end
     return true
@@ -329,13 +346,25 @@ function BackupManager:_createArchive(source_dir, archive_path)
 
     -- Use tar to create compressed archive
     -- -czf: create, compress with gzip, file
-    -- -C: change to directory
-    local cmd = string.format('cd "%s" && tar -czf "%s" .', safe_source, safe_archive)
-    local success, exit_type, exit_code = os.execute(cmd)
+    -- -C: change to the source directory, so the archive holds its contents
+    -- Let tar do the chdir instead of the shell: DataStorage:getDataDir() is the
+    -- literal "." on every plain install (Kindle, Kobo, PocketBook, plain Linux),
+    -- so a `cd` first would make the relative archive path resolve inside the
+    -- source directory and tar could not create it (issue #110).
+    local cmd = string.format('tar -czf "%s" -C "%s" .', safe_archive, safe_source)
 
-    if not success or (exit_type == "exit" and exit_code ~= 0) then
+    if not shellOk(os.execute(cmd)) then
         logger.err("BackupManager: Failed to create archive: " .. archive_path)
         return false, "Failed to create archive (tar command failed)"
+    end
+
+    -- The archive must actually be there. Without this an unnoticed tar failure
+    -- reports a successful backup of 0 B (_getFileSize returns 0 for a file that
+    -- does not exist).
+    local attr = lfs.attributes(archive_path)
+    if not attr or attr.mode ~= "file" or attr.size == 0 then
+        logger.err("BackupManager: Archive missing or empty after tar: " .. archive_path)
+        return false, "Failed to create archive (no archive was written)"
     end
 
     return true
@@ -381,9 +410,7 @@ function BackupManager:_extractArchive(archive_path, dest_dir, specific_file)
         cmd = string.format('tar -xzf "%s" -C "%s"', safe_archive, safe_dest)
     end
 
-    local success, exit_type, exit_code = os.execute(cmd)
-
-    if not success or (exit_type == "exit" and exit_code ~= 0) then
+    if not shellOk(os.execute(cmd)) then
         logger.err("BackupManager: Failed to extract archive: " .. archive_path)
         return false, "Failed to extract archive (tar command failed)"
     end
@@ -650,8 +677,10 @@ function BackupManager:_countItems(options)
         local domains_dir = self.PLUGIN_DIR .. "/domains"
         if lfs.attributes(domains_dir, "mode") == "directory" then
             local count = 0
+            -- Dotfiles are not content: a macOS copy leaves a hidden "._name.md"
+            -- beside every file, and the loaders skip them (#112)
             for entry in lfs.dir(domains_dir) do
-                if entry ~= "." and entry ~= ".." and (entry:match("%.md$") or entry:match("%.txt$")) then
+                if entry:sub(1, 1) ~= "." and (entry:match("%.md$") or entry:match("%.txt$")) then
                     count = count + 1
                 end
             end
@@ -665,7 +694,7 @@ function BackupManager:_countItems(options)
         if lfs.attributes(behaviors_dir, "mode") == "directory" then
             local count = 0
             for entry in lfs.dir(behaviors_dir) do
-                if entry ~= "." and entry ~= ".." and (entry:match("%.md$") or entry:match("%.txt$")) then
+                if entry:sub(1, 1) ~= "." and (entry:match("%.md$") or entry:match("%.txt$")) then
                     count = count + 1
                 end
             end
@@ -1095,6 +1124,7 @@ function BackupManager:validateBackup(backup_path)
     local success, err_msg = self:_extractArchive(backup_path, temp_dir, "manifest.json")
 
     if not success then
+        self:_removeTempDir(temp_dir)
         return { valid = false, errors = { err_msg } }
     end
 
@@ -1396,16 +1426,29 @@ end
 function BackupManager:restoreBackup(backup_path, options)
     options = options or {}
 
-    -- Acquire lock to prevent concurrent operations
-    local lock_acquired, lock_err = self:_acquireLock()
-    if not lock_acquired then
-        return { success = false, error = lock_err }
+    -- Acquire lock to prevent concurrent operations.
+    -- options.skip_lock: the caller already holds it. The rollback below is a
+    -- restore inside a restore, and the outer lock is seconds old, so without
+    -- this it could never acquire one (LOCK_TIMEOUT is 5 minutes) and every
+    -- failed restore ended in "Restore failed AND rollback failed". Same
+    -- contract as createBackup: whoever acquires the lock releases it.
+    local hold_lock = options.skip_lock == true
+    if not hold_lock then
+        local lock_acquired, lock_err = self:_acquireLock()
+        if not lock_acquired then
+            return { success = false, error = lock_err }
+        end
+    end
+    local function releaseLock()
+        if not hold_lock then
+            self:_releaseLock()
+        end
     end
 
     -- Validate backup first
     local validation = self:validateBackup(backup_path)
     if not validation.valid then
-        self:_releaseLock()
+        releaseLock()
         return {
             success = false,
             error = "Backup validation failed: " .. table.concat(validation.errors, ", "),
@@ -1421,7 +1464,7 @@ function BackupManager:restoreBackup(backup_path, options)
         if not restore_result.success then
             logger.warn("BackupManager: Failed to create restore point: " .. (restore_result.error or "unknown error"))
             -- Don't continue without restore point - too risky
-            self:_releaseLock()
+            releaseLock()
             return {
                 success = false,
                 error = "Failed to create restore point. Aborting restore for safety.",
@@ -1436,7 +1479,8 @@ function BackupManager:restoreBackup(backup_path, options)
     local success, err_msg = self:_extractArchive(backup_path, temp_dir)
 
     if not success then
-        self:_releaseLock()
+        self:_removeTempDir(temp_dir)
+        releaseLock()
         return {
             success = false,
             error = err_msg,
@@ -1680,7 +1724,7 @@ function BackupManager:restoreBackup(backup_path, options)
     -- Handle restore result
     if pcall_success and restore_success then
         -- Restore succeeded
-        self:_releaseLock()
+        releaseLock()
         logger.info("BackupManager: Successfully restored backup: " .. backup_path)
 
         return {
@@ -1699,6 +1743,7 @@ function BackupManager:restoreBackup(backup_path, options)
 
             -- Attempt rollback
             local rollback_options = {
+                skip_lock = true,  -- we still hold the lock; the inner call must not wait on it
                 skip_restore_point = true,  -- Don't create another restore point
                 restore_settings = true,
                 restore_api_keys = true,
@@ -1712,7 +1757,7 @@ function BackupManager:restoreBackup(backup_path, options)
 
             if rollback_result.success then
                 logger.info("BackupManager: Successfully rolled back to restore point")
-                self:_releaseLock()
+                releaseLock()
                 return {
                     success = false,
                     error = "Restore failed and was rolled back: " .. restore_error,
@@ -1720,7 +1765,7 @@ function BackupManager:restoreBackup(backup_path, options)
                 }
             else
                 logger.err("BackupManager: Rollback also failed:", rollback_result.error)
-                self:_releaseLock()
+                releaseLock()
                 return {
                     success = false,
                     error = "Restore failed AND rollback failed. Manual recovery may be needed. Original error: " .. restore_error,
@@ -1730,7 +1775,7 @@ function BackupManager:restoreBackup(backup_path, options)
             end
         else
             -- No restore point, just return error
-            self:_releaseLock()
+            releaseLock()
             return {
                 success = false,
                 error = restore_error,

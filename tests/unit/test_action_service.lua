@@ -744,17 +744,18 @@ local function runInputInjectionTests()
     end)
 
     -- Fresh-install highlight-menu default order (A9 pare-down 2026-08-17;
-    -- conditional rows moved to the tail 2026-08-21).
+    -- conditional rows moved to the tail 2026-08-21; the model button first,
+    -- 2026-09-29).
     -- buildDefaultFromFlags sorts by the numeric in_highlight_menu values with
     -- no tiebreaker, so a future duplicate/gap in those hand-edited literals
     -- would ship a nondeterministic order silently — this pins the exact set.
-    TestRunner:test("fresh highlight-menu defaults keep the conditional rows last", function()
+    TestRunner:test("fresh highlight-menu defaults: model button first, conditional rows last", function()
         local service = createService({})
         local result = service:getHighlightMenuActions()
         -- xray_lookup (requires_xray_cache) and image_gen (requires_image_provider)
         -- are conditional, so they sit at the end where a hidden row cannot skew
         -- the positions of the always-present ones.
-        local expected = { "translate", "explain", "quick_explain", "summarize",
+        local expected = { "model_switch", "translate", "explain", "quick_explain", "summarize",
             "quick_define", "dictionary", "xray_lookup", "image_gen" }
         TestRunner:assertEqual(#result, #expected, "exactly " .. #expected .. " default rows")
         for i, id in ipairs(expected) do
@@ -809,6 +810,66 @@ local function runOrderingAndContextTests()
     end)
 end
 
+-- The model button (#86) is the model_switch pseudo-action: the two action
+-- editors place it (first when added; first in the highlight menu by default,
+-- not in the dictionary popup), and it is no action for an input dialog
+local function runModelButtonTests()
+    print("\n--- The model button (model_switch) ---")
+
+    TestRunner:test("added to either menu it goes first; an action still goes last", function()
+        local data = {
+            highlight_menu_actions = { "translate", "explain" },
+            -- removed once, so the default does not bring it back by itself
+            _dismissed_highlight_menu_actions = { "model_switch" },
+            dictionary_popup_actions = { "dictionary", "quick_define" },
+        }
+        local service = createService(data)
+        -- (reading a saved list also injects the flagged defaults it lacks)
+        TestRunner:assertEqual(service:isInHighlightMenu("model_switch"), false, "removed stays out")
+        service:addToHighlightMenu("model_switch")
+        service:addToHighlightMenu("eli5")
+        local hl = service:getHighlightMenuActions()
+        TestRunner:assertEqual(hl[1], "model_switch", "highlight menu: first")
+        TestRunner:assertEqual(hl[2], "translate", "highlight menu: the rest keep their order")
+        TestRunner:assertEqual(hl[#hl], "eli5", "highlight menu: an action last")
+        service:addToDictionaryPopup("model_switch")
+        service:addToDictionaryPopup("eli5")
+        local dp = service:getDictionaryPopupActions()
+        TestRunner:assertEqual(dp[1], "model_switch", "dictionary popup: first")
+        TestRunner:assertEqual(dp[2], "dictionary", "dictionary popup: the rest keep their order")
+        TestRunner:assertEqual(dp[#dp], "eli5", "dictionary popup: an action last")
+    end)
+
+    TestRunner:test("an existing highlight menu gets it first; the dictionary popup does not", function()
+        local data = {
+            highlight_menu_actions = { "explain", "translate" },
+            dictionary_popup_actions = { "dictionary" },
+        }
+        local service = createService(data)
+        local hl = service:getHighlightMenuActions()
+        TestRunner:assertEqual(hl[1], "model_switch", "injected first")
+        TestRunner:assertEqual(hl[2] .. "," .. hl[3], "explain,translate", "the reader's order kept")
+        for _i, id in ipairs(service:getDictionaryPopupActions()) do
+            TestRunner:assertEqual(id ~= "model_switch", true, "dictionary popup: not by default")
+        end
+        for _i, id in ipairs(createService({}):getDictionaryPopupActions()) do
+            TestRunner:assertEqual(id ~= "model_switch", true, "fresh dictionary popup: not by default")
+        end
+    end)
+
+    TestRunner:test("never an input-dialog action, nor offered in its managers", function()
+        local service = createService({})
+        for _i, ctx in ipairs({ "highlight", "xray_chat" }) do
+            for _j, item in ipairs(service:getAllActionsWithInputState(ctx)) do
+                TestRunner:assertEqual(item.action.id ~= "model_switch", true, ctx .. " manager list")
+            end
+        end
+        local action = service:getAction("highlight", "model_switch")
+        TestRunner:assertNotNil(action, "the pseudo-action resolves")
+        TestRunner:assertNil(ActionService.getInputContextForAction(action), "no Input Dialog placement")
+    end)
+end
+
 local function runAll()
     print("\n=== Testing ActionService ===")
 
@@ -820,6 +881,7 @@ local function runAll()
     runFileBrowserTests()
     runInputInjectionTests()
     runOrderingAndContextTests()
+    runModelButtonTests()
 
     print(string.format("\n=== Results: %d passed, %d failed ===\n", TestRunner.passed, TestRunner.failed))
     return TestRunner.failed == 0

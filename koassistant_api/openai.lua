@@ -237,8 +237,7 @@ function OpenAIHandler:buildRequestBody(message_history, config)
     request_body.max_tokens = ModelConstraints.clampMaxTokens("openai", model, request_body.max_tokens)
 
     -- OpenAI's newer models (GPT-5.x, o-series, GPT-4.1) require max_completion_tokens instead of max_tokens
-    local needs_new_param = model:match("^gpt%-5") or model:match("^o%d") or model:match("^gpt%-4%.1")
-    if needs_new_param and request_body.max_tokens then
+    if ModelConstraints.usesMaxCompletionTokens(model) and request_body.max_tokens then
         request_body.max_completion_tokens = request_body.max_tokens
         request_body.max_tokens = nil
     end
@@ -327,7 +326,7 @@ function OpenAIHandler:query(message_history, config)
         print("Streaming enabled:", use_streaming and "yes" or "no")
     end
 
-    local requestBody = json.encode(request_body)
+    local requestBody = BaseHandler.encodeBody(request_body)
     local headers = {
         ["Content-Type"] = "application/json",
         ["Authorization"] = "Bearer " .. config.api_key,
@@ -350,7 +349,8 @@ function OpenAIHandler:query(message_history, config)
         -- (top-level reasoning_effort on Chat Completions, nested on Responses)
         local stream_reasoning_effort = request_body.reasoning_effort
             or (type(request_body.reasoning) == "table" and request_body.reasoning.effort)
-        if stream_reasoning_effort then
+        -- "none" is the off setting (gpt-6 sol/luna), not a reasoning request
+        if stream_reasoning_effort and stream_reasoning_effort ~= "none" then
             return {
                 _stream_fn = stream_fn,
                 _reasoning_requested = true,
@@ -364,6 +364,7 @@ function OpenAIHandler:query(message_history, config)
     -- Non-streaming mode: use background request for non-blocking UI
     local reasoning_effort = request_body.reasoning_effort
         or (type(request_body.reasoning) == "table" and request_body.reasoning.effort)
+    if reasoning_effort == "none" then reasoning_effort = nil end  -- the off setting
     local parser_key = built.parser or "openai"
     local debug_enabled = config and config.features and config.features.debug
 

@@ -96,8 +96,9 @@ TestRunner:check("gpt-5.7 gets responses_web_search via family",
 
 p = ModelConstraints.getReasoningProfile("deepseek", "deepseek-v5-pro")
 TestRunner:check("deepseek-v5 inherits binary/on", p.axis == "binary" and p.default_state == "on")
-p = ModelConstraints.getReasoningProfile("zai", "glm-5.3")
-TestRunner:check("glm-5.3 inherits binary/on + temp1 via glm-5 prefix",
+-- (glm-5.3 is curated since 2026-09-28; a still-unlisted minor tests the fallback)
+p = ModelConstraints.getReasoningProfile("zai", "glm-5.9")
+TestRunner:check("glm-5.9 inherits binary/on + temp1 via glm-5 prefix",
     p.axis == "binary" and p.needs_temp_1 == true)
 p = ModelConstraints.getReasoningProfile("zai", "glm-4-plus")
 TestRunner:check("glm-4-plus (pre-4.5, non-thinking) stays passthrough", p.axis == "none")
@@ -106,7 +107,8 @@ TestRunner:check("glm-4-plus (pre-4.5, non-thinking) stays passthrough", p.axis 
 p = ModelConstraints.getReasoningProfile("xai", "grok-4.20-0309")
 TestRunner:check("grok-4.20-0309 (non-reasoning slug) stays axis=none", p.axis == "none")
 p = ModelConstraints.getReasoningProfile("xai", "grok-4.20-0309-reasoning")
-TestRunner:check("grok-4.20-0309-reasoning keeps effort profile", p.axis == "effort")
+TestRunner:check("grok-4.20-0309-reasoning: always on, no knob (refuses reasoningEffort, recheck 2026-09-29)",
+    p.axis == "none" and p.default_state == "on")
 p = ModelConstraints.getReasoningProfile("xai", "grok-4.6")
 TestRunner:check("grok-4.6 inherits effort profile via family", p.axis == "effort")
 TestRunner:check("grok-4.6 gets tools via family",

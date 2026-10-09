@@ -1357,11 +1357,11 @@ local ChatGPTViewer = InputContainer:extend {
   dictionary_view = false,
 
   -- Minimal buttons mode (used for dictionary lookups)
-  -- Shows only: MD/Text, Copy, Expand, Close
+  -- Shows only: MD/Text, Copy, → Chat, Close
   minimal_buttons = false,
 
   -- Translate view mode (special view for translations)
-  -- Shows: MD/Text, Copy, Expand, Toggle Quote, Close
+  -- Shows: MD/Text, Copy, → Chat, Toggle Quote, Close
   translate_view = false,
 
   -- Session toggle for hiding original text in translate view
@@ -1438,23 +1438,39 @@ function ChatGPTViewer:init()
   -- what we are centred in: expanded mode shrinks it to keep the status bar
   -- clear, so even the dynamically-sized views below never sit over the footer.
   self.align = "center"
+  -- The view flags arrive in the constructor, or (a rotation's recreate) only in
+  -- configuration.features, which the block further down reads after the
+  -- geometry: read them here too, or a recreated compact popup opens full size.
+  local view_features = self.configuration and self.configuration.features
+  if view_features and view_features.compact_view then self.compact_view = true end
+  if view_features and view_features.dictionary_view then self.dictionary_view = true end
   -- compact_view is deliberately excluded from the expanded setting, region
   -- included: its dismiss gesture is the tap outside, which needs a real outside.
   self.region = Geom:new(UIConstants.CHAT_REGION({ compact = self.compact_view }))
   self.width = self.width or UIConstants.CHAT_WIDTH({ compact = self.compact_view })
 
   -- Height calculation depends on view mode:
-  -- - compact_view: fixed compact height (60%)
-  -- - translate_view: dynamic height based on content, capped at max
+  -- - compact_view: the fixed compact height, grown to fit a longer text (80% cap)
+  -- - translate_view / simple_view: fitted to the text, up to the full height
   -- - standard: full Wikipedia-style height
+  -- The fitted heights are settled by the content build (_fitContent), which
+  -- measures the text laid out; this sets the size it starts from.
   if self.compact_view then
-    self.height = self.height or UIConstants.COMPACT_DIALOG_HEIGHT()
+    -- Never smaller than the fixed height, so short lookups keep one familiar
+    -- size, and never to the screen edges: the tap outside is how a compact
+    -- popup closes
+    if not self.height then
+      self.height = UIConstants.COMPACT_DIALOG_HEIGHT()
+      self._fit_height = { floor = self.height, ceil = math.floor(Screen:getHeight() * 0.8), from_floor = true }
+    end
   elseif self.dictionary_view then
     self.height = self.height or UIConstants.CHAT_HEIGHT()
   elseif self.simple_view or self.translate_view or (self.configuration and self.configuration.features and self.configuration.features.translate_view) then
-    -- Dynamic height for simple/translate view (like Wikipedia)
-    -- Calculate based on content length, capped at max available height
-    self.height = self.height or self:calculateDynamicHeight()
+    -- Fitted to the text like Wikipedia's window, up to the full height
+    if not self.height then
+      self.height = UIConstants.CHAT_HEIGHT()
+      self._fit_height = { floor = Screen:scaleBySize(250), ceil = self.height }
+    end
   else
     self.height = self.height or UIConstants.CHAT_HEIGHT()
   end
@@ -1932,9 +1948,9 @@ function ChatGPTViewer:init()
     end
   end
 
-  -- Minimal buttons for compact dictionary view
+  -- Minimal buttons for the dictionary windows (compact and full-size)
   -- Row 1: MD/Text, Copy, Wiki, +Vocab
-  -- Row 2: Expand, Lang, Ctx, Close
+  -- Row 2: → Chat, Lang, Ctx, Close
   local minimal_button_row1 = {}
   local minimal_button_row2 = {}
 
@@ -2110,38 +2126,22 @@ function ChatGPTViewer:init()
     })
   end
 
-  -- Row 2: Expand / → Chat button
-  if self.compact_view then
-    -- Compact view: Expand to full-size dictionary view
-    table.insert(minimal_button_row2, {
-      text = _("Expand"),
-      id = "expand_view",
-      callback = function()
-        self:expandToDictionaryView()
-      end,
-      hold_callback = function()
-        UIManager:show(Notification:new{
-          text = _("Open in full-size dictionary viewer"),
-          timeout = 2,
-        })
-      end,
-    })
-  else
-    -- Dictionary view (or fallback): → Chat to open full chat viewer
-    table.insert(minimal_button_row2, {
-      text = _("→ Chat"),
-      id = "expand_view",
-      callback = function()
-        self:expandToFullView()
-      end,
-      hold_callback = function()
-        UIManager:show(Notification:new{
-          text = _("Open full chat with all options"),
-          timeout = 2,
-        })
-      end,
-    })
-  end
+  -- Row 2: → Chat opens the full chat viewer, from both dictionary windows (the
+  -- compact popup grows to fit its answer, so a full-size dictionary window
+  -- between the two added little; it stays a per-action view mode)
+  table.insert(minimal_button_row2, {
+    text = _("→ Chat"),
+    id = "expand_view",
+    callback = function()
+      self:expandToFullView()
+    end,
+    hold_callback = function()
+      UIManager:show(Notification:new{
+        text = _("Open full chat with all options"),
+        timeout = 2,
+      })
+    end,
+  })
 
   -- Row 2: Language button (re-run with different dictionary language)
   local rerun_features = self.configuration and self.configuration.features
@@ -2187,7 +2187,10 @@ function ChatGPTViewer:init()
             local Dialogs = require("koassistant_dialogs")
             Dialogs.executeDirectAction(
               self.configuration._rerun_ui, self.configuration._rerun_action,
-              self.original_highlighted_text, new_config, self.configuration._rerun_plugin
+              self.original_highlighted_text, new_config, self.configuration._rerun_plugin,
+              -- Same action again: its run option (B345) stays with the window
+              self.configuration._rerun_run_variant
+                and { run_variant = self.configuration._rerun_run_variant } or nil
             )
           end,
         }})
@@ -2261,7 +2264,10 @@ function ChatGPTViewer:init()
       local Dialogs = require("koassistant_dialogs")
       Dialogs.executeDirectAction(
         self.configuration._rerun_ui, self.configuration._rerun_action,
-        self.original_highlighted_text, new_config, self.configuration._rerun_plugin
+        self.original_highlighted_text, new_config, self.configuration._rerun_plugin,
+        -- Same action again: its run option (B345) stays with the window
+        self.configuration._rerun_run_variant
+          and { run_variant = self.configuration._rerun_run_variant } or nil
       )
     end,
     hold_callback = function()
@@ -2534,7 +2540,10 @@ function ChatGPTViewer:init()
             local Dialogs = require("koassistant_dialogs")
             Dialogs.executeDirectAction(
               self.configuration._rerun_ui, self.configuration._rerun_action,
-              self.original_highlighted_text, new_config, self.configuration._rerun_plugin
+              self.original_highlighted_text, new_config, self.configuration._rerun_plugin,
+              -- Same action again: its run option (B345) stays with the window
+              self.configuration._rerun_run_variant
+                and { run_variant = self.configuration._rerun_run_variant } or nil
             )
           end,
         }})
@@ -2954,6 +2963,19 @@ function ChatGPTViewer:init()
         local artifact_emoji = self.configuration and self.configuration.features
           and self.configuration.features.enable_emoji_icons == true
         local chat_input
+        -- The first message starts the chat; a pick from Send's long-press
+        -- (B345 step 3) rides it and the chat's replies
+        local function launch(run_variant)
+          local input_text = chat_input:getInputText()
+          UIManager:close(chat_input)
+          if input_text and input_text ~= "" then
+            local launch_fn = artifact_viewer.on_launch_chat
+            artifact_viewer:onClose()
+            UIManager:scheduleIn(0.1, function()
+              launch_fn(input_text, run_variant)
+            end)
+          end
+        end
         chat_input = InputDialog:new{
           title = self.launch_chat_title or _("Chat about this artifact"),
           input = "",
@@ -2979,16 +3001,16 @@ function ChatGPTViewer:init()
               text = artifact_emoji and (_("Send") .. " ➤") or _("Send"),
               is_enter_default = true,
               font_bold = false,
-              callback = function()
-                local input_text = chat_input:getInputText()
-                UIManager:close(chat_input)
-                if input_text and input_text ~= "" then
-                  local launch_fn = artifact_viewer.on_launch_chat
-                  artifact_viewer:onClose()
-                  UIManager:scheduleIn(0.1, function()
-                    launch_fn(input_text)
-                  end)
+              callback = function() launch(nil) end,
+              hold_callback = function()
+                local typed = chat_input:getInputText()
+                if not typed or typed == "" then
+                  UIManager:show(Notification:new{ text = _("Type a message first."), timeout = 2 })
+                  return
                 end
+                require("koassistant_action_hold").showSend(artifact_viewer._plugin, {
+                  run = function(variant) launch(variant) end,
+                })
               end,
             },
           }},
@@ -3207,7 +3229,9 @@ function ChatGPTViewer:init()
     end
   end
 
-  local textw_height = self.height - titlebar:getHeight() - self.button_table:getSize().h
+  -- Everything in the window but the text area
+  local text_chrome = titlebar:getHeight() + self.button_table:getSize().h
+    + 2 * self.text_padding + 2 * self.text_margin
 
   -- For dictionary popup with RTL language, detect early for IPA fix
   local dict_lang = self.configuration and self.configuration.features
@@ -3215,6 +3239,9 @@ function ChatGPTViewer:init()
   local is_rtl_lang = Languages.isRTL(dict_lang)
   local needs_rtl_fix = (self.compact_view or self.dictionary_view) and is_rtl_lang
 
+  -- The text as the content widget shows it: HTML when rendering Markdown,
+  -- plain text otherwise
+  local html_body, display_text
   if self.render_markdown then
     -- Convert Markdown to HTML and render in a ScrollHtmlWidget
     -- 1. Auto-linkify plain URLs, 2. Escape non-link brackets, 3. Convert tables
@@ -3226,7 +3253,8 @@ function ChatGPTViewer:init()
     local auto_linked = autoLinkUrls(applyMath(self, source_text))
     local bracket_escaped = preprocessBrackets(auto_linked)
     local preprocessed_text = preprocessMarkdownTables(bracket_escaped)
-    local html_body, err = MD(preprocessed_text, {})
+    local err
+    html_body, err = MD(preprocessed_text, {})
     if err then
       logger.warn("ChatGPTViewer: could not generate HTML", err)
       -- Fallback to plain text if HTML generation fails
@@ -3239,30 +3267,36 @@ function ChatGPTViewer:init()
     -- the classified opening tag so a split Arabic paragraph keeps direction
     html_body = applyExchangePageBreaks(html_body, self.configuration,
       self._stream_carry_anchor, self._stream_carry_occurrence)
-    self.scroll_text_w = ScrollHtmlWidget:new {
-      html_body = html_body,
-      css = getViewerCSS(self.text_align),
-      default_font_size = Screen:scaleBySize(self.markdown_font_size),
-      width = self.width - 2 * self.text_padding - 2 * self.text_margin,
-      height = textw_height - 2 * self.text_padding - 2 * self.text_margin,
-      dialog = self,
-      highlight_text_selection = true,
-      html_link_tapped_callback = handleLinkTap,
-    }
   else
     -- If not rendering Markdown, optionally strip markdown syntax for cleaner display
-    local display_text = self.strip_markdown_in_text_mode and stripMarkdown(self.text, self.para_direction_rtl) or self.text
+    display_text = self.strip_markdown_in_text_mode and stripMarkdown(self.text, self.para_direction_rtl) or self.text
     -- Fix IPA BiDi issues when RTL dictionary language
     if needs_rtl_fix then
       display_text = fixIPABidi(display_text)
     end
-    self.scroll_text_w = ScrollTextWidget:new {
+  end
+  -- The content widget for a text area h pixels tall: built once for a fixed
+  -- window, again at the height the text needs for a fitted one
+  local function buildContent(h)
+    if html_body then
+      return ScrollHtmlWidget:new {
+        html_body = html_body,
+        css = getViewerCSS(self.text_align),
+        default_font_size = Screen:scaleBySize(self.markdown_font_size),
+        width = self.width - 2 * self.text_padding - 2 * self.text_margin,
+        height = h,
+        dialog = self,
+        highlight_text_selection = true,
+        html_link_tapped_callback = handleLinkTap,
+      }
+    end
+    return ScrollTextWidget:new {
       text = display_text,
       face = self.text_face,
       fgcolor = self.fgcolor,
       line_height = 0.2,  -- Denser than default 0.3 to match markdown view
       width = self.width - 2 * self.text_padding - 2 * self.text_margin,
-      height = textw_height - 2 * self.text_padding - 2 * self.text_margin,
+      height = h,
       dialog = self,
       alignment = self.alignment,
       justified = self.justified,
@@ -3273,6 +3307,18 @@ function ChatGPTViewer:init()
       scroll_callback = self._buttons_scroll_callback,
       highlight_text_selection = true,
     }
+  end
+  local fit = self._fit_height
+  self._fit_height = nil
+  if fit then
+    local floor_h = math.max(fit.floor - text_chrome, Screen:scaleBySize(50))
+    local ceil_h = math.max(fit.ceil - text_chrome, floor_h)
+    local text_h
+    self.scroll_text_w, text_h = self:_fitContent(buildContent, floor_h, ceil_h,
+      fit.from_floor and floor_h or ceil_h)
+    self.height = text_h + text_chrome
+  else
+    self.scroll_text_w = buildContent(self.height - text_chrome)
   end
   self.textw = FrameContainer:new {
     padding = self.text_padding,
@@ -3529,15 +3575,13 @@ function ChatGPTViewer:askAnotherQuestion()
   local quick_btn
   do
     local qa_on = cfg_features._session_quick_answer == true
-    -- {follow=true} sentinels are "explicitly back to settings" — not overrides
-    local sr = cfg_features._session_reasoning
-    local sm = cfg_features._session_model
-    local has_override = (sr ~= nil and not sr.follow) or (sm ~= nil and not sm.follow)
+    -- ON/OFF, the input dialog's wording. A chat's own model or reasoning pick
+    -- (a resumed chat, a run option) is not a Quick state: no third label.
     local label
     if enable_emoji then
-      label = "\u{26A1} " .. (qa_on and _("ON") or (has_override and _("SET") or _("OFF")))
+      label = "\u{26A1} " .. (qa_on and _("ON") or _("OFF"))
     else
-      label = qa_on and _("Quick ON") or (has_override and _("Quick SET") or _("Quick"))
+      label = qa_on and _("Quick ON") or _("Quick")
     end
     quick_btn = {
       text = label,
@@ -3622,6 +3666,25 @@ function ChatGPTViewer:askAnotherQuestion()
     btn.font_size = control_font
   end
 
+  local function sendReply()
+    local input_text = input_dialog:getInputText()
+    UIManager:close(input_dialog)
+
+    -- Clear draft on send
+    current_instance.reply_draft = nil
+
+    if input_text and input_text ~= "" then
+      -- Store reference to onAskQuestion before we potentially close this instance
+      local onAskQuestionFn = current_instance.onAskQuestion
+
+      -- Check if we have a valid callback
+      if onAskQuestionFn then
+        -- Properly pass self as first argument
+        onAskQuestionFn(current_instance, input_text)
+      end
+    end
+  end
+
   input_dialog = InputDialog:new {
     title = _("Reply"),
     input = self.reply_draft or "",  -- Restore saved draft
@@ -3666,23 +3729,40 @@ function ChatGPTViewer:askAnotherQuestion()
           text = enable_emoji and (_("Send") .. " ➤") or _("Send"),
           is_enter_default = true,
           font_bold = false,
-          callback = function()
-            local input_text = input_dialog:getInputText()
-            UIManager:close(input_dialog)
-
-            -- Clear draft on send
-            current_instance.reply_draft = nil
-
-            if input_text and input_text ~= "" then
-              -- Store reference to onAskQuestion before we potentially close this instance
-              local onAskQuestionFn = current_instance.onAskQuestion
-
-              -- Check if we have a valid callback
-              if onAskQuestionFn then
-                -- Properly pass self as first argument
-                onAskQuestionFn(current_instance, input_text)
-              end
+          callback = sendReply,
+          -- Send another way (B345 step 3): the pick becomes this chat's model
+          -- (or reasoning) pick, so this reply and the later ones use it and a
+          -- resumed chat keeps it (applyQuickReplyOverrides, captureControlState)
+          hold_callback = function()
+            local typed = input_dialog:getInputText()
+            if not typed or typed == "" then
+              UIManager:show(Notification:new{ text = _("Type a message first."), timeout = 2 })
+              return
             end
+            local sm = cfg_features._session_model
+            local base
+            if type(sm) == "table" and sm.provider and not sm.follow then
+              base = sm
+            elseif type(cfg_features._run_model) == "table" and cfg_features._run_model.provider then
+              base = cfg_features._run_model
+            else
+              base = { provider = cfg.provider or cfg.default_provider,
+                model = require("model_constraints").dispatchModel(cfg) }
+            end
+            require("koassistant_action_hold").showSend(current_instance._plugin, {
+              base = base,
+              session = { quick = cfg_features._session_quick_answer == true },
+              run = function(variant)
+                cfg.features = cfg.features or {}
+                if variant.provider then
+                  cfg.features._session_model = { provider = variant.provider, model = variant.model }
+                end
+                if variant.reasoning == "off" then
+                  cfg.features._session_reasoning = { force = "off" }
+                end
+                sendReply()
+              end,
+            })
           end,
         },
       },
@@ -3710,51 +3790,56 @@ function ChatGPTViewer:onCloseWidget()
   end)
 end
 
--- Calculate dynamic height for translate view (Wikipedia-style sizing)
--- Estimates content height based on text length and caps at max available height
--- Returns height that fits content or max, whichever is smaller
-function ChatGPTViewer:calculateDynamicHeight()
-  local max_height = UIConstants.CHAT_HEIGHT()  -- Maximum: Wikipedia-style full height
-
-  -- Estimate chrome height (title bar + buttons + padding)
-  -- Title bar: ~50px, buttons (2 rows for translate): ~80px, padding/margins: ~40px
-  local chrome_height = Screen:scaleBySize(170)
-
-  -- If no text, use a reasonable default
-  if not self.text or self.text == "" then
-    -- Minimum height: enough for chrome + a few lines
-    return math.min(Screen:scaleBySize(300), max_height)
+-- Windows fitted to their text (the compact dictionary popup, translate and
+-- simple views). `build(h)` makes the content widget for a text area h pixels
+-- tall; the text is measured laid out, never estimated from its length: HTML
+-- that fits one page reports where its ink ends (MuPDF, the way KOReader's
+-- footnote popup sizes itself), plain text counts its lines. The height is
+-- clamped to [floor_h, ceil_h]; start_h is the first layout tried (the floor
+-- when most texts fit there, so they cost one layout). Returns the widget and
+-- its text-area height.
+function ChatGPTViewer:_fitContent(build, floor_h, ceil_h, start_h)
+  -- MuPDF moves a line to the next page by its line box, and the measure is
+  -- ink: leave the last line its descent and leading (line-height 1.3)
+  local slack = math.ceil(0.6 * Screen:scaleBySize(self.markdown_font_size))
+  -- The height the text needs (nil: unknown, HTML past one page) and whether
+  -- it fits a text area h tall
+  local function need(w, h)
+    if w.htmlbox_widget then
+      local used = w:getSinglePageHeight()
+      if not used then return nil, false end
+      return used + slack, true
+    end
+    local total = w.text_widget:getAllLineCount() * w:getLineHeight()
+    return total, total <= h
   end
-
-  -- Estimate line height based on font size
-  -- Default markdown font is 20, gives roughly 1.5x for line height with spacing
-  local font_size = self.markdown_font_size or 20
-  local estimated_line_height = Screen:scaleBySize(math.floor(font_size * 1.8))
-
-  -- Estimate content width (width minus padding/margins)
-  local content_width = self.width and (self.width - Screen:scaleBySize(40)) or (Screen:getWidth() * 0.85)
-
-  -- Estimate characters per line (rough: ~0.5 of font size per character on average)
-  local chars_per_line = math.floor(content_width / (font_size * 0.6))
-  chars_per_line = math.max(chars_per_line, 20)  -- Minimum reasonable chars per line
-
-  -- Estimate number of lines from text length
-  -- Account for line breaks in text
-  local text_length = #self.text
-  local newline_count = select(2, self.text:gsub("\n", "\n"))
-  local estimated_lines = math.ceil(text_length / chars_per_line) + newline_count
-
-  -- Calculate estimated content height
-  local content_height = estimated_lines * estimated_line_height
-
-  -- Add chrome and some padding
-  local total_height = content_height + chrome_height + Screen:scaleBySize(40)
-
-  -- Minimum height: at least enough to show something useful
-  local min_height = Screen:scaleBySize(250)
-
-  -- Return clamped height
-  return math.max(min_height, math.min(total_height, max_height))
+  local function free(w)
+    if w.htmlbox_widget then w.htmlbox_widget:free() else w.text_widget:free(true) end
+  end
+  local widget, cur = build(start_h), start_h
+  local want, fits = need(widget, cur)
+  if fits and cur <= floor_h then return widget, cur end
+  if not want then
+    if cur >= ceil_h then return widget, cur end
+    -- Longer than the floor: lay it out at the ceiling to learn its height
+    local tall = build(ceil_h)
+    free(widget)
+    widget, cur = tall, ceil_h
+    want = need(tall, ceil_h)
+    if not want then return widget, cur end  -- longer than the ceiling too
+  end
+  local h = math.max(floor_h, math.min(ceil_h, want))
+  if h ~= cur then
+    local exact = build(h)
+    if h == ceil_h or select(2, need(exact, h)) then
+      free(widget)
+      widget, cur = exact, h
+    else
+      -- A line spilled onto a second page: keep the taller layout
+      free(exact)
+    end
+  end
+  return widget, cur
 end
 
 -- Calculate scroll ratio to show the last user question at top of viewport
@@ -4309,112 +4394,6 @@ function ChatGPTViewer:expandToFullView()
   end)
 end
 
-function ChatGPTViewer:expandToDictionaryView()
-  -- Expand compact view to full-size dictionary view (same buttons, bigger window)
-  -- No text regeneration needed — both views hide prefixes
-  local dict_config = nil
-  if self.configuration then
-    dict_config = {}
-    for k, v in pairs(self.configuration) do
-      if type(k) == "string" and k:match("^_rerun_") then
-        -- Live ui/plugin/action handles: keep by reference — a shallow clone loses
-        -- metatables (class methods like getCombinedLanguages vanish), which broke
-        -- the Language button after Expand
-        dict_config[k] = v
-      elseif type(v) == "table" then
-        dict_config[k] = {}
-        for k2, v2 in pairs(v) do
-          dict_config[k][k2] = v2
-        end
-      else
-        dict_config[k] = v
-      end
-    end
-    if dict_config.features then
-      dict_config.features.compact_view = false
-      dict_config.features.dictionary_view = true
-      dict_config.features.minimal_buttons = true
-      -- Full-size window uses large streaming dialog for re-runs
-      dict_config.features.large_stream_dialog = true
-      -- Minimal-popup dispatch forces enable_streaming=false; this full-size
-      -- dictionary view should follow the dictionary family's own streaming
-      -- setting again (false only when the user disabled it there — or disabled
-      -- streaming globally: nil reads as "on", so falling back to it would switch
-      -- streaming on for someone who keeps it off).
-      -- Spelled out, not `cond and false or nil`: that idiom ALWAYS yields nil,
-      -- because `false or nil` is nil — which is why the dictionary streaming-off
-      -- setting never actually survived this expand before.
-      local plug = self._plugin or self.configuration._rerun_plugin
-      local gf = plug and plug.settings and plug.settings:readSetting("features")
-      if dict_config.features.dictionary_enable_streaming == false
-          or (gf and gf.enable_streaming == false) then
-        dict_config.features.enable_streaming = false
-      else
-        dict_config.features.enable_streaming = nil
-      end
-      -- Dispatch-scoped minimal-popup transients (see expandToFullView).
-      dict_config.features.loading_message = nil
-      dict_config.features._minimal_popup_eligible = nil
-    end
-  end
-
-  local config_for_dict_view = dict_config or self.configuration
-  local message_history = self._message_history or self.original_history
-
-  local current_state = {
-    text = self.text,  -- Same text, no regeneration needed
-    title = self.title,
-    title_multilines = self.title_multilines,
-    title_shrink_font_to_fit = self.title_shrink_font_to_fit,
-    _message_history = message_history,
-    original_history = message_history,
-    original_highlighted_text = self.original_highlighted_text,
-    configuration = config_for_dict_view,
-    onAskQuestion = self.onAskQuestion,
-    save_callback = self.save_callback,
-    export_callback = self.export_callback,
-    tag_callback = self.tag_callback,
-    pin_callback = self.pin_callback,
-    star_callback = self.star_callback,
-    get_pin_state = self.get_pin_state,
-    get_star_state = self.get_star_state,
-    close_callback = self.close_callback,
-    add_default_buttons = true,
-    render_markdown_override = self.render_markdown,
-    markdown_font_size = self.markdown_font_size,
-    text_align = self.text_align,
-    show_debug_in_chat = self.show_debug_in_chat,
-    hide_highlighted_text = self.hide_highlighted_text,
-    _plugin = self._plugin,
-    _ui = self._ui,
-    _recreate_func = self._recreate_func,
-    settings_callback = self.settings_callback,
-    update_debug_callback = self.update_debug_callback,
-    selection_data = self.selection_data,
-    compact_view = false,
-    dictionary_view = true,
-    minimal_buttons = true,
-  }
-
-  UIManager:close(self)
-
-  UIManager:scheduleIn(0.1, function()
-    local original_close_callback = current_state.close_callback
-    current_state.close_callback = function()
-      if _G.ActiveChatViewer then
-        _G.ActiveChatViewer = nil
-      end
-      if original_close_callback then
-        original_close_callback()
-      end
-    end
-
-    local dict_viewer = ChatGPTViewer:new(current_state)
-    _G.ActiveChatViewer = dict_viewer
-    UIManager:show(dict_viewer)
-  end)
-end
-
 function ChatGPTViewer:onClose()
   UIManager:close(self)
   if self.close_callback then
@@ -4531,7 +4510,7 @@ function ChatGPTViewer:handleTextSelection(text, hold_duration, start_idx, end_i
 
   if word_count == 1 and not ChatGPTViewer.isLongHold(hold_duration) then
     -- Single word + short hold: auto dictionary lookup (fast path)
-    local ui = self._ui or (self.configuration and self.configuration._rerun_ui)
+    local ui = ChatGPTViewer.liveUI(self._ui or (self.configuration and self.configuration._rerun_ui))
     if ui and ui.dictionary then
       ui.dictionary._koassistant_non_reader_lookup = true
       -- Carry this chat's book so a bypass / dict-popup X-Ray lookup targets
@@ -4583,6 +4562,23 @@ function ChatGPTViewer:clearTextHighlight()
       inner:redrawHighlight()
     end
   end
+end
+
+--- The UI a word selected in a plugin window is looked up in: the reader or
+--- file browser on screen now, else the one the window was opened with. A
+--- window keeps its UI, which can close under it (B341: an artifact window
+--- opened from the file browser rows held a closed FileManager, whose
+--- dictionary wrapper never saw the bypass turned on), and 8 of the 14
+--- artifact windows carry none. The lookup carries its book separately
+--- (_koassistant_lookup_book), so any live UI serves.
+--- @param captured table|nil the window's own UI
+--- @return table|nil
+function ChatGPTViewer.liveUI(captured)
+  local ok_r, ReaderUI = pcall(require, "apps/reader/readerui")
+  if ok_r and type(ReaderUI) == "table" and ReaderUI.instance then return ReaderUI.instance end
+  local ok_f, FileManager = pcall(require, "apps/filemanager/filemanager")
+  if ok_f and type(FileManager) == "table" and FileManager.instance then return FileManager.instance end
+  return captured
 end
 
 --- Check if hold_duration qualifies as a "long hold" (for single-word popup instead of dictionary).
@@ -4637,28 +4633,33 @@ function ChatGPTViewer.buildTextSelectionPopup(text, opts)
     end,
   })
 
-  -- Dictionary
-  if ui and ui.dictionary then
+  -- Dictionary and Wikipedia: the live UI (B341), resolved when the row is
+  -- tapped; the actions below keep the window's own
+  local lookup_ui = ChatGPTViewer.liveUI(ui)
+  if lookup_ui and lookup_ui.dictionary then
     table.insert(flat_buttons, {
       text = _("Dictionary"),
       callback = function()
         close_and_clear()
-        ui.dictionary._koassistant_non_reader_lookup = true
+        local dui = ChatGPTViewer.liveUI(ui)
+        if not (dui and dui.dictionary) then return end
+        dui.dictionary._koassistant_non_reader_lookup = true
         -- Carry the surface's own book for bypass / dict-popup X-Ray lookups
-        ui.dictionary._koassistant_lookup_book = book_path
-        ui.dictionary:onLookupWord(text)
+        dui.dictionary._koassistant_lookup_book = book_path
+        dui.dictionary:onLookupWord(text)
       end,
     })
   end
 
   -- Wikipedia (KOReader's own lookup; ReaderWikipedia handles the
   -- offline case itself via willRerunWhenOnline)
-  if ui and ui.wikipedia then
+  if lookup_ui and lookup_ui.wikipedia then
     table.insert(flat_buttons, {
       text = _("Wikipedia"),
       callback = function()
         close_and_clear()
-        ui.wikipedia:onLookupWikipedia(text)
+        local wui = ChatGPTViewer.liveUI(ui)
+        if wui and wui.wikipedia then wui.wikipedia:onLookupWikipedia(text) end
       end,
     })
   end
@@ -5623,9 +5624,12 @@ function ChatGPTViewer:toggleDebugMode()
 
   -- Rebuild the display with debug info shown/hidden
   if self.original_history then
-    -- Create a temporary config with updated display setting
+    -- Create a temporary config with updated display setting (the view flags
+    -- too: dictionary windows render without prefixes or the reasoning line)
     local temp_config = {
       features = {
+        compact_view = self.compact_view,
+        dictionary_view = self.dictionary_view,
         show_debug_in_chat = self.show_debug_in_chat,
         debug_display_level = self.configuration.features and self.configuration.features.debug_display_level,
         hide_highlighted_text = self.configuration.features and self.configuration.features.hide_highlighted_text,
@@ -6176,6 +6180,9 @@ function ChatGPTViewer:showViewerSettings()
   -- it, not this. The empty row renders as ButtonTable's double rule, the same
   -- group break the action-manager carousel uses.
   -- Skipped on compact_view, which the setting does not govern.
+  -- Show Excerpt (dictionary windows) is the Dictionary Settings toggle,
+  -- surfaced here for the same reason, in the same group.
+  local shortcut_rows = false
   if not self.compact_view then
     table.insert(buttons, {
       {
@@ -6186,6 +6193,23 @@ function ChatGPTViewer:showViewerSettings()
         end,
       },
     })
+    shortcut_rows = true
+  end
+  if self.compact_view or self.dictionary_view then
+    local excerpt_on = self.configuration and self.configuration.features
+      and self.configuration.features.dictionary_show_excerpt == true
+    table.insert(buttons, {
+      {
+        text = T(_("Show Excerpt: %1"), excerpt_on and _("On") or _("Off")),
+        callback = function()
+          UIManager:close(dialog)
+          self:toggleExcerpt()
+        end,
+      },
+    })
+    shortcut_rows = true
+  end
+  if shortcut_rows then
     table.insert(buttons, {})
   end
 
@@ -6277,6 +6301,38 @@ function ChatGPTViewer:cycleAlignment()
   self:refreshMarkdownDisplay()
   UIManager:show(Notification:new{
     text = T(_("Alignment: %1"), getAlignmentDisplayName(next_align)),
+    timeout = 2,
+  })
+end
+
+-- Show Excerpt on the gear of dictionary windows: the Dictionary Settings
+-- toggle (saved), and this window redrawn with or without the excerpt. The
+-- line was worked out when the lookup ran (history.excerpt_line); a lookup
+-- that sent no context has none, and only the setting changes. A compact
+-- popup reopens at the height its new text needs.
+function ChatGPTViewer:toggleExcerpt()
+  local features = self.configuration and self.configuration.features
+  local on = not (features and features.dictionary_show_excerpt == true)
+  self:persistFeatureSetting("dictionary_show_excerpt", on)
+  local history = self.original_history
+  local line = history and history.excerpt_line
+  if line then
+    history.source_excerpt = on and line or nil
+    -- The excerpt stands in for the quote, which dictionary windows hide
+    self.hide_highlighted_text = not on
+    if features then features.hide_highlighted_text = not on end
+    local render_config = {}
+    for k, v in pairs(self.configuration) do render_config[k] = v end
+    render_config.features = {}
+    for k, v in pairs(features or {}) do render_config.features[k] = v end
+    render_config.features.show_debug_in_chat = self.show_debug_in_chat
+    self.text = history:createResultText(self.original_highlighted_text or "", render_config)
+    if not (self.compact_view and self:_handleScreenChange(true)) then
+      self:update(self.text, false)
+    end
+  end
+  UIManager:show(Notification:new{
+    text = T(_("Show Excerpt: %1"), on and _("On") or _("Off")),
     timeout = 2,
   })
 end

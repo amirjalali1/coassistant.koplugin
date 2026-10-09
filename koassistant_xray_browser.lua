@@ -373,6 +373,31 @@ local function gatherMentionHits(ui, terms, exclude)
     return hits
 end
 
+--- gatherMentionHits off the UI thread, the way KOReader runs its own
+--- full-text search (ReaderSearch:findAllText): Trapper forks, the child
+--- searches its copy of the document, the UI loop keeps running, and a tap
+--- on the message kills the child. One whole-book search takes tens of
+--- seconds on an e-reader for a very large book; run in process it froze the
+--- reader until Android killed it (docs/xray_marks_freeze_plan.md). Must run
+--- inside Trapper:wrap (outside one, Trapper falls back to a blocking run).
+--- @return table|nil hits, nil when the reader cancelled
+local function gatherMentionHitsInSubprocess(ui, terms, exclude)
+    local Trapper = require("ui/trapper")
+    local info = InfoMessage:new{ text = _("Searching the book… (tap to cancel)") }
+    UIManager:show(info)
+    UIManager:forceRePaint()
+    local completed, hits = Trapper:dismissableRunInSubprocess(function()
+        return gatherMentionHits(ui, terms, exclude)
+    end, info)
+    if not completed then return nil end
+    UIManager:close(info)
+    if type(hits) ~= "table" then
+        require("koassistant_logger").warn("KOAssistant XrayBrowser: mention search process returned no result")
+        return {}
+    end
+    return hits
+end
+
 --- Open KOReader's native search session for the term at the CURRENT
 --- position, then float the "Back to X-Ray" button. The built-in search owns
 --- highlighting and prev/next — no custom overlay (maintainer 2026-08-13).
@@ -742,9 +767,10 @@ local function extractChapterText(ui, chapter, max_chars)
         end
     end
 
-    -- Cap length
+    -- Cap length. utf8Head, not a raw byte cut: a cut landing inside a character
+    -- ships stray bytes into the request and the provider rejects it whole.
     if #text > max_chars then
-        text = text:sub(1, max_chars)
+        text = require("koassistant_scope_resolver").utf8Head(text, max_chars)
     end
 
     return text
@@ -850,13 +876,16 @@ local function handleTextSelection(text, hold_duration, opts)
     end
 
     if word_count == 1 and not ChatGPTViewer.isLongHold(hold_duration) then
-        -- Single word + short hold: auto dictionary lookup (fast path)
-        if ui and ui.dictionary then
-            ui.dictionary._koassistant_non_reader_lookup = true
+        -- Single word + short hold: auto dictionary lookup (fast path), in the
+        -- reader or file browser on screen (B341: ui is nil for another book's
+        -- X-Ray, and a kept one can have closed)
+        local dict_ui = ChatGPTViewer.liveUI(ui)
+        if dict_ui and dict_ui.dictionary then
+            dict_ui.dictionary._koassistant_non_reader_lookup = true
             -- Carry the X-Ray's SOURCE book so a bypass / dict-popup X-Ray
             -- lookup targets it, not whatever the reader has open
-            ui.dictionary._koassistant_lookup_book = opts.book_file or nil
-            ui.dictionary:onLookupWord(text)
+            dict_ui.dictionary._koassistant_lookup_book = opts.book_file or nil
+            dict_ui.dictionary:onLookupWord(text)
             clear_highlight()
             return
         end
@@ -975,6 +1004,8 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
     self._text_cache = nil
     self._scope_reveal_warned = nil
     self._dormant_archived = nil
+    self.page = nil
+    self._ledger_gen = 0
     -- Q6: browsing sessions default to parent-reveal on the entity X; the
     -- direct-entry openers (lookup exact-match, card tap-through) set this
     -- AFTER show, and the entity close_callback consumes it
@@ -1174,6 +1205,11 @@ function XrayBrowser:show(xray_data, metadata, ui, on_delete)
             self:_applyPendingLocation(navigate_to)
             navigate_to = nil
         end
+        if navigate_to and navigate_to.carried_list then
+            -- The X-Ray popup's carried row (B401): land on the list
+            self:showDormantList()
+            navigate_to = nil
+        end
         local target_items = navigate_to and self.xray_data[navigate_to.category_key]
         if target_items then
             for _idx, target_item in ipairs(target_items) do
@@ -1263,20 +1299,80 @@ end
 --- @param book_file string|nil
 --- @param n number|nil Count for the titled form; nil = bare row label
 --- @return string
-local function dormantListTitle(book_file, n)
+local function inSeriesGroup(book_file)
     local BookGroups = require("koassistant_book_groups")
-    local series = false
     for _idx, g in ipairs(BookGroups.groupsFor(book_file or "") or {}) do
-        if BookGroups.kindOf(g) == BookGroups.KIND_SERIES then
-            series = true
-            break
-        end
+        if BookGroups.kindOf(g) == BookGroups.KIND_SERIES then return true end
     end
+    return false
+end
+
+local function dormantListTitle(book_file, n)
+    local series = inSeriesGroup(book_file)
     if n then
         return series and T(_("Carried from earlier books (%1)"), n)
             or T(_("Carried from group (%1)"), n)
     end
     return series and _("Carried from earlier books") or _("Carried from group")
+end
+
+--- The carried list's title for a count the caller holds (the shared
+--- "Link and merge…" rows, koassistant_xray_rows.lua).
+function XrayBrowser.carriedListTitle(book_file, n)
+    return dormantListTitle(book_file, n)
+end
+
+--- The carried list's title with its count, for a row outside the browser
+--- (the X-Ray popup's "Link and merge…" group, B401), or nil when the book's
+--- live X-Ray carries nothing. Counts what _dormantRows lists.
+--- @param book_file string
+--- @param raw string|nil The X-Ray's text when the caller holds it: a text
+---   with no carried list is not parsed (this runs when the popup opens, and
+---   a long series' X-Ray is large)
+--- @return string|nil
+function XrayBrowser.carriedListLabel(book_file, raw)
+    if type(raw) == "string"
+            and not raw:find('"' .. XrayParser.DORMANT_KEY .. '"', 1, true) then
+        return nil
+    end
+    local res = require("koassistant_action_cache").parsedXrayFor(book_file)
+    local ledger = res and res.data[XrayParser.DORMANT_KEY]
+    if type(ledger) ~= "table" then return nil end
+    local n = 0
+    for _idx, stub in ipairs(ledger) do
+        if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= "" then
+            n = n + 1
+        end
+    end
+    if n == 0 then return nil end
+    return dormantListTitle(book_file, n)
+end
+
+--- The header over the carried entries inside a category page and in
+--- Mentions (#116, B393): same kind rule as the carried list's own title.
+local function carriedSectionTitle(book_file, n)
+    return inSeriesGroup(book_file) and T(_("From earlier books (%1)"), n)
+        or T(_("From the group (%1)"), n)
+end
+
+--- Whether this view lists carried entries at all: main live views only (a
+--- section or an archived version holds no ledger of its own, and the manual
+--- actions write the live main).
+function XrayBrowser:_carriedView()
+    return (not self.scope and not self.metadata.checkpoint
+        and self.metadata.plugin and self.metadata.book_file) and true or false
+end
+
+--- Whether carried entries are listed inside the categories (#116, B393): the
+--- per-book dial (book, then the group it follows, then global).
+function XrayBrowser:_carriedInCategories()
+    if not self:_carriedView() then return false end
+    local ok, value = pcall(function()
+        local ds = require("koassistant_doc_settings").resolve(self.metadata.book_file, self.ui)
+        local features = self.metadata.configuration and self.metadata.configuration.features
+        return (require("koassistant_book_settings").resolveXrayCarried(ds, features))
+    end)
+    return ok and value == "categories"
 end
 
 function XrayBrowser:buildCategoryItems()
@@ -1286,15 +1382,23 @@ function XrayBrowser:buildCategoryItems()
 
     local items = {}
 
+    -- #116 (B393): with the carried-entries dial on, a category row counts
+    -- its carried entries too ("85 + 900"), and a category this book has not
+    -- filled yet still shows when earlier books carry entries for it
+    local carried_by_key = self:_carriedInCategories()
+        and XrayParser.ledgerByCategory(self.xray_data) or {}
+
     -- Category items with counts
     for _idx, cat in ipairs(categories) do
         local count = #cat.items
-        if count > 0 then
+        local carried_n = #(carried_by_key[cat.key] or {})
+        if count > 0 or carried_n > 0 then
             local mandatory_text = ""
             -- Don't show count for singleton categories (always 1)
             if cat.key ~= "current_state" and cat.key ~= "current_position"
                 and cat.key ~= "reader_engagement" and cat.key ~= "conclusion" then
-                mandatory_text = tostring(count)
+                mandatory_text = carried_n > 0 and T(_("%1 + %2"), count, carried_n)
+                    or tostring(count)
             end
 
             local label = Constants.getEmojiText(CATEGORY_EMOJIS[cat.key] or "", cat.label, enable_emoji)
@@ -1313,6 +1417,11 @@ function XrayBrowser:buildCategoryItems()
             })
         end
     end
+
+    -- The root lists what this X-Ray has. A category it was built without
+    -- gets no row: the dim "Story Arc: not tracked" row (B312, unreleased)
+    -- was the only one of its kind and read as standing in for Current
+    -- State; the creation form's Preset button names what each preset tracks.
 
     -- Carried from earlier books (series-identity round, 2026-08-06): the
     -- dormant ledger made visible — entities carried from the group's earlier
@@ -1477,37 +1586,88 @@ function XrayBrowser:_dormantRows()
                 rank = DORMANT_CATEGORY_RANK[stub.category or ""] or 9 }
         end
     end
+    -- Name order ignores case, like the per-category pages (#116): a
+    -- lowercase name sorts among the others, not after every capital
     table.sort(rows, function(a, b)
         if a.rank ~= b.rank then return a.rank < b.rank end
+        local an, bn = a.stub.name:lower(), b.stub.name:lower()
+        if an ~= bn then return an < bn end
         if a.stub.name ~= b.stub.name then return a.stub.name < b.stub.name end
         return a.idx < b.idx
     end)
     return rows
 end
 
---- Menu items for the carried-entity list. Round 26 (device report: "the popup
---- is very bad design"): the ledger renders as an ordinary paginated browser
---- page like every other entity list, not as a stack of full-width buttons.
+--- What names a carried entry's source book in a row of ONE category
+--- (#116, B393): in a series the book's number ("Book 3"), short enough to
+--- sit whole beside the role; otherwise the source title.
+--- @return function label(stub) -> string text, boolean short
+function XrayBrowser:_carriedSourceLabeler()
+    local BookGroups = require("koassistant_book_groups")
+    local pos = {}
+    for _idx, g in ipairs(BookGroups.groupsFor(self.metadata.book_file or "") or {}) do
+        if BookGroups.kindOf(g) == BookGroups.KIND_SERIES then
+            for i, p in ipairs(g.books or {}) do
+                if pos[p] == nil then pos[p] = i end
+            end
+        end
+    end
+    return function(stub)
+        local n = type(stub.file) == "string" and pos[stub.file]
+        if n then return T(_("Book %1"), n), true end
+        return type(stub.source) == "string" and stub.source or "", false
+    end
+end
+
+--- Menu rows for carried entries: the ONE row grammar every carried list
+--- uses (#116, B393). The name on the left; in the grey column, `tagged`
+--- lists the category tag and the source title (the mixed lists: all, other),
+--- and a page of one category lists the role and the source.
+--- Round 28 (#90 device report: "you barely have any space for the main
+--- item"): the right column always goes through the measured fitter, so a
+--- long (CJK) source title never swallows the carried entity's NAME.
+--- @param rows table Array of { idx, stub } in display order
+--- @param tagged boolean|nil
 --- @return table items
-function XrayBrowser:_buildDormantItems()
+function XrayBrowser:_carriedItems(rows, tagged)
     local self_ref = self
     local items = {}
-    local rows = self:_dormantRows()
-    -- Round 28 (#90 device report: "you barely have any space for the main
-    -- item"): this list was the ONE X-Ray list that passed its right column
-    -- through raw, so a long (CJK) source title swallowed the row and the
-    -- carried entity's NAME — the thing you are reading the list for — got
-    -- elided. Same measured fitter as the category lists now; the category tag
-    -- is protected as the minimum, since it survives being the only thing left.
+    local src_label = not tagged and self:_carriedSourceLabeler() or nil
     for i, r in ipairs(rows) do
         local captured_i, captured, display_i = r.idx, r.stub, i
-        local short_cat = CHAPTER_CATEGORY_SHORT[captured.category]
-        -- The source title is what overflows, so fit THAT and keep the tag whole
-        local tag = short_cat and (short_cat .. " · ") or ""
-        local fitted_src = XrayBrowser.fitSourceTitle(captured.name, captured.source, tag)
+        local function rightColumn()
+            if tagged then
+                local short_cat = CHAPTER_CATEGORY_SHORT[captured.category]
+                -- The source title is what overflows, so fit THAT and keep the tag whole
+                local tag = short_cat and (short_cat .. " · ") or ""
+                return tag .. XrayBrowser.fitSourceTitle(captured.name, captured.source, tag)
+            end
+            local src, short = src_label(captured)
+            local role = type(captured.role) == "string" and captured.role or ""
+            if role == "" then
+                return short and src or XrayBrowser.fitSourceTitle(captured.name, src)
+            elseif src == "" then
+                return XrayBrowser.fitSourceTitle(captured.name, role)
+            elseif short then
+                -- The book number stays whole; the role takes what is left
+                local tail = " · " .. src
+                local fitted = XrayBrowser.fitSourceTitle(captured.name, role, tail)
+                return fitted ~= "" and (fitted .. tail) or src
+            end
+            return XrayBrowser.fitSourceTitle(captured.name, role .. " · " .. src)
+        end
+        -- The right column is fitted when the row is first SHOWN, not when
+        -- the page is built: fitting lays text out three times or more per
+        -- row, and a long series carries hundreds of rows into one category
+        -- (a category page lists them by default). The Menu asks only for
+        -- the rows of the page on screen.
+        local fitted
         table.insert(items, {
             text = captured.name,
-            mandatory = tag .. fitted_src,
+            mandatory_func = function()
+                if fitted == nil then fitted = rightColumn() end
+                return fitted
+            end,
             mandatory_dim = true,
             callback = function()
                 -- ◀/▶ walk the DISPLAYED rows (filtered + sorted); the ledger
@@ -1521,43 +1681,117 @@ function XrayBrowser:_buildDormantItems()
     return items
 end
 
+--- Menu items for the whole carried list, category then name. Round 26
+--- (device report: "the popup is very bad design"): the ledger renders as an
+--- ordinary paginated browser page like every other entity list.
+--- @return table items
+function XrayBrowser:_buildDormantItems()
+    return self:_carriedItems(self:_dormantRows(), true)
+end
+
+--- The carried list's category rows (#116, B393): "All" first, then one row
+--- per category of this X-Ray that has carried entries, then "Other" for the
+--- entries whose kind this X-Ray's type has no category for. nil when the
+--- list holds a single kind (it then opens as one flat page, as before).
+--- @return table|nil items, number total
+function XrayBrowser:_buildCarriedRootItems()
+    local self_ref = self
+    local by_key, other, total = XrayParser.ledgerByCategory(self.xray_data)
+    local kinds = #other > 0 and 1 or 0
+    for _key in pairs(by_key) do kinds = kinds + 1 end
+    if kinds < 2 then return nil, total end
+    local enable_emoji = self.metadata.enable_emoji
+    local items = { {
+        text = _("All"),
+        mandatory = tostring(total),
+        separator = true,
+        callback = function() self_ref:showDormantList({ flat = true }) end,
+    } }
+    for _idx, cat in ipairs(XrayParser.getCategories(self.xray_data)) do
+        local rows = by_key[cat.key]
+        if rows and #rows > 0 then
+            local captured = cat
+            table.insert(items, {
+                text = Constants.getEmojiText(CATEGORY_EMOJIS[cat.key] or "", cat.label, enable_emoji),
+                mandatory = tostring(#rows),
+                callback = function() self_ref:showCarriedCategory(captured.key, captured.label) end,
+            })
+        end
+    end
+    if #other > 0 then
+        table.insert(items, {
+            text = _("Other"),
+            mandatory = tostring(#other),
+            callback = function() self_ref:showCarriedCategory(nil, _("Other")) end,
+        })
+    end
+    return items, total
+end
+
+--- One category of the carried list (#116, B393): that kind's carried
+--- entries in name order, the role and the source beside each. key nil = the
+--- entries with no category in this X-Ray's type.
+function XrayBrowser:showCarriedCategory(key, label)
+    local self_ref = self
+    local function build()
+        local by_key, other = XrayParser.ledgerByCategory(self_ref.xray_data)
+        local rows = key and by_key[key] or (not key and other) or {}
+        if #rows == 0 then return nil end
+        return T(_("%1 · %2"), label, carriedSectionTitle(self_ref.metadata.book_file, #rows)),
+            self_ref:_carriedItems(rows, not key)
+    end
+    local title, items = build()
+    if not items then return end
+    self.location = nil
+    self:navigateForward(title, items)
+    self.page = { gen = self._ledger_gen, rebuild = build }
+end
+
 --- Carried-entities list (series-identity round; Menu page since round 26):
---- every dormant ledger stub — name, category and source book — one tap from
---- the main category menu. Reading is the primary use ("who might return?");
---- the per-stub detail offers the manual actions.
-function XrayBrowser:showDormantList()
-    local items = self:_buildDormantItems()
-    if #items == 0 then return end
+--- every dormant ledger stub, one tap from the main category menu. Reading is
+--- the primary use ("who might return?"); the per-stub detail offers the
+--- manual actions. #116 (B393): a list holding several kinds opens on its
+--- category rows (Cast, World, ... each with its count) so a reader can
+--- filter by kind; opts.flat opens the whole list on one page (the "All" row,
+--- and every landing that puts the list under an entry).
+--- @param opts table|nil { flat = boolean }
+function XrayBrowser:showDormantList(opts)
+    local self_ref = self
+    local file = self.metadata.book_file
+    local function buildFlat()
+        local items = self_ref:_buildDormantItems()
+        if #items == 0 then return nil end
+        return dormantListTitle(file, #items), items
+    end
+    -- The list's own tools lead its top page (B401), whichever shape it has
+    local function buildRoot()
+        local items, total = self_ref:_buildCarriedRootItems()
+        local title
+        if items then
+            title = dormantListTitle(file, total)
+        else
+            title, items = buildFlat()
+            if not items then return nil end
+        end
+        for i, row in ipairs(self_ref:_carriedToolRows()) do table.insert(items, i, row) end
+        return title, items
+    end
+    local build = (opts and opts.flat) and buildFlat or buildRoot
+    local title, items = build()
+    if not items then return end
     -- A carried stub is not a live entity in THIS book, so there is no honest
     -- "→ Group" target from these pages
     self.location = nil
-    self:navigateForward(dormantListTitle(self.metadata.book_file, #items), items)
+    self:navigateForward(title, items)
+    self.page = { gen = self._ledger_gen, rebuild = build }
 end
 
---- Repaint the carried list in place after an edit (the root-only refresh in
---- _commitDormantOp cannot see this page). Pops back out when the last stub
---- leaves, so the reader never stares at an empty list.
-function XrayBrowser:_refreshDormantPage()
-    if not self.menu then return end
-    local items = self:_buildDormantItems()
-    if #items == 0 then
-        self:navigateBack()
-        return
-    end
-    self.current_title = dormantListTitle(self.metadata.book_file, #items)
-    self.menu:switchItemTable(self.current_title, items, -1)
-end
-
---- One carried entity: its full history, and the manual actions — link to an
---- existing entry (reader-asserted identity, the zero-token fix for naming
---- drift the model missed), promote to a visible entry, or remove.
---- Round 26 (device report: "the character info is very long and you have to
---- scroll a small thing at the bottom"): a scrollable TextViewer with a real
---- button row, exactly like showItemDetail — the body is text, the actions
---- are buttons, and neither fights the other for space.
---- @param nav_context table|nil { stubs, index } for ◀/▶ within the list
-function XrayBrowser:showDormantDetail(stub_idx, stub, nav_context)
-    local self_ref = self
+--- What a carried entry's page says about it, as lines: the name and role,
+--- its other names, the book it comes from, its description there, and the
+--- lines earlier books left on it. The page adds its status line; the review
+--- of likely matches shows two of these one above the other.
+--- @return table parts
+local function carriedDetailParts(stub)
     -- S3 parity (ref #90): the role on line 1, as formatItemDetail renders
     -- a live entry (stubs store it since S3; older stubs simply have none)
     local head = stub.name
@@ -1586,8 +1820,240 @@ function XrayBrowser:showDormantDetail(stub_idx, stub, nav_context)
             end
         end
     end
+    return parts
+end
+
+--- The carried list's likely matches (B314), scanned once per state of the
+--- list: the scan indexes every carried name and every entry name, and the
+--- list's top page asks for the count each time it is drawn.
+--- @return table pairs XrayDedup.findCarriedMatches output
+function XrayBrowser:_carriedMatches()
+    if not self:_carriedView() then return {} end
+    local memo = self._match_memo
+    if memo and memo.gen == self._ledger_gen and memo.data == self.xray_data then
+        return memo.found
+    end
+    local never = require("koassistant_action_cache").getNeverMergePairs(self.metadata.book_file)
+    local found = require("koassistant_xray_dedup").findCarriedMatches(self.xray_data, never)
+    self._match_memo = { gen = self._ledger_gen, data = self.xray_data, found = found }
+    return found
+end
+
+--- The carried list's own tools, above its rows (B401, picture doc 10.5):
+--- the free review of likely matches, when the scan finds any, and the AI
+--- merges between books. List-level only: linking one entry by hand is one
+--- tap on its page, and a request for one entry is not worth sending.
+--- @return table items
+function XrayBrowser:_carriedToolRows()
+    local self_ref = self
+    local rows = {}
+    local found = self:_carriedMatches()
+    if #found > 0 then
+        rows[#rows + 1] = {
+            text = _("Possible matches"),
+            mandatory = tostring(#found),
+            callback = function() self_ref:showCarriedMatches() end,
+        }
+    end
+    rows[#rows + 1] = {
+        text = _("AI merge…"),
+        separator = true,
+        callback = function() self_ref:_showCarriedAiMerge() end,
+    }
+    return rows
+end
+
+--- The AI merges between books, from the carried list (B401): the same rows
+--- the "Link and merge…" group has, so no second copy of a label or a flow.
+function XrayBrowser:_showCarriedAiMerge()
+    local dialog
+    local rows = self:_mergeGroupRows(function() UIManager:close(dialog) end, true)
+    if #rows == 0 then return end
+    dialog = ButtonDialog:new{
+        title = _("AI merge"),
+        buttons = rows,
+    }
+    UIManager:show(dialog)
+end
+
+--- The review of likely matches (B314): the pairs the free carry left
+--- unlinked because the names differ, one row each, those with an entry of
+--- this book first. A tap opens the pair. Free: nothing is sent.
+function XrayBrowser:showCarriedMatches()
+    local self_ref = self
+    local XrayDedup = require("koassistant_xray_dedup")
+    local function build()
+        local found = self_ref:_carriedMatches()
+        if #found == 0 then return nil end
+        local n_entry = 0
+        for _idx, pair in ipairs(found) do
+            if pair.kind == "entry" then n_entry = n_entry + 1 end
+        end
+        local items = {}
+        local last_kind
+        for _idx, pair in ipairs(found) do
+            if pair.kind ~= last_kind then
+                last_kind = pair.kind
+                if #items > 0 then items[#items].separator = true end
+                items[#items + 1] = {
+                    text = pair.kind == "entry" and T(_("With this book's entries (%1)"), n_entry)
+                        or T(_("Between carried entries (%1)"), #found - n_entry),
+                    bold = true,
+                    callback = function() end,
+                }
+            end
+            local captured = pair
+            items[#items + 1] = {
+                text = T(_("%1 ↔ %2"), pair.stub.name, pair.item_name or pair.other.name),
+                mandatory = XrayDedup.reasonLabel(pair.reason),
+                mandatory_dim = true,
+                callback = function() self_ref:showCarriedMatch(captured) end,
+            }
+        end
+        return T(_("Possible matches (%1)"), #found), items
+    end
+    local title, items = build()
+    if not items then return end
+    self.location = nil
+    self:navigateForward(title, items)
+    self.page = { gen = self._ledger_gen, rebuild = build }
+end
+
+--- One likely match (B314): both sides at a glance, then the reader's answer.
+--- "Link" is the free link the carried entry's page offers (a carried row
+--- into an entry of this book), or two carried rows becoming one. "Never"
+--- goes on the book's never-merge list, the one the duplicate review keeps,
+--- so it is undone there and every other matcher honors it.
+--- @param pair table One XrayDedup.findCarriedMatches pair
+function XrayBrowser:showCarriedMatch(pair)
+    local self_ref = self
+    local XrayDedup = require("koassistant_xray_dedup")
+    local stub = pair.stub
+    local other_name = pair.item_name or pair.other.name
+    local function who(s)
+        return type(s.source) == "string" and s.source ~= ""
+            and T(_("carried from %1"), s.source) or _("carried")
+    end
+    local dialog
+    local rows = {}
+    -- Deciding needs the whole text: the title's snippets are cut short
+    rows[#rows + 1] = {{
+        text = _("Full descriptions…"),
+        callback = function()
+            local second = pair.kind == "entry"
+                and XrayParser.formatItemDetail(pair.item, pair.cat_key)
+                or table.concat(carriedDetailParts(pair.other), "\n")
+            UIManager:show(TextViewer:new{
+                title = T(_("%1 ↔ %2"), stub.name, other_name),
+                text = table.concat(carriedDetailParts(stub), "\n")
+                    .. "\n\n――――――――\n\n" .. second,
+                justified = false,
+            })
+        end,
+    }}
+    local function link(label, apply_fn, done_text)
+        rows[#rows + 1] = {{
+            text = label,
+            callback = function()
+                UIManager:close(dialog)
+                if self_ref:_commitDormantOp(apply_fn, done_text) then
+                    self_ref:_refreshDormantPage()
+                end
+            end,
+        }}
+    end
+    if pair.kind == "entry" then
+        link(T(_("Link \"%1\" to \"%2\""), stub.name, other_name),
+            function(data)
+                return XrayParser.wakeStubInto(data, pair.stub_idx, stub.name, pair.cat_key, other_name)
+            end,
+            T(_("Linked \"%1\" to \"%2\". Its carried history now shows there."), stub.name, other_name))
+    else
+        link(T(_("Link \"%1\" and \"%2\""), stub.name, other_name),
+            function(data)
+                return XrayParser.linkStubs(data, pair.stub_idx, stub.name, pair.other_idx, other_name)
+            end,
+            T(_("Linked \"%1\" and \"%2\". They are one carried entry now."), stub.name, other_name))
+    end
+    rows[#rows + 1] = {{
+        text = _("Never suggest this pair"),
+        callback = function()
+            -- Over the pair, which stays up: Cancel lands back on it
+            UIManager:show(require("ui/widget/confirmbox"):new{
+                text = T(_("Never suggest \"%1\" and \"%2\" as a match?\n\nThis is remembered for this book. To undo it, open \"%3\" and tap \"Never-merge pairs\"."),
+                    stub.name, other_name, require("koassistant_xray_rows").dedupLabel()),
+                ok_text = _("Never suggest"),
+                ok_callback = function()
+                    UIManager:close(dialog)
+                    require("koassistant_action_cache").addNeverMergePair(
+                        self_ref.metadata.book_file, stub.name, other_name)
+                    -- The list did not change, what the review shows did
+                    self_ref._ledger_gen = (self_ref._ledger_gen or 0) + 1
+                    UIManager:show(Notification:new{
+                        text = T(_("\"%1\" and \"%2\" will stay separate"), stub.name, other_name),
+                    })
+                    self_ref:_refreshDormantPage()
+                end,
+            })
+        end,
+    }}
+    local kind_label = pair.cat_label or CHAPTER_CATEGORY_SHORT[stub.category or "characters"]
+    local reason = XrayDedup.reasonLabel(pair.reason)
+    local second_line = pair.kind == "entry"
+        and T(_("%1 (%2): %3"), other_name, _("this book"), XrayDedup.snippet(pair.item))
+        or T(_("%1 (%2): %3"), other_name, who(pair.other), XrayDedup.snippet(pair.other))
+    dialog = ButtonDialog:new{
+        title = (kind_label and T(_("%1: %2"), kind_label, reason) or reason) .. "\n\n"
+            .. T(_("%1 (%2): %3"), stub.name, who(stub), XrayDedup.snippet(stub)) .. "\n\n"
+            .. second_line,
+        buttons = rows,
+    }
+    UIManager:show(dialog)
+end
+
+--- Repaint the page on screen after a carried-list edit (the root-only
+--- refresh in _commitDormantOp cannot see it): the carried list, one of its
+--- category pages, or a category page listing carried entries. Pops back out
+--- when nothing is left on it, so the reader never stares at an empty list.
+function XrayBrowser:_refreshDormantPage()
+    if not self.menu then return end
+    local page = self.page
+    if not (page and page.rebuild) or page.gen == self._ledger_gen then return end
+    local title, items = page.rebuild()
+    if not items or #items == 0 then
+        self:navigateBack()
+        return
+    end
+    page.gen = self._ledger_gen
+    self.current_title = title
+    self.menu:switchItemTable(title, items, -1)
+end
+
+--- Repaint the page on screen after the carried-entries dial changed (#116):
+--- the root's counts, or a category page gaining or losing its carried rows.
+function XrayBrowser:_repaintCarried()
+    if not self.menu then return end
+    self._ledger_gen = (self._ledger_gen or 0) + 1
+    if #self.nav_stack == 0 then
+        self.menu:switchItemTable(self:buildMainTitle(), self:buildCategoryItems(), -1)
+    else
+        self:_refreshDormantPage()
+    end
+end
+
+--- One carried entity: its full history, and the manual actions — link to an
+--- existing entry (reader-asserted identity, the zero-token fix for naming
+--- drift the model missed), promote to a visible entry, or remove.
+--- Round 26 (device report: "the character info is very long and you have to
+--- scroll a small thing at the bottom"): a scrollable TextViewer with a real
+--- button row, exactly like showItemDetail — the body is text, the actions
+--- are buttons, and neither fights the other for space.
+--- @param nav_context table|nil { stubs, index } for ◀/▶ within the list
+function XrayBrowser:showDormantDetail(stub_idx, stub, nav_context)
+    local self_ref = self
+    local parts = carriedDetailParts(stub)
     parts[#parts + 1] = ""
-    parts[#parts + 1] = _("Not seen in this book yet. It wakes on its own when an update or merge meets it.")
+    parts[#parts + 1] = _("Not seen in this book yet. It is linked on its own when an update names it.")
 
     local viewer
     local function afterClose(fn)
@@ -1648,7 +2114,7 @@ function XrayBrowser:showDormantDetail(stub_idx, stub, nav_context)
     local buttons_rows = {
         {
             {
-                text = _("Merge into an existing entry…"),
+                text = _("Link to an entry of this book…"),
                 callback = afterClose(function()
                     self_ref:showDormantLinkPicker(stub_idx, stub)
                 end),
@@ -1669,6 +2135,10 @@ function XrayBrowser:showDormantDetail(stub_idx, stub, nav_context)
                             if self_ref:_commitDormantOp(
                                 function(data) return XrayParser.promoteStub(data, stub_idx, stub.name) end,
                                 T(_("\"%1\" added to the X-Ray."), stub.name)) then
+                                -- B400: remembered, so the next checkpoint
+                                -- install or rebuild keeps it an entry
+                                require("koassistant_action_cache").addPromotedStub(
+                                    self_ref.metadata.book_file, stub.name)
                                 self_ref:_refreshDormantPage()
                             end
                         end,
@@ -1692,28 +2162,35 @@ function XrayBrowser:showDormantDetail(stub_idx, stub, nav_context)
         },
     }
     if open_row then table.insert(buttons_rows, 1, open_row) end
-    -- Prev/next within the carried list, mirroring showItemDetail's nav row
+    -- The last row mirrors showItemDetail's: ← first (back to the list this
+    -- page was opened from: the carried list, one of its category pages, a
+    -- category page listing carried entries, the search results; the page is
+    -- an overlay on that list, so closing it is the way back), then prev/next
+    -- within the list
+    local nav_row = { {
+        text = "←",
+        callback = afterClose(function() end),
+    } }
     local rows = nav_context and nav_context.rows
     if rows and #rows > 1 then
         local idx = nav_context.index
         local function jump(i)
             self_ref:showDormantDetail(rows[i].idx, rows[i].stub, { rows = rows, index = i })
         end
-        table.insert(buttons_rows, {
-            {
-                text = "◀",
-                callback = afterClose(function()
-                    jump(idx > 1 and idx - 1 or #rows)
-                end),
-            },
-            {
-                text = "▶",
-                callback = afterClose(function()
-                    jump(idx < #rows and idx + 1 or 1)
-                end),
-            },
+        table.insert(nav_row, {
+            text = "◀",
+            callback = afterClose(function()
+                jump(idx > 1 and idx - 1 or #rows)
+            end),
+        })
+        table.insert(nav_row, {
+            text = "▶",
+            callback = afterClose(function()
+                jump(idx < #rows and idx + 1 or 1)
+            end),
         })
     end
+    table.insert(buttons_rows, nav_row)
 
     local display_title = stub.name
     if rows and #rows > 1 then
@@ -1796,7 +2273,7 @@ function XrayBrowser:showDormantLinkPicker(stub_idx, stub, filter)
                         function(data)
                             return XrayParser.wakeStubInto(data, stub_idx, stub.name, cat_key, captured)
                         end,
-                        T(_("Folded \"%1\" into \"%2\" — its carried history now shows there."),
+                        T(_("Linked \"%1\" to \"%2\". Its carried history now shows there."),
                             stub.name, captured)) then
                         -- Pop the picker; the list underneath re-reads the ledger
                         self_ref:navigateBack()
@@ -1855,7 +2332,7 @@ function XrayBrowser:_applyPendingLocation(navigate_to)
             -- Push the carried list underneath so Back lands there, exactly as
             -- the live-entity branch above pushes its category (round 26).
             -- The ◀/▶ context is the DISPLAY order, so locate this stub in it.
-            self:showDormantList()
+            self:showDormantList({ flat = true })
             local rows = self:_dormantRows()
             local display_i
             for i, r in ipairs(rows) do
@@ -1903,10 +2380,12 @@ function XrayBrowser:reloadLiveMain(file)
         XrayParser.mergeUserAliases(data, user_aliases)
     end
     self.xray_data = data
+    self._ledger_gen = (self._ledger_gen or 0) + 1
     -- The reload usually follows a merge — the fold ledger may have grown, and
     -- Info reads metadata, not the disk entry
     self.metadata.merged_from = entry.merged_from
     self.metadata.merged_from_books = entry.merged_from_books
+    self.metadata.xray_categories = entry.xray_categories
     if #self.nav_stack == 0 then
         self.menu:switchItemTable(self:buildMainTitle(), self:buildCategoryItems(), -1)
     end
@@ -1945,7 +2424,16 @@ function XrayBrowser:_commitDormantOp(apply_fn, success_text)
         return false
     end
     self._dormant_archived = true
+    -- The view keeps the reader's own aliases (the fresh parse holds none):
+    -- entry pages show them, search finds by them, and the review of likely
+    -- matches reads them
+    local user_aliases = require("koassistant_action_cache").getUserAliases(self.metadata.book_file)
+    if next(user_aliases) then
+        XrayParser.mergeUserAliases(data, user_aliases)
+    end
     self.xray_data = data
+    -- Pages that list carried entries rebuild when they are next shown
+    self._ledger_gen = (self._ledger_gen or 0) + 1
     UIManager:show(Notification:new{ text = success_text })
     -- Root repaint: the carried count changed, possibly a category count too.
     -- Deeper pages (the carried list) repaint via _refreshDormantPage — the
@@ -1968,6 +2456,9 @@ function XrayBrowser:navigateForward(title, items, focus_idx, display)
         title = self.current_title,
         items = self.menu.item_table,
         location = self.location,
+        -- What the page being left is, when it lists carried entries (#116):
+        -- { gen, rebuild, location }. The new page sets its own after this.
+        page = self.page,
         display = {
             single_line = self.menu.single_line,
             multilines_forced = self.menu.multilines_forced,
@@ -1982,6 +2473,7 @@ function XrayBrowser:navigateForward(title, items, focus_idx, display)
         },
     })
     self.current_title = title
+    self.page = nil
     if display then
         -- Protocol: a display-passing level states everything it needs;
         -- unstated fields drop to the Menu class defaults (nil clears the
@@ -2078,6 +2570,8 @@ function XrayBrowser:navigateBack()
     self.current_title = prev.title
     -- The group jump follows the reader back out (round 25)
     self.location = prev.location
+    self.page = prev.page
+    if prev.page and prev.page.location then self.location = prev.page.location end
     -- Restore the display params saved at push time (multiline levels,
     -- the appearances tree's state column / dots / hidden dividers)
     if prev.display then
@@ -2097,11 +2591,26 @@ function XrayBrowser:navigateBack()
     table.remove(self.menu.paths)
     if #self.nav_stack == 0 then
         self.location = nil
+        self.page = nil
         -- Back at root — rebuild to reflect any new artifacts (wiki, pins)
         local fresh_items = self:buildCategoryItems()
         self.menu:switchItemTable(self:buildMainTitle(), fresh_items, -1)
     else
-        self.menu:switchItemTable(prev.title, prev.items)
+        local title, items = prev.title, prev.items
+        -- A page listing carried entries is rebuilt when the carried list
+        -- changed while a deeper page was open (#116); with nothing left on
+        -- it, keep going back
+        if prev.page and prev.page.rebuild and prev.page.gen ~= self._ledger_gen then
+            local fresh_title, fresh = prev.page.rebuild()
+            if not fresh or #fresh == 0 then
+                self.menu:switchItemTable(title, items)
+                return self:navigateBack()
+            end
+            title, items = fresh_title, fresh
+            prev.page.gen = self._ledger_gen
+            self.current_title = title
+        end
+        self.menu:switchItemTable(title, items)
     end
 
     -- Reopen item detail TextViewer if distribution was entered from one
@@ -2122,9 +2631,12 @@ function XrayBrowser:navigateBack()
     end
 end
 
---- Show items within a category (navigates forward)
+--- Title and rows of a category page: this book's own entries in the order
+--- the model wrote them and, with the carried-entries dial on (#116, B393),
+--- a header row and that category's carried entries in name order.
 --- @param category table {key, label, items}
-function XrayBrowser:showCategoryItems(category)
+--- @return string title, table items
+function XrayBrowser:_categoryPage(category)
     local Font = require("ui/font")
     local Size = require("ui/size")
 
@@ -2214,13 +2726,57 @@ function XrayBrowser:showCategoryItems(category)
         })
     end
 
+    local title = category.label .. " (" .. #category.items .. ")"
+    -- #116 (B393): the carried entries of this category, after this book's
+    -- own. They stay carried entries (their page offers the manual actions
+    -- and says they have not appeared in this book yet); only the listing
+    -- changes.
+    if self:_carriedInCategories() then
+        local carried = (XrayParser.ledgerByCategory(self.xray_data))[category.key]
+        if carried and #carried > 0 then
+            if #items > 0 then items[#items].separator = true end
+            table.insert(items, {
+                text = carriedSectionTitle(self.metadata.book_file, #carried),
+                bold = true,
+                callback = function() end,
+            })
+            for _idx, row in ipairs(self:_carriedItems(carried)) do
+                table.insert(items, row)
+            end
+            title = T(_("%1 (%2 + %3)"), category.label, #category.items, #carried)
+        end
+    end
+    return title, items
+end
+
+--- Show items within a category (navigates forward)
+--- @param category table {key, label, items}
+function XrayBrowser:showCategoryItems(category)
+    local self_ref = self
+    local title, items = self:_categoryPage(category)
+
     -- Where the reader is now, in machine-readable form (round 25): the group
     -- row carries this to the next book's X-Ray so the jump lands in the same
     -- place instead of at its root
-    self.location = { category_key = category.key, category_label = category.label }
+    local location = { category_key = category.key, category_label = category.label }
+    self.location = location
 
-    local title = category.label .. " (" .. #category.items .. ")"
     self:navigateForward(title, items)
+    -- A page that can list carried entries rebuilds after a carried-list edit
+    -- (the entry moved to this book's own rows, or left)
+    if self:_carriedView() then
+        local key = category.key
+        self.page = {
+            gen = self._ledger_gen,
+            location = location,
+            rebuild = function()
+                for _idx, cat in ipairs(XrayParser.getCategories(self_ref.xray_data)) do
+                    if cat.key == key then return self_ref:_categoryPage(cat) end
+                end
+                return nil
+            end,
+        }
+    end
 end
 
 --- Every connection of one entity as a paged list (the overflow behind the
@@ -2346,6 +2902,10 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         end
     end
     local item_highlights = {}
+    -- The "Your highlights" block appended to chat_text and the book's override
+    -- it was judged under: "Chat about this" records both so every send from
+    -- that chat re-judges the block for its own provider (B396 d)
+    local hl_record
     -- Populated by the connections block below; the More… popup is built
     -- BEFORE it, and its callbacks run after, so the closure sees the filled list
     local conn_entries = {}
@@ -2370,10 +2930,11 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
         -- Per-book privacy override (Book Settings ▸ Privacy): the highlights come
         -- from the OPEN book's live annotations, and this detail text is sent to
         -- the provider by "Chat about this" — deny beats trusted.
+        local hl_override
         if self.ui.doc_settings then
-            local ov = require("koassistant_book_settings")
+            hl_override = require("koassistant_book_settings")
                 .effectivePrivacyOverrides(self.ui.doc_settings).highlights
-            if ov ~= nil then highlights_allowed = ov end
+            if hl_override ~= nil then highlights_allowed = hl_override end
         end
         item_highlights = highlights_allowed and findItemHighlights(item, self.ui) or {}
         if #item_highlights > 0 then
@@ -2381,14 +2942,16 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
             -- gating them on the sharing settings); the PAGE moves them behind
             -- a button. A well-highlighted character buried its own X-Ray
             -- description under a wall of quotes (device 2026-08-18).
-            chat_text = chat_text .. "\n\n" .. _("Your highlights:") .. "\n"
+            local block = { "\n\n", _("Your highlights:"), "\n" }
             for _idx, hl in ipairs(item_highlights) do
                 local display_hl = hl
                 if #display_hl > 200 then
                     display_hl = display_hl:sub(1, 200) .. "..."
                 end
-                chat_text = chat_text .. "\n> " .. display_hl
+                block[#block + 1] = "\n> " .. display_hl
             end
+            hl_record = { block = table.concat(block), override = hl_override }
+            chat_text = chat_text .. hl_record.block
         end
     end
 
@@ -2504,6 +3067,7 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
                 self_ref:chatAboutItem(chat_text, {
                     name = XrayParser.getItemName(item, category_key),
                     category = (nav_context and nav_context.category_label) or category_key,
+                    highlights = hl_record,
                 })
             end,
         })
@@ -2940,7 +3504,9 @@ function XrayBrowser:showEntityHistory(item, category_key, reveal)
             local ui = self.ui
             if ui and ui.document and ui.document.info
                 and (ui.document.info.number_of_pages or 0) > 0 then
-                g = math.max(g, (getCurrentPage(ui) or 0) / ui.document.info.number_of_pages)
+                -- Flow position, like the versions' coverage (B335)
+                g = math.max(g, require("koassistant_context_extractor")
+                    .flowFraction(ui.document, getCurrentPage(ui) or 0))
             elseif ds and ds.readSetting then
                 local pf = tonumber(ds:readSetting("percent_finished"))
                 if pf then g = math.max(g, pf) end
@@ -3209,6 +3775,10 @@ function XrayBrowser:_showEntityManagePopup(item, category_key, title, source, n
                                     return XrayParser.demoteToStub(data, category_key, demote_name)
                                 end,
                                 T(_("\"%1\" moved back to the carried list."), demote_name)) then
+                                -- B400: the way back out of "Add as a new
+                                -- entry" forgets that it was added by hand
+                                require("koassistant_action_cache").clearPromotedStub(
+                                    self_ref.metadata.book_file, demote_name)
                                 -- Back to root: the entry this page rendered no
                                 -- longer exists, and the pages under it hold
                                 -- item tables that still list it
@@ -3349,7 +3919,7 @@ function XrayBrowser:_confirmLink(member_file, member_title, entry, parsed,
     local ConfirmBox = require("ui/widget/confirmbox")
     local self_ref = self
     UIManager:show(ConfirmBox:new{
-        text = T(_("Link \"%1\" (this book) with \"%2\" (%3)?\nEach book's entry gains the other's names as aliases, so group navigation and future folds treat them as the same. No content is copied."),
+        text = T(_("Link \"%1\" (this book) with \"%2\" (%3)?\nEach book's entry gains the other's names as aliases, so group navigation and future AI merges treat them as the same. No content is copied."),
             link_name, r_name, member_title),
         ok_text = _("Link"),
         ok_callback = function()
@@ -3398,12 +3968,17 @@ function XrayBrowser:_commitLink(member_file, member_title, entry, parsed,
             timeout = 4 })
         return
     end
+    -- B267 (B394 slice 6): the member's built checkpoints take the link too,
+    -- or its next install would drop these names again
+    WriteBack.replayIntoRungs(member_file, WriteBack.aliasEdit(r_cat, r_name, our_names))
     self:_dismissDetail(viewer)
     if self:_commitDormantOp(
         function(data)
             return XrayParser.addItemAliases(data, category_key, link_name, their_names)
         end,
         T(_("Linked \"%1\" with \"%2\" (%3)."), link_name, r_name, member_title)) then
+        WriteBack.replayIntoRungs(self.metadata.book_file,
+            WriteBack.aliasEdit(category_key, link_name, their_names))
         self:_rebuildToDetail(category_key, link_name)
     else
         -- The remote write landed; only this book's side is missing
@@ -3419,6 +3994,7 @@ function XrayBrowser:_unwindToRoot()
     if not self.menu then return end
     self.nav_stack = {}
     self.location = nil
+    self.page = nil
     local base_paths = self._level_up and 1 or 0
     while #self.menu.paths > base_paths do table.remove(self.menu.paths) end
     self.menu:switchItemTable(self:buildMainTitle(), self:buildCategoryItems(), -1)
@@ -3488,6 +4064,11 @@ function XrayBrowser:_commitRename(category_key, old_name, new_name, viewer)
     end
     local ActionCache = require("koassistant_action_cache")
     ActionCache.renameEntityKeys(book_file, category_key, old_name, new_name)
+    -- B267 (B394 slice 6): checkpoints built before the rename take it too.
+    -- Without this the next install brought the old name back (the duplicate
+    -- review's merge has replayed since round 18; rename and link did not).
+    local WriteBack = require("koassistant_artifact_writeback")
+    WriteBack.replayIntoRungs(book_file, WriteBack.renameEdit(category_key, old_name, new_name))
     -- STAY IN PLACE (maintainer 2026-08-09, replacing the unwind-to-root):
     -- rebuild the path to the renamed detail synchronously, so no page in the
     -- fresh stack holds pre-rename item tables
@@ -3843,6 +4424,11 @@ function XrayBrowser:chatAboutItem(detail_text, entity)
     -- Action filtering is now handled by the xray_chat input context sorting
     config.features._xray_chat_context = true
     config.features._hide_artifacts = true
+    -- The highlights block inside detail_text, re-judged at every send from
+    -- this chat for the provider it goes to (Attachments.xrayChatTextFor,
+    -- B396 d). Set or cleared on every open: this config is the chat's own copy,
+    -- so a copy taken from an earlier X-Ray chat never names a stale block.
+    config.features._xray_chat_highlights = entity and entity.highlights or nil
     -- When no book is open, exclude actions that need document data (text extraction, annotations)
     if not self.ui or not self.ui.document then
         config.features._exclude_action_flags = {"use_book_text", "use_annotations"}
@@ -4790,7 +5376,10 @@ function XrayBrowser:showMentions(chapter)
     UIManager:show(Notification:new{ text = notif_text })
 
     local self_ref = self
-    UIManager:scheduleIn(0.2, function()
+    -- Trapper:wrap: a whole-book name-index pass may run in a subprocess
+    UIManager:scheduleIn(0.2, function() require("ui/trapper"):wrap(function()
+        local XrayIndex = require("koassistant_xray_index")
+        local by_index = XrayIndex.supported(self_ref.ui.document)
         local text, chapter_title
         local display_chapter = chapter  -- track what we're showing for the picker
         local mentions_gate = self_ref:_spoilerGate()  -- F2: posture-routed, position-strict
@@ -4799,25 +5388,27 @@ function XrayBrowser:showMentions(chapter)
         -- the reader is INSIDE crosses the gate — this surface used to
         -- extract its WHOLE span (the tree and the per-entity mention pages
         -- already clipped), so just entering chapter N revealed every entity
-        -- in its unread tail. Clip the extraction at the gate page; the
+        -- in its unread tail. Clip the range at the gate page; the
         -- session-level reveal flag (_mentions_spoiler_warned, same one the
         -- picker's beyond-gate confirm sets) lifts the clip.
         local clipped_to
-        local function gatedChapterText(ch)
+        local function gatedChapter(ch)
             if mentions_gate and not self_ref._mentions_spoiler_warned
                     and ch.start_page and ch.start_page <= mentions_gate
                     and (ch.end_page or 0) > mentions_gate then
                 clipped_to = mentions_gate
-                return self_ref:_getChapterText({
+                return {
                     title = ch.title,
                     start_page = ch.start_page,
                     end_page = mentions_gate,
                     depth = ch.depth,
-                }), ch.title or ""
+                }
             end
-            return self_ref:_getChapterText(ch), ch.title or ""
+            return ch
         end
 
+        local range -- { start_page, end_page } of what the list counts
+        local span  -- a section's own span: read in a moment when not stored
         if is_all then
             -- Aggregate: page range depends on context
             -- Section X-Ray "all" = scope bounds; main X-Ray "all" = the
@@ -4837,48 +5428,81 @@ function XrayBrowser:showMentions(chapter)
                 -- Section X-Ray: scope bounds
                 start_page = self_ref.scope_start or 1
                 end_page = self_ref.scope_end or total_pages
+                span = { first = start_page, last = end_page }
             elseif chapter == "all_reveal" then
                 end_page = total_pages
             else
                 end_page = mentions_gate or total_pages
             end
-            local all_chapter = { start_page = start_page, end_page = end_page }
-            text = self_ref:_getChapterText(all_chapter)
+            range = { start_page = start_page, end_page = end_page }
             chapter_title = ""
         elseif type(chapter) == "table" then
             -- Specific chapter from picker
-            text, chapter_title = gatedChapterText(chapter)
+            range = gatedChapter(chapter)
+            chapter_title = chapter.title or ""
         else
             -- Current chapter (default — deepest TOC match; flat page chunk
             -- when there is no TOC)
             local cur = getChapterBoundaries(self_ref.ui, nil)
                 or getPageRangeChapter(self_ref.ui)
             if cur then
-                text, chapter_title = gatedChapterText(cur)
+                range = gatedChapter(cur)
+                chapter_title = cur.title or ""
             else
                 text, chapter_title = getCurrentChapterText(self_ref.ui, nil, self_ref)
             end
         end
 
-        if not text or text == "" then
-            local msg
+        -- Counts from the per-book name index: the same numbers as Chapter
+        -- Appearances, whole book or section read once and stored (the
+        -- whole-book text used to be cut at 5 MB, a quarter of a very large
+        -- book). A single chapter uses it when it is ready and reads its own
+        -- text otherwise (a chapter is quick either way).
+        local found, carried_found
+        if by_index and range then
+            local layout
             if is_all then
-                msg = self_ref.ui.document.info.has_pages
-                    and _("Could not extract book text. PDF text extraction may not be available for this document.")
-                    or _("Could not extract book text.")
+                layout = self_ref:_nameLayout(span)
+                if not layout then return end
             else
-                msg = self_ref.ui.document.info.has_pages
-                    and _("Could not extract chapter text. PDF text extraction may not be available for this document.")
-                    or _("Could not extract chapter text.")
+                layout = XrayIndex.ready(self_ref.ui, self_ref:_indexForms())
             end
-            UIManager:show(InfoMessage:new{
-                text = msg,
-                timeout = 5,
-            })
-            return
+            if layout then
+                found = self_ref:_mentionsFromIndex(layout, range.start_page, range.end_page)
+                -- #116 (B393): the carried names the same pages mention.
+                -- Names the index does not hold yet are fetched in the
+                -- background and show the next time (never a wait here).
+                if self_ref:_carriedInCategories() and not layout.span then
+                    local carried_forms = self_ref:_carriedIndexForms()
+                    if #XrayIndex.missing(layout, carried_forms) > 0 then
+                        XrayIndex.request(self_ref.ui, carried_forms)
+                    end
+                    carried_found = self_ref:_carriedMentionsFromIndex(layout,
+                        range.start_page, range.end_page)
+                end
+            end
         end
-
-        local found = XrayParser.findItemsInChapter(self_ref.xray_data, text)
+        if not found then
+            if range and not text then text = self_ref:_getChapterText(range) end
+            if not text or text == "" then
+                local msg
+                if is_all then
+                    msg = self_ref.ui.document.info.has_pages
+                        and _("Could not extract book text. PDF text extraction may not be available for this document.")
+                        or _("Could not extract book text.")
+                else
+                    msg = self_ref.ui.document.info.has_pages
+                        and _("Could not extract chapter text. PDF text extraction may not be available for this document.")
+                        or _("Could not extract chapter text.")
+                end
+                UIManager:show(InfoMessage:new{
+                    text = msg,
+                    timeout = 5,
+                })
+                return
+            end
+            found = XrayParser.findItemsInChapter(self_ref.xray_data, text)
+        end
 
         -- Build menu items
         local items = {}
@@ -4949,7 +5573,8 @@ function XrayBrowser:showMentions(chapter)
             })
         end
 
-        if #found == 0 then
+        local carried_n = carried_found and #carried_found or 0
+        if #found == 0 and carried_n == 0 then
             -- No results: show picker with empty-state message so user can try other chapters
             table.insert(items, {
                 text = _("No X-Ray items found in this text."),
@@ -4973,6 +5598,9 @@ function XrayBrowser:showMentions(chapter)
         for _idx, entry in ipairs(found) do
             if entry.count > max_count then max_count = entry.count end
         end
+        for _idx, entry in ipairs(carried_found or {}) do
+            if entry.count > max_count then max_count = entry.count end
+        end
         local count_width = #tostring(max_count)
         for _idx, entry in ipairs(found) do
             local nav_entry = nav_entries[_idx]
@@ -4994,16 +5622,135 @@ function XrayBrowser:showMentions(chapter)
             })
         end
 
+        -- #116 (B393): carried names these pages mention, under their own
+        -- header (the marks already underline them). A row opens the carried
+        -- entry's page.
+        if carried_n > 0 then
+            if #items > 0 then items[#items].separator = true end
+            table.insert(items, {
+                text = carriedSectionTitle(self_ref.metadata.book_file, carried_n),
+                bold = true,
+                callback = function() end,
+            })
+            local carried_rows = {}
+            for i, entry in ipairs(carried_found) do
+                carried_rows[i] = { idx = entry.idx, stub = entry.stub }
+            end
+            for i, entry in ipairs(carried_found) do
+                local captured_i = i
+                local short_cat = CHAPTER_CATEGORY_SHORT[entry.stub.category]
+                table.insert(items, {
+                    text = entry.stub.name,
+                    mandatory = (short_cat and ("[" .. short_cat .. "] ") or "")
+                        .. buildDistributionBar(entry.count, max_count, 6, count_width),
+                    callback = function()
+                        self_ref:showDormantDetail(entry.idx, entry.stub,
+                            { rows = carried_rows, index = captured_i })
+                    end,
+                })
+            end
+        end
+
         -- Title: just "Mentions (N)" — the scope already lives in the picker
         -- row right below, naming it twice cramped the title bar (round 5).
         -- Two-line rows: a long chapter name in the picker row wraps instead
         -- of truncating its "▾" away (device round 2026-08-13)
-        self_ref:navigateForward(T(_("Mentions (%1)"), #found), items, nil, {
+        self_ref:navigateForward(carried_n > 0
+                and T(_("Mentions (%1 + %2)"), #found, carried_n)
+                or T(_("Mentions (%1)"), #found), items, nil, {
             single_line = false,
             multilines_forced = true,
             items_max_lines = 2,
         })
+    end) end)
+end
+
+--- Per-entry counts over [first, last] from a name-index layout (the Mentions
+--- view's rows), sorted by count: the one matcher, with cross-entity
+--- containment, exactly as Chapter Appearances counts.
+function XrayBrowser:_mentionsFromIndex(layout, first, last)
+    local XrayIndex = require("koassistant_xray_index")
+    -- Pages in hidden flows stay out, as the text path's flow-aware read did
+    local doc = self.ui and self.ui.document
+    local hidden = doc and doc.hasHiddenFlows and doc:hasHiddenFlows()
+    local results = {}
+    for _idx, cat in ipairs(XrayParser.getCategories(self.xray_data) or {}) do
+        if not XrayParser.TEXT_MATCH_EXCLUDED[cat.key] then
+            for _idx2, item in ipairs(cat.items) do
+                local set = XrayParser.matchTermSet(item)
+                if set then
+                    local counts, total = XrayIndex.entityPages(layout, set,
+                        XrayParser.containingMatchHandles(self.xray_data, item), first, last)
+                    if hidden and counts then
+                        total = 0
+                        for p, c in pairs(counts) do
+                            if doc:getPageFlow(p) == 0 then total = total + c end
+                        end
+                    end
+                    if total and total > 0 then
+                        results[#results + 1] = {
+                            item = item,
+                            category_key = cat.key,
+                            category_label = cat.label,
+                            count = total,
+                        }
+                    end
+                end
+            end
+        end
+    end
+    table.sort(results, function(a, b) return a.count > b.count end)
+    return results
+end
+
+--- Carried entries mentioned on pages [first, last] (#116, B393), sorted by
+--- count: the Mentions view's second section, shown with the carried-entries
+--- dial on. Counted from the name index like this book's own entries; a
+--- carried entry whose forms the index does not hold yet is left out until
+--- the index catches up (the caller asks for them in the background).
+--- @return table Array of { idx, stub, count }
+function XrayBrowser:_carriedMentionsFromIndex(layout, first, last)
+    local results = {}
+    local ledger = self.xray_data and self.xray_data[XrayParser.DORMANT_KEY]
+    if type(ledger) ~= "table" then return results end
+    local XrayIndex = require("koassistant_xray_index")
+    local doc = self.ui and self.ui.document
+    local hidden = doc and doc.hasHiddenFlows and doc:hasHiddenFlows()
+    local function visibleTotal(counts, total)
+        if not (hidden and counts) then return total end
+        local n = 0
+        for p, c in pairs(counts) do
+            if doc:getPageFlow(p) == 0 then n = n + c end
+        end
+        return n
+    end
+    for i, stub in ipairs(ledger) do
+        if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= "" then
+            local cat_key = type(stub.category) == "string" and stub.category or "characters"
+            local set = not XrayParser.TEXT_MATCH_EXCLUDED[cat_key] and XrayParser.matchTermSet(stub)
+            if set then
+                local counts, total = XrayIndex.entityPages(layout, set, nil, first, last)
+                if total and total > 0 then
+                    -- Only a name that occurs pays for the containment rule:
+                    -- an occurrence inside one of this book's longer names
+                    -- ("Kubrick" in "Vivian Kubrick") is that entry's mention
+                    local handles = XrayParser.containingMatchHandles(self.xray_data, stub)
+                    if handles then
+                        counts, total = XrayIndex.entityPages(layout, set, handles, first, last)
+                    end
+                    total = visibleTotal(counts, total or 0)
+                    if total > 0 then
+                        results[#results + 1] = { idx = i, stub = stub, count = total }
+                    end
+                end
+            end
+        end
+    end
+    table.sort(results, function(a, b)
+        if a.count ~= b.count then return a.count > b.count end
+        return a.stub.name < b.stub.name
     end)
+    return results
 end
 
 --- Show all X-Ray items in a specific chapter (given boundaries)
@@ -5164,7 +5911,7 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
             mandatory_dim = true,
             callback = function()
                 self_ref:_showChapterMentions(item, category_key, item_title, nil,
-                    { hits = data.hits, no_clip = fully or nil })
+                    { hits = data.hits, dist = data.layout and data or nil, no_clip = fully or nil })
             end,
         })
     end
@@ -5178,12 +5925,15 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
             mandatory_dim = true,
             bold = true,
             callback = function()
-                for j = 1, #nodes do
-                    data.revealed[j] = true
-                end
-                data.spoiler_warned = true
-                data._focus_idx = nil
-                self_ref:_buildDistributionView(item, category_key, item_title, data, true)
+                -- A section's span-only first view completes the rest first
+                self_ref:_completeDistribution(data, function()
+                    for j = 1, #nodes do
+                        data.revealed[j] = true
+                    end
+                    data.spoiler_warned = true
+                    data._focus_idx = nil
+                    self_ref:_buildDistributionView(item, category_key, item_title, data, true)
+                end)
             end,
         })
     end
@@ -5331,13 +6081,15 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
                 dim = true,
                 callback = function()
                     local function do_reveal()
-                        data.revealed[captured_i] = true
-                        for j = captured_i + 1, #nodes do
-                            if (nodes[j].depth or 1) <= (n.depth or 1) then break end
-                            data.revealed[j] = true
-                        end
-                        data._focus_idx = captured_i
-                        self_ref:_buildDistributionView(item, category_key, item_title, data, true)
+                        self_ref:_completeDistribution(data, function()
+                            data.revealed[captured_i] = true
+                            for j = captured_i + 1, #nodes do
+                                if (nodes[j].depth or 1) <= (n.depth or 1) then break end
+                                data.revealed[j] = true
+                            end
+                            data._focus_idx = captured_i
+                            self_ref:_buildDistributionView(item, category_key, item_title, data, true)
+                        end)
                     end
                     if not data.spoiler_warned then
                         local warn_text = self_ref.scope
@@ -5384,7 +6136,7 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
                         -- Mention list scoped to this node's span; a node the
                         -- user revealed opens unclipped
                         self_ref:_showChapterMentions(item, category_key, item_title, n,
-                            { hits = data.hits,
+                            { hits = data.hits, dist = data.layout and data or nil,
                               no_clip = data.revealed[captured_i] or nil })
                     else
                         UIManager:show(Notification:new{
@@ -5463,7 +6215,8 @@ function XrayBrowser:_buildDistributionView(item, category_key, item_title, data
             end
             if pm then
                 self:_showChapterMentions(item, category_key, item_title, target_chapter,
-                    { hits = data.hits, no_clip = pm.no_clip or nil })
+                    { hits = data.hits, dist = data.layout and data or nil,
+                      no_clip = pm.no_clip or nil })
             end
         end
     end
@@ -5480,6 +6233,185 @@ function XrayBrowser:_mentionReturnInfo(category_key, item_title)
     }
     if self.scope then return_info.scope = self.scope end
     return return_info
+end
+
+--- Every form this browser's X-Ray matches (all text-matched entries): what
+--- the per-book name index must hold for Chapter Appearances and Mentions.
+function XrayBrowser:_indexForms()
+    local forms, seen = {}, {}
+    for _idx, cat in ipairs(XrayParser.getCategories(self.xray_data) or {}) do
+        if not XrayParser.TEXT_MATCH_EXCLUDED[cat.key] then
+            for _idx2, item in ipairs(cat.items) do
+                local set = XrayParser.matchTermSet(item)
+                for _idx3, f in ipairs(set and set.all or {}) do
+                    if not seen[f] then
+                        seen[f] = true
+                        forms[#forms + 1] = f
+                    end
+                end
+            end
+        end
+    end
+    return forms
+end
+
+--- The forms of the carried entries (#116, B393): what Mentions' carried
+--- section reads from the name index. Never REQUIRED of the index (this
+--- book's own views must not wait on up to thousands of carried names); the
+--- marks keep them there, and Mentions asks for them in the background.
+function XrayBrowser:_carriedIndexForms()
+    local forms, seen = {}, {}
+    for _idx, stub in ipairs(self.xray_data[XrayParser.DORMANT_KEY] or {}) do
+        if type(stub) == "table" and type(stub.name) == "string" and stub.name ~= ""
+                and not XrayParser.TEXT_MATCH_EXCLUDED[
+                    type(stub.category) == "string" and stub.category or "characters"] then
+            local set = XrayParser.matchTermSet(stub)
+            for _idx2, f in ipairs(set and set.all or {}) do
+                if not seen[f] then
+                    seen[f] = true
+                    forms[#forms + 1] = f
+                end
+            end
+        end
+    end
+    return forms
+end
+
+--- The name index for this browser's X-Ray (docs/xray_marks_freeze_plan.md
+--- round 4): the stored layout when it holds every form; else a section's
+--- own span, read now in a moment (the whole book follows in the
+--- background); else one whole-book pass now, in a subprocess with a
+--- tap-to-cancel message. Must run inside Trapper:wrap.
+--- @param span table|nil { first, last }
+--- @return table|nil layout (layout.span set when it covers only the span),
+---   nil when cancelled or while KOReader re-lays the book out
+function XrayBrowser:_nameLayout(span)
+    local XrayIndex = require("koassistant_xray_index")
+    local ui = self.ui
+    local forms = self:_indexForms()
+    local layout = XrayIndex.ready(ui, forms)
+    if layout then return layout end
+    if not XrayIndex.stamp(ui) then
+        UIManager:show(InfoMessage:new{
+            text = _("KOReader is still laying out the book after a settings change. Try again in a moment."),
+            timeout = 4,
+        })
+        return nil
+    end
+    return XrayIndex.buildNow(ui, forms, span)
+end
+
+--- Distribution counts from a name-index layout: per-page counts, every
+--- node's count (clipped at the gate too), the totals. A span-only layout
+--- (a section browser's first view) leaves `partial` set: counts outside it
+--- are unknown until the first reveal completes them.
+function XrayBrowser:_fillDistributionCounts(data, layout)
+    local XrayIndex = require("koassistant_xray_index")
+    local total_pages = self.ui.document.info.number_of_pages or 0
+    local sp = layout.span
+    local page_counts = XrayIndex.entityPages(layout, data.set, data.handles,
+        sp and sp[1], sp and sp[2]) or {}
+    local prefix = { [0] = 0 }
+    for p = 1, total_pages do
+        prefix[p] = prefix[p - 1] + (page_counts[p] or 0)
+    end
+    local function spanCount(a, b)
+        if b > total_pages then b = total_pages end
+        if a < 1 then a = 1 end
+        if b < a then return 0 end
+        return prefix[b] - prefix[a - 1]
+    end
+    local gate = data.gate
+    for _idx, n in ipairs(data.nodes) do
+        n.count = spanCount(n.start_page, n.end_page)
+        n.gated_count = (gate and n.start_page <= gate)
+            and spanCount(n.start_page, math.min(n.end_page, gate)) or nil
+    end
+    data.layout = layout
+    data.page_counts = page_counts
+    data.partial = sp
+    data.total_full = total_pages > 0 and prefix[total_pages] or 0
+    data.total_gated = gate and spanCount(1, gate) or nil
+end
+
+--- Run `after` once the distribution holds the whole book: a section
+--- browser's span-only first view completes on the first reveal beyond it
+--- (stored index, or one pass now with a tap-to-cancel message).
+function XrayBrowser:_completeDistribution(data, after)
+    if not data.partial then return after() end
+    local self_ref = self
+    require("ui/trapper"):wrap(function()
+        local layout = self_ref:_nameLayout(nil)
+        if not layout then return end
+        self_ref:_fillDistributionCounts(data, layout)
+        after()
+    end)
+end
+
+--- Mention rows for pages of the name index: every occurrence on those
+--- pages with a bold-match snippet (the PTF shape KOReader's own search list
+--- renders), the page, and its place on the page (the jump walks to it).
+--- Pure against the document, so a long list builds in a subprocess.
+local function indexMentionRows(document, pages, set, handles)
+    local TextBoxWidget = require("ui/widget/textboxwidget")
+    local total = document.info.number_of_pages or 0
+    local rows = {}
+    for _idx, p in ipairs(pages) do
+        local xp = document:getPageXPointer(p)
+        local nxp = p < total and document:getPageXPointer(p + 1)
+            or require("koassistant_context_extractor").documentEndXPointer(document, total)
+        local text = (xp and nxp) and document:getTextFromXPointers(xp, nxp) or ""
+        if text ~= "" then
+            local pieces = XrayParser.textPieces(text)
+            local norm, ranges = XrayParser.normalizePieces(pieces)
+            for k, o in ipairs(XrayParser.occurrencesIn(norm, set, handles)) do
+                local f, l = XrayParser.piecesForSpan(ranges, o[1], o[2])
+                if f then
+                    local before, match, after = XrayParser.snippetFromPieces(pieces, f, l)
+                    rows[#rows + 1] = {
+                        page = p,
+                        display_page = p,
+                        k = k,
+                        row_text = table.concat({ TextBoxWidget.PTF_HEADER, "… ", before,
+                            TextBoxWidget.PTF_BOLD_START, match, TextBoxWidget.PTF_BOLD_END,
+                            after, " …" }),
+                    }
+                end
+            end
+        end
+    end
+    return rows
+end
+
+-- A mention list over more pages than this builds in a subprocess
+-- (tap to cancel); fewer build in place
+local MENTION_ROWS_IN_PROCESS_PAGES = 20
+
+--- Where the k-th occurrence of a mention row sits: the page's words walked
+--- for their xpointers, the same matcher as the row. nil when it cannot be
+--- found (the page then opens at its top).
+function XrayBrowser:_mentionXPointer(mention)
+    local XrayIndex = require("koassistant_xray_index")
+    local doc = self.ui and self.ui.document
+    if not (doc and mention.set) then return nil end
+    local ok, pieces, norm = pcall(XrayIndex.pageWords, doc, mention.page, mention.page, 0)
+    if not ok or not pieces then return nil end
+    local ranges = {}
+    for i, pc in ipairs(pieces) do ranges[i] = pc.range or false end
+    local n = 0
+    for _idx, o in ipairs(XrayParser.occurrencesIn(norm, mention.set, mention.handles)) do
+        local f, l = XrayParser.piecesForSpan(ranges, o[1], o[2])
+        if f then
+            for q = f, l do
+                if pieces[q].inside then
+                    n = n + 1
+                    if n == mention.k then return pieces[f].ws end
+                    break
+                end
+            end
+        end
+    end
+    return nil
 end
 
 --- THE text-matching spoiler gate (F2, slice 4): routed through the posture
@@ -5509,7 +6441,9 @@ function XrayBrowser:_spoilerGate()
     local total = ui.document.info and ui.document.info.number_of_pages
     local gate = getCurrentPage(ui) or 0
     if total and md and md.progress_decimal then
-        local coverage = math.floor(md.progress_decimal * total + 0.5)
+        -- The coverage is a flow position; the gate is a raw page (B335)
+        local coverage = require("koassistant_context_extractor")
+            .rawPageAt(ui.document, tonumber(md.progress_decimal) or 0, true) or 0
         if coverage > gate then gate = coverage end
     end
     if gate == 0 or (total and gate >= total) then return nil end
@@ -5525,50 +6459,60 @@ end
 --- session there (built-in highlighting + prev/next — no custom overlay,
 --- maintainer verdict). chapter = nil → whole book. Spans are clipped by
 --- the posture-routed spoiler gate (_spoilerGate) unless opts.no_clip (the
---- user revealed this span, or protection is off). opts.hits = the
---- distribution's pre-gathered hit list (one pass powers counts AND these
---- rows — consistent by construction); absent → gather here.
+--- user revealed this span, or protection is off). opts.dist = the
+--- distribution's name-index data (EPUB: rows read from the pages it points
+--- at, the same matcher as its counts); opts.hits = its gathered hit list
+--- (PDF); neither → gather here (PDF).
 function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapter, opts)
     local self_ref = self
     local ui = self.ui
     if not (ui and ui.document) then return end
+    local dist = opts and opts.dist
     local terms = collectSearchTerms(item, item_title)
+    if dist and dist.set then
+        -- The index path also matches a name's bracketed and alef-optional
+        -- forms: the search session a tap opens looks for the name or alias
+        -- each came from too, or it would jump away from the tapped hit
+        local seen, extra = {}, {}
+        for _idx, t in ipairs(terms) do seen[t.text:lower()] = true end
+        for _form, src in pairs(dist.set.source) do
+            if not seen[src:lower()] then
+                seen[src:lower()] = true
+                extra[#extra + 1] = src
+            end
+        end
+        table.sort(extra)
+        for _idx, src in ipairs(extra) do
+            terms[#terms + 1] = { text = src, regex = XrayParser.buildArabicSearchRegex(src) }
+        end
+    end
     if #terms == 0 then return end
     local pre_hits = opts and opts.hits
-    local exclude = XrayParser.containingHandles(self.xray_data, item)
-    if not pre_hits and not ui.document.findAllText then return end
+    if not dist and not pre_hits and not ui.document.findAllText then return end
     local no_clip = opts and opts.no_clip
 
-    local function render(all_hits)
-        -- Span bounds: the chapter's page range, or the whole book — either
-        -- way clipped at the spoiler gate unless no_clip
-        local boundary = (not no_clip) and self_ref:_spoilerGate() or nil
-        local first_page, last_page
-        if chapter then
-            first_page = chapter.start_page
-            last_page = chapter.end_page
-            if boundary and boundary < last_page then
-                -- Crossing span: show up to the gate (an entirely-beyond
-                -- span yields an empty list — reveal is the way in)
-                last_page = math.max(boundary, first_page - 1)
-            else
-                boundary = nil  -- no visible clip on this span
-            end
+    -- Span bounds: the chapter's page range, or the whole book — either
+    -- way clipped at the spoiler gate unless no_clip
+    local boundary = (not no_clip) and self_ref:_spoilerGate() or nil
+    local first_page, last_page
+    if chapter then
+        first_page = chapter.start_page
+        last_page = chapter.end_page
+        if boundary and boundary < last_page then
+            -- Crossing span: show up to the gate (an entirely-beyond
+            -- span yields an empty list — reveal is the way in)
+            last_page = math.max(boundary, first_page - 1)
         else
-            first_page = 1
-            last_page = boundary
-                or (ui.document.info and ui.document.info.number_of_pages)
+            boundary = nil  -- no visible clip on this span
         end
-        if not (first_page and last_page) then return end
+    else
+        first_page = 1
+        last_page = boundary
+            or (ui.document.info and ui.document.info.number_of_pages)
+    end
+    if not (first_page and last_page) then return end
 
-        local mentions = {}
-        for _idx, m in ipairs(all_hits) do
-            if m.display_page and m.display_page >= first_page
-                and m.display_page <= last_page then
-                table.insert(mentions, m)
-            end
-        end
-
+    local function render(mentions)
         -- Return descriptor: the search-return button relaunches THIS page
         local mentions_state = {
             whole_book = (not chapter) or nil,
@@ -5632,12 +6576,56 @@ function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapte
         })
     end
 
-    if pre_hits then
-        render(pre_hits)
+    local function inSpan(all_hits)
+        local mentions = {}
+        for _idx, m in ipairs(all_hits) do
+            if m.display_page and m.display_page >= first_page
+                and m.display_page <= last_page then
+                table.insert(mentions, m)
+            end
+        end
+        return mentions
+    end
+
+    if dist then
+        -- The pages the name index points at, read and matched here: a long
+        -- list builds in a subprocess (tap to cancel)
+        local pages = {}
+        for p, c in pairs(dist.page_counts or {}) do
+            if c > 0 and p >= first_page and p <= last_page then pages[#pages + 1] = p end
+        end
+        table.sort(pages)
+        local doc = ui.document
+        local function show(rows)
+            for _idx, r in ipairs(rows) do
+                r.set = dist.set
+                r.handles = dist.handles
+            end
+            render(rows)
+        end
+        if #pages <= MENTION_ROWS_IN_PROCESS_PAGES then
+            show(indexMentionRows(doc, pages, dist.set, dist.handles))
+        else
+            require("ui/trapper"):wrap(function()
+                local Trapper = require("ui/trapper")
+                local info = InfoMessage:new{ text = _("Collecting the mentions… (tap to cancel)") }
+                UIManager:show(info)
+                UIManager:forceRePaint()
+                local completed, rows = Trapper:dismissableRunInSubprocess(function()
+                    return indexMentionRows(doc, pages, dist.set, dist.handles)
+                end, info)
+                if not completed then return end
+                UIManager:close(info)
+                show(type(rows) == "table" and rows or {})
+            end)
+        end
+    elseif pre_hits then
+        render(inSpan(pre_hits))
     else
-        UIManager:show(Notification:new{ text = _("Finding mentions…") })
-        UIManager:scheduleIn(0.1, function()
-            render(gatherMentionHits(ui, terms, exclude))
+        require("ui/trapper"):wrap(function()
+            local hits = gatherMentionHitsInSubprocess(ui, terms,
+                XrayParser.containingHandles(self_ref.xray_data, item))
+            if hits then render(inSpan(hits)) end
         end)
     end
 end
@@ -5659,6 +6647,9 @@ function XrayBrowser:_gotoMentionAndSearch(category_key, item_title, mention, te
         origin = { xp = (ui.rolling and ui.rolling.getLastProgress
             and ui.rolling:getLastProgress()) or ui.document:getXPointer() }
     end
+    -- A name-index row knows its page and its place there: walk the page
+    -- for that occurrence's xpointer before anything moves
+    local target_xp = (not mention.xp and mention.k) and self:_mentionXPointer(mention) or nil
     -- Reveal the page: covering widgets, then the browser
     if self._cleanup_widgets then
         for _cw, widget in ipairs(self._cleanup_widgets) do
@@ -5671,6 +6662,8 @@ function XrayBrowser:_gotoMentionAndSearch(category_key, item_title, mention, te
     end
     if mention.xp then
         ui:handleEvent(Event:new("GotoXPointer", mention.xp, mention.xp))
+    elseif target_xp then
+        ui:handleEvent(Event:new("GotoXPointer", target_xp, target_xp))
     elseif mention.page then
         ui:handleEvent(Event:new("GotoPage", mention.page))
     end
@@ -5692,11 +6685,13 @@ function XrayBrowser:_gotoMentionAndSearch(category_key, item_title, mention, te
 end
 
 --- Show where a single entity appears across the book (Chapter Appearances,
---- slice 4 shape): the full TOC hierarchy with a count at EVERY level,
---- computed from ONE gatherMentionHits pass — the same hit list the mention
---- pages render, so counts and lists always agree. No text extraction on
---- this surface anymore. Spoiler gating is display-only (see
---- _buildDistributionView).
+--- slice 4 shape): the full TOC hierarchy with a count at EVERY level. On
+--- EPUB the counts come from the per-book name index (koassistant_xray_index:
+--- stored, or one pass now with a tap-to-cancel message; a section browser
+--- reads its own span first and completes the rest on the first reveal
+--- beyond it) and the mention lists read the pages it points at; PDFs keep
+--- ONE gatherMentionHits pass. Either way counts and lists agree. Spoiler
+--- gating is display-only (see _buildDistributionView).
 --- Entry point: "Chapter Appearances" button in item detail view
 --- @param item table The X-Ray item
 --- @param category_key string Category key
@@ -5719,15 +6714,21 @@ function XrayBrowser:showItemDistribution(item, category_key, item_title, detail
         return
     end
 
-    if not self.ui.document.findAllText then
+    local by_index = require("koassistant_xray_index").supported(self.ui.document)
+    if not by_index and not self.ui.document.findAllText then
         UIManager:show(InfoMessage:new{
             text = _("Text search is not supported for this document."),
             timeout = 3,
         })
         return
     end
-    local terms = collectSearchTerms(item, item_title)
-    if #terms == 0 then
+    local terms, set
+    if by_index then
+        set = XrayParser.matchTermSet(item, item_title)
+    else
+        terms = collectSearchTerms(item, item_title)
+    end
+    if (by_index and not set) or (not by_index and #terms == 0) then
         UIManager:show(InfoMessage:new{
             text = T(_("No searchable name for \"%1\"."), item_title),
             timeout = 3,
@@ -5735,12 +6736,10 @@ function XrayBrowser:showItemDistribution(item, category_key, item_title, detail
         return
     end
 
-    UIManager:show(Notification:new{
-        text = _("Computing distribution…"),
-    })
-
     local self_ref = self
-    UIManager:scheduleIn(0.2, function()
+    -- Trapper:wrap: a whole-book pass runs in a subprocess and this
+    -- coroutine resumes when it lands (or ends when the reader cancels)
+    UIManager:scheduleIn(0.2, function() require("ui/trapper"):wrap(function()
         local ui = self_ref.ui
         local gate = self_ref:_spoilerGate()
 
@@ -5766,38 +6765,59 @@ function XrayBrowser:showItemDistribution(item, category_key, item_title, detail
             return
         end
 
-        -- ONE native pass: every hit, whole book (display gating comes later)
-        local hits = gatherMentionHits(ui, terms,
-            XrayParser.containingHandles(self.xray_data, item))
-
-        -- Per-page prefix sums → a node's count is one subtraction, at any depth
-        local total_pages = ui.document.info.number_of_pages or 0
-        local page_counts = {}
-        for _idx, h in ipairs(hits) do
-            local p = h.display_page
-            if p and p >= 1 and p <= total_pages then
-                page_counts[p] = (page_counts[p] or 0) + 1
+        local data = {
+            nodes = nodes,
+            max_depth = max_depth,
+            gate = gate,
+            revealed = {},
+            spoiler_warned = false,
+        }
+        if by_index then
+            data.set = set
+            data.handles = XrayParser.containingMatchHandles(self_ref.xray_data, item)
+            local span = self_ref.scope
+                and { first = self_ref.scope_start, last = self_ref.scope_end } or nil
+            local layout = self_ref:_nameLayout(span)
+            if not layout then return end
+            self_ref:_fillDistributionCounts(data, layout)
+        else
+            -- ONE native pass: every hit, whole book (display gating comes later)
+            local hits = gatherMentionHitsInSubprocess(ui, terms,
+                XrayParser.containingHandles(self_ref.xray_data, item))
+            if not hits then return end
+            -- Per-page prefix sums → a node's count is one subtraction, at any depth
+            local total_pages = ui.document.info.number_of_pages or 0
+            local page_counts = {}
+            for _idx, h in ipairs(hits) do
+                local p = h.display_page
+                if p and p >= 1 and p <= total_pages then
+                    page_counts[p] = (page_counts[p] or 0) + 1
+                end
             end
+            local prefix = { [0] = 0 }
+            for p = 1, total_pages do
+                prefix[p] = prefix[p - 1] + (page_counts[p] or 0)
+            end
+            local function spanCount(a, b)
+                if b > total_pages then b = total_pages end
+                if a < 1 then a = 1 end
+                if b < a then return 0 end
+                return prefix[b] - prefix[a - 1]
+            end
+            for _idx, n in ipairs(nodes) do
+                n.count = spanCount(n.start_page, n.end_page)
+                -- Clipped count for spans the gate cuts through (nil elsewhere)
+                n.gated_count = (gate and n.start_page <= gate)
+                    and spanCount(n.start_page, math.min(n.end_page, gate)) or nil
+            end
+            data.hits = hits
+            data.total_full = total_pages > 0 and prefix[total_pages] or #hits
+            data.total_gated = gate and spanCount(1, gate) or nil
         end
-        local prefix = { [0] = 0 }
-        for p = 1, total_pages do
-            prefix[p] = prefix[p - 1] + (page_counts[p] or 0)
-        end
-        local function spanCount(a, b)
-            if b > total_pages then b = total_pages end
-            if a < 1 then a = 1 end
-            if b < a then return 0 end
-            return prefix[b] - prefix[a - 1]
-        end
-        for _idx, n in ipairs(nodes) do
-            n.count = spanCount(n.start_page, n.end_page)
-            -- Clipped count for spans the gate cuts through (nil elsewhere)
-            n.gated_count = (gate and n.start_page <= gate)
-                and spanCount(n.start_page, math.min(n.end_page, gate)) or nil
-        end
-        local total_full = total_pages > 0 and prefix[total_pages] or #hits
 
-        if total_full == 0 then
+        -- Nothing anywhere (a section's span-only view still opens: the rest
+        -- of the book is one reveal away)
+        if data.total_full == 0 and not data.partial then
             local msg = ui.document.info.has_pages
                 and T(_("No mentions of \"%1\" found. PDF text extraction may not be available for this document."), item_title)
                 or T(_("No mentions of \"%1\" found in book text."), item_title)
@@ -5850,22 +6870,11 @@ function XrayBrowser:showItemDistribution(item, category_key, item_title, detail
                 end
             end
         end
-
-        local data = {
-            nodes = nodes,
-            hits = hits,
-            max_depth = max_depth,
-            gate = gate,
-            total_full = total_full,
-            total_gated = gate and spanCount(1, gate) or nil,
-            revealed = {},
-            expanded = expanded,
-            spoiler_warned = false,
-            _focus_idx = cur_i,
-        }
+        data.expanded = expanded
+        data._focus_idx = cur_i
         self_ref._dist_cache[cache_key] = data
         self_ref:_buildDistributionView(item, category_key, item_title, data, false, detail_context)
-    end)
+    end) end)
 end
 
 --- Show search dialog (overlays as InputDialog)
@@ -5958,6 +6967,7 @@ function XrayBrowser:_openOtherXrayAtItem(group, result)
         full_document = ce.full_document,
         merged_from_books = ce.merged_from_books,
         merged_from = ce.merged_from,
+        xray_categories = ce.xray_categories,
         scope = scope,
         _cleanup_widgets = self._cleanup_widgets,  -- preserve across X-Ray swaps
     }
@@ -6058,10 +7068,11 @@ function XrayBrowser:_showCrossXrayResults(query)
     end)
 end
 
---- Show search results (navigates forward)
+--- Title and rows of a search results page.
 --- @param query string The search query
 --- @param skip_cross_search boolean|nil Skip "Search other X-Rays" button (already searched)
-function XrayBrowser:showSearchResults(query, skip_cross_search)
+--- @return string title, table items
+function XrayBrowser:_searchResultsPage(query, skip_cross_search)
     local results = XrayParser.searchAll(self.xray_data, query)
 
     local items = {}
@@ -6178,7 +7189,8 @@ function XrayBrowser:showSearchResults(query, skip_cross_search)
     local stub_hits = XrayParser.searchLedger(self.xray_data, query)
     if #stub_hits > 0 then
         table.insert(items, {
-            text = _("Carried from earlier books"),
+            -- The kind's own wording: only a series has "earlier" books
+            text = dormantListTitle(self.metadata.book_file),
             bold = true,
             separator = true,
             callback = function() end,
@@ -6317,8 +7329,26 @@ function XrayBrowser:showSearchResults(query, skip_cross_search)
         })
     end
 
-    local title = T(_("Results for \"%1\" (%2)"), query, #results + #stub_hits)
+    return T(_("Results for \"%1\" (%2)"), query, #results + #stub_hits), items
+end
+
+--- Show search results (navigates forward)
+--- @param query string The search query
+--- @param skip_cross_search boolean|nil Skip "Search other X-Rays" button (already searched)
+function XrayBrowser:showSearchResults(query, skip_cross_search)
+    local self_ref = self
+    local title, items = self:_searchResultsPage(query, skip_cross_search)
     self:navigateForward(title, items)
+    -- The list can hold carried entries: an edit made from one of its rows
+    -- (remove, add as an entry, merge into an entry) repaints it in place
+    if self:_carriedView() then
+        self.page = {
+            gen = self._ledger_gen,
+            rebuild = function()
+                return self_ref:_searchResultsPage(query, skip_cross_search)
+            end,
+        }
+    end
 end
 
 --- Show full rendered markdown view in ChatGPTViewer (overlays on menu)
@@ -6409,6 +7439,74 @@ function XrayBrowser:showFullView()
         on_launch_chat = self.metadata.plugin and self.metadata.plugin._buildLaunchChatCallback
             and self.metadata.plugin:_buildLaunchChatCallback(self.metadata.book_file, self.metadata.title, self.metadata.book_author, markdown, _("X-Ray")) or nil,
     })
+end
+
+--- The shared "Link and merge…" rows as this browser starts them (B401), from
+--- the one builder (koassistant_xray_rows.lua): the ☰ menu's group, or with
+--- `between_books` only the AI merges between books, for the carried list's
+--- own row. One place hands the builder its handlers, so both use the same
+--- flows.
+--- @param pre function Closes the dialog the rows sit in
+--- @param between_books boolean|nil
+--- @return table rows ButtonDialog rows
+function XrayBrowser:_mergeGroupRows(pre, between_books)
+    local self_ref = self
+    local ActionCache = require("koassistant_action_cache")
+    -- Every flow closes this browser only when it actually starts work
+    -- that replaces the data this view renders (device round 2 T11: an
+    -- empty flow or an early return must leave the browser up), and
+    -- reopens the X-Ray on the result (round 27)
+    local function flowOpts()
+        local browser_closed = false
+        return {
+            file = self_ref.metadata.book_file,
+            ui = self_ref.ui,
+            plugin = self_ref.metadata.plugin,
+            configuration = self_ref.metadata.configuration,
+            title = self_ref.metadata.title,
+            author = self_ref.metadata.book_author,
+            reopen_live = true,
+            close_browser = function()
+                if not browser_closed and self_ref.menu then
+                    browser_closed = true
+                    UIManager:close(self_ref.menu)
+                end
+            end,
+        }
+    end
+    local ctx = {
+        plugin = self.metadata.plugin,
+        file = self.metadata.book_file,
+        carried_count = #self:_dormantRows(),
+        section_count = ActionCache.getSectionCount(self.metadata.book_file,
+            ActionCache.SECTION_PREFIXES.xray),
+        pre = pre,
+        align = "left",
+        on_carried = function() self_ref:showDormantList() end,
+        on_cross_book = function()
+            require("koassistant_xray_merge").startCrossBookFlow(flowOpts())
+        end,
+        on_group_merge = function(kind)
+            local XrayMerge = require("koassistant_xray_merge")
+            local start = kind == "project" and XrayMerge.startFanInFlow
+                or XrayMerge.startSeriesChainFlow
+            start(flowOpts())
+        end,
+        on_sections = function()
+            require("koassistant_xray_merge").startFlow(flowOpts())
+        end,
+        on_dedup = function()
+            local dedup_opts = flowOpts()
+            dedup_opts.reopen_live = nil
+            require("koassistant_xray_dedup").startFlow(dedup_opts)
+        end,
+    }
+    if between_books then
+        -- A missing handler drops its row: the two merges between books stay
+        ctx.on_carried, ctx.on_sections, ctx.on_dedup = nil, nil, nil
+        ctx.align = nil
+    end
+    return require("koassistant_xray_rows").linkMergeRows(ctx)
 end
 
 --- Show options menu (hamburger button)
@@ -6607,69 +7705,46 @@ function XrayBrowser:showOptions()
         table.insert(buttons, vr.all_versions)
     end
 
-    -- Merge section X-Rays (§6 slice 3, #90): main X-Ray views only (a section
-    -- view merging its own peers would confuse the landing surface); archived
-    -- views stay read-only
+    -- "Link and merge…" (B401): the carried list, the AI merges (another
+    -- book, the series or the project, section X-Rays) and the duplicate
+    -- review behind ONE row, the same group the X-Ray popup has, from the
+    -- shared builder (koassistant_xray_rows.lua linkMergeRows). Main X-Ray
+    -- views only (a section view merging its own peers would confuse the
+    -- landing surface); archived views stay read-only. These rows sat flat
+    -- in this menu, in another order, with the duplicate review four rows
+    -- further down.
     if not self.scope and not self.metadata.checkpoint
         and self.metadata.plugin and self.metadata.book_file then
-        local ActionCache = require("koassistant_action_cache")
-        local sec_count = ActionCache.getSectionCount(self.metadata.book_file,
-            ActionCache.SECTION_PREFIXES.xray)
-        if sec_count > 0 then
+        local XrayRows = require("koassistant_xray_rows")
+        local lm_rows = self:_mergeGroupRows(closeOptions)
+        if #lm_rows > 0 then
             table.insert(buttons, {{
-                text = T(_("Merge section X-Rays (%1)…"), sec_count), align = "left",
+                text = XrayRows.linkMergeLabel(), align = "left",
                 callback = function()
                     closeOptions()
-                    -- Close the browser: a successful into-main merge replaces the
-                    -- data this view renders. Deferred to list-open (device
-                    -- round 2 T11): an empty flow must leave the browser up.
-                    local browser_closed = false
-                    require("koassistant_xray_merge").startFlow({
-                        file = self_ref.metadata.book_file,
-                        ui = self_ref.ui,
-                        plugin = self_ref.metadata.plugin,
-                        configuration = self_ref.metadata.configuration,
-                        title = self_ref.metadata.title,
-                        author = self_ref.metadata.book_author,
-                        reopen_live = true,
-                        close_browser = function()
-                            if not browser_closed and self_ref.menu then
-                                browser_closed = true
-                                UIManager:close(self_ref.menu)
-                            end
+                    local rows = {}
+                    for _idx, r in ipairs(lm_rows) do rows[#rows + 1] = r end
+                    rows[#rows + 1] = {{
+                        text = _("Back"), align = "left",
+                        callback = function()
+                            closeOptions()
+                            self_ref:showOptions()
                         end,
-                    })
+                    }}
+                    -- The same anchored dropdown, in the menu's place: the
+                    -- rows' own closeOptions() closes it. A tap outside
+                    -- closes it and leaves the browser, like the menu itself.
+                    self_ref.options_dialog = ButtonDialog:new{
+                        buttons = rows,
+                        shrink_unneeded_width = true,
+                        anchor = function()
+                            return self_ref.menu.title_bar.left_button.image.dimen, true
+                        end,
+                    }
+                    UIManager:show(self_ref.options_dialog)
                 end,
             }})
         end
-        -- Cross-book merge (item 43, #90 v1): fold another book's X-Ray into
-        -- this one as background. Main views only, same rationale as above;
-        -- the flow's early returns (no candidates / consent) leave the
-        -- browser up (close deferred to the actual merge start).
-        table.insert(buttons, {{
-            text = _("Merge from another book…"), align = "left",
-            callback = function()
-                closeOptions()
-                local xb_browser_closed = false
-                require("koassistant_xray_merge").startCrossBookFlow({
-                    file = self_ref.metadata.book_file,
-                    ui = self_ref.ui,
-                    plugin = self_ref.metadata.plugin,
-                    configuration = self_ref.metadata.configuration,
-                    title = self_ref.metadata.title,
-                    author = self_ref.metadata.book_author,
-                    -- The fold closes this browser; reopen the X-Ray on the
-                    -- merged data when it lands (round 27)
-                    reopen_live = true,
-                    close_browser = function()
-                        if not xb_browser_closed and self_ref.menu then
-                            xb_browser_closed = true
-                            UIManager:close(self_ref.menu)
-                        end
-                    end,
-                })
-            end,
-        }})
         -- Book group row (item 46): one popup of the group's members — tap a
         -- volume to switch to ITS live X-Ray (grayed when it has none).
         -- Checked LAZILY here (not threaded through browser metadata): every
@@ -6756,34 +7831,28 @@ function XrayBrowser:showOptions()
         }})
     end
 
-    -- Find duplicate entities (§6 slice 4, #90): main X-Ray views only, same
-    -- rationale as the merge row; the flow operates on disk truth
     if not self.scope and not self.metadata.checkpoint
         and self.metadata.plugin and self.metadata.book_file then
-        table.insert(buttons, {{
-            text = _("Find duplicate entities…"), align = "left",
-            callback = function()
-                closeOptions()
-                -- Close the browser only when the pair list actually opens (a
-                -- merge rewrites the data this view renders) — an empty scan
-                -- must leave the browser up (device round 2 T11)
-                local browser_closed = false
-                require("koassistant_xray_dedup").startFlow({
-                    file = self_ref.metadata.book_file,
-                    ui = self_ref.ui,
-                    plugin = self_ref.metadata.plugin,
-                    configuration = self_ref.metadata.configuration,
-                    title = self_ref.metadata.title,
-                    author = self_ref.metadata.book_author,
-                    close_browser = function()
-                        if not browser_closed and self_ref.menu then
-                            browser_closed = true
-                            UIManager:close(self_ref.menu)
-                        end
-                    end,
-                })
-            end,
-        }})
+        -- #116 (B393): where this book's carried entries are listed. Shown
+        -- only when there are any; the picker's book tab also offers the
+        -- group's value when the group sets one.
+        if #self:_dormantRows() > 0 then
+            local BookSettings = require("koassistant_book_settings")
+            table.insert(buttons, {{
+                text = T(_("Carried entries: %1…"), BookSettings.xrayCarriedLabel(
+                    self:_carriedInCategories() and "categories" or "list")),
+                align = "left",
+                callback = function()
+                    closeOptions()
+                    BookSettings.showXrayCarriedPicker({
+                        plugin = self_ref.metadata.plugin, ui = self_ref.ui,
+                        document_path = self_ref.metadata.book_file,
+                        target_override = "book",
+                        on_close = function() self_ref:_repaintCarried() end,
+                    })
+                end,
+            }})
+        end
     end
 
     -- Info
@@ -6842,7 +7911,7 @@ function XrayBrowser:showOptions()
                 local src_ts = src and tonumber(src.timestamp)
                 if src_ts then
                     line = line .. " — " .. (src_ts > tonumber(rec.source_ts)
-                        and _("changed since the fold") or _("up to date"))
+                        and _("changed since the AI merge") or _("up to date"))
                 end
             end
             table.insert(info_parts, line)
@@ -6905,6 +7974,16 @@ function XrayBrowser:showOptions()
         end,
     }
     UIManager:show(self.options_dialog)
+    -- The shared version rows hide while a build or update runs: the menu
+    -- redraws when that changes (main.lua _trackLiveWindow)
+    local plugin = self.metadata.plugin
+    if plugin and plugin._trackLiveWindow then
+        plugin:_trackLiveWindow(self.options_dialog, function()
+            if self_ref.menu and UIManager:isWidgetShown(self_ref.menu) then
+                self_ref:showOptions()
+            end
+        end)
+    end
 end
 
 -- Get available non-xray artifacts for this book

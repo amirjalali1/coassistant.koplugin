@@ -237,6 +237,17 @@ TestRunner:test("listBackups sees the new backup", function()
     TestRunner:assertTrue(found, "listBackups should include the created backup")
 end)
 
+TestRunner:test("the domain/behavior counts skip macOS '._' companions (#112)", function()
+    writeFile(TMP .. "/plugin/domains/._academic.md", "\0\5\22\7binary")
+    writeFile(TMP .. "/plugin/behaviors/._terse.md", "\0\5\22\7binary")
+    local r = bm:createBackup(BACKUP_OPTS)
+    os.remove(TMP .. "/plugin/domains/._academic.md")
+    os.remove(TMP .. "/plugin/behaviors/._terse.md")
+    TestRunner:assertTrue(r and r.success, "backup should succeed")
+    TestRunner:assertTrue(r.counts.domains == 1 and r.counts.behaviors == 1,
+        "counts should be 1 and 1, got " .. tostring(r.counts.domains) .. " and " .. tostring(r.counts.behaviors))
+end)
+
 TestRunner:test("ordinary backup excludes API keys and subscription OAuth tokens", function()
     local sanitized = bm:createBackup({
         include_settings = true,
@@ -368,6 +379,181 @@ TestRunner:test("main.lua runs the importer off the flag (structural)", function
     local src = f:read("*all"); f:close()
     TestRunner:assertTrue(src:find("result%.v1_chats_restored", 1) ~= nil
         and src:find("self:migrateChatsToDocSettings%(%)", 1) ~= nil, "restore callback must call the importer")
+end)
+
+--------------------------------------------------------------------------------
+TestRunner:suite("a restore inside a restore can run (rollback lock, audit HIGH)")
+
+-- restoreBackup's own rollback calls restoreBackup again while the outer call
+-- still holds the lock. The lock is seconds old and LOCK_TIMEOUT is 5 minutes,
+-- so an unconditional acquire could never succeed and every failed restore ended
+-- in "Restore failed AND rollback failed". The inner call passes skip_lock.
+wipeTmp()
+seed()
+local bm_lock = freshManager()
+local lock_backup = bm_lock:createBackup(BACKUP_OPTS)
+local RESTORE_OPTS = {
+    restore_settings = true,
+    restore_api_keys = true,
+    restore_configs = true,
+    restore_content = true,
+    merge_mode = false,
+    skip_restore_point = true,
+}
+
+-- Stand in for the outer restore: hold the lock, then restore the way the
+-- rollback does.
+TestRunner:assertTrue(bm_lock:_acquireLock(), "test setup: lock should be free")
+local held = {}
+for k, v in pairs(RESTORE_OPTS) do held[k] = v end
+held.skip_lock = true
+local inner = bm_lock:restoreBackup(lock_backup.backup_path, held)
+local lock_still_held = exists(BackupManager.LOCK_FILE)
+bm_lock:_releaseLock()
+
+TestRunner:test("a skip_lock restore runs while the caller holds the lock", function()
+    TestRunner:assertTrue(inner and inner.success,
+        "inner restore failed: " .. tostring(inner and inner.error))
+end)
+
+TestRunner:test("the inner restore does not release a lock it never took", function()
+    TestRunner:assertTrue(lock_still_held,
+        "the outer caller's lock must survive the inner restore")
+end)
+
+TestRunner:test("without skip_lock a held lock still blocks a second restore", function()
+    TestRunner:assertTrue(bm_lock:_acquireLock(), "test setup: lock should be free again")
+    local blocked = bm_lock:restoreBackup(lock_backup.backup_path, RESTORE_OPTS)
+    bm_lock:_releaseLock()
+    TestRunner:assertTrue(blocked and not blocked.success, "a concurrent restore must be refused")
+end)
+
+wipeTmp()
+
+--------------------------------------------------------------------------------
+TestRunner:suite("a restore that fails halfway is rolled back (audit HIGH)")
+
+-- The lock fix only matters because of what it unblocks: the rollback itself.
+-- Nothing inside the restore pcall raises on its own (the JSON decodes are
+-- pcall-ed, LuaSettings swallows a corrupt file, the copies return false), so a
+-- device cannot reach this path by hand -- inject the failure instead, at a step
+-- that runs AFTER settings and configs were already written, and check the
+-- pre-restore state comes back.
+wipeTmp()
+seed()
+local bm_rb = freshManager()
+
+-- The archive we are about to fail to restore: different values throughout, and
+-- a chats JSON so the chat step (the last one) actually runs.
+local rb_src = TMP .. "/rollback_src"
+local ARCHIVE_CONFIG_BODY = '-- from the archive\nreturn { provider = "archived" }\n'
+writeFile(rb_src .. "/settings/koassistant_settings.lua",
+    'return {\n  ["features"] = {},\n  ["provider"] = "from_the_archive",\n}\n')
+writeFile(rb_src .. "/configs/configuration.lua", ARCHIVE_CONFIG_BODY)
+writeFile(rb_src .. "/koassistant_chats.json", '{"version":2,"chats":{}}\n')
+writeFile(rb_src .. "/manifest.json",
+    '{"version":"' .. BackupManager.BACKUP_VERSION .. '","plugin_version":"0.23.0","timestamp":1,'
+    .. '"created_date":"2026-01-01","contents":{"settings":true,"api_keys":true,"config_files":true,'
+    .. '"chats":true},"counts":{},"settings_schema_version":"2","notes":""}')
+local rb_archive = BackupManager.BACKUP_DIR .. "/koassistant_backup_rollback.koa"
+sh(string.format('tar -czf "%s" -C "%s" .', rb_archive, rb_src))
+
+-- Fail once, on the last restore step, so settings and configs are already
+-- overwritten when it happens. Once only, so the rollback's own run is clean.
+local orig_restore_chats = BackupManager.restoreChatsFromJSON
+local injected = false
+BackupManager.restoreChatsFromJSON = function(selfx, path, merge)
+    if not injected then
+        injected = true
+        error("injected failure after settings were written")
+    end
+    return orig_restore_chats(selfx, path, merge)
+end
+local rb_result = bm_rb:restoreBackup(rb_archive, {
+    restore_settings = true,
+    restore_api_keys = true,
+    restore_configs = true,
+    restore_content = true,
+    restore_chats = true,
+    merge_mode = false,
+})
+BackupManager.restoreChatsFromJSON = orig_restore_chats
+
+TestRunner:test("the failure is reported as rolled back, not as a broken restore", function()
+    TestRunner:assertTrue(injected, "test setup: the injected failure never fired")
+    TestRunner:assertTrue(rb_result and not rb_result.success, "a failed restore must not report success")
+    TestRunner:assertTrue(rb_result.rolled_back == true,
+        "rollback did not run: " .. tostring(rb_result and rb_result.error))
+end)
+
+TestRunner:test("settings written by the failed restore are undone", function()
+    local live = LuaSettingsStub:open(TMP .. "/settings/koassistant_settings.lua")
+    TestRunner:assertTrue(live:readSetting("provider") == "anthropic",
+        "provider should be back to the pre-restore value, got "
+        .. tostring(live:readSetting("provider")))
+end)
+
+TestRunner:test("configs written by the failed restore are undone", function()
+    TestRunner:assertTrue(readFile(TMP .. "/plugin/configuration.lua") == CONFIG_BODY,
+        "configuration.lua should be the pre-restore file, not the archive's")
+end)
+
+TestRunner:test("the lock is released once the rollback is done", function()
+    TestRunner:assertTrue(not exists(BackupManager.LOCK_FILE),
+        "a rolled-back restore must leave no lock behind")
+end)
+
+wipeTmp()
+
+--------------------------------------------------------------------------------
+TestRunner:suite("relative storage roots (the on-device layout, issue #110)")
+
+-- DataStorage:getDataDir() is the literal "." on every plain install (Kindle,
+-- Kobo, PocketBook, plain Linux), so BACKUP_DIR and friends are RELATIVE to
+-- KOReader's working directory. Every other suite here uses absolute /tmp paths,
+-- which is exactly why the broken archive command shipped: `cd <source> && tar
+-- -czf <relative archive>` resolved the archive inside the source directory and
+-- tar could not create it. Re-run the backup with the device-shaped paths.
+wipeTmp()
+seed()
+local prev_cwd = real_lfs.currentdir()
+mkdirs(TMP .. "/data/koassistant_backups")
+BackupManager.BACKUP_DIR = "./data/koassistant_backups"
+BackupManager.SETTINGS_DIR = "./settings"
+BackupManager.PLUGIN_DIR = "./plugin"
+BackupManager.CHAT_DIR = "./data/koassistant_chats"
+BackupManager.LOCK_FILE = "./data/koassistant_backups/.backup_lock"
+real_lfs.chdir(TMP)
+local bm_rel = BackupManager:new()
+local rel_result = bm_rel:createBackup(BACKUP_OPTS)
+local rel_archive_fails = bm_rel:_createArchive("./no_such_source_dir", "./data/koassistant_backups/never.koa")
+real_lfs.chdir(prev_cwd)
+
+TestRunner:test("createBackup writes a real archive when the roots are relative", function()
+    TestRunner:assertTrue(rel_result and rel_result.success,
+        "createBackup failed: " .. tostring(rel_result and rel_result.error))
+    local abs = TMP .. "/data/koassistant_backups/" .. tostring(rel_result and rel_result.backup_name)
+    TestRunner:assertTrue(exists(abs), "archive should exist at " .. abs)
+    TestRunner:assertTrue((real_lfs.attributes(abs, "size") or 0) > 0, "archive should not be empty")
+end)
+
+TestRunner:test("the reported size is the real archive size, never 0 B", function()
+    TestRunner:assertTrue((rel_result and rel_result.size or 0) > 0,
+        "a 0 B success is the symptom users saw in issue #110")
+end)
+
+TestRunner:test("the relative archive holds the settings bytes", function()
+    local check = TMP .. "/check_relative"
+    mkdirs(check)
+    sh(string.format('tar -xzf "%s" -C "%s"',
+        TMP .. "/data/koassistant_backups/" .. rel_result.backup_name, check))
+    TestRunner:assertTrue(readFile(check .. "/settings/koassistant_settings.lua") == SETTINGS_BODY,
+        "settings should round-trip from a relative-root backup")
+end)
+
+TestRunner:test("a failing tar is reported as a failure (LuaJIT os.execute returns a number)", function()
+    TestRunner:assertTrue(rel_archive_fails == false,
+        "_createArchive must return false when tar cannot read the source directory")
 end)
 
 wipeTmp()

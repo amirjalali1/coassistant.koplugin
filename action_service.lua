@@ -771,6 +771,17 @@ local function processActionList(service, saved, flag_field, dismissed_key)
     return pruned
 end
 
+-- Add an id to a menu list: a menu_button (the model button) goes first, among
+-- KOAssistant's buttons; an action goes last
+local function insertMember(service, list, action_id)
+    local action = service:getAction("highlight", action_id)
+    if action and action.menu_button then
+        table.insert(list, 1, action_id)
+    else
+        table.insert(list, action_id)
+    end
+end
+
 -- Get ordered list of highlight menu action IDs
 function ActionService:getHighlightMenuActions()
     local saved = self.settings:readSetting("highlight_menu_actions")
@@ -792,12 +803,12 @@ function ActionService:isInHighlightMenu(action_id)
     return false
 end
 
--- Add action to highlight menu (appends to end)
+-- Add action to highlight menu (appends to end; the model button goes first)
 function ActionService:addToHighlightMenu(action_id)
     local actions = self:getHighlightMenuActions()
     -- Don't add duplicates
     if not self:isInHighlightMenu(action_id) then
-        table.insert(actions, action_id)
+        insertMember(self, actions, action_id)
         self.settings:saveSetting("highlight_menu_actions", actions)
         -- Remove from dismissed list if present
         local dismissed = self.settings:readSetting("_dismissed_highlight_menu_actions") or {}
@@ -944,12 +955,12 @@ function ActionService:isInDictionaryPopup(action_id)
     return false
 end
 
--- Add action to dictionary popup
+-- Add action to dictionary popup (appends to end; the model button goes first)
 function ActionService:addToDictionaryPopup(action_id)
     local actions = self:getDictionaryPopupActions()
     -- Don't add duplicates
     if not self:isInDictionaryPopup(action_id) then
-        table.insert(actions, action_id)
+        insertMember(self, actions, action_id)
         self.settings:saveSetting("dictionary_popup_actions", actions)
         -- Remove from dismissed list if present
         local dismissed = self.settings:readSetting("_dismissed_dictionary_popup_actions") or {}
@@ -1999,7 +2010,9 @@ function ActionService.getActionDisplayText(action, features, opts)
     if opts and opts.effective_web_search ~= nil then
         effective_web = opts.effective_web_search == true
     end
-    if action.enable_web_search == true then
+    if action.local_handler then
+        -- Runs a handler of its own (Generate Image, the X-Ray lookup): no search is sent
+    elseif action.enable_web_search == true then
         -- Forced on: solid icon
         table.insert(indicators, "🌐")
     elseif action.enable_web_search == nil and effective_web
@@ -2052,7 +2065,11 @@ local INPUT_CONTEXTS = {
         -- Curated defaults: non-open-book actions suitable for file browser context
         -- Includes the sidecar-powered analyze_highlights (reads DocSettings);
         -- xray_simple left 2026-08-17 (A9 follow-up, same call as the book list)
-        default_ids = {"book_info", "similar_books", "analyze_highlights", "related_thinkers", "explain_author", "historical_context", "book_reviews", "suggest_from_library"},
+        -- and returned last 2026-09-30 (maintainer: it was the ONE action the
+        -- "Show More Actions" button revealed here; the open-book list keeps
+        -- eleven behind its button and stays as it is). Existing lists get it
+        -- appended by _processInputList unless the reader dismissed it.
+        default_ids = {"book_info", "similar_books", "analyze_highlights", "related_thinkers", "explain_author", "historical_context", "book_reviews", "suggest_from_library", "xray_simple"},
     },
     highlight = {
         settings_key = "input_highlight_actions",
@@ -2107,9 +2124,11 @@ end
 -- entry, not document text: smart-retrieval actions (explain/analyze in
 -- context) would gather around nothing, so they leave the eligible pool
 -- entirely — defaults AND the manager's pickable list (A9 follow-up
--- 2026-08-17; revisit if X-Ray chat ever gains document access)
+-- 2026-08-17; revisit if X-Ray chat ever gains document access). A
+-- menu_button (the model button) is no action: never in an input dialog.
 local function excludedFromInputCtx(ctx_name, action)
-    return ctx_name == "xray_chat" and action.smart_retrieval == true
+    return action.menu_button == true
+        or (ctx_name == "xray_chat" and action.smart_retrieval == true)
 end
 
 function ActionService:_getEligibleInputActionIds(ctx_name)
@@ -2352,7 +2371,7 @@ end
 -- Get the input context name for an action based on its context type
 -- Returns ctx_name or nil if action doesn't belong to any input context
 function ActionService.getInputContextForAction(action)
-    if not action then return nil end
+    if not action or action.menu_button then return nil end
     local context = action.context
     if context == "book" then
         return "book"

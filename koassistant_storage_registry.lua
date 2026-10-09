@@ -110,6 +110,11 @@ Registry.SETTINGS_SUBKEYS = {
         "ollama_num_ctx",           -- ollama context-window cap (model menu row; nil = automatic sizing)
         "xray_default_categories",  -- global default for new X-Rays' category groups (presets v0.21)
         "xray_default_depth",       -- global default for new X-Rays' depth rung (light/standard/deep; nil = standard)
+        "xray_default_type",        -- global default for new X-Rays' type (auto/fiction/nonfiction/academic; nil = auto, B337c)
+        "xray_carried_entries",     -- where carried entries are listed (categories/list; nil = categories; #116, B393)
+        "xray_default_status",      -- global default for new X-Rays' status block (on/off; nil = on; B271)
+        "run_recent_models",        -- the hold menu's recent "More models…" picks (B345; newest first)
+        "favorite_models",          -- favorite models (B345): the long-press menus' first model spots; ♥ in pickers
     },
     internal = {
         "languages_migrated", "behavior_migrated",
@@ -322,6 +327,14 @@ Registry.entries = {
         index_key = "koassistant_artifact_index",  -- best-effort: shares the artifact sidecar dir (like user_aliases)
         opt_in_reset = true,
         notes = "Create-ahead prefix versions (rungs, ascending by progress; xray_ecosystem_plan.md §6); promotion source; deleted with the X-Ray.",
+    },
+    {
+        id = "sidecar_xray_index", label = "Per-book X-Ray name index",
+        location = "sidecar_file", ref = "koassistant_xray_index.lua",
+        category = "artifacts", backup = false, rebuildable = true,
+        index_key = "koassistant_artifact_index",  -- best-effort: shares the artifact sidecar dir (like user_aliases)
+        opt_in_reset = true,
+        notes = "Where each X-Ray name form occurs, page by page, per layout (two kept); koassistant_xray_index.lua, xray_marks_freeze_plan.md round 4. Derived from the book text: found again in the background when missing, never backed up. Keyed by name form, so it outlives X-Ray deletes and rebuilds harmlessly.",
     },
 
     --========================= Plugin per-book files (Track 37, 2026-09-02) ===

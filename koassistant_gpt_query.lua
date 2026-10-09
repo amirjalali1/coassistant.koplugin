@@ -77,6 +77,7 @@ loadHandler("featherless")
 loadHandler("vercel")
 loadHandler("opencode")     -- #107 (2026-09-05): OpenCode Zen, required x-opencode-session header
 loadHandler("opencode_go")  -- OpenCode Go: own endpoint + catalog, key falls back to Zen's
+loadHandler("a2agent")      -- #108: gateway to DeepSeek, GLM, Kimi, Qwen, MiniMax
 -- Generic handler for custom OpenAI-compatible providers
 loadHandler("custom_openai")
 
@@ -94,6 +95,64 @@ local STREAMING_IN_PROGRESS = { _streaming = true }
 --- @return boolean
 local function isStreamingInProgress(result)
     return type(result) == "table" and result._streaming == true
+end
+
+--- Decode a non-streaming response body.
+--- KOReader's lpeg json decoder returns nil WITHOUT raising for an empty or
+--- whitespace-only string, so a pcall around json.decode is not enough: the nil
+--- travelled all the way into the provider transform and crashed KOReader on
+--- `response.error` (issue #111, a Kindle X-Ray batch). An empty buffer is a real
+--- outcome — the child can exit without writing (killed before its own error
+--- marker), and a 200 with no body leaves nothing behind once the rate-limit
+--- marker line is stripped — so it is named apart from a body that failed to parse.
+--- @param text string|nil: the buffer, marker already stripped
+--- @return table|nil: the decoded object, nil on either failure
+--- @return string|nil: "empty" or "unparseable" when the decode did not yield a table
+local function decodeResponseBody(text)
+    if type(text) ~= "string" or text:match("^%s*$") then
+        return nil, "empty"
+    end
+    local ok, parsed = pcall(json.decode, text)
+    -- A decoded non-table (JSON null's truthy function sentinel, a bare string
+    -- or number) is no more usable to a transform than a parse failure.
+    if not ok or type(parsed) ~= "table" then
+        return nil, "unparseable"
+    end
+    return parsed
+end
+
+-- read(2) errno values. Kept as literals for the same reason the O_NONBLOCK line
+-- in the poll setup below does it: older KOReader builds shipped a Linux-only
+-- posix cdef. EINTR is 4 everywhere; EAGAIN == EWOULDBLOCK on both platforms.
+local READ_EINTR = 4
+local READ_EAGAIN = ffi.os == "OSX" and 35 or 11
+-- Signal-interrupted reads retried inside ONE poll tick before the rest is left
+-- for the next one. A pipe that cannot manage one uninterrupted read in this many
+-- tries is not going to be rescued by spinning here.
+local MAX_READ_INTERRUPTS = 16
+-- Consecutive polls (0.1 s apart) that got NOTHING through but interrupted reads
+-- before the request is given up on. The poll has no timeout of its own and the
+-- drained-pipe gate below deliberately withholds the subprocess-done fallback, so
+-- without this a pipe stuck on EINTR would spin for the rest of the session. Five
+-- seconds of solid interruption with not one byte read is broken, not busy.
+local MAX_INTERRUPTED_POLLS = 50
+
+--- What the non-streaming poll must do about one read() result.
+--- read(2) answers -1 for EVERY failure and names the reason only in errno, so
+--- reading the return value three ways (>0 data / 0 EOF / anything else "nothing
+--- yet") treats a signal-interrupted read as an empty pipe and drops whatever is
+--- still queued in it (B325, #111). Only "empty" proves the pipe holds nothing
+--- more; the streaming reader has always consulted errno (stream_handler.lua) and
+--- writeAllToFD already retries on EINTR, so this is those rules on this path.
+--- @param bytes_read number|nil ffi.C.read's return, tonumber'd
+--- @param err number|nil ffi.errno(), read once, when bytes_read is negative
+--- @return string "data" | "eof" | "empty" | "interrupted" | "failed"
+local function readOutcome(bytes_read, err)
+    if bytes_read and bytes_read > 0 then return "data" end
+    if bytes_read == 0 then return "eof" end
+    if err == READ_EINTR then return "interrupted" end
+    if err == READ_EAGAIN then return "empty" end
+    return "failed"
 end
 
 --- Handle non-streaming background request with cancellable loading dialog
@@ -125,6 +184,7 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
     local completed = false
     local user_cancelled = false
     local response_data = {}
+    local interrupted_polls = 0   -- consecutive polls that read nothing but interruptions
 
     -- Cleanup function
     local function cleanup()
@@ -338,8 +398,15 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
         end
 
         -- Parse JSON response
-        local ok, parsed = pcall(json.decode, full_response)
-        if not ok then
+        local parsed, decode_err = decodeResponseBody(full_response)
+        if decode_err == "empty" then
+            -- Nothing came back at all: the child wrote no body and no error
+            -- marker of its own. The length is the whole diagnosis here.
+            logger.warn("Empty non-streaming response from", provider,
+                "- buffer bytes:", #full_response)
+            finish(false, nil, T(_("Empty response from %1. Please try again."), provider))
+            return
+        elseif decode_err then
             -- 200 chars stopped inside the HTTP headers, so a 200-with-unparseable-body
             -- (the 2026-08-18 X-Ray case) could not be diagnosed at all. This is a
             -- rare failure path; 2000 buys the start of the body without spamming.
@@ -355,9 +422,18 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
             print(string.format("[%s] Token usage: %s", provider, DebugUtils.formatUsage(usage)))
         end
 
-        -- Use response parser to extract content
+        -- Use response parser to extract content.
+        -- Wrapped: this runs inside a UIManager task, so an error in a provider
+        -- transform unwinds past the scheduler and takes KOReader down with it
+        -- (issue #111). A malformed response is worth a message, never a crash.
         if response_parser then
-            local parse_success, content, reasoning, web_search_used = response_parser(parsed)
+            local called_ok, parse_success, content, reasoning, web_search_used =
+                pcall(response_parser, parsed)
+            if not called_ok then
+                logger.warn("Response parser error for", provider, ":", tostring(parse_success))
+                finish(false, nil, T(_("Could not read the response from %1."), provider))
+                return
+            end
             if parse_success then
                 finish(true, content, nil, reasoning, web_search_used, usage)
             else
@@ -370,7 +446,8 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
     end
 
     -- Poll for completion using non-blocking read.
-    -- read() on non-blocking fd returns: >0 data, 0 EOF, -1 EAGAIN (no data yet).
+    -- read() on a non-blocking fd returns >0 data or 0 EOF; a -1 is graded off
+    -- errno by readOutcome (B325), never assumed to be EAGAIN.
     -- This detects pipe close instantly without depending on waitpid,
     -- which can take minutes on some Android devices.
     local function pollForData()
@@ -378,23 +455,67 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
             return
         end
 
-        -- Read all available data from the pipe
+        -- Read all available data from the pipe. Exactly one of the ways out of
+        -- this loop ("empty") proves the pipe holds nothing more, and that is
+        -- what makes it safe to read a finished child as a finished answer.
+        local pipe_empty = false
+        local interrupts = 0
         while true do
             local bytes_read = tonumber(ffi.C.read(parent_read_fd, buffer_ptr, chunksize))
-            if bytes_read and bytes_read > 0 then
+            -- Read errno ONCE: any later C call (strerror included) may clobber it.
+            local err = (bytes_read and bytes_read < 0) and ffi.errno() or nil
+            local outcome = readOutcome(bytes_read, err)
+            if outcome == "data" then
                 table.insert(response_data, ffi.string(buffer, bytes_read))
-            elseif bytes_read == 0 then
+            elseif outcome == "eof" then
                 -- EOF: subprocess closed write end, process response immediately
                 processResponse()
                 return
-            else
-                -- EAGAIN/EWOULDBLOCK (-1): no data available right now
+            elseif outcome == "interrupted" then
+                -- A signal hit the read: NOTHING was read and the bytes are still
+                -- in the pipe. Retry, and when the retries run out leave the rest
+                -- for the next tick rather than falling through to the done-check,
+                -- which would process the answer minus whatever is still queued.
+                interrupts = interrupts + 1
+                if interrupts >= MAX_READ_INTERRUPTS then
+                    logger.dbg("KOAssistant: response pipe read interrupted",
+                        interrupts, "times, resuming on the next poll")
+                    break
+                end
+            elseif outcome == "empty" then
+                -- EAGAIN/EWOULDBLOCK: no data available right now
+                pipe_empty = true
                 break
+            else
+                -- A real error (EIO, EBADF): the read will not start working, and
+                -- what has arrived so far is not the answer. Say so instead of
+                -- serving a truncated one.
+                logger.warn("KOAssistant: response pipe read failed, errno", tostring(err),
+                    err and ffi.string(ffi.C.strerror(err)) or "")
+                finish(false, nil, T(_("Could not read the response from %1."), provider))
+                return
             end
         end
 
-        -- Fallback: check if subprocess exited (works on most devices)
-        if ffiutil.isSubProcessDone(pid) then
+        -- A tick that read nothing but interruptions made no progress. A run of
+        -- them means the pipe is stuck, and since the done-check below is gated
+        -- on a drained pipe there is nothing else to end the request.
+        if pipe_empty then
+            interrupted_polls = 0
+        else
+            interrupted_polls = interrupted_polls + 1
+            if interrupted_polls >= MAX_INTERRUPTED_POLLS then
+                logger.warn("KOAssistant: response pipe stuck on interrupted reads for",
+                    interrupted_polls, "polls, giving up")
+                finish(false, nil, T(_("Could not read the response from %1."), provider))
+                return
+            end
+        end
+
+        -- Fallback: check if subprocess exited (works on most devices). Only with
+        -- the pipe drained: a read cut short by signals can still have the rest of
+        -- the answer queued behind it.
+        if pipe_empty and ffiutil.isSubProcessDone(pid) then
             processResponse()
             return
         end
@@ -833,6 +954,9 @@ It is about %1 tokens (an estimate) and your %2 plan allows about %3 tokens a mi
             -- still announced itself as quiz generation on the device
             hidden_streaming_label = config.features and config.features.hidden_streaming_label,
             hidden_streaming_note = config.features and config.features.hidden_streaming_note,
+            -- The action's name for the window title (buildUnifiedRequestConfig
+            -- sets it; a freeform question has none)
+            request_title = config.features and config.features.loading_action_name,
             -- Quick-answer retry (input safety net S3): a ⚡ button in the stream window
             -- that aborts + resends with quick posture. Shown only for quick-ELIGIBLE runs
             -- (freeform sends + actions that opted into quick via accept_quick_answer; NOT
@@ -966,4 +1090,6 @@ end
 return {
     query = queryChatGPT,
     isStreamingInProgress = isStreamingInProgress,
+    decodeResponseBody = decodeResponseBody,
+    readOutcome = readOutcome,
 }
