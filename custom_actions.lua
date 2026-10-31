@@ -23,6 +23,17 @@
 -- Settings -> Actions & Prompts -> Manage Actions -> tap the action ->
 -- check "+ Highlight Menu" / "+ Dict. Popup" (one-time, per menu).
 --
+-- Model pinning: provider + model on an action override the global pick for
+-- that action only (koassistant/ui/dialogs.lua, handlePredefinedPrompt; model
+-- is applied only when provider is also set). Both actions below pin
+-- openai_codex / gpt-6.1-terra (the ChatGPT-subscription login). The Codex
+-- handler sends the id as written; a plan that doesn't serve it is refused
+-- with a plan hint, not silently downgraded. The plugin's model list has no
+-- gpt-6.1-terra entry (as of v0.24.1), so it is not in the model picker, and
+-- the "gpt-6.1-" reasoning rule treats it as unable to turn reasoning off and
+-- the "gpt-6" rule forces temperature 1.0 -- assumptions made for 6.1 Sol,
+-- unverified for Terra. Remove the two lines to follow the global model again.
+--
 -- RTL/Persian rendering: two layered fixes, both required.
 -- (1) koassistant/ui/dialogs.lua's handlePredefinedPrompt now honors an
 --     explicit render_markdown field on the action (a small addition to a
@@ -61,6 +72,8 @@ return {
         skip_language_instruction = true,
         skip_domain = true,
         render_markdown = false,  -- Forces Plain Text mode: MuPDF's HTML renderer mis-shapes/scrambles the Farsi section (see header note); confirmed fixed on-device via the MD/TXT toggle
+        provider = "openai_codex",  -- Pinned (see header note on model pinning); needs a ChatGPT plan that serves it
+        model = "gpt-6.1-terra",
         -- Enable manually on-device: Manage Actions -> FA Dictionary -> "+ Highlight Menu" / "+ Dict. Popup"
         prompt = [[Dictionary entry for "{highlighted_text}"
 
@@ -96,6 +109,8 @@ Inline bold labels, no headers. Concise. Keep the two entries clearly separated.
         accept_quick_answer = true,
         include_book_context = true,  -- matches built-in Explain
         render_markdown = false,  -- Forces Plain Text mode: hasDominantRTL's auto-detect only fires when RTL is the MAJORITY script, which a half-English/half-Farsi response never is; confirmed fixed on-device via the MD/TXT toggle
+        provider = "openai_codex",  -- Pinned (see header note on model pinning); needs a ChatGPT plan that serves it
+        model = "gpt-6.1-terra",
         -- Enable manually on-device: Manage Actions -> FA Explain -> "+ Highlight Menu"
         prompt = [[You are an English Reading Coach helping an advanced but non native English speaker improve reading comprehension, vocabulary depth, and cultural understanding.
 
