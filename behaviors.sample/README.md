@@ -7,7 +7,7 @@ Behaviors define the AI's personality and communication style. This folder conta
 1. Create a `behaviors/` folder in your plugin directory (next to `behaviors.sample/`)
 2. Copy behaviors you want to use: `cp behaviors.sample/claude_style_standard.md behaviors/`
 3. Restart KOReader to load new behaviors
-4. Select your behavior in Settings > AI Behavior
+4. Select it in Settings → Actions & Prompts → Manage Behaviors (your files appear under FROM BEHAVIORS/ FOLDER)
 
 ## Size Tiers
 
@@ -55,15 +55,15 @@ Designed specifically for book reading and literary analysis:
 
 ## Built-in Behaviors
 
-Five built-in behaviors are always available (based on [Anthropic Claude guidelines](https://docs.anthropic.com/en/release-notes/system-prompts)):
+The built-in behaviors are always available (24 files under `koassistant/prompts/behaviors/`, all listed in Manage Behaviors; the Claude styles follow [Anthropic's published guidelines](https://docs.anthropic.com/en/release-notes/system-prompts)). The main ones:
 
-- **Mini** (~220 tokens) - Concise guidance for e-reader conversations
-- **Standard** (~420 tokens) - Balanced guidance for quality responses
-- **Full** (~1150 tokens) - Comprehensive guidance for best quality responses
-- **Research Standard** (~470 tokens) - Research-focused with source transparency
+- **Claude Style (Mini)** (~220 tokens) - Concise guidance for e-reader conversations
+- **Claude Style (Standard)** (~420 tokens, the default) - Balanced guidance for quality responses
+- **Claude Style (Full)** (~1150 tokens) - Comprehensive guidance for best quality responses
+- **Perplexity Style (Standard)** (~470 tokens) - Research-focused with source transparency
 - **Translator Direct** (~80 tokens) - Direct translation without commentary
 
-The samples in this folder offer alternative styles (GPT, Gemini, Grok, etc.) and specialized behaviors (scholarly, religious, creative).
+The GPT, Gemini, Grok, Perplexity and DeepSeek styles ship built in as well. The samples in this folder give you the provider styles as files to edit, plus specialized behaviors (scholarly, religious, creative).
 
 ## Recommendations by Use Case
 

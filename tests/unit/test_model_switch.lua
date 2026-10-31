@@ -1,5 +1,5 @@
 -- The model button in the highlight menu and the dictionary popup
--- (koassistant_model_switch.lua, #86 / B345 step 4): its list is the favorites
+-- (koassistant/ui/model_switch.lua, #86 / B345 step 4): its list is the favorites
 -- in their order, then the recent "More models…" picks not already listed, with
 -- keyless providers left out; its label is the model in effect.
 --
@@ -13,7 +13,7 @@ local function setupPaths()
     local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -21,7 +21,7 @@ local function setupPaths()
 end
 setupPaths()
 require("mock_koreader")
-local ModelSwitch = require("koassistant_model_switch")
+local ModelSwitch = require("koassistant.ui.model_switch")
 local TestRunner = require("test_runner"):new()
 
 local function names(list)

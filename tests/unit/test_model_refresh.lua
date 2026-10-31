@@ -27,7 +27,7 @@ end
 setupPaths()
 
 local TestRunner = require("test_runner"):new()
-local ModelLists = require("koassistant_model_lists")
+local ModelLists = require("koassistant.request.model_lists")
 
 local GEMINI_KNOWN = { "gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash" }
 local GEMINI_SHIPPED = { "gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash" }
@@ -93,6 +93,28 @@ TestRunner:test("resolveModelRefresh — safe no-ops", function()
         "absent known list never triggers a reset")
     TestRunner:assertEqual(resolve({ model = "who-knows", known_models = {} }), "keep",
         "empty known list never triggers a reset")
+end)
+
+TestRunner:test("opencode: the baked deepseek-v4-flash default moves, an explicit pick stays (2026-10-20)", function()
+    local args = { model = "deepseek-v4-flash", current_default = ModelLists.opencode[1],
+        known_models = ModelLists.opencode, shipped_defaults = ModelLists._shipped_defaults.opencode,
+        retired = ModelLists._retired.opencode }
+    local action, to = ModelLists.resolveModelRefresh(args)
+    TestRunner:assertEqual(action, "refresh", "the old Zen default was auto-baked: it moves")
+    TestRunner:assertEqual(to, "deepseek-v4.1-flash", "to the current default")
+    args.explicit = true
+    TestRunner:assertEqual((ModelLists.resolveModelRefresh(args)), "keep",
+        "a deliberate pick is kept (served where the workspace enables it)")
+end)
+
+TestRunner:test("nvidia: the super-120b default stopped serving, saved picks move to the 3.5 Super VL (2026-10-20)", function()
+    local action, to = ModelLists.resolveModelRefresh({ model = "nvidia/nemotron-3-super-120b-a12b", explicit = true,
+        current_default = ModelLists.nvidia[1], known_models = ModelLists.nvidia,
+        shipped_defaults = ModelLists._shipped_defaults.nvidia, retired = ModelLists._retired.nvidia })
+    TestRunner:assertEqual(action, "retired", "not served any more: even a deliberate pick moves")
+    TestRunner:assertEqual(to, "nvidia/nemotron-3.5-super-vl-120b-a12b", "to the model that answers")
+    TestRunner:assertEqual(ModelLists._retired.nvidia["minimaxai/minimax-m3"], "nvidia/nemotron-3.5-super-vl-120b-a12b",
+        "the older mapping no longer lands on the dead id")
 end)
 
 TestRunner:test("_shipped_defaults data integrity", function()

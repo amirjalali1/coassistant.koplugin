@@ -18,7 +18,7 @@ local function setupPaths()
 
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -41,7 +41,7 @@ end
 
 print("test_conversation_ids: one id per chat, from the first message to the wire")
 
-local MessageHistory = require("koassistant_message_history")
+local MessageHistory = require("koassistant.request.message_history")
 local MESSAGES = { { role = "user", content = "hi" } }
 
 local function cfg(provider, extra)
@@ -99,7 +99,7 @@ do
     local G = require("opencode_go")
     local built = G:buildRequestBody(MESSAGES, cfg("opencode_go", { conversation_id = "17_9" }))
     TestRunner.assert(built.headers["x-opencode-session"] == "17_9", "opencode_go sends the session header")
-    local ConfigHelper = require("koassistant_config_helper")
+    local ConfigHelper = require("koassistant.core.config_helper")
     local merged = ConfigHelper:mergeWithDefaults({ provider = "opencode_go", features = {} })
     local go_url = G:buildRequestBody(MESSAGES, merged).url
     TestRunner.assert(go_url == "https://opencode.ai/zen/go/v1/chat/completions",
@@ -109,7 +109,7 @@ do
     TestRunner.assert(zen_url == "https://opencode.ai/zen/v1/chat/completions",
         "opencode merges to the Zen endpoint, got " .. tostring(zen_url))
 
-    local Base = require("koassistant_api.base")
+    local Base = require("koassistant.api.base")
     local saved = package.loaded["apikeys"]
     package.loaded["apikeys"] = { opencode = "zen-key" }
     TestRunner.assert(#Base.listApiKeys("opencode_go", nil) == 0,
@@ -168,7 +168,7 @@ end
 
 -- 8. Every transport names the plugin
 do
-    local Base = require("koassistant_api.base")
+    local Base = require("koassistant.api.base")
     TestRunner.assert(type(Base.USER_AGENT) == "string" and Base.USER_AGENT:match("^KOAssistant/%S+$"),
         "USER_AGENT is KOAssistant/<version>, got " .. tostring(Base.USER_AGENT))
     local h = Base.withUserAgent({ ["Content-Type"] = "application/json" })

@@ -1,4 +1,4 @@
--- Unit tests for the shared byte-budget cuts in koassistant_scope_resolver.lua
+-- Unit tests for the shared byte-budget cuts in koassistant/request/scope_resolver.lua
 -- (utf8Head / utf8Tail / utf8TrimTail / utf8TrimHead).
 
 local function setupPaths()
@@ -19,7 +19,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local ScopeResolver = require("koassistant_scope_resolver")
+local ScopeResolver = require("koassistant.request.scope_resolver")
 local TestRunner = require("test_runner"):new()
 
 local A3 = "東"        -- 3 bytes

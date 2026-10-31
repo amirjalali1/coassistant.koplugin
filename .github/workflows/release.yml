@@ -22,35 +22,15 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - name: Get version from tag
-        id: get_version
+      # The same script the updater tester builds its zips with
+      # (tests/tools/updater_e2e.sh), so the zip readers download is the zip
+      # that was tested: scripts/build_release_zip.sh holds the exclude list
+      # and, while scripts/release_shims.txt exists, writes the transitional
+      # shims of the layout change.
+      - name: Build the plugin zip
         run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "VERSION=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-          else
-            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create plugin directory structure
-        run: |
-          mkdir -p build/koassistant.koplugin
-          # Copy all files except excluded ones
-          rsync -av --exclude='.git' \
-                    --exclude='.github' \
-                    --exclude='.claude' \
-                    --exclude='build' \
-                    --exclude='docs' \
-                    --exclude='tests' \
-                    --exclude='scripts' \
-                    --exclude='hooks' \
-                    --exclude='screenshots' \
-                    --exclude='.gitignore' \
-                    . build/koassistant.koplugin/
-
-      - name: Create zip archive
-        run: |
-          cd build
-          zip -r koassistant.koplugin.zip koassistant.koplugin
+          mkdir -p build
+          sh scripts/build_release_zip.sh HEAD build/koassistant.koplugin.zip
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1

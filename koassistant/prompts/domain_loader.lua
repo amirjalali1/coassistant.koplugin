@@ -1,0 +1,350 @@
+-- Domain loader for KOAssistant
+-- Loads domain definitions from external files
+--
+-- Sources (in priority order):
+--   1. domains/           - User domains (gitignored, can override built-in)
+--   2. koassistant/prompts/domains/   - Built-in domains (tracked in git)
+--
+-- Domain file format:
+--   Filename: domain_id.md or domain_id.txt (filename becomes the domain ID)
+--   First line: # Domain Name (optional, becomes display name)
+--   Rest of file: Context text sent to AI
+--
+-- Example file: domains/research.md
+--   # Research
+--   Focus on critical thinking and evidence-based reasoning...
+--
+-- If no heading is found, the display name is derived from the filename:
+--   islamic_studies.md -> "Islamic Studies"
+
+local lfs = require("libs/libkoreader-lfs")
+local logger = require("koassistant.core.logger")
+local ScopeResolver = require("koassistant.request.scope_resolver")
+
+local DomainLoader = {}
+
+-- The plugin's root folder (the reader's domains/ sits there; the built-ins
+-- are under koassistant/prompts/)
+local function getPluginPath()
+    return require("koassistant.core.paths").ROOT
+end
+
+-- Read file contents
+local function readFile(path)
+    local file = io.open(path, "r")
+    if not file then return nil end
+    local content = file:read("*a")
+    file:close()
+    return content
+end
+
+-- Convert filename to display name (snake_case to Title Case)
+-- e.g., "islamic_studies" -> "Islamic Studies"
+local function filenameToDisplayName(filename)
+    return filename:gsub("_", " "):gsub("(%a)([%w]*)", function(first, rest)
+        return first:upper() .. rest
+    end)
+end
+
+-- Parse metadata from HTML comments
+-- Returns: metadata table and content with comments stripped
+local function parseMetadata(text)
+    local metadata = {}
+
+    -- Extract metadata from HTML-style comments <!-- ... -->
+    for comment in text:gmatch("<!%-%-(.-)%-%->") do
+        -- Parse key: value pairs
+        for line in comment:gmatch("[^\n]+") do
+            local key, value = line:match("^%s*([^:]+):%s*(.+)%s*$")
+            if key and value then
+                key = key:lower():gsub("^%s*", ""):gsub("%s*$", "")
+                value = value:gsub("^%s*", ""):gsub("%s*$", "")
+                metadata[key] = value
+            end
+        end
+    end
+
+    -- Remove HTML-style comments <!-- ... -->
+    local stripped = text:gsub("<!%-%-.-%-%->\n?", "")
+
+    return metadata, stripped
+end
+
+-- Parse a domain file
+-- Returns: { name = "Display Name", context = "...", metadata = {...} } or nil
+local function parseDomainFile(content, fallback_name, source)
+    if not content or content == "" then
+        return nil
+    end
+
+    local name, context
+
+    -- Check for markdown heading on first line
+    local first_line, rest = content:match("^([^\n]*)\n(.*)$")
+    if not first_line then
+        -- Single line file
+        first_line = content
+        rest = ""
+    end
+
+    local heading = first_line:match("^#%s*(.+)%s*$")
+    if heading then
+        name = heading
+        context = rest
+    else
+        -- No heading found, use filename as name
+        name = fallback_name
+        context = content
+    end
+
+    -- Parse and strip metadata comments from context
+    local metadata, stripped = parseMetadata(context)
+    context = stripped
+
+    -- Trim whitespace from context
+    context = context:match("^%s*(.-)%s*$") or ""
+
+    if context == "" then
+        return nil
+    end
+
+    return {
+        name = name,
+        context = context,
+        metadata = metadata,  -- Tokens, Notes, etc.
+        external = true,  -- Mark as loaded from external file
+        source = source or "folder",
+    }
+end
+
+-- Load domains from a specific folder path
+-- @param folder_path: Full path to the folder
+-- @param source: Source identifier ("builtin" or "folder")
+-- @return table: domain_id -> { name, context, external, source }
+--- A behavior/domain file has to BE text. A NUL byte or a broken UTF-8
+--- sequence means the file is not what its name claims (a binary sidecar, a
+--- truncated copy): loading it puts those bytes in the system prompt, and the
+--- provider then rejects the whole request rather than the one bad field (#112).
+local function isLoadableText(content)
+    return not content:find("%z") and ScopeResolver.utf8FirstBad(content) == nil
+end
+
+local function loadFromFolder(folder_path, source)
+    local domains = {}
+
+    -- Check if folder exists
+    local attr = lfs.attributes(folder_path)
+    if not attr or attr.mode ~= "directory" then
+        return domains
+    end
+
+    -- Iterate through files in the folder
+    for file in lfs.dir(folder_path) do
+        -- Only process .md and .txt files; skip README files and anything whose
+        -- name starts with a dot. That leading dot is what keeps macOS AppleDouble
+        -- sidecars out: copying a plugin folder from a Mac to a Kobo writes a
+        -- "._name" companion next to EVERY file carrying an extended attribute (a
+        -- GitHub download stamps quarantine on all of them), and "._standard.md"
+        -- ends in .md exactly like the real file. Loaded, it becomes a behavior
+        -- made of 4 KB of binary and every request built from it is rejected by
+        -- the provider (#112). Finder never shows these, so the reader cannot see
+        -- what went wrong.
+        local lower_file = file:lower()
+        if file:sub(1, 1) ~= "."
+            and (file:match("%.md$") or file:match("%.txt$"))
+            and not lower_file:match("^readme%.") then
+            local id = file:gsub("%.md$", ""):gsub("%.txt$", "")
+            local content = readFile(folder_path .. file)
+
+            if content and not isLoadableText(content) then
+                logger.warn("DomainLoader: ignoring", file, "- not text, bytes:", #content)
+                content = nil
+            end
+
+            if content then
+                local fallback_name = filenameToDisplayName(id)
+                local domain = parseDomainFile(content, fallback_name, source)
+
+                if domain then
+                    domains[id] = domain
+                end
+            end
+        end
+    end
+
+    return domains
+end
+
+-- Load all domains from user folder only (for backward compatibility)
+-- Returns: table of domain_id -> { name, context, external, source }
+function DomainLoader.load()
+    local domains_path = getPluginPath() .. "domains/"
+    return loadFromFolder(domains_path, "folder")
+end
+
+-- Load built-in domains from koassistant/prompts/domains/
+-- Returns: table of domain_id -> { name, context, external, source }
+function DomainLoader.loadBuiltin()
+    local builtin_path = require("koassistant.core.paths").CODE .. "prompts/domains/"
+    return loadFromFolder(builtin_path, "builtin")
+end
+
+-- Load all domains from all sources
+-- User domains override built-in domains with same ID
+-- Returns: table of domain_id -> { name, context, external, source }
+function DomainLoader.loadAll()
+    local all_domains = {}
+
+    -- Load built-in first (lower priority)
+    local builtin = DomainLoader.loadBuiltin()
+    for id, domain in pairs(builtin) do
+        all_domains[id] = domain
+    end
+
+    -- Load user domains (higher priority, overrides built-in)
+    local user = DomainLoader.load()
+    for id, domain in pairs(user) do
+        all_domains[id] = domain
+    end
+
+    return all_domains
+end
+
+-- Get sorted list of domain IDs for UI
+-- Sorts alphabetically by display name
+function DomainLoader.getSortedIds(domains)
+    local ids = {}
+    for id in pairs(domains) do
+        table.insert(ids, id)
+    end
+    table.sort(ids, function(a, b)
+        return (domains[a].name or a) < (domains[b].name or b)
+    end)
+    return ids
+end
+
+-- Get a single domain by ID
+function DomainLoader.get(domains, id)
+    return domains[id]
+end
+
+-- Check if any domains are available
+function DomainLoader.hasAny(domains)
+    return next(domains) ~= nil
+end
+
+-- Get the user domains folder path (for UI display)
+function DomainLoader.getFolderPath()
+    return getPluginPath() .. "domains/"
+end
+
+-- Get the built-in domains folder path
+function DomainLoader.getBuiltinPath()
+    return require("koassistant.core.paths").CODE .. "prompts/domains/"
+end
+
+-- Get all domains from all sources: builtin, folder, and UI-created
+-- @param custom_domains: Array of UI-created domains from settings (optional)
+-- @return table: { id = { id, name, context, source, display_name } }
+function DomainLoader.getAllDomains(custom_domains)
+    local all_domains = {}
+
+    -- Load all file-based domains (builtin + user folder)
+    local file_domains = DomainLoader.loadAll()
+
+    for id, domain in pairs(file_domains) do
+        local display_suffix = domain.source == "builtin" and "" or " (file)"
+        all_domains[id] = {
+            id = id,
+            name = domain.name,
+            context = domain.context,
+            source = domain.source,
+            display_name = domain.name .. display_suffix,
+            external = domain.source ~= "builtin",
+            metadata = domain.metadata,  -- Tokens, Notes from file comments
+        }
+    end
+
+    -- Add UI-created domains
+    if custom_domains and type(custom_domains) == "table" then
+        for _, domain in ipairs(custom_domains) do
+            if domain.id and domain.context then
+                all_domains[domain.id] = {
+                    id = domain.id,
+                    name = domain.name or domain.id,
+                    context = domain.context,
+                    source = "ui",
+                    display_name = (domain.name or domain.id) .. " (custom)",
+                }
+            end
+        end
+    end
+
+    return all_domains
+end
+
+-- Get sorted list of domain entries for UI display
+-- @param custom_domains: Array of UI-created domains from settings (optional)
+-- @return table: Array of domain entries sorted by display_name
+function DomainLoader.getSortedDomains(custom_domains)
+    local all = DomainLoader.getAllDomains(custom_domains)
+    local sorted = {}
+
+    for _, domain in pairs(all) do
+        table.insert(sorted, domain)
+    end
+
+    table.sort(sorted, function(a, b)
+        -- Built-ins first, then folders, then UI
+        local order = { builtin = 1, folder = 2, ui = 3 }
+        if order[a.source] ~= order[b.source] then
+            return order[a.source] < order[b.source]
+        end
+        return (a.display_name or a.name) < (b.display_name or b.name)
+    end)
+
+    return sorted
+end
+
+-- Get a specific domain by ID
+-- @param id: Domain ID to look up
+-- @param custom_domains: Array of UI-created domains from settings (optional)
+-- @return table or nil: Domain entry or nil if not found
+function DomainLoader.getDomainById(id, custom_domains)
+    if not id then return nil end
+
+    -- Check all file-based domains (builtin + user folder)
+    local file_domains = DomainLoader.loadAll()
+    if file_domains[id] then
+        local domain = file_domains[id]
+        local display_suffix = domain.source == "builtin" and "" or " (file)"
+        return {
+            id = id,
+            name = domain.name,
+            context = domain.context,
+            source = domain.source,
+            display_name = domain.name .. display_suffix,
+            external = domain.source ~= "builtin",
+            metadata = domain.metadata,  -- Tokens, Notes from file comments
+        }
+    end
+
+    -- Check UI-created domains
+    if custom_domains and type(custom_domains) == "table" then
+        for _, domain in ipairs(custom_domains) do
+            if domain.id == id then
+                return {
+                    id = domain.id,
+                    name = domain.name or domain.id,
+                    context = domain.context,
+                    source = "ui",
+                    display_name = (domain.name or domain.id) .. " (custom)",
+                }
+            end
+        end
+    end
+
+    return nil
+end
+
+return DomainLoader

@@ -13,7 +13,7 @@ Run: lua tests/run_tests.lua --unit
 package.path = package.path .. ";./?.lua;./?/init.lua"
 require("tests.lib.mock_koreader")
 
-local XrayParser = require("koassistant_xray_parser")
+local XrayParser = require("koassistant.xray.xray_parser")
 
 -- Test suite
 local TestXrayCounting = {

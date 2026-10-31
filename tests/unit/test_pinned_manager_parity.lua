@@ -38,7 +38,7 @@ local DOC_PATH = TMP_ROOT .. "/book.epub"
 os.execute(string.format("mkdir -p %q", SIDECAR_DIR))
 
 -- Module cache reset BEFORE installing mocks (matters when run via run_tests.lua)
-package.loaded["koassistant_pinned_manager"] = nil
+package.loaded["koassistant.artifacts.pinned_manager"] = nil
 package.loaded["docsettings"] = nil
 package.loaded["util"] = nil
 
@@ -64,7 +64,7 @@ package.loaded["util"] = {
     makePath = function(dir) os.execute(string.format("mkdir -p %q", dir)) end,
 }
 
-local PinnedManager = require("koassistant_pinned_manager")
+local PinnedManager = require("koassistant.artifacts.pinned_manager")
 local TestRunner = require("test_runner"):new()
 
 print("Running: test_pinned_manager_parity")

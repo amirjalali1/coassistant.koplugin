@@ -1,0 +1,507 @@
+-- Anthropic-specific request builder with caching support
+-- This module creates properly structured requests for Claude API
+-- including system array, prompt caching, and extended thinking
+--
+-- Usage:
+--   local AnthropicRequest = require("koassistant.api.anthropic_request")
+--   local request, adjustments = AnthropicRequest:build(config)
+--   local headers = AnthropicRequest:getHeaders(config)
+
+local Defaults = require("koassistant.api.defaults")
+local ModelConstraints = require("koassistant.request.model_constraints")
+
+local AnthropicRequest = {}
+
+-- Default API parameters
+AnthropicRequest.DEFAULT_PARAMS = {
+    max_tokens = 16384,
+    temperature = 0.7,
+}
+
+-- Build request body for Anthropic API
+-- @param config: {
+--   model: Model ID (optional, uses default)
+--   messages: Message history array (user/assistant messages only)
+--   system: System content array (from ActionService.buildAnthropicSystem)
+--   api_params: { temperature, max_tokens, thinking } (optional)
+--   stream: Enable streaming (optional)
+-- }
+-- @return table: Request body ready for JSON encoding
+function AnthropicRequest:build(config)
+    config = config or {}
+    local defaults = Defaults.ProviderDefaults.anthropic
+
+    local request_body = {
+        model = config.model or defaults.model,
+    }
+
+    -- Add system array if provided
+    -- Handles two formats:
+    --   1. Unified format (v0.5.2+): { text, enable_caching, components }
+    --   2. Legacy array format: array of { type, text, cache_control } blocks
+    if config.system then
+        -- Check for unified format (has 'text' field)
+        if config.system.text and config.system.text ~= "" then
+            -- Convert unified format to Anthropic array format
+            local block = {
+                type = "text",
+                text = config.system.text,
+            }
+            if config.system.enable_caching then
+                block.cache_control = { type = "ephemeral" }
+            end
+            request_body.system = { block }
+        elseif #config.system > 0 then
+            -- Legacy array format - strip debug fields
+            request_body.system = {}
+            for _, block in ipairs(config.system) do
+                local clean_block = {
+                    type = block.type,
+                    text = block.text,
+                }
+                if block.cache_control then
+                    clean_block.cache_control = block.cache_control
+                end
+                table.insert(request_body.system, clean_block)
+            end
+        end
+    end
+
+    -- Add messages (user/assistant only, no system role)
+    if config.messages then
+        request_body.messages = self:filterMessages(config.messages)
+    else
+        request_body.messages = {}
+    end
+
+    -- Merge API parameters: defaults -> config additional_params -> action params
+    local params = {}
+
+    -- Start with defaults
+    for k, v in pairs(AnthropicRequest.DEFAULT_PARAMS) do
+        params[k] = v
+    end
+
+    -- Add defaults from provider config
+    if defaults.additional_parameters then
+        for k, v in pairs(defaults.additional_parameters) do
+            if k ~= "anthropic_version" then  -- Skip header-only params
+                params[k] = v
+            end
+        end
+    end
+
+    -- Override with config additional_parameters
+    if config.additional_parameters then
+        for k, v in pairs(config.additional_parameters) do
+            params[k] = v
+        end
+    end
+
+    -- Override with action-specific params
+    if config.api_params then
+        for k, v in pairs(config.api_params) do
+            params[k] = v
+        end
+    end
+
+    -- Apply parameters to request
+    -- A PIN is a value the ACTION or the USER chose (config.api_params /
+    -- config.additional_parameters). The provider default merged into `params`
+    -- above is NOT a pin — it is the fallback the item-27 resolver replaces when
+    -- the model's ceiling is known. Reading `params.max_tokens` as the pin made
+    -- the resolver unreachable here (params always carries defaults.lua's 16384),
+    -- so Anthropic — the plugin's default provider — silently never got the raise.
+    local pinned = (config.api_params and config.api_params.max_tokens)
+        or (config.additional_parameters and config.additional_parameters.max_tokens)
+    request_body.max_tokens = pinned
+        or ModelConstraints.resolveMaxTokens("anthropic", request_body.model,
+            params.max_tokens or AnthropicRequest.DEFAULT_PARAMS.max_tokens)
+    request_body.max_tokens = ModelConstraints.clampMaxTokens("anthropic", request_body.model, request_body.max_tokens)
+    request_body.temperature = params.temperature or AnthropicRequest.DEFAULT_PARAMS.temperature
+
+    -- Add web search tool if enabled
+    -- Logic: per-action override > global setting
+    local enable_web_search = false
+    if config.enable_web_search ~= nil then
+        -- Per-action override (true = force on, false = force off)
+        enable_web_search = config.enable_web_search
+    elseif config.features and config.features.enable_web_search then
+        -- Global setting
+        enable_web_search = true
+    end
+
+    local tools = {}
+
+    if enable_web_search then
+        -- Search cap from the effort dial; a legacy/power-user web_search_max_uses
+        -- (configuration.lua) still wins when explicitly set
+        local EFFORT_MAX_USES = { light = 2, standard = 5, thorough = 10 }
+        local effort = ModelConstraints.webSearchEffort(config.features)
+        local max_uses = (config.features and tonumber(config.features.web_search_max_uses))
+            or EFFORT_MAX_USES[effort]
+        table.insert(tools, {
+            type = "web_search_20250305",
+            name = "web_search",
+            max_uses = max_uses,
+        })
+    end
+
+    -- Book-tool function declarations (provider-neutral config.tools = { specs, mode }).
+    -- Anthropic uses input_schema (not parameters) and no wrapper object.
+    if config.tools and type(config.tools.specs) == "table" and #config.tools.specs > 0 then
+        for _, spec in ipairs(config.tools.specs) do
+            table.insert(tools, {
+                name = spec.name,
+                description = spec.description,
+                input_schema = spec.parameters,
+            })
+        end
+        -- mode NONE = the runner's final pass: tool turns are replayed in the history, so
+        -- the declarations must stay (Anthropic 400s on tool_use/tool_result without tools),
+        -- but no further calls are allowed. mode ANY = gather rounds: force a tool call
+        -- (search or done) so the model can never answer in prose on the non-streamed
+        -- gather path (live-verified: Claude otherwise emits text+done in one turn).
+        if config.tools.mode == "NONE" then
+            request_body.tool_choice = { type = "none" }
+        elseif config.tools.mode == "ANY" then
+            -- Opus 5.5 / Fable 5.1 refuse a forced call outright: auto, and the
+            -- runner accepts a round that answers in prose.
+            if ModelConstraints.supportsCapability("anthropic", request_body.model, "no_forced_tool_choice") then
+                request_body.tool_choice = { type = "auto" }
+            else
+                request_body.tool_choice = { type = "any" }
+            end
+        end
+    end
+
+    if #tools > 0 then
+        request_body.tools = tools
+    end
+
+    -- Get model for constraints and capability checking
+    local model = config.model or defaults.model
+
+    -- Apply model constraints (Anthropic max temperature is 1.0)
+    local adjustments
+    request_body, adjustments = ModelConstraints.apply("anthropic", model, request_body)
+
+    -- Add thinking if enabled AND model supports it
+    -- Two modes: adaptive (4.6+) and manual/extended (4.5+)
+    if params.thinking then
+        if params.thinking.type == "adaptive" then
+            -- Adaptive thinking (4.6+ models)
+            local supports_adaptive = ModelConstraints.supportsCapability("anthropic", model, "adaptive_thinking")
+
+            if supports_adaptive then
+                request_body.thinking = { type = "adaptive" }
+                -- Opus 4.7/4.8 default thinking display to "omitted" (empty thinking text).
+                -- Request "summarized" so reasoning is returned for the chat viewer.
+                if ModelConstraints.supportsCapability("anthropic", model, "no_sampling_params") then
+                    request_body.thinking.display = "summarized"
+                end
+                -- Pass through output_config (effort level) if provided.
+                -- Field-wise MERGE onto a fresh table, never an alias-assign:
+                -- assigning params.output_config wholesale (a) mutated the
+                -- caller's api_params table when the effort clamp below fired,
+                -- and (b) would clobber sibling keys other writers put in
+                -- output_config (structured outputs' `format` lives here too —
+                -- campaign T1 §3d, 2026-08-14).
+                if params.output_config then
+                    request_body.output_config = request_body.output_config or {}
+                    for k, v in pairs(params.output_config) do
+                        request_body.output_config[k] = v
+                    end
+                    -- Clamp top-of-ladder effort to "high" for models whose reasoning
+                    -- profile doesn't list it. The UI offers the full Opus ladder
+                    -- (incl. xhigh/max) for every Anthropic model, so guard here: Opus 4.6+
+                    -- and Sonnet 5 support xhigh/max, Sonnet 4.6 does not.
+                    local eff = request_body.output_config.effort
+                    if eff == "max" or eff == "xhigh" then
+                        local profile = ModelConstraints.getReasoningProfile("anthropic", model)
+                        local allowed = {}
+                        for _idx, opt in ipairs(profile.options or {}) do allowed[opt] = true end
+                        if not allowed[eff] then
+                            adjustments.effort = {
+                                from = eff,
+                                to = "high",
+                                reason = eff .. " effort not supported by this model"
+                            }
+                            request_body.output_config.effort = "high"
+                        end
+                    end
+                end
+                -- Adaptive thinking on 4.6 requires temperature=1.0. Opus 4.7/4.8 and Sonnet 5
+                -- reject sampling params entirely (stripped below), so skip the temp=1.0 step for them.
+                if not ModelConstraints.supportsCapability("anthropic", model, "no_sampling_params")
+                        and request_body.temperature ~= 1.0 then
+                    adjustments.temperature = {
+                        from = request_body.temperature,
+                        to = 1.0,
+                        reason = "adaptive thinking requires temp=1.0"
+                    }
+                    request_body.temperature = 1.0
+                end
+                -- No budget_tokens/max_tokens validation needed for adaptive mode
+            else
+                -- Model doesn't support adaptive thinking - skip it
+                adjustments.thinking_skipped = {
+                    reason = "model " .. model .. " does not support adaptive thinking"
+                }
+            end
+        elseif params.thinking.type == "disabled" or params.thinking.type == "between_tools" then
+            -- Explicit disable — needed for models that think by default (Sonnet 5), where
+            -- omitting `thinking` would still reason. Accepted on adaptive-capable models
+            -- (Opus 4.6+, Sonnet 5); skip on models without the thinking parameter.
+            -- Sonnet 5.5 refuses "disabled" and takes "between_tools", its lowest setting
+            -- (the profile's off_option).
+            if ModelConstraints.supportsCapability("anthropic", model, "adaptive_thinking") then
+                request_body.thinking = { type = params.thinking.type }
+            else
+                adjustments.thinking_skipped = {
+                    reason = "model " .. model .. " has no thinking parameter to disable"
+                }
+            end
+        else
+            -- Manual/extended thinking (type = "enabled" with budget_tokens)
+            local supports_thinking = ModelConstraints.supportsCapability("anthropic", model, "extended_thinking")
+
+            if supports_thinking then
+                request_body.thinking = params.thinking
+                -- Extended thinking has specific requirements:
+                -- - budget_tokens must be >= 1024
+                -- - max_tokens MUST be > budget_tokens
+                -- - temperature MUST be exactly 1.0 (API rejects any other value)
+                if request_body.temperature ~= 1.0 then
+                    adjustments.temperature = {
+                        from = request_body.temperature,
+                        to = 1.0,
+                        reason = "extended thinking requires temp=1.0"
+                    }
+                    request_body.temperature = 1.0
+                end
+
+                -- Ensure max_tokens > budget_tokens (API requirement)
+                local default_budget = ModelConstraints.reasoning_defaults.anthropic.budget
+                local budget = params.thinking.budget_tokens or default_budget
+                if request_body.max_tokens <= budget then
+                    local old_max = request_body.max_tokens
+                    request_body.max_tokens = budget + default_budget
+                    adjustments.max_tokens = {
+                        from = old_max,
+                        to = request_body.max_tokens,
+                        reason = "must be > thinking budget"
+                    }
+                end
+            else
+                -- Model doesn't support extended thinking - skip it
+                adjustments.thinking_skipped = {
+                    reason = "model " .. model .. " does not support extended thinking"
+                }
+            end
+        end
+    else
+        -- No thinking param (the reasoning resolver's send_nothing / "Model API default").
+        -- Carve-out to the send-nothing contract (2026-07-11, display-only params allowed):
+        -- models whose adaptive thinking is ON at the API default (Sonnet 5) think SILENTLY
+        -- — Anthropic streams no reasoning unless display="summarized" is requested, so the
+        -- user stares at a blank wait before the first token. Sending adaptive+summarized
+        -- is behaviorally identical to the API default (adaptive IS the default) but makes
+        -- the thinking visible. Excludes default-OFF adaptive models (Opus/Sonnet 4.6 —
+        -- enabling thinking there WOULD change behavior) via profile.default_state.
+        local profile = ModelConstraints.getReasoningProfile("anthropic", model)
+        if profile.axis == "adaptive_effort" and profile.default_state == "on"
+            and ModelConstraints.supportsCapability("anthropic", model, "adaptive_thinking") then
+            request_body.thinking = { type = "adaptive", display = "summarized" }
+            adjustments.thinking_display = {
+                reason = "adaptive is this model's API default; summarized display makes it visible"
+            }
+        end
+    end
+
+    -- Strip sampling params for models that reject them (Opus 4.7/4.8, Sonnet 5 → HTTP 400).
+    -- Runs for both thinking and non-thinking requests (default temp would otherwise 400).
+    if ModelConstraints.supportsCapability("anthropic", model, "no_sampling_params") then
+        if request_body.temperature ~= nil then
+            adjustments.temperature = {
+                from = request_body.temperature,
+                to = nil,
+                reason = "Opus 4.7/4.8 and Sonnet 5 reject sampling params"
+            }
+            request_body.temperature = nil
+        end
+        request_body.top_p = nil
+        request_body.top_k = nil
+    end
+
+    -- Automatic prompt caching (GA 2026-02-19, no beta header): a top-level
+    -- cache_control makes the API place the cache breakpoint on the last
+    -- cacheable block and advance it as the conversation grows, so message
+    -- history (book text, chat turns, tool loops) caches — the explicit
+    -- system-block breakpoint alone sits UNDER the model's minimum cacheable
+    -- prefix in the default config (1024 tokens on Sonnet 5; system block is
+    -- ~571) and measurably cached nothing (probed 2026-08-14). Explicit
+    -- block-level breakpoints coexist with the automatic one.
+    if not (config.system and config.system.enable_caching == false) then
+        request_body.cache_control = { type = "ephemeral" }
+    end
+
+    -- Add streaming if requested
+    if config.stream then
+        request_body.stream = true
+    end
+
+    return request_body, adjustments
+end
+
+-- Filter messages to remove system role and empty content
+-- @param messages: Array of message objects
+-- @return table: Filtered messages
+function AnthropicRequest:filterMessages(messages)
+    local filtered = {}
+
+    for _, msg in ipairs(messages) do
+        -- Skip system messages (they go in system array)
+        if msg.role ~= "system" and self:hasContent(msg) then
+            table.insert(filtered, {
+                role = msg.role == "assistant" and "assistant" or "user",
+                content = msg.content,
+            })
+        end
+    end
+
+    return filtered
+end
+
+-- Check if message has non-empty content
+function AnthropicRequest:hasContent(msg)
+    if not msg or not msg.content then return false end
+    if type(msg.content) == "string" then
+        return msg.content:match("%S") ~= nil
+    end
+    return true  -- Non-string content (arrays) assumed valid
+end
+
+-- Get headers for Anthropic API request
+-- @param config: { api_key, enable_caching }
+-- @param content_length: Length of request body
+-- @return table: HTTP headers
+function AnthropicRequest:getHeaders(config, content_length)
+    local defaults = Defaults.ProviderDefaults.anthropic
+
+    local headers = {
+        ["Content-Type"] = "application/json",
+        ["x-api-key"] = config.api_key,
+        ["anthropic-version"] = defaults.additional_parameters.anthropic_version,
+    }
+
+    -- Add content length if provided
+    if content_length then
+        headers["Content-Length"] = tostring(content_length)
+    end
+
+    return headers
+end
+
+-- Get streaming headers
+-- @param config: Same as getHeaders
+-- @param content_length: Length of request body
+-- @return table: HTTP headers for SSE streaming
+function AnthropicRequest:getStreamHeaders(config, content_length)
+    local headers = self:getHeaders(config, content_length)
+    headers["Accept"] = "text/event-stream"
+    return headers
+end
+
+-- Build system array from legacy format (for migration)
+-- Converts old consolidated message format to new system array
+-- @param system_text: Old-style system prompt text
+-- @param enable_caching: Whether to add cache_control
+-- @return table: System array for Anthropic API
+function AnthropicRequest:buildSystemFromLegacy(system_text, enable_caching)
+    if not system_text or system_text == "" then
+        return nil
+    end
+
+    local block = {
+        type = "text",
+        text = system_text,
+    }
+
+    if enable_caching ~= false then
+        block.cache_control = { type = "ephemeral" }
+    end
+
+    return { block }
+end
+
+-- Create a cached content block
+-- @param text: Content text
+-- @return table: Content block with cache_control
+function AnthropicRequest:createCachedBlock(text)
+    return {
+        type = "text",
+        text = text,
+        cache_control = { type = "ephemeral" },
+    }
+end
+
+-- Create a non-cached content block
+-- @param text: Content text
+-- @return table: Content block without cache_control
+function AnthropicRequest:createBlock(text)
+    return {
+        type = "text",
+        text = text,
+    }
+end
+
+-- Build extended thinking configuration
+-- @param budget_tokens: Token budget for thinking (minimum 1024)
+-- @return table: Thinking configuration
+function AnthropicRequest:buildThinkingConfig(budget_tokens)
+    local defaults = ModelConstraints.reasoning_defaults.anthropic
+    budget_tokens = math.max(budget_tokens or defaults.budget, defaults.budget_min)
+
+    return {
+        type = "enabled",
+        budget_tokens = budget_tokens,
+    }
+end
+
+-- Parse cache usage from response
+-- @param usage: Response usage object
+-- @return table: { cache_write, cache_read, input, output }
+function AnthropicRequest:parseCacheUsage(usage)
+    if not usage then return nil end
+
+    return {
+        cache_write = usage.cache_creation_input_tokens or 0,
+        cache_read = usage.cache_read_input_tokens or 0,
+        input = usage.input_tokens or 0,
+        output = usage.output_tokens or 0,
+    }
+end
+
+-- Format cache usage for debug display
+-- @param usage: Parsed usage from parseCacheUsage
+-- @return string: Human-readable cache status
+function AnthropicRequest:formatCacheUsage(usage)
+    if not usage then return "No usage data" end
+
+    local parts = {}
+
+    if usage.cache_write > 0 then
+        table.insert(parts, string.format("Cache write: %d tokens", usage.cache_write))
+    end
+
+    if usage.cache_read > 0 then
+        table.insert(parts, string.format("Cache hit: %d tokens (90%% savings)", usage.cache_read))
+    end
+
+    table.insert(parts, string.format("Input: %d, Output: %d", usage.input, usage.output))
+
+    return table.concat(parts, " | ")
+end
+
+return AnthropicRequest

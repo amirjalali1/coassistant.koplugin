@@ -13,7 +13,7 @@ local function setupPaths()
     local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -21,7 +21,7 @@ local function setupPaths()
 end
 setupPaths()
 require("mock_koreader")
-local UpdateChecker = require("koassistant_update_checker")
+local UpdateChecker = require("koassistant.storage.update_checker")
 local TestRunner = require("test_runner"):new()
 
 local cmp, parse = UpdateChecker.compareVersions, UpdateChecker.parseVersion

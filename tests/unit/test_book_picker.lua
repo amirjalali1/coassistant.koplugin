@@ -1,4 +1,4 @@
--- Unit tests for koassistant_book_picker.lua pure ordering helpers (round 29).
+-- Unit tests for koassistant/ui/book_picker.lua pure ordering helpers (round 29).
 --
 -- Why this file exists: the picker hands callers a SET (hash keyed by file
 -- path). Any caller that cares about order — a book group's reading order
@@ -27,7 +27,7 @@ package.loaded["docsettings"] = package.loaded["docsettings"] or {
     open = function() return { readSetting = function() end, close = function() end } end,
 }
 
-local BookPicker = require("koassistant_book_picker")
+local BookPicker = require("koassistant.ui.book_picker")
 
 local TestRunner = { passed = 0, failed = 0 }
 function TestRunner:suite(name) print(string.format("\n  [%s]", name)) end

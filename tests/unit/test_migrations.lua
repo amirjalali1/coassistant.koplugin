@@ -1,4 +1,4 @@
--- Unit tests for koassistant_migrations.lua — the one-time settings upgrade chain
+-- Unit tests for koassistant/storage/migrations.lua — the one-time settings upgrade chain
 -- (extracted verbatim from AskGPT:initSettings, 2026-08-10; release_prep_v0.21 C0).
 --
 -- The chain had ZERO coverage while guarding every user's upgrade path. These are
@@ -22,7 +22,7 @@ local function setupPaths()
 
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -35,8 +35,8 @@ setupPaths()
 
 require("mock_koreader")
 
-local Migrations = require("koassistant_migrations")
-local Constants = require("koassistant_constants")
+local Migrations = require("koassistant.storage.migrations")
+local Constants = require("koassistant.core.constants")
 
 local TestRunner = {
     passed = 0,
@@ -175,9 +175,33 @@ TestRunner:test("chain reports changes and stamps every post-0.20.0 guard", func
         "_session_chips_attach_v1", "_session_chips_quick_v1",
         "_web_search_effort_migrated", "_dict_bypass_default_migrated",
         "_highlight_context_migrated", "_session_chips_registry_v1",
+        "_privacy_ask_migrated",
     }) do
         TestRunner:assertEqual(f[stamp], true, stamp)
     end
+end)
+
+TestRunner:test("the Ask reset (B395): a switch that was on becomes Ask, position and per-book values stay, the notice is owed", function()
+    local f = v020Fixture()
+    f.enable_highlights_sharing = true
+    f.enable_notebook_sharing = false
+    f.enable_basic_stats = false
+    f.trusted_providers = { "ollama" }
+    Migrations.run(f)
+    TestRunner:assertEqual(f.enable_book_text_extraction, nil, "text: on becomes Ask")
+    TestRunner:assertEqual(f.enable_highlights_sharing, nil, "highlights: on becomes Ask")
+    TestRunner:assertEqual(f.enable_notebook_sharing, nil, "notebook: off reads as Ask already")
+    TestRunner:assertEqual(f.enable_basic_stats, false, "reading position keeps its own two values")
+    TestRunner:assertEqual(f.trusted_providers[1], "ollama", "the trusted list is kept")
+    TestRunner:assertEqual(f._privacy_notice_pending, true, "the notice is owed")
+    TestRunner:assertEqual(f._privacy_ask_migrated, true, "stamped")
+end)
+
+TestRunner:test("the Ask reset owes no notice when nothing was decided", function()
+    local f = { behavior_migrated = true, _tools_posture_migrated = true }
+    Migrations.run(f)
+    TestRunner:assertEqual(f._privacy_ask_migrated, true, "stamped")
+    TestRunner:assertEqual(f._privacy_notice_pending, nil, "no notice")
 end)
 
 TestRunner:test("legacy auto-X-Ray master ON -> one-way grant recorded, master OFF", function()
@@ -225,6 +249,25 @@ TestRunner:test("session chips seeded then rebuilt to canonical 7; spoiler toggl
     TestRunner:assertEqual(f._dismissed_session_chips, nil, "full membership -> no dismissal seed")
 end)
 
+TestRunner:test("a chip added after the registry move is never seeded as dismissed", function()
+    local f = v020Fixture()
+    Migrations.run(f)
+    -- the migration's list is frozen at the seven ids of its time: a chip
+    -- appended to SESSION_CHIP_IDS later is injected for an upgrader, never
+    -- seeded as dismissed (the id list is the guard; today's list is the same seven)
+    local dismissed = {}
+    for _idx, id in ipairs(f._dismissed_session_chips or {}) do dismissed[id] = true end
+    TestRunner:assertEqual(next(dismissed), nil, "nothing seeded as dismissed")
+    local Constants = require("koassistant.core.constants")
+    local shown = {}
+    for _idx, id in ipairs(Constants.resolveSessionChips(f.session_chips, f._dismissed_session_chips)) do
+        shown[id] = true
+    end
+    for _idx, id in ipairs(Constants.SESSION_CHIP_IDS) do
+        TestRunner:assertTrue(shown[id], id .. " rendered for an upgrader")
+    end
+end)
+
 TestRunner:test("web_search_max_uses maps to the effort dial and is removed", function()
     local cases = { [2] = "light", [8] = "thorough", [5] = nil }  -- 4-7 = standard = nil
     for old_uses, effort in pairs(cases) do
@@ -261,7 +304,6 @@ TestRunner:test("unrelated settings ride through untouched", function()
     local f = v020Fixture()
     Migrations.run(f)
     TestRunner:assertEqual(f.translation_language, "German")
-    TestRunner:assertEqual(f.enable_book_text_extraction, true)
     TestRunner:assertEqual(f.ui_language, "auto")
     TestRunner:assertEqual(f._language_prompt_shown, true)
 end)
@@ -342,8 +384,10 @@ TestRunner:test("deliberately removed chips seed the dismissal list, membership 
     Migrations.run(f)
     assertDeepEqual(f.session_chips, { "domain", "web_search" },
         "membership must not be re-expanded")
+    -- the canonical ids as of the registry migration (frozen there: a chip
+    -- added later is injected, never seeded as dismissed)
     local expected = {}
-    for _idx, id in ipairs(Constants.SESSION_CHIP_IDS) do
+    for _idx, id in ipairs(CANONICAL_CHIPS) do
         if id ~= "domain" and id ~= "web_search" then
             table.insert(expected, id)
         end
@@ -387,6 +431,40 @@ TestRunner:test("translate_to never clobbers an existing translation_language", 
     Migrations.run(f)
     TestRunner:assertEqual(f.translation_language, "German")
     TestRunner:assertEqual(f.translate_to, nil)
+end)
+
+--------------------------------------------------------------------------------
+TestRunner:suite("Image Shape and Detail (image round S2)")
+
+TestRunner:test("OpenAI's size and quality become Shape and Detail while OpenAI draws", function()
+    local f = { image_gen_provider = "openai", image_gen_size = "1536x1024", image_gen_quality = "high" }
+    TestRunner:assertTrue(Migrations.run(f))
+    TestRunner:assertEqual(f.image_gen_shape, "landscape")
+    TestRunner:assertEqual(f.image_gen_detail, "best")
+    TestRunner:assertEqual(f.image_gen_size, nil)
+    TestRunner:assertEqual(f.image_gen_quality, nil)
+end)
+
+TestRunner:test("the drawing provider's row first; OpenAI's quality stays OpenAI's", function()
+    local f = { provider = "xai", image_gen_size = "1024x1024", image_gen_aspect = "9:16",
+                image_gen_quality = "high" }
+    Migrations.run(f)
+    TestRunner:assertEqual(f.image_gen_shape, "portrait", "xAI draws: its aspect ratio wins")
+    TestRunner:assertEqual(f.image_gen_detail, nil, "no other provider starts drawing at Best")
+    TestRunner:assertEqual(f.image_gen_aspect, nil)
+    TestRunner:assertEqual(f.image_gen_quality, nil)
+end)
+
+TestRunner:test("Default takes the new defaults; a Shape already set is kept", function()
+    local f = { provider = "openai", image_gen_size = "default", image_gen_quality = "default" }
+    Migrations.run(f)
+    TestRunner:assertEqual(f.image_gen_shape, nil, "nil = Fit my screen")
+    TestRunner:assertEqual(f.image_gen_detail, nil, "nil = Draft")
+    TestRunner:assertEqual(f.image_gen_size, nil)
+    f = { image_gen_shape = "square", image_gen_aspect = "16:9" }
+    Migrations.run(f)
+    TestRunner:assertEqual(f.image_gen_shape, "square")
+    TestRunner:assertEqual(Migrations.run(f), false, "the old keys are gone: nothing runs again")
 end)
 
 return TestRunner:summary()

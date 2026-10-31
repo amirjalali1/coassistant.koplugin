@@ -23,9 +23,9 @@ end
 setupPaths()
 require("mock_koreader")
 
-local OllamaHandler = require("koassistant_api.ollama")
-local ResponseParser = require("koassistant_api.response_parser")
-local ToolWire = require("koassistant_api.tool_wire")
+local OllamaHandler = require("koassistant.api.ollama")
+local ResponseParser = require("koassistant.api.response_parser")
+local ToolWire = require("koassistant.api.tool_wire")
 local TestRunner = require("test_runner"):new()
 
 print("")

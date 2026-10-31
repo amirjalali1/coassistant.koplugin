@@ -1,4 +1,4 @@
--- Unit tests for koassistant_rate_limits.lua (per-minute admission limits,
+-- Unit tests for koassistant/request/rate_limits.lua (per-minute admission limits,
 -- 2026-09-03, docs/tpm_admission_plan.md): header capture, pipe marker
 -- encode/decode, session memo, refusal parsing, budget sizing.
 -- Run: lua tests/unit/test_rate_limits.lua  (or lua tests/run_tests.lua --unit)
@@ -11,7 +11,7 @@ local function setupPaths()
     local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -35,7 +35,7 @@ end
 function TestRunner:assertTrue(v, msg) if not v then error(msg or "expected truthy") end end
 function TestRunner:assertNil(v, msg) if v ~= nil then error((msg or "expected nil") .. ", got " .. tostring(v)) end end
 
-local RL = require("koassistant_rate_limits")
+local RL = require("koassistant.request.rate_limits")
 
 -- Real wordings (2026-09-03). Groq = the Reddit screenshot; OpenAI = community reports.
 local GROQ = "groq/openai/gpt-oss-20b: Request too large for model `openai/gpt-oss-20b` in organization "

@@ -1,4 +1,4 @@
--- Unit tests for behavior_loader.lua and domain_loader.lua
+-- Unit tests for koassistant/prompts/behavior_loader.lua and koassistant/prompts/domain_loader.lua
 -- Tests file loading, sorting, and retrieval functions
 -- Uses actual filesystem if behaviors/ and domains/ folders exist
 
@@ -98,12 +98,12 @@ function TestRunner:summary()
 end
 
 -- Load the modules under test
-local BehaviorLoader = require("behavior_loader")
-local DomainLoader = require("domain_loader")
+local BehaviorLoader = require("koassistant.prompts.behavior_loader")
+local DomainLoader = require("koassistant.prompts.domain_loader")
 
 print("")
 print(string.rep("=", 50))
-print("  Unit Tests: behavior_loader.lua & domain_loader.lua")
+print("  Unit Tests: koassistant/prompts/behavior_loader.lua & koassistant/prompts/domain_loader.lua")
 print(string.rep("=", 50))
 
 -- ============================================================

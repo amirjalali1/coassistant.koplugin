@@ -17,12 +17,14 @@ local CONFIGURATION = {
     -- These are used as defaults until changed in the Settings UI.
     -- Once you pick a provider/model in the UI, the UI value wins.
     --
-    -- Built-in providers: anthropic, openai, deepseek, gemini, ollama,
-    --   groq, mistral, xai, openrouter, requesty, qwen, kimi, together, fireworks,
-    --   sambanova, cohere, doubao, zai, perplexity
+    -- Built-in provider ids (the provider list in Settings → Model shows the names):
+    --   anthropic, openai, openai_codex, deepseek, gemini, ollama, groq, mistral, xai,
+    --   openrouter, requesty, qwen, kimi, together, fireworks, sambanova, cohere, doubao,
+    --   zai, perplexity, nvidia, cerebras, minimax, deepinfra, novita, hyperbolic, nebius,
+    --   chutes, featherless, vercel, opencode, opencode_go, a2agent
     --
     -- provider = "anthropic",
-    -- model = "claude-sonnet-4-6",
+    -- model = "claude-sonnet-5-5",
 
     -- ============================================================
     -- CUSTOM API ENDPOINTS (the main reason to use this file)
@@ -87,7 +89,7 @@ local CONFIGURATION = {
         --     stance = "default",             -- "minimal" | "default" | "maximum" (applies to all models)
         --     -- Per-model overrides, keyed "provider/model":
         --     -- models = {
-        --     --     ["anthropic/claude-opus-4-8"] = { state = "on", effort = "high" },
+        --     --     ["anthropic/claude-opus-5-5"] = { state = "on", effort = "high" },
         --     --     ["deepseek/deepseek-v4-pro"]  = { state = "off" },
         --     -- },
         -- },
@@ -95,8 +97,11 @@ local CONFIGURATION = {
         -- Web search
         -- enable_web_search = false,          -- Global web search toggle
 
+        -- Updates
+        -- auto_check_updates = true,          -- Check for a new version at startup (false = never)
+
         -- Development
-        -- debug = false,                      -- Console logging (false/minimal/names/full)
+        -- debug = false,                      -- Console Debug: the plugin's debug log lines (true/false)
     },
 
     -- For custom AI behavior, use custom_actions.lua to define actions with:

@@ -1,4 +1,4 @@
--- Perplexity on the Agent API (B078): the request koassistant_api/perplexity.lua
+-- Perplexity on the Agent API (B078): the request koassistant/api/perplexity.lua
 -- builds for POST /v1/agent. The Sonar chat wire retired 2026-09-27; the wire
 -- facts asserted here were probed live that day (docs/backlog_v0.22.md B078).
 --
@@ -23,7 +23,7 @@ setupPaths()
 require("mock_koreader")
 
 local json = require("json")
-local Handler = require("koassistant_api.perplexity")
+local Handler = require("koassistant.api.perplexity")
 local TestRunner = require("test_runner"):new()
 
 print("")
@@ -71,7 +71,7 @@ TestRunner:test("no model or an empty one falls to the default model, Sonar", fu
 end)
 
 TestRunner:test("the model list holds models only, with no tier placements", function()
-    local ModelLists = require("koassistant_model_lists")
+    local ModelLists = require("koassistant.request.model_lists")
     TestRunner:assertEqual(ModelLists.perplexity[1], "perplexity/sonar", "default first")
     for _idx, id in ipairs(ModelLists.perplexity) do
         TestRunner:assertTrue(id:find("/", 1, true) ~= nil, id .. " is a provider/model id, not a preset")
@@ -137,7 +137,7 @@ end)
 
 TestRunner:test("a preset gets no temperature, a direct model keeps it and its constraints", function()
     TestRunner:assertEqual(build("low").body.temperature, nil, "the low preset refuses one")
-    local ModelOverrides = require("koassistant_model_overrides")
+    local ModelOverrides = require("koassistant.request.model_overrides")
     local saved = ModelOverrides._user
     ModelOverrides._setUserForTests({ constraints = { perplexity = { ["perplexity/sonar"] = { temperature = 0.3 } } } })
     local direct = build("perplexity/sonar").body.temperature
@@ -148,7 +148,7 @@ TestRunner:test("a preset gets no temperature, a direct model keeps it and its c
 end)
 
 TestRunner:test("a direct model that refuses sampling gets no temperature, with or without the preset", function()
-    local ModelConstraints = require("model_constraints")
+    local ModelConstraints = require("koassistant.request.model_constraints")
     for _idx, model in ipairs({ "anthropic/claude-opus-4-7", "anthropic/claude-opus-5-5",
             "anthropic/claude-fable-5-1", "anthropic/claude-sonnet-5", "anthropic/claude-sonnet-5-5",
             "openai/gpt-6-astra" }) do

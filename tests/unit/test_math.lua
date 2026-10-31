@@ -1,5 +1,5 @@
 --[[
-Unit Tests for koassistant_math.lua (#105 LaTeX math → readable HTML)
+Unit Tests for koassistant/ui/math.lua (#105 LaTeX math → readable HTML)
 
 Covers:
 - symbol/greek/operator mapping, sup/sub, accents, fractions, roots
@@ -14,7 +14,7 @@ Run: lua tests/run_tests.lua --unit   or   lua tests/unit/test_math.lua
 
 package.path = package.path .. ";./?.lua;./?/init.lua"
 
-local M = require("koassistant_math")
+local M = require("koassistant.ui.math")
 
 local T = { passed = 0, failed = 0 }
 

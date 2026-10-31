@@ -16,8 +16,8 @@ Run: lua tests/run_tests.lua --unit
 package.path = package.path .. ";./?.lua;./?/init.lua"
 require("tests.lib.mock_koreader")
 
-local ContextExtractor = require("koassistant_context_extractor")
-local Actions = require("prompts.actions")
+local ContextExtractor = require("koassistant.request.context_extractor")
+local Actions = require("koassistant.prompts.actions")
 
 -- Test suite
 local TestRunner = {
@@ -91,8 +91,8 @@ package.loaded["docsettings"] = {
 
 -- Mock Notebook for sidecar reads
 local mock_notebook_content = ""
-local original_notebook = package.loaded["koassistant_notebook"]
-package.loaded["koassistant_notebook"] = {
+local original_notebook = package.loaded["koassistant.chat.notebook"]
+package.loaded["koassistant.chat.notebook"] = {
     read = function(path)
         if path then return mock_notebook_content end
         return ""
@@ -101,8 +101,8 @@ package.loaded["koassistant_notebook"] = {
 
 -- Mock ActionCache for cache tests
 local mock_cache_data = {}
-local original_action_cache = package.loaded["koassistant_action_cache"]
-package.loaded["koassistant_action_cache"] = {
+local original_action_cache = package.loaded["koassistant.artifacts.action_cache"]
+package.loaded["koassistant.artifacts.action_cache"] = {
     getXrayCache = function(path)
         return mock_cache_data.xray
     end,
@@ -611,7 +611,7 @@ local function runSidecarUnavailableDataTests()
 
     print("\n--- Sidecar: _unavailable_data messages ---")
 
-    TestRunner:test("sidecar _unavailable_data: 'highlights (sharing disabled)' when off", function()
+    TestRunner:test("sidecar _unavailable_data: 'highlights (not allowed for this request)' when off", function()
         local extractor = createSidecarExtractor({
             enable_highlights_sharing = false,
             enable_annotations_sharing = false,
@@ -620,12 +620,23 @@ local function runSidecarUnavailableDataTests()
         TestRunner:assert(data._unavailable_data, "should have _unavailable_data")
         local found = false
         for _idx, msg in ipairs(data._unavailable_data) do
-            if msg:find("highlights (sharing disabled)", 1, true) then found = true end
+            if msg:find("highlights (not allowed for this request)", 1, true) then found = true end
         end
-        TestRunner:assert(found, "should contain 'highlights (sharing disabled)'")
+        TestRunner:assert(found, "should contain 'highlights (not allowed for this request)'")
     end)
 
-    TestRunner:test("sidecar _unavailable_data: 'annotations (sharing disabled)' when both off", function()
+    TestRunner:test("sidecar _unavailable_data: the true cause of a Never (B395)", function()
+        local function items(settings, action)
+            local data = createSidecarExtractor(settings):extractForAction(action)
+            return table.concat(data._unavailable_data or {}, "; ")
+        end
+        TestRunner:assertContains(items({ enable_highlights_sharing = "never" },
+            { use_highlights = true, prompt = "{highlights_section}" }), "highlights (set to Never)")
+        TestRunner:assertContains(items({ enable_notebook_sharing = "never" }, { use_notebook = true }),
+            "notebook (set to Never)")
+    end)
+
+    TestRunner:test("sidecar _unavailable_data: 'annotations (not allowed for this request)' when both off", function()
         local extractor = createSidecarExtractor({
             enable_highlights_sharing = false,
             enable_annotations_sharing = false,
@@ -634,9 +645,9 @@ local function runSidecarUnavailableDataTests()
         TestRunner:assert(data._unavailable_data, "should have _unavailable_data")
         local found = false
         for _idx, msg in ipairs(data._unavailable_data) do
-            if msg:find("annotations (sharing disabled)", 1, true) then found = true end
+            if msg:find("annotations (not allowed for this request)", 1, true) then found = true end
         end
-        TestRunner:assert(found, "should contain 'annotations (sharing disabled)'")
+        TestRunner:assert(found, "should contain 'annotations (not allowed for this request)'")
     end)
 
     TestRunner:test("sidecar _unavailable_data: 'annotations (using highlights only)' when degraded", function()
@@ -659,15 +670,15 @@ local function runSidecarUnavailableDataTests()
         TestRunner:assert(found, "should contain 'annotations (using highlights only)'")
     end)
 
-    TestRunner:test("sidecar _unavailable_data: 'notebook (sharing disabled)' when off", function()
+    TestRunner:test("sidecar _unavailable_data: 'notebook (not allowed for this request)' when off", function()
         local extractor = createSidecarExtractor({})  -- default: notebook sharing off
         local data = extractor:extractForAction({ use_notebook = true })
         TestRunner:assert(data._unavailable_data, "should have _unavailable_data")
         local found = false
         for _idx, msg in ipairs(data._unavailable_data) do
-            if msg:find("notebook (sharing disabled)", 1, true) then found = true end
+            if msg:find("notebook (not allowed for this request)", 1, true) then found = true end
         end
-        TestRunner:assert(found, "should contain 'notebook (sharing disabled)'")
+        TestRunner:assert(found, "should contain 'notebook (not allowed for this request)'")
     end)
 
     TestRunner:test("sidecar _unavailable_data: no progress entry when sharing enabled (opt-out)", function()
@@ -1138,8 +1149,8 @@ local function runParityTests()
         TestRunner:assert(o._unavailable_data, "open-book should have _unavailable_data")
         -- Check same message appears in both
         local s_msg, o_msg = table.concat(s._unavailable_data, "; "), table.concat(o._unavailable_data, "; ")
-        TestRunner:assertContains(s_msg, "highlights (sharing disabled)")
-        TestRunner:assertContains(o_msg, "highlights (sharing disabled)")
+        TestRunner:assertContains(s_msg, "highlights (not allowed for this request)")
+        TestRunner:assertContains(o_msg, "highlights (not allowed for this request)")
     end)
 
     TestRunner:test("PARITY: same _unavailable_data for degraded annotations", function()
@@ -1164,8 +1175,8 @@ local function runParityTests()
         TestRunner:assert(s._unavailable_data, "sidecar should have _unavailable_data")
         TestRunner:assert(o._unavailable_data, "open-book should have _unavailable_data")
         local s_msg, o_msg = table.concat(s._unavailable_data, "; "), table.concat(o._unavailable_data, "; ")
-        TestRunner:assertContains(s_msg, "notebook (sharing disabled)")
-        TestRunner:assertContains(o_msg, "notebook (sharing disabled)")
+        TestRunner:assertContains(s_msg, "notebook (not allowed for this request)")
+        TestRunner:assertContains(o_msg, "notebook (not allowed for this request)")
     end)
 
     TestRunner:test("PARITY: no _unavailable_data when all permissions granted", function()
@@ -1830,6 +1841,86 @@ local function runPerBookOverrideTests()
     resetMocks()
 end
 
+-- =============================================================================
+-- The run's allowance (Allow once, B395 slice 2): _data_once on the request's
+-- settings reaches every read through gateContext, for this extractor's book
+-- (a record without a book covers every book of the run); a book's own Never
+-- still wins. Found dead on the first desktop try (2026-10-15): the gate
+-- context carried no once.
+-- =============================================================================
+
+local function runOnceAllowanceTests()
+    print("\n=== Testing the run's allowance (Allow once) THROUGH extractForAction ===")
+
+    setupSidecarData({
+        annotations = {
+            { text = "Test highlight from chapter 1" },
+        },
+        percent_finished = 0.65,
+    })
+
+    local function withOverrides(extractor, overrides)
+        extractor.getBookPrivacyOverrides = function() return overrides end
+        return extractor
+    end
+
+    TestRunner:test("once for the run (no book named): highlights on Ask are sent", function()
+        local extractor = createSidecarExtractor({
+            _data_once = { kinds = { highlights = true } },
+        })
+        local data = extractor:extractForAction({ use_highlights = true, prompt = "{highlights}" })
+        TestRunner:assertContains(data.highlights, "Test highlight", "a run-wide allowance covers this book")
+    end)
+
+    TestRunner:test("once for this book: highlights on Ask are sent", function()
+        local extractor = createSidecarExtractor({
+            _data_once = { book = "/test/books/sample.epub", kinds = { highlights = true } },
+        })
+        local data = extractor:extractForAction({ use_highlights = true, prompt = "{highlights}" })
+        TestRunner:assertContains(data.highlights, "Test highlight")
+    end)
+
+    TestRunner:test("once for another book: highlights on Ask stay out", function()
+        local extractor = createSidecarExtractor({
+            _data_once = { book = "/test/books/other.epub", kinds = { highlights = true } },
+        })
+        local data = extractor:extractForAction({ use_highlights = true, prompt = "{highlights}" })
+        TestRunner:assertEquals(data.highlights, "", "another book's allowance is not this book's")
+    end)
+
+    TestRunner:test("once does not lift the book's own Never", function()
+        local extractor = withOverrides(createSidecarExtractor({
+            _data_once = { book = "/test/books/sample.epub", kinds = { highlights = true } },
+        }), { highlights = false, annotations = false })
+        local data = extractor:extractForAction({ use_highlights = true, prompt = "{highlights}" })
+        TestRunner:assertEquals(data.highlights, "", "the book's Never beats the run's allowance")
+    end)
+
+    TestRunner:test("open book: text extraction on Ask is allowed once for the open file only", function()
+        local allowed = createOpenBookExtractor({
+            _data_once = { book = "/test/books/sample.epub", kinds = { book_text = true } },
+        })
+        TestRunner:assertEquals(allowed:isBookTextExtractionEnabled(), true, "once for the open book")
+        local other = createOpenBookExtractor({
+            _data_once = { book = "/test/books/other.epub", kinds = { book_text = true } },
+        })
+        TestRunner:assertEquals(other:isBookTextExtractionEnabled(), false, "once for another book")
+        local none = createOpenBookExtractor({})
+        TestRunner:assertEquals(none:isBookTextExtractionEnabled(), false, "Ask without an allowance")
+    end)
+
+    TestRunner:test("gateContext: a run-wide allowance covers the book list judged from a book", function()
+        local Gates = require("koassistant.request.privacy_gates")
+        local extractor = createSidecarExtractor({
+            _data_once = { kinds = { book_list = true } },
+        })
+        TestRunner:assertEquals(Gates.allows("book_list", extractor:gateContext()), true)
+        TestRunner:assertEquals(Gates.allows("habits", extractor:gateContext()), false, "only the kinds allowed")
+    end)
+
+    resetMocks()
+end
+
 local function runAll()
     print("\n=== Testing Sidecar Data Access and Privacy Gating ===")
 
@@ -1837,6 +1928,7 @@ local function runAll()
     runSidecarReaderTests()
     runSidecarGatingTests()
     runPerBookOverrideTests()
+    runOnceAllowanceTests()
     runSidecarUnavailableDataTests()
     runFlagClassificationTests()
     runSidecarLiveFlagTests()
@@ -1853,10 +1945,10 @@ local function runAll()
         package.loaded["docsettings"] = original_docsettings
     end
     if original_notebook then
-        package.loaded["koassistant_notebook"] = original_notebook
+        package.loaded["koassistant.chat.notebook"] = original_notebook
     end
     if original_action_cache then
-        package.loaded["koassistant_action_cache"] = original_action_cache
+        package.loaded["koassistant.artifacts.action_cache"] = original_action_cache
     end
 
     return TestRunner.failed == 0

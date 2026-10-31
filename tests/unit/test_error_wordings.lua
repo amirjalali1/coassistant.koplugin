@@ -38,7 +38,7 @@ local function setupPaths()
     local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -60,11 +60,11 @@ function TestRunner.assert(condition, message)
     end
 end
 
-local ModelConstraints = require("model_constraints")
-local RateLimits = require("koassistant_rate_limits")
+local ModelConstraints = require("koassistant.request.model_constraints")
+local RateLimits = require("koassistant.request.rate_limits")
 -- The unattended surface's classifier is the fourth parser over these same
 -- wordings (audit B2b); the module is pure (no KOReader deps at file level).
-local XrayAuto = require("koassistant_xray_auto")
+local XrayAuto = require("koassistant.xray.xray_auto")
 
 --------------------------------------------------------------------------------
 -- THE CORPUS
@@ -127,6 +127,17 @@ local CORPUS = {
         expect = { kind = "output_cap", limit = 16384, rate_limit = false },
         hint = "none",
         ladder = { kind = "too_large", transient = false },
+    },
+    {
+        id = "codex_plan_model",
+        provider = "openai_codex",
+        status = 400,
+        source = "the Codex backend to a free ChatGPT account, sweeps of 2026-08-15 and 2026-10-11 "
+            .. "(model_tooling_plan.md, OpenAI Subscription section)",
+        text = "HTTP 400: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.",
+        expect = { kind = "other", rate_limit = false },
+        hint = "plan",
+        ladder = { kind = "other", transient = false },
     },
     {
         id = "anthropic_output_cap",

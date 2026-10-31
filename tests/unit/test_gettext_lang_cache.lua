@@ -48,8 +48,8 @@ package.loaded["luasettings"] = {
 }
 
 -- Reset module cache before requiring (matters under run_tests.lua)
-package.loaded["koassistant_gettext"] = nil
-local Gettext = require("koassistant_gettext")
+package.loaded["koassistant.core.gettext"] = nil
+local Gettext = require("koassistant.core.gettext")
 local TestRunner = require("test_runner"):new()
 
 print("")
@@ -85,6 +85,6 @@ end)
 -- Restore whatever the harness had loaded so later test files see the original modules
 package.loaded["datastorage"] = saved_datastorage
 package.loaded["luasettings"] = saved_luasettings
-package.loaded["koassistant_gettext"] = nil
+package.loaded["koassistant.core.gettext"] = nil
 
 return TestRunner:summary()

@@ -18,7 +18,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local BookToolRunner = require("koassistant_book_tool_runner")
+local BookToolRunner = require("koassistant.tools.book_tool_runner")
 local TestRunner = require("test_runner"):new()
 
 local function makeUi()
@@ -1144,7 +1144,7 @@ TestRunner:test("the whole-text size is the reader's setting, not the effort's (
     TestRunner:assertEqual(L({ tool_whole_text = true, tool_lookup_effort = "thorough" }), 64000, "effort no longer raises it")
     TestRunner:assertEqual(BookToolRunner.budgetFor({ tool_lookup_effort = "thorough" }).whole_chars, nil, "budgets carry no size")
     -- The settings row offers exactly the values the runner reads, Medium by default.
-    local f = assert(io.open(package.searchpath("koassistant_settings_schema", package.path), "r"))
+    local f = assert(io.open(package.searchpath("koassistant.ui.settings_schema", package.path), "r"))
     local schema = f:read("*a")
     f:close()
     local row = schema:match('id = "tool_whole_text",(.-)\n                },')
@@ -1184,8 +1184,8 @@ local function wholeTextSent(config, ui)
 end
 
 TestRunner:test("a text the model's known limits cannot take is searched instead (B402)", function()
-    local ModelConstraints = require("model_constraints")
-    local RateLimits = require("koassistant_rate_limits")
+    local ModelConstraints = require("koassistant.request.model_constraints")
+    local RateLimits = require("koassistant.request.rate_limits")
     local cfg = gatherConfig({ tool_whole_text = true, spoiler_free_chat = false })
     local model = ModelConstraints.dispatchModel(cfg)
     TestRunner:assertTrue(model ~= nil, "the dispatch model")
@@ -1737,7 +1737,7 @@ TestRunner:test("liveSpoilerLine: scope consent stands the nudge down ONCE", fun
 end)
 
 TestRunner:test("liveSpoilerLine: stats off + untrusted -> no-progress variant, no position leak", function()
-    local Templates = require("prompts/templates")
+    local Templates = require("koassistant.prompts.templates")
     local features = { _spoiler_live = true, enable_basic_stats = false }
     local line = BookToolRunner._liveSpoilerLine({ features = features, provider = "openai" }, nil)
     TestRunner:assertEqual(line, Templates.SPOILER_FREE_NUDGE_NO_PROGRESS,
@@ -1746,8 +1746,8 @@ TestRunner:test("liveSpoilerLine: stats off + untrusted -> no-progress variant, 
 end)
 
 TestRunner:test("liveSpoilerLine: substitutes the live position when stats allowed", function()
-    local saved = package.loaded["koassistant_context_extractor"]
-    package.loaded["koassistant_context_extractor"] = {
+    local saved = package.loaded["koassistant.request.context_extractor"]
+    package.loaded["koassistant.request.context_extractor"] = {
         new = function(_self, _ui)
             return { getReadingProgress = function() return { formatted = "42%" } end }
         end,
@@ -1756,7 +1756,7 @@ TestRunner:test("liveSpoilerLine: substitutes the live position when stats allow
     local ui = { document = { file = "/tmp/x.epub" }, doc_settings = fake_ds }
     local features = { _spoiler_live = true, book_metadata = { file = "/tmp/x.epub" } }
     local line = BookToolRunner._liveSpoilerLine({ features = features, provider = "anthropic" }, ui)
-    package.loaded["koassistant_context_extractor"] = saved
+    package.loaded["koassistant.request.context_extractor"] = saved
     TestRunner:assertEqual(type(line), "string", "protected book chat gets the line")
     TestRunner:assertEqual(line:find("42%%") ~= nil, true, "position substituted")
     TestRunner:assertEqual(line:find("{reading_progress}", 1, true), nil, "placeholder resolved")

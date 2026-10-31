@@ -10,8 +10,8 @@
 --      output-token ceiling, tools acceptance, forced tool_choice (the runner's
 --      gather/final modes - the Z.AI wave-1.5 failure class a bare tools probe
 --      cannot see), and an SSE streaming smoke test.
---   3. DRAFT - emit copy-pasteable stanzas for model_constraints.lua plus
---      reminders for koassistant_model_lists.lua. NEVER auto-applied - a
+--   3. DRAFT - emit copy-pasteable stanzas for koassistant/request/model_constraints.lua plus
+--      reminders for koassistant/request/model_lists.lua. NEVER auto-applied - a
 --      human reviews the diff and places tiers by hand.
 --
 -- Usage:
@@ -33,6 +33,13 @@
 --   lua tests/model_audit.lua --keys [providers]       # ONE request per keyed provider on its
 --                                                      # default model: which keys work, which
 --                                                      # accounts are empty or on a plan without it
+--   lua tests/model_audit.lua --images [providers]     # the image lists (_image_models) against
+--                                                      # what openai, xai and gemini list (free)
+--   lua tests/model_audit.lua --image-probe <provider> <model>   # ONE image through the plugin's
+--                                                      # own builder and reader (costs cents) at
+--                                                      # the defaults (Fit my screen on a 3:4
+--                                                      # screen, Draft) or --shape S / --detail D;
+--                                                      # prints the picture's real pixel size
 --   Every mode that sends requests ends with SPEND: the tokens each reply reported,
 --   per provider, and an estimate at OpenRouter's list prices (its public catalog,
 --   free). Discovery also lists where a NEW direct id is served but not curated
@@ -82,10 +89,10 @@ local HAS_NETWORK = pcall(require, "ssl.https")
 require("mock_koreader")
 
 local JSON_OK, json = pcall(require, "json")
-local ModelLists = require("koassistant_model_lists")
-local ModelConstraints = require("model_constraints")
-local RateLimits = require("koassistant_rate_limits")
-local Defaults = require("koassistant_api.defaults")
+local ModelLists = require("koassistant.request.model_lists")
+local ModelConstraints = require("koassistant.request.model_constraints")
+local RateLimits = require("koassistant.request.rate_limits")
+local Defaults = require("koassistant.api.defaults")
 local TestConfig = require("test_config")
 
 local ModelAudit = {}
@@ -163,8 +170,10 @@ end
 -- DELETE an entry to resurface the id. Reviewed 2026-07-25.
 ModelAudit.DELIBERATE_SKIPS = {
     anthropic = {
-        ["claude-opus-4-6"] = "superseded by opus-4-8 (custom-add if wanted)",
-        ["claude-opus-4-7"] = "superseded by opus-4-8 (custom-add if wanted)",
+        ["claude-opus-4-6"] = "superseded by opus-5-5 (custom-add if wanted)",
+        ["claude-opus-4-7"] = "superseded by opus-5-5 (custom-add if wanted)",
+        ["claude-opus-4-8"] = "left the picker 2026-10-11: one previous version per line (opus-5)",
+        ["claude-sonnet-4-6"] = "left the picker 2026-10-11: one previous version per line (sonnet-5)",
     },
     gemini = {
         ["gemini-3-flash-preview"] = "3.0 preview, superseded by 3.1+ stable",
@@ -177,10 +186,19 @@ ModelAudit.DELIBERATE_SKIPS = {
         ["gemini-2.0-flash-001"] = "old generation",
         ["gemini-2.0-flash-lite"] = "old generation",
         ["gemini-2.0-flash-lite-001"] = "old generation",
+        ["gemini-2.5-flash"] = "left the picker 2026-10-14: served only to accounts that used 2.5 before",
+        ["gemini-2.5-pro"] = "left the picker 2026-10-14: served only to accounts that used 2.5 before",
+        ["gemini-2.5-flash-lite"] = "left the picker 2026-10-14: served only to accounts that used 2.5 before",
     },
     openai = {
         ["chat-latest"] = "ChatGPT-tuned rolling alias",
         ["gpt-5.3-chat-latest"] = "ChatGPT-tuned rolling alias",
+        ["gpt-5.6-sol"] = "left the picker 2026-10-11: one previous sol per line (6-sol)",
+        ["gpt-5.5"] = "left the picker 2026-10-11: previous flagship, pricier than 6.1-sol",
+        ["gpt-5.4"] = "left the picker 2026-10-11: the 5.4 line ended, 6-luna is cheaper",
+        ["gpt-5.4-mini"] = "left the picker 2026-10-11: the 5.4 line ended, 6-luna is cheaper",
+        ["gpt-5.4-nano"] = "left the picker 2026-10-11: the 5.4 line ended, 6-luna is cheaper",
+        ["gpt-5.5-2026-04-23"] = "dated snapshot of gpt-5.5, which left the picker 2026-10-11",
     },
     mistral = {
         ["mistral-medium"] = "curated via mistral-medium-latest",
@@ -448,12 +466,15 @@ ModelAudit.RECENT_SECONDS = 180 * 86400  -- uncurated ids older than this go to 
 -- curated: array of ids; fetched: map id -> meta; now: os.time() (nil = no
 -- staleness split, everything uncurated lands in `new`). opts.unlisted(id) =
 -- true for curated ids the list never carries (Perplexity presets): they are
--- never reported removed.
+-- never reported removed. opts.retired = ModelLists._retired[provider]: an id
+-- we moved saved picks off that the list still carries (Google's routed
+-- flashes, OpenCode Go's "use ..." ids) is `retired`, never new.
 -- Returns { new={}, stale={}, removed={}, snapshots={}, ignored={}, deliberate={},
--- reviewed={}, known=n }.
+-- reviewed={}, retired={}, known=n }.
 function ModelAudit.diffLists(provider, curated, fetched, now, opts)
     local result = { new = {}, stale = {}, removed = {}, snapshots = {}, ignored = {},
-                     deliberate = {}, reviewed = {}, known = 0 }
+                     deliberate = {}, reviewed = {}, retired = {}, known = 0 }
+    local retired = opts and opts.retired or {}
     local curated_set = {}
     for _i, id in ipairs(curated) do curated_set[id] = true end
     local skips = ModelAudit.DELIBERATE_SKIPS[provider] or {}
@@ -469,6 +490,8 @@ function ModelAudit.diffLists(provider, curated, fetched, now, opts)
     for _i, id in ipairs(fetched_ids) do
         if curated_set[id] then
             result.known = result.known + 1
+        elseif retired[id] then
+            table.insert(result.retired, { id = id, to = retired[id] })
         elseif ModelAudit.isSnapshotOf(id, curated_set) then
             table.insert(result.snapshots, id)
         elseif ModelAudit.isNoise(provider, id) then
@@ -1212,9 +1235,9 @@ local function runDiscovery(provider, api_key, verbose)
 
     local undated = ModelAudit.undatedList(fetched)
     local diff = ModelAudit.diffLists(provider, curated, fetched, (not undated) and os.time() or nil,
-        { unlisted = DISCOVERY[provider].unlisted })
+        { unlisted = DISCOVERY[provider].unlisted, retired = ModelLists._retired[provider] })
     printf("  fetched %d chat-relevant ids - curated %d - older uncurated %d - snapshots %d - ignored %d",
-        diff.known + #diff.new + #diff.stale + #diff.snapshots + #diff.reviewed, #curated,
+        diff.known + #diff.new + #diff.stale + #diff.snapshots + #diff.reviewed + #diff.retired, #curated,
         #diff.stale, #diff.snapshots, #diff.ignored)
     if undated then
         printf("  %sthe list carries no release dates (one shared `created` value): every " ..
@@ -1227,7 +1250,7 @@ local function runDiscovery(provider, api_key, verbose)
             C.off)
     end
     if #diff.new > 0 then
-        printf("  %sNEW%s (not in koassistant_model_lists.lua):", C.green, C.off)
+        printf("  %sNEW%s (not in koassistant/request/model_lists.lua):", C.green, C.off)
         for _i, id in ipairs(diff.new) do
             printf("    + %-40s %sprobe: lua tests/model_audit.lua --probe %s %s%s",
                 id, C.dim, provider, id, C.off)
@@ -1242,6 +1265,12 @@ local function runDiscovery(provider, api_key, verbose)
             C.dim, C.off)
         for _i, entry in ipairs(diff.deliberate) do
             printf("    %s. %-38s %s%s", C.dim, entry.id, entry.reason, C.off)
+        end
+    end
+    if #diff.retired > 0 then
+        printf("  %sstill listed, retired here (ModelLists._retired moves saved picks):%s", C.dim, C.off)
+        for _i, entry in ipairs(diff.retired) do
+            printf("    %s> %-38s -> %s%s", C.dim, entry.id, entry.to, C.off)
         end
     end
     if #diff.removed > 0 then
@@ -1361,7 +1390,7 @@ end
 -- The runner's real declarations (gather set incl. the empty-properties
 -- `done` tool — the field-found Gemini rejection class), probe-safe copy.
 local function realToolSpecs()
-    local ok, Runner = pcall(require, "koassistant_book_tool_runner")
+    local ok, Runner = pcall(require, "koassistant.tools.book_tool_runner")
     if not ok or type(Runner) ~= "table" then return nil end
     local specs = Runner.gather_declarations or Runner.function_declarations
     if type(specs) ~= "table" then return nil end
@@ -1431,7 +1460,7 @@ end
 -- Neutral tool-call parse via the plugin's OWN response transformers; falls
 -- back to the shared "openai" transformer for providers without one.
 local function parseToolCalls(decoded, provider)
-    local ResponseParser = require("koassistant_api.response_parser")
+    local ResponseParser = require("koassistant.api.response_parser")
     local ok, content = ResponseParser:parseResponse(decoded, provider)
     if not ok or type(content) ~= "table" or not content._tool_calls then
         if provider ~= "openai" then
@@ -1448,7 +1477,7 @@ end
 -- code: round-2 failure classes — gemini thought_signature, deepseek
 -- reasoning_content, orphaned call ids — live in the adapter's exact output).
 local function appendReplayTurn(adapter_key, messages, parsed)
-    local ToolWire = require("koassistant_api.tool_wire")
+    local ToolWire = require("koassistant.api.tool_wire")
     local adapter = ToolWire.adapters[adapter_key]
     if not adapter then return false end
     local executed = {}
@@ -1789,10 +1818,14 @@ local OPENAI_FAMILY = {
     opencode_go = { effort_key = "reasoning_effort",
                    extra_headers = { ["x-opencode-session"] = "koassistant-model-audit" } },
     a2agent    = { effort_key = "reasoning_effort" },   -- #108: gateway to five families; the probe decides what each backend honors
-    deepseek   = { binary_key = "thinking" },   -- {type="enabled"/"disabled"}
+    -- tool_off = what the handler adds to every tool-session request (deepseek.lua and
+    -- qwen.lua turn thinking off there); the replay leg sends it too.
+    deepseek   = { binary_key = "thinking",     -- {type="enabled"/"disabled"}
+                   tool_off = { thinking = { type = "disabled" } } },
     zai        = { binary_key = "thinking" },
     mistral    = {},                            -- no reasoning params (magistral always-on)
-    qwen       = {},                            -- DashScope compatible-mode; enable_thinking probing TODO (2026-08-15)
+    qwen       = { binary_key = "enable_thinking", binary_flat = true,   -- DashScope: true/false (B368)
+                   tool_off = { enable_thinking = false } },
     kimi       = {},                            -- Moonshot international; k2.6 has no reasoning params
                                                 -- CAUTION: lowest tier = org-wide 3 RPM — expect 429 retries
     openrouter = { reasoning_obj = true,        -- reasoning={effort=..}/{enabled=false}
@@ -1883,6 +1916,7 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
     end
 
     -- 3. reasoning controls
+    local binary_off_value   -- the off the forced-call retry in step 6 sends
     if fam.effort_key then
         facts.ladder = OPENAI_LADDER
         for _i, effort in ipairs(OPENAI_LADDER) do
@@ -1894,15 +1928,25 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
         facts.disable_ok = facts.efforts.none
     elseif fam.binary_key then
         facts.binary = true
-        local oncode, ondec, onraw = req({ [fam.binary_key] = { type = "enabled" } })
+        -- {type="enabled"/"disabled"} (deepseek, zai) or a flat boolean (qwen's enable_thinking)
+        local on_v, off_v = { type = "enabled" }, { type = "disabled" }
+        if fam.binary_flat then on_v, off_v = true, false end
+        local on_label = fam.binary_key .. (fam.binary_flat and "=true" or '={type="enabled"}')
+        local off_label = fam.binary_key .. (fam.binary_flat and "=false" or '={type="disabled"}')
+        local oncode, ondec, onraw = req({ [fam.binary_key] = on_v })
         facts.binary_on_ok = verdict(oncode)
-        recordProbe(facts, fam.binary_key .. '={type="enabled"}', facts.binary_on_ok,
+        recordProbe(facts, on_label, facts.binary_on_ok,
             not facts.binary_on_ok and ModelAudit.errText(ondec, onraw) or nil)
-        local offcode, offdec, offraw = req({ [fam.binary_key] = { type = "disabled" } })
-        facts.binary_off_ok = verdict(offcode)
+        -- Accepted is not off: the off runs on the reasoning prompt with room to think,
+        -- and counts only when the reply shows no reasoning (the Argon budget-0 lesson).
+        local offcode, offdec, offraw = req({ [fam.binary_key] = off_v }, 1024, REASONING_PROBE_PROMPT)
+        local still = offcode == 200 and ModelAudit.reasoningEvidence(offdec) or nil
+        facts.binary_off_ok = verdict(offcode) and not still
         facts.disable_ok = facts.binary_off_ok
-        recordProbe(facts, fam.binary_key .. '={type="disabled"}', facts.binary_off_ok,
-            not facts.binary_off_ok and ModelAudit.errText(offdec, offraw) or nil)
+        recordProbe(facts, off_label, verdict(offcode),
+            verdict(offcode) == false and ModelAudit.errText(offdec, offraw)
+            or (still and ("accepted, still reasoned (" .. still .. "): no off")) or nil)
+        binary_off_value = off_v
     elseif fam.reasoning_obj then
         facts.ladder = OPENAI_LADDER
         for _i, effort in ipairs(OPENAI_LADDER) do
@@ -1962,8 +2006,11 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
         if facts.tool_choice_any_ok == false and fam.binary_key then
             -- deepseek V4 precedent: thinking mode rejects tool_choice=required;
             -- the handler accommodation is forcing thinking off on tool turns
+            -- (an explicit nil check: Qwen's off is the boolean false, which `or` would replace)
+            local off_value = binary_off_value
+            if off_value == nil then off_value = { type = "disabled" } end
             local rcode = req({ tools = probe_tools, tool_choice = "required",
-                                [fam.binary_key] = { type = "disabled" } })
+                                [fam.binary_key] = off_value })
             if rcode == 200 then
                 facts.tool_choice_any_thinking_off = true
                 adetail = (adetail or "") .. " | OK with " .. fam.binary_key .. " disabled"
@@ -2063,7 +2110,7 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
     if facts.tools_ok and real_specs then
         local auto = replayWithAuto(facts)
         local tool_extra = { tools = probe_tools, tool_choice = auto and "auto" or "required" }
-        if provider == "deepseek" then tool_extra.thinking = { type = "disabled" } end
+        for k, v in pairs(fam.tool_off or {}) do tool_extra[k] = v end
         local t1code, t1dec, t1raw = req(tool_extra, 1024, TOOL_REPLAY_PROMPT)
         local parsed = t1code == 200 and parseToolCalls(t1dec, provider) or nil
         if not parsed then
@@ -2077,7 +2124,7 @@ local function probeOpenAIFamily(provider, model, api_key, verbose)
                 if provider ~= "openrouter" then m.reasoning_details = nil end
             end
             local replay_extra = { messages = messages, tools = probe_tools, tool_choice = "none" }
-            if provider == "deepseek" then replay_extra.thinking = { type = "disabled" } end
+            for k, v in pairs(fam.tool_off or {}) do replay_extra[k] = v end
             local t2code, t2dec, t2raw = req(replay_extra, 1024)
             facts.tool_replay_ok = verdict(t2code)
             recordProbe(facts, "tool replay round 2 (adapter echo)", facts.tool_replay_ok,
@@ -2163,11 +2210,29 @@ local function probeGemini(model, api_key, verbose)
     end
     facts.adaptive_ok = any_level  -- effort-style control accepted
 
-    -- 4. thinkingBudget (2.5 budget axis; 0 = disable)
-    local zcode, zdec, zraw = req({ thinkingConfig = { thinkingBudget = 0 } }, nil, 32)
-    facts.disable_ok = verdict(zcode)
-    recordProbe(facts, "thinkingBudget=0 (disable)", facts.disable_ok,
-        not facts.disable_ok and ModelAudit.errText(zdec, zraw) or nil)
+    -- 4. thinkingBudget (2.5 budget axis; 0 = disable). On the harder prompt, so a
+    -- budget that only maps to a thinking level shows its thoughts: Google maps a
+    -- budget to the nearest level on 3.x and 4 (Gemini 4 Argon accepted budget 0 and
+    -- thought 174 tokens, 2026-10-14; the old 32-token leg drafted can_disable = true).
+    -- Where levels are accepted the plugin sends thinkingLevel, which has no off: such
+    -- a model turns off only by sending nothing, so only when it does not think by default.
+    local zcode, zdec, zraw = req({ thinkingConfig = { thinkingBudget = 0 } }, nil, 2048,
+        HARD_REASONING_PROBE_PROMPT)
+    local zum = zcode == 200 and type(zdec) == "table" and type(zdec.usageMetadata) == "table"
+        and zdec.usageMetadata
+    local zthoughts = zum and type(zum.thoughtsTokenCount) == "number" and zum.thoughtsTokenCount or 0
+    if facts.adaptive_ok then
+        facts.disable_ok = not facts.default_reasoning
+    else
+        facts.disable_ok = verdict(zcode) and zthoughts == 0
+    end
+    local znote
+    if verdict(zcode) == false then
+        znote = ModelAudit.errText(zdec, zraw)
+    elseif zthoughts > 0 then
+        znote = "accepted, still thought " .. zthoughts .. " tokens: a budget is no off here"
+    end
+    recordProbe(facts, "thinkingBudget=0 (disable)", verdict(zcode), znote)
     local bcode, bdec, braw = req({ thinkingConfig = { thinkingBudget = 1024 } }, nil, 32)
     facts.budget_ok = verdict(bcode)
     recordProbe(facts, "thinkingBudget=1024", facts.budget_ok,
@@ -2242,7 +2307,7 @@ local function probeGemini(model, api_key, verbose)
         else
             local messages = { { role = "user",
                 parts = { { text = TOOL_REPLAY_PROMPT } } } }
-            local ToolWire = require("koassistant_api.tool_wire")
+            local ToolWire = require("koassistant.api.tool_wire")
             local executed = {}
             for _i, call in ipairs(parsed.calls or {}) do
                 table.insert(executed, { call = call,
@@ -2375,7 +2440,7 @@ function ModelAudit.draftStanzas(facts, current)
     local provider, model = facts.provider, facts.model
     local profile = current.profile or {}
 
-    add("%s-- DRAFT for model_constraints.lua (REVIEW - never auto-applied) ------------%s",
+    add("%s-- DRAFT for koassistant/request/model_constraints.lua (REVIEW - never auto-applied) ------------%s",
         C.bold, C.off)
 
     -- Perplexity: presets carry no profile; a direct model's facts are the
@@ -2578,13 +2643,13 @@ function ModelAudit.draftStanzas(facts, current)
         add('    ["%s"] = %d,', model, facts.ceiling)
     end
 
-    -- Wire notes that live outside model_constraints.lua
+    -- Wire notes that live outside koassistant/request/model_constraints.lua
     if facts.needs_max_completion_tokens then
-        add("%s-- NOTE: needs max_completion_tokens - check the prefix rule in koassistant_api/openai.lua%s",
+        add("%s-- NOTE: needs max_completion_tokens - check the prefix rule in koassistant/api/openai.lua%s",
             C.yellow, C.off)
     end
 
-    add("%s-- koassistant_model_lists.lua (HUMAN decisions) ---------------------------%s",
+    add("%s-- koassistant/request/model_lists.lua (HUMAN decisions) ---------------------------%s",
         C.bold, C.off)
     add('--   %s array: add "%s" (position matters - first entry = provider default)', provider, model)
     add("--   _tiers: place by price/positioning (frontier/flagship/standard/fast/ultrafast)")
@@ -2653,8 +2718,8 @@ local function probeOllama(model, _verbose)
     printf("  %sserver: %s (override with KOA_OLLAMA_URL); local inference - legs can take a while%s",
         C.dim, root, C.off)
 
-    local OllamaHandler = require("koassistant_api.ollama")
-    local ResponseParser = require("koassistant_api.response_parser")
+    local OllamaHandler = require("koassistant.api.ollama")
+    local ResponseParser = require("koassistant.api.response_parser")
     local function handlerBody(history, config)
         config = config or {}
         config.model = model
@@ -2845,7 +2910,7 @@ end
 
 local function perplexityBuilt(model, api_key, opts)
     opts = opts or {}
-    local Handler = require("koassistant_api.perplexity")
+    local Handler = require("koassistant.api.perplexity")
     return Handler:buildRequestBody(
         opts.history or { { role = "user", content = opts.prompt or PROBE_PROMPT } },
         { model = model, api_key = api_key, enable_web_search = opts.web ~= false,
@@ -3197,7 +3262,7 @@ function ModelAudit.minimalBuilt(provider, model, api_key)
     ModelConstraints.applyReasoningParams(provider, api_params,
         ModelConstraints.resolveReasoning(provider, model, { global_stance = "minimal" }))
     if next(api_params) == nil then return nil end
-    local ok, Handler = pcall(require, "koassistant_api." .. provider)
+    local ok, Handler = pcall(require, "koassistant.api." .. provider)
     if not ok or type(Handler) ~= "table" or type(Handler.buildRequestBody) ~= "function" then
         return nil
     end
@@ -3448,7 +3513,7 @@ end
 --- The largest max_tokens a built-in action pins (scanned: a new pin is
 --- covered without editing this file).
 function ModelAudit.largestActionPin()
-    local Actions = require("prompts.actions")
+    local Actions = require("koassistant.prompts.actions")
     local best = 0
     for _idx, ctx in ipairs({ "highlight", "book", "library", "general", "special" }) do
         for _id, a in pairs(type(Actions[ctx]) == "table" and Actions[ctx] or {}) do
@@ -3457,7 +3522,7 @@ function ModelAudit.largestActionPin()
             if n and n > best then best = n end
         end
     end
-    local mok, Merge = pcall(require, "koassistant_xray_merge")
+    local mok, Merge = pcall(require, "koassistant.xray.xray_merge")
     local m = mok and type(Merge) == "table" and type(Merge.API_PARAMS) == "table"
         and tonumber(Merge.API_PARAMS.max_tokens)
     if m and m > best then best = m end
@@ -3495,7 +3560,7 @@ local function runPins(providers, apikeys, verbose)
     banner(string.format("ACTION PINS: max_tokens %d to every listed model with no recorded ceiling", pin))
     local counts = { ok = 0, heals = 0, drift = 0, stale = 0, inconclusive = 0, error = 0, skipped = 0 }
     local stanzas = {}
-    local Base = require("koassistant_api.base")
+    local Base = require("koassistant.api.base")
     for _i, p in ipairs(providers) do
         local todo = {}
         for _j, m in ipairs(type(ModelLists[p]) == "table" and ModelLists[p] or {}) do
@@ -3504,7 +3569,7 @@ local function runPins(providers, apikeys, verbose)
             end
         end
         local key = keyFor(apikeys, p)
-        local hok, Handler = pcall(require, "koassistant_api." .. p)
+        local hok, Handler = pcall(require, "koassistant.api." .. p)
         if #todo == 0 then
             if verbose then printf("  %s%s: every model has a ceiling%s", C.dim, p, C.off) end
         elseif not TestConfig.isValidApiKey(key) then
@@ -3559,7 +3624,7 @@ local function runPins(providers, apikeys, verbose)
         counts.ok, counts.heals, counts.drift, counts.stale, counts.inconclusive, counts.error,
         counts.skipped, C.off)
     if #stanzas > 0 then
-        printf("\n  %sCeilings the refusals stated (review, then add to model_constraints.lua so the first request lands):%s",
+        printf("\n  %sCeilings the refusals stated (review, then add to koassistant/request/model_constraints.lua so the first request lands):%s",
             C.bold, C.off)
         for _idx, s in ipairs(stanzas) do print("  " .. s:gsub("\n", "\n  ")) end
     end
@@ -3623,16 +3688,521 @@ function ModelAudit.redact(text, max)
     return (s:sub(1, max or 170))
 end
 
+--------------------------------------------------------------------------------
+-- Image models (docs/image_round_plan.md S1, 2026-10-14)
+--------------------------------------------------------------------------------
+-- Chat discovery files every image id under noise, so the image lists
+-- (ModelLists._image_models) are checked on their own: --images diffs them
+-- against what each provider lists (free), --image-probe makes ONE image with
+-- the plugin's own builder and reader (costs cents: never part of a routine run).
+
+-- Ids a provider lists that the image lists leave out on purpose. Refresh an
+-- entry at each review.
+ModelAudit.IMAGE_SKIPS = {
+    openai = {
+        ["gpt-image-1.5"] = "left the picker 2026-10-14 (one previous version per line)",
+        ["gpt-image-1"] = "left the picker 2026-10-14",
+        ["chatgpt-image-latest"] = "left the picker 2026-10-14 (ChatGPT's own alias)",
+        ["dall-e-2"] = "retired generation",
+        ["dall-e-3"] = "retired generation",
+    },
+    gemini = {
+        ["gemini-3.1-flash-image"] = "deprecated for gemini-nano-banana-2.1; left the picker 2026-10-14",
+        ["gemini-2.5-flash-image"] = "shuts down 2027-03-15",
+        ["gemini-3-pro-image-preview"] = "preview of gemini-3-pro-image",
+        ["gemini-3.1-flash-image-preview"] = "preview of gemini-3.1-flash-image",
+        ["nano-banana-pro-preview"] = "alias of gemini-3-pro-image-preview",
+    },
+    xai = {},
+    -- OpenRouter lists every maker's image models (57 on 2026-10-14); its list
+    -- here is five of them and More models… reaches the rest, so the diff
+    -- reports only listed ids gone and the listed models' parameter drift
+    openrouter = {},
+}
+
+--- The image model ids in a provider's list answer (pure). OpenAI: /v1/models
+--- ids of the gpt-image, chatgpt-image and dall-e families; xAI:
+--- /v1/image-generation-models, each alias mapped to its model; Gemini:
+--- /v1beta/models names with "image" or "banana" in them (gemini-nano-banana-2.1
+--- has no "image" in its name).
+--- @return table served (id -> true), table aliases (alias -> id)
+function ModelAudit.imageIdsFrom(provider, data)
+    local served, aliases = {}, {}
+    if type(data) ~= "table" then return served, aliases end
+    if provider == "openai" then
+        for _i, m in ipairs(type(data.data) == "table" and data.data or {}) do
+            local id = type(m) == "table" and type(m.id) == "string" and m.id or ""
+            if id:find("^gpt%-image") or id:find("^chatgpt%-image") or id:find("^dall%-e") then
+                served[id] = true
+            end
+        end
+    elseif provider == "xai" then
+        for _i, m in ipairs(type(data.models) == "table" and data.models or {}) do
+            if type(m) == "table" and type(m.id) == "string" then
+                served[m.id] = true
+                for _j, a in ipairs(type(m.aliases) == "table" and m.aliases or {}) do
+                    if type(a) == "string" then aliases[a] = m.id end
+                end
+            end
+        end
+    elseif provider == "gemini" then
+        for _i, m in ipairs(type(data.models) == "table" and data.models or {}) do
+            local name = type(m) == "table" and type(m.name) == "string" and m.name or ""
+            local id = name:match("^models/(.+)$") or name
+            if id:find("image", 1, true) or id:find("banana", 1, true) then served[id] = true end
+        end
+    elseif provider == "openrouter" then
+        for _i, m in ipairs(type(data.data) == "table" and data.data or {}) do
+            if type(m) == "table" and type(m.id) == "string" then served[m.id] = true end
+        end
+    end
+    return served, aliases
+end
+
+--- Where an OpenRouter catalog entry's parameters differ from what the
+--- plugin sends its listed model (pure): a list of "aspect_ratio: …" lines,
+--- empty when they agree.
+function ModelAudit.openRouterDrift(model, entry)
+    local ImageGenerator = require("koassistant.images.image_generator")
+    local listed = ImageGenerator.pictureFacts("openrouter", model)
+    -- the catalog's side, read as a More models… pick of the same model
+    local caps = ImageGenerator.openRouterFacts(type(entry) == "table" and entry.supported_parameters)
+    caps.model = "(catalog)"
+    local served = ImageGenerator.pictureFacts("openrouter", "(catalog)", { image_gen_openrouter_caps = caps })
+    local out = {}
+    local function same(a, b)
+        a, b = a or {}, b or {}
+        if #a ~= #b then return false end
+        local set = {}
+        for _i, v in ipairs(a) do set[v] = true end
+        for _i, v in ipairs(b) do if not set[v] then return false end end
+        return true
+    end
+    for _i, k in ipairs({ "ratios", "resolutions", "qualities", "formats" }) do
+        -- a catalog entry without output formats says nothing about them
+        -- (flare's JPEG is a probed fact, image_generator.lua OPENROUTER_FACTS)
+        if not same(listed[k], served[k]) and not (k == "formats" and not served[k]) then
+            out[#out + 1] = string.format("%s: plugin %s, catalog %s", k,
+                table.concat(listed[k] or {}, " "), table.concat(served[k] or {}, " "))
+        end
+    end
+    return out
+end
+
+--- One image list against what its provider serves (pure).
+--- @return table { missing = {curated ids not served}, new = {served ids nobody
+---   curated, skipped or retired}, retired_listed = {retired ids still listed},
+---   skipped = {skipped ids still listed} }, every list sorted
+function ModelAudit.diffImageLists(curated, retired, skips, served, aliases)
+    curated, retired, skips = curated or {}, retired or {}, skips or {}
+    aliases = aliases or {}
+    local curated_set = {}
+    for _i, id in ipairs(curated) do curated_set[id] = true end
+    local out = { missing = {}, new = {}, retired_listed = {}, skipped = {} }
+    for _i, id in ipairs(curated) do
+        if not served[id] and not aliases[id] then table.insert(out.missing, id) end
+    end
+    for id in pairs(served) do
+        if not curated_set[id] then
+            if retired[id] then
+                table.insert(out.retired_listed, id)
+            elseif skips[id] then
+                table.insert(out.skipped, id)
+            elseif not ModelAudit.isSnapshotOf(id, curated_set) then
+                table.insert(out.new, id)
+            end
+        end
+    end
+    for _i, list in pairs(out) do table.sort(list) end
+    return out
+end
+
+--- OpenRouter's image catalog entries that arrived lately (B497): the ids on
+--- no list here whose `created` falls within `days` of `now`, newest first.
+--- The rest of the catalog is More models…'s and is only counted. Pure.
+function ModelAudit.recentImageModels(data, curated, now, days)
+    local listed = {}
+    for _i, id in ipairs(curated or {}) do listed[id] = true end
+    local cutoff = now - days * 86400
+    local out = {}
+    for _i, m in ipairs(type(data) == "table" and type(data.data) == "table" and data.data or {}) do
+        local created = type(m) == "table" and tonumber(m.created)
+        if created and type(m.id) == "string" and not listed[m.id] and created >= cutoff then
+            out[#out + 1] = { id = m.id, created = created }
+        end
+    end
+    table.sort(out, function(a, b) return a.created > b.created end)
+    return out
+end
+
+local IMAGE_LISTS = {
+    openai = { url = "https://api.openai.com/v1/models",
+               headers = function(key) return bearerHeaders(key) end },
+    xai = { url = "https://api.x.ai/v1/image-generation-models",
+            headers = function(key) return bearerHeaders(key) end },
+    gemini = { url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+               headers = function(key) return { ["x-goog-api-key"] = key } end },
+    openrouter = { url = "https://openrouter.ai/api/v1/images/models",
+                   headers = function() return {} end },
+}
+
+local function runImageDiscovery(providers, apikeys, verbose)
+    local problems = 0
+    for _i, provider in ipairs(providers) do
+        banner("IMAGES: " .. provider)
+        local src = IMAGE_LISTS[provider]
+        local key = keyFor(apikeys, provider)
+        if not src then
+            printf("  %sno image list for %s%s", C.dim, provider, C.off)
+        elseif provider ~= "openrouter" and not TestConfig.isValidApiKey(key) then
+            -- OpenRouter's catalog needs no key
+            printf("  %sskipped: no API key in apikeys.lua%s", C.dim, C.off)
+        else
+            local text, err = httpGet(src.url, src.headers(key))
+            local ok, data = pcall(json.decode, text or "")
+            if not text or not ok then
+                printf("  %sfetch failed: %s%s", C.red, tostring(err), C.off)
+                problems = problems + 1
+            else
+                local served, aliases = ModelAudit.imageIdsFrom(provider, data)
+                local d = ModelAudit.diffImageLists(ModelLists.getImageModels(provider),
+                    ModelLists._image_retired[provider], ModelAudit.IMAGE_SKIPS[provider], served, aliases)
+                printf("  listed: %d, served by the provider: %d",
+                    #(ModelLists.getImageModels(provider) or {}), (function()
+                        local n = 0
+                        for _id in pairs(served) do n = n + 1 end
+                        return n
+                    end)())
+                for _j, id in ipairs(d.missing) do
+                    printf("  %sNOT SERVED  %s%s (listed here)", C.red, id, C.off)
+                    problems = problems + 1
+                end
+                if provider == "openrouter" then
+                    -- a router: the rest of its catalog is More models…, so only
+                    -- the listed models' parameters are checked
+                    local by_id = {}
+                    for _j, m in ipairs(type(data.data) == "table" and data.data or {}) do
+                        if type(m) == "table" and type(m.id) == "string" then by_id[m.id] = m end
+                    end
+                    for _j, id in ipairs(ModelLists.getImageModels(provider) or {}) do
+                        for _k, line in ipairs(by_id[id] and ModelAudit.openRouterDrift(id, by_id[id]) or {}) do
+                            printf("  %sDRIFT       %s%s %s", C.yellow, id, C.off, line)
+                            problems = problems + 1
+                        end
+                    end
+                    -- the catalog's arrivals of the last 30 days are named (FLUX 3
+                    -- Image Klein went by as a count, 2026-10-16)
+                    local recent = ModelAudit.recentImageModels(data, ModelLists.getImageModels(provider), os.time(), 30)
+                    local named = {}
+                    for _j, m in ipairs(recent) do
+                        named[m.id] = true
+                        printf("  %sNEW         %s%s (in the catalog since %s; --image-probe it)", C.yellow, m.id,
+                            C.off, os.date("%Y-%m-%d", m.created))
+                    end
+                    local others = 0
+                    for _j, id in ipairs(d.new) do
+                        if not named[id] then others = others + 1 end
+                    end
+                    printf("  %sothers in the catalog: %d (More models… reaches them)%s", C.dim, others, C.off)
+                    d.new = {}
+                end
+                for _j, id in ipairs(d.new) do
+                    printf("  %sNEW         %s%s (not listed; --image-probe it)", C.yellow, id, C.off)
+                end
+                for _j, id in ipairs(d.retired_listed) do
+                    printf("  %sretired here, still listed: %s -> %s%s", C.dim, id,
+                        ModelLists._image_retired[provider][id], C.off)
+                end
+                if #d.skipped > 0 then
+                    printf("  %sleft out on purpose: %d%s", C.dim, #d.skipped, C.off)
+                    if verbose then
+                        for _j, id in ipairs(d.skipped) do
+                            printf("    %s%s: %s%s", C.dim, id, ModelAudit.IMAGE_SKIPS[provider][id], C.off)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return problems
+end
+
+local IMAGE_PROBE_PASSAGE = "The lighthouse stood on the black rocks at the edge of the bay, its lamp dark, "
+    .. "while gulls wheeled over the grey water."
+
+--- An image's width and height from its header (PNG's IHDR, a JPEG's frame
+--- marker); nil for anything else. Pure: the probe says what the provider
+--- really drew, whatever shape was asked.
+function ModelAudit.imageDimensions(bytes)
+    if type(bytes) ~= "string" then return nil end
+    if bytes:sub(1, 8) == "\137PNG\r\n\26\n" and #bytes >= 24 then
+        local function u32(i)
+            local a, b, c, d = bytes:byte(i, i + 3)
+            return ((a * 256 + b) * 256 + c) * 256 + d
+        end
+        return u32(17), u32(21)
+    end
+    if bytes:sub(1, 2) ~= "\255\216" then return nil end
+    local i = 3
+    while i + 8 <= #bytes do
+        if bytes:byte(i) ~= 0xFF then return nil end
+        local marker = bytes:byte(i + 1)
+        if marker == 0xFF then
+            i = i + 1 -- a fill byte
+        else
+            -- SOF0 to SOF15 carry the size; C4, C8 and CC are other markers
+            if marker >= 0xC0 and marker <= 0xCF and marker ~= 0xC4 and marker ~= 0xC8 and marker ~= 0xCC then
+                return bytes:byte(i + 7) * 256 + bytes:byte(i + 8), bytes:byte(i + 5) * 256 + bytes:byte(i + 6)
+            end
+            i = i + 2 + bytes:byte(i + 2) * 256 + bytes:byte(i + 3)
+        end
+    end
+    return nil
+end
+
+-- The screen Fit my screen fits in the probe: a 3:4 e-reader held upright
+local PROBE_SCREEN = { w = 1264, h = 1680 }
+
+-- One image through the plugin's own builder and reader, at the plugin's
+-- defaults (Fit my screen, Draft) or the shape and detail given. Saves it
+-- under TMPDIR.
+local function runImageProbe(provider, model, api_key, shape, detail)
+    banner("IMAGE PROBE " .. provider .. " / " .. model)
+    if not TestConfig.isValidApiKey(api_key) then
+        printf("  %sno API key for %s in apikeys.lua%s", C.red, provider, C.off)
+        return false
+    end
+    local ImageGenerator = require("koassistant.images.image_generator")
+    local features = { image_gen_shape = shape, image_gen_detail = detail }
+    if provider == "openrouter" then
+        local listed = false
+        for _i, id in ipairs(ModelLists.getImageModels(provider) or {}) do
+            if id == model then listed = true end
+        end
+        if not listed then
+            -- a model on no list here goes as a More models… pick sends it:
+            -- with the facts its catalog entry lists (B497; without them the
+            -- request carries no ratio and no resolution)
+            local text = httpGet(IMAGE_LISTS.openrouter.url, IMAGE_LISTS.openrouter.headers())
+            for _i, m in ipairs(ImageGenerator.parseOpenRouterCatalog(text) or {}) do
+                if m.id == model then
+                    m.facts.model = model
+                    features.image_gen_openrouter_caps = m.facts
+                end
+            end
+            printf("  %s%s%s", C.dim, features.image_gen_openrouter_caps
+                and "not listed here: the facts from OpenRouter's catalog, as a More models… pick stores them"
+                or "not in OpenRouter's catalog: sent without a ratio or a resolution", C.off)
+        end
+    end
+    local prompt = ImageGenerator.buildPrompt(IMAGE_PROBE_PASSAGE, {
+        book_metadata = { title = "The Lighthouse Keeper", author = "A. Writer" } }, features)
+    local request = ImageGenerator.buildRequest(provider, model, prompt, features, PROBE_SCREEN)
+    if not request then
+        printf("  %s%s has no image endpoint in image_generator.lua%s", C.red, provider, C.off)
+        return false
+    end
+    -- What Shape and Detail became for this model
+    local b, sent = request.body, {}
+    local ic = type(b.generationConfig) == "table" and b.generationConfig.imageConfig or {}
+    for _i, k in ipairs({ "size", "quality", "output_format", "aspect_ratio", "resolution" }) do
+        if b[k] then table.insert(sent, k .. " " .. tostring(b[k])) end
+    end
+    for _i, k in ipairs({ "aspectRatio", "imageSize" }) do
+        if ic[k] then table.insert(sent, k .. " " .. tostring(ic[k])) end
+    end
+    printf("  sent (%s, %s): %s", shape or "fit", detail or "draft",
+        #sent > 0 and table.concat(sent, ", ") or "no shape or detail parameters")
+    local headers = { [request.key_header] = request.key_header == "Authorization"
+        and ("Bearer " .. api_key) or api_key }
+    for name, value in pairs(request.headers or {}) do headers[name] = value end
+    RUN.provider, RUN.model = provider, model
+    local t0 = require("socket").gettime()
+    local code, decoded, raw = httpPostJson(request.url, headers, request.body)
+    local secs = require("socket").gettime() - t0
+    if code ~= 200 then
+        printf("  %sHTTP %s in %.1f s: %s%s", C.red, tostring(code), secs,
+            ImageGenerator.errorMessage(code, raw), C.off)
+        return false
+    end
+    local result, err = ImageGenerator.parseResponse(provider, raw)
+    if not result then
+        printf("  %sanswered in %.1f s without an image: %s%s", C.red, secs, tostring(err), C.off)
+        return false
+    end
+    if result.url then
+        printf("  %sanswered in %.1f s with a link (no b64): %s%s", C.yellow, secs, result.url, C.off)
+        return true
+    end
+    local ext = ImageGenerator.imageExtension(result.bytes)
+    local path = (os.getenv("TMPDIR") or "/tmp/"):gsub("/?$", "/")
+        .. "koassistant_image_probe_" .. provider .. "_" .. model:gsub("[^%w%.%-]", "_") .. "." .. ext
+    local f = io.open(path, "wb")
+    if f then f:write(result.bytes); f:close() end
+    local w, h = ModelAudit.imageDimensions(result.bytes)
+    printf("  %sOK%s in %.1f s: %s %s, %d KB -> %s", C.green, C.off, secs, ext,
+        w and (w .. "x" .. h) or "(size unread)", math.floor(#result.bytes / 1024 + 0.5), path)
+    if type(decoded) == "table" then
+        if type(decoded.usage) == "table" and tonumber(decoded.usage.cost_in_usd_ticks) then
+            printf("  cost: $%.4f (xAI's own figure)", tonumber(decoded.usage.cost_in_usd_ticks) / 1e10)
+        elseif type(decoded.usage) == "table" and tonumber(decoded.usage.cost) then
+            printf("  cost: $%.4f (OpenRouter's own figure)", tonumber(decoded.usage.cost))
+        elseif type(decoded.usage) == "table" then
+            printf("  usage: input %s, output %s tokens", tostring(decoded.usage.input_tokens),
+                tostring(decoded.usage.output_tokens))
+        elseif type(decoded.usageMetadata) == "table" then
+            local u = decoded.usageMetadata
+            printf("  usage: output %s tokens, thinking %s", tostring(u.candidatesTokenCount),
+                tostring(u.thoughtsTokenCount))
+        end
+    end
+    return true
+end
+
+-- The prompt writer's bench (docs/image_round_plan.md S5): fixed material
+-- through the writer on a provider's fast model (the plugin's own system
+-- text, material, request config and handler), each written prompt printed
+-- and saved for reading. Invented passages and names: no book's text.
+ModelAudit.WRITER_BENCH = {
+    { id = "scene", passage = IMAGE_PROBE_PASSAGE,
+      book = { title = "The Lighthouse Keeper", author = "A. Writer" } },
+    { id = "entry-in-passage", passage = "Mara pulled the red scarf tighter and stepped onto the jetty.",
+      entries = { { name = "Mara", type = "person", aliases = { "the girl" },
+          description = "The keeper's daughter, about twelve, quick and watchful; dark hair cut short, a red wool scarf, oilskin boots too big for her." } },
+      around = { before = "The ferry was already pulling away.", after = " Behind her the lamp began to turn." } },
+    { id = "abstract", passage = "Grief, she had learned, was not a weight but a room you kept walking into." },
+    { id = "dialogue", passage = '"You\'re late," said the ferryman, not looking up from his ropes.',
+      around = { before = "The tide was turning when Ilse reached the slip.", after = " She dropped her bag into the boat." } },
+    { id = "setting", passage = "The market at Varn filled the square from the fountain to the cathedral steps; awnings of every colour snapped in the wind.",
+      book = { title = "The Salt Road", author = "B. Author" }, background = "Feels late medieval to me, somewhere on the Baltic." },
+    { id = "nonfiction", passage = "The printing press did not merely copy books faster; it changed who could argue with whom, and over what distance.",
+      book = { title = "Ink and Argument", author = "C. Historian" } },
+    { id = "map", passage = "The road ran north from the river ford, split at the old mill, and climbed in two arms toward the pass.",
+      style = "map" },
+    { id = "note", passage = "A small cottage at the edge of the moor.", note = "make it night, with one lit window" },
+    { id = "spoiler", passage = "She opened the letter.", spoiler = true,
+      around = { before = "The postman had come late, soaked through.", after = " Her hands shook." } },
+    -- The moment's setting only further back than the frame's 400 a side,
+    -- past the end of an earlier scene in another place (a kitchen)
+    { id = "setting-far", passage = "Tom coughed into his sleeve, a long, tearing cough that bent him double, and when he straightened his eyes were wet.",
+      around = { before = table.concat({
+          'Her mother set the kettle on the stove and wiped her hands on her apron. "Don\'t be late," she said, and turned back to the window over the sink, where the geraniums were dying in their pots.',
+          "The night bus was nearly empty. Ilse took the back seat, the one over the engine, and Tom dropped in beside her with his collar still turned up against the rain. The windows were fogged, and the streetlights slid past as orange smears.",
+          '"You didn\'t tell her," Tom said.',
+          '"Tell her what?"',
+          '"Where we\'re going."',
+          'Ilse shrugged. "She\'d only worry. She worries about everything. Last week it was the boiler, the week before that my cousin\'s wedding, and before that the neighbour\'s dog."',
+          '"And this week?"',
+          '"This week it\'s me. Same as every week, really. She just finds new reasons." She picked at a loose thread on her sleeve until it came away in her fingers. "We could still go back, you know. Nobody would know we\'d left."',
+          '"We could," Tom said, but he did not move, and neither did she.',
+      }, "\n"),
+          after = ' "It\'s nothing," he said before she could ask. "It\'s the cold, that\'s all." She unwound her scarf and wrapped it round his neck anyway, and he let her, and for a long while neither of them said anything at all.' } },
+    -- Nothing says where the moment happens; the entry names where he lives
+    { id = "setting-none", passage = "Ned laughed so hard he had to sit down, and then he laughed some more, wiping his eyes with the back of his hand.",
+      around = { before = '"And then," Priya said, "he tried to apologise, and knocked the whole tray over. Again."',
+          after = ' "Stop," he managed. "Stop, I can\'t breathe."' },
+      entries = { { name = "Ned", type = "person",
+          description = "A student in his twenties, lanky, with a shock of red hair and a frayed green jumper; lives in the shared house on Mill Lane with three others and works nights at the bakery." } } },
+    -- Who the man is only in the entry and the word "warriors"; his clothes
+    -- say someone else
+    { id = "identity", passage = "A dozen warriors came down the slope on their ponies. Their chief was a tall man in a stolen cavalry officer's coat, a woollen cap and riding boots, a lance across his saddle.",
+      entries = { { name = "Kesh", type = "person",
+          description = "The Comanche war chief who leads the raid on the river settlements; patient, feared, older than most of his warriors." } } },
+    -- A person to draw whose description says nowhere where she is
+    { id = "entry-person", entry = { name = "Agnes Hallam", type = "person", aliases = { "Mrs Hallam" },
+        description = "A retired schoolteacher in her seventies, small and very upright, silver hair in a tight bun, round steel spectacles, always in a grey cardigan; sharp-tongued but kind, and the first to notice when something is wrong." } },
+    { id = "entry-place", entry = { name = "the Black Rocks", type = "place",
+        description = "Jagged basalt at the mouth of the bay where the lighthouse stands; covered at high tide, black and slick with weed." } },
+    { id = "entry-idea", entry = { name = "Solitude", type = "idea",
+        description = "Living apart from others, chosen by the keeper and dreaded by his daughter; the book returns to it through the empty lamp room." },
+      style = "woodcut" },
+}
+
+local function runWriterBench(providers, apikeys, fast_model)
+    local PromptWriter = require("koassistant.images.prompt_writer")
+    local ImageGenerator = require("koassistant.images.image_generator")
+    local ResponseParser = require("koassistant.api.response_parser")
+    local Base = require("koassistant.api.base")
+    local failures = 0
+    local saved = {}
+    for _i, main in ipairs(providers) do
+        -- each provider's chat model (its default), as the plugin's own default;
+        -- --fast-model: its fast model, as Prompt writer's Fast model
+        local provider, model = PromptWriter.target({ image_gen_writer_model = fast_model and "fast" or nil }, main)
+        banner("IMAGE PROMPT WRITER " .. tostring(provider) .. " / " .. tostring(model
+            or require("koassistant.request.model_constraints").dispatchModel({ provider = provider })))
+        local key = keyFor(apikeys, provider)
+        local hok, Handler = pcall(require, "koassistant.api." .. tostring(provider))
+        if not TestConfig.isValidApiKey(key) then
+            printf("  %sno API key for %s%s", C.red, tostring(provider), C.off)
+            failures = failures + 1
+        elseif not hok or type(Handler) ~= "table" or type(Handler.buildRequestBody) ~= "function" then
+            printf("  %sno request builder for %s%s", C.red, tostring(provider), C.off)
+            failures = failures + 1
+        else
+            for _j, case in ipairs(ModelAudit.WRITER_BENCH) do
+                local features = { image_gen_style = case.style }
+                local system = PromptWriter.systemText({ subject = case.entry and "entry" or "passage",
+                    spoiler = case.spoiler })
+                local material = PromptWriter.material({
+                    passage = case.passage, entry = case.entry, note = case.note, around = case.around,
+                    entries = case.entries, book = case.book, background = case.background,
+                    style = (PromptWriter.styleText(features)),
+                    shape = PromptWriter.shapeLine("fit", PROBE_SCREEN.w / PROBE_SCREEN.h, true),
+                })
+                local cfg, sent = ImageGenerator.writerConfig({ provider = provider, features = {} },
+                    provider, model, system)
+                cfg.api_key = key
+                RUN.provider, RUN.model = provider, sent
+                local bok, built = pcall(Handler.buildRequestBody, Handler,
+                    { { role = "user", content = material } }, cfg)
+                if not bok or type(built) ~= "table" or not built.url then
+                    printf("  %s%-18s request not built: %s%s", C.red, case.id, tostring(built), C.off)
+                    failures = failures + 1
+                else
+                    if built.body.stream then built.body.stream = false end
+                    local t0 = require("socket").gettime()
+                    local code, decoded, raw = httpPostJson(built.url, Base.withUserAgent(built.headers), built.body)
+                    local secs = require("socket").gettime() - t0
+                    local ok, text = false, nil
+                    if code == 200 and decoded then ok, text = ResponseParser:parseResponse(decoded, provider) end
+                    local prompt, why = PromptWriter.finish(ok and type(text) == "string" and text or nil)
+                    if prompt then
+                        local words = select(2, prompt:gsub("%S+", ""))
+                        printf("  %s%-18s%s %.1f s, %d words\n    %s", C.green, case.id, C.off, secs, words, prompt)
+                        saved[#saved + 1] = string.format("## %s / %s / %s\n\n%s\n\n%s\n", provider, sent, case.id,
+                            material, prompt)
+                    else
+                        printf("  %s%-18s HTTP %s, no prompt (%s): %s%s", C.red, case.id, tostring(code),
+                            tostring(why), ModelAudit.errText(decoded, raw) or "", C.off)
+                        failures = failures + 1
+                    end
+                end
+            end
+        end
+    end
+    if #saved > 0 then
+        local path = (os.getenv("TMPDIR") or "/tmp/"):gsub("/?$", "/") .. "koassistant_image_writer_bench.md"
+        local f = io.open(path, "w")
+        if f then
+            f:write(table.concat(saved, "\n"))
+            f:close()
+            printf("\n  saved: %s", path)
+        end
+    end
+    return failures
+end
+
 local KEY_LABEL = { ok = "OK", key = "KEY", credits = "CREDITS", plan = "PLAN", rate = "BUSY",
                     model = "MODEL", error = "ERROR" }
 
 local function runKeys(providers, apikeys, verbose)
     banner("KEYS: one request per keyed provider, on its default model")
-    local Base = require("koassistant_api.base")
+    local Base = require("koassistant.api.base")
     local counts = { ok = 0, key = 0, credits = 0, plan = 0, rate = 0, model = 0, error = 0 }
     for _i, p in ipairs(providers) do
         local key, model = keyFor(apikeys, p), ModelAudit.defaultModel(p)
-        local hok, Handler = pcall(require, "koassistant_api." .. p)
+        local hok, Handler = pcall(require, "koassistant.api." .. p)
         local verdict, note
         if not TestConfig.isValidApiKey(key) then
             note = "no API key"
@@ -3707,13 +4277,17 @@ local function main()
     -- arg parsing
     local providers, verbose = {}, false
     local mode, probe_provider, probe_model = "discover", nil, nil
+    local image_shape, image_detail
     local recheck_ceilings = false
+    local writer_fast = false
     local i = 1
     while i <= #arg do
         local a = arg[i]
         if a == "--help" or a == "-h" then
             print("Usage: lua tests/model_audit.lua [providers...] [--probe <provider> <model>] " ..
-                  "[--probe-new] [--recheck [--ceilings]] [--pins] [--keys] [--verbose]")
+                  "[--probe-new] [--recheck [--ceilings]] [--pins] [--keys] [--images] " ..
+                  "[--image-probe <provider> <model> [--shape fit|portrait|landscape|square|auto] " ..
+                  "[--detail draft|standard|best]] [--image-writer [providers] [--fast-model]] [--verbose]")
             os.exit(0)
         elseif a == "--verbose" or a == "-v" then
             verbose = true
@@ -3735,6 +4309,27 @@ local function main()
             mode = "pins"
         elseif a == "--keys" then
             mode = "keys"
+        elseif a == "--images" then
+            mode = "images"
+        elseif a == "--image-writer" then
+            mode = "image-writer"
+        elseif a == "--fast-model" then
+            writer_fast = true
+        elseif a == "--image-probe" then
+            mode = "image-probe"
+            probe_provider, probe_model = arg[i + 1], arg[i + 2]
+            i = i + 2
+            if not probe_provider or not probe_model then
+                print("--image-probe needs <provider> <model>")
+                os.exit(1)
+            end
+        elseif a == "--shape" or a == "--detail" then
+            if not arg[i + 1] then
+                printf("%s needs a value (see --help)", a)
+                os.exit(1)
+            end
+            if a == "--shape" then image_shape = arg[i + 1] else image_detail = arg[i + 1] end
+            i = i + 1
         elseif a:match("^%-") then
             printf("unknown option: %s (see --help)", a)
             os.exit(1)
@@ -3763,6 +4358,21 @@ local function main()
     if mode == "probe" then
         local facts = probeModel(probe_provider, probe_model, keyFor(apikeys, probe_provider), verbose)
         finish((facts and facts.reachable) and 0 or 1)
+    end
+
+    if mode == "images" then
+        if #providers == 0 then providers = { "openai", "xai", "gemini", "openrouter" } end
+        finish(runImageDiscovery(providers, apikeys, verbose) > 0 and 1 or 0)
+    end
+
+    if mode == "image-writer" then
+        if #providers == 0 then providers = { "anthropic", "gemini" } end
+        finish(runWriterBench(providers, apikeys, writer_fast) > 0 and 1 or 0)
+    end
+
+    if mode == "image-probe" then
+        finish(runImageProbe(probe_provider, probe_model, keyFor(apikeys, probe_provider),
+            image_shape, image_detail) and 0 or 1)
     end
 
     if mode == "keys" then

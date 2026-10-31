@@ -12,7 +12,7 @@ local function setupPaths()
 
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -104,9 +104,9 @@ print("  Unit Tests: Web Search (Multi-Provider)")
 print(string.rep("=", 50))
 
 -- Load modules under test
-local ResponseParser = require("koassistant_api.response_parser")
-local StreamHandler = require("stream_handler")
-local ModelConstraints = require("model_constraints")
+local ResponseParser = require("koassistant.api.response_parser")
+local StreamHandler = require("koassistant.request.stream_handler")
+local ModelConstraints = require("koassistant.request.model_constraints")
 
 --------------------------------------------------------------------------------
 -- Test: Response Parser - OpenAI web_search_used detection

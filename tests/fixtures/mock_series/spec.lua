@@ -34,9 +34,21 @@ at 70%): see the plan doc §6.2. Short form:
   Dorrit Hale      vol 2 active, DELIBERATELY absent from vol 3 (S2 tier)
   Zeph Umber       vol 1 active only, absent from vol 2 (S2 whole-chain tier)
   Hester Lune      70% rung only (ahead-only control)
+  Oswin Tarr       vol-3 entry ADDED BY HAND from the carried list (B400's
+                   record in vol 3's alias file; a carried row in the 70% rung,
+                   so the install keeps him): the one entry whose More… offers
+                   Move back to carried list (B534); Tamsin's history line
+                   alone does not
   Saltmere         place, vol-3 ledger stub (family = places)
   Warden           vol-3 live LEXICON term + ledger CHARACTER stub (chooser)
   Vex              vol-3 ledger stub WITH alias "the grey cat" (alias hit)
+  The Drowned      vol-3 live faction (and in the 70% rung), the #120 shape
+                   (B533 S2, S3): the text writes the faction "the Drowned"
+                   (ch 4, 8, 10) and the everyday "the drowned trees" (ch 4)
+                   and "the drowned rows" (ch 9). Written both ways, the
+                   faction three times mid-sentence: the automatic capitals
+                   set it to capitals only, so the faction alone is marked
+                   once the name index has the book; Any case marks all five
   Jory / Jory Pell THE NAME-DRIFT PAIR (2026-10-03, picture doc section 10): vol 2
                    names her Jory Pell; vol 3's live X-Ray and its 70% rung hold
                    an entry "Jory" (the bare first name, in vol-3 text at ~15%)
@@ -139,7 +151,9 @@ local VOL3_XRAY = [[{
   "characters": [
     {"name": "Tamsin Vael", "role": "Orchard warden", "description": "Tamsin Vael has come inland to mind the sea-orchard. She distrusts the quiet.", "background": [{"source": "Mock Series 1 - The Lantern", "text": "Kept the harbor lantern and read the tide ledgers.", "file": "]] .. V1 .. [["}]},
     {"name": "Gil Rook", "role": "Grafter", "description": "Gil Rook grafts the salt-apple rows and talks to the trees more than to people."},
+    {"name": "Oswin Tarr", "role": "Lock keeper", "description": "Oswin Tarr kept the river lock below the ferry landing and knew every boat by its wake.", "background": [{"source": "Mock Series 2 - The Ferry", "text": "Oswin Tarr kept the river lock below the ferry landing and knew every boat by its wake.", "file": "]] .. V2 .. [["}]},
     {"name": "Jory", "role": "Carter", "description": "Jory drives the supply cart up from the shore road and counts the sacks aloud."},
+    {"name": "The Drowned", "role": "River faction", "description": "The Drowned live on reed boats over the flooded rows and light fires on the water at dusk."},
     {"name": "高橋美咲", "role": "Orchard clerk", "description": "高橋美咲 keeps the orchard tally sheets and corrects Gil's arithmetic without comment."},
     {"name": "ミラ・エル・ソーン", "aliases": ["ミラ"], "role": "Survey apprentice", "description": "ミラ・エル・ソーン carries the survey chain and asks more questions than the valley can answer."}
   ],
@@ -180,6 +194,7 @@ local VOL3_RUNG_70 = [[{
     {"name": "Jory", "role": "Carter", "description": "Jory drives the supply cart up from the shore road and counts the sacks aloud."},
     {"name": "Orrin Blackwood", "role": "Ferry master, retired", "description": "Orrin Blackwood arrives at Hollowmere without his ferry and will not say why.", "background": [{"source": "Mock Series 2 - The Ferry", "text": "Ran the night ferry and never asked for fares twice.", "file": "]] .. V2 .. [["}]},
     {"name": "Hester Lune", "role": "Surveyor", "description": "Hester Lune walks the salt line with brass instruments and writes to someone nightly."},
+    {"name": "The Drowned", "role": "River faction", "description": "The Drowned live on reed boats over the flooded rows and light fires on the water at dusk."},
     {"name": "高橋美咲", "role": "Orchard clerk", "description": "高橋美咲 keeps the orchard tally sheets and corrects Gil's arithmetic without comment."},
     {"name": "ミラ・エル・ソーン", "aliases": ["ミラ"], "role": "Survey apprentice", "description": "ミラ・エル・ソーン carries the survey chain and asks more questions than the valley can answer."}
   ],
@@ -204,6 +219,7 @@ local VOL3_RUNG_70 = [[{
     {"name": "the Warden", "category": "characters", "role": "Harbor official", "aliases": ["Warden"], "description": "The Warden inspects the ferry manifests and is never seen eating. First name unknown.", "source": "Mock Series 2 - The Ferry", "file": "]] .. V2 .. [["},
     {"name": "Vex", "aliases": ["the grey cat"], "category": "characters", "role": "Ship's cat", "description": "Vex, the grey cat, boards whichever boat is warmest and answers to no one.", "source": "Mock Series 2 - The Ferry", "file": "]] .. V2 .. [["},
     {"name": "Jory Pell", "category": "characters", "role": "Toll keeper", "description": "Jory Pell keeps the toll chain at the ferry landing and counts every coin aloud.", "source": "Mock Series 2 - The Ferry", "file": "]] .. V2 .. [["},
+    {"name": "Oswin Tarr", "category": "characters", "role": "Lock keeper", "description": "Oswin Tarr kept the river lock below the ferry landing and knew every boat by its wake.", "source": "Mock Series 2 - The Ferry", "file": "]] .. V2 .. [["},
     {"name": "Saltmere", "category": "locations", "description": "Saltmere is the drowned market town across the bay, visited at low tide.", "source": "Mock Series 2 - The Ferry", "file": "]] .. V2 .. [["}
   ]
 }]]
@@ -335,13 +351,13 @@ local VOL3_CHAPTERS = {
     ch("The Orchard Post", "Tamsin Vael came inland to Hollowmere to mind the sea-orchard. The quiet felt rented."),
     ch("The Grafter", "Gil Rook was up a ladder in the salt-apple rows, talking to the graft. He handed Tamsin the knife by way of hello. The supply cart came up the lane behind her, and the carter, Jory, counted the sacks aloud."),
     ch("The Salt Line", "Gil showed Tamsin the white line climbing the trunks. A warden's first job, he said, is to notice. 高橋美咲 kept the tally at the gate and corrected his count; Gil only ever said 美咲. Behind them ミラ・エル・ソーン dragged the survey chain through the wet grass, and Gil called her ミラ when she asked what the white line meant."),
-    ch("Rented Quiet", "Tamsin walked the flooded rows at dusk. Whatever was wrong with Hollowmere had not introduced itself yet."),
+    ch("Rented Quiet", "Tamsin walked the flooded rows at dusk, past the drowned trees. Out on the water the Drowned had lit their reed fires again. Whatever was wrong with Hollowmere had not introduced itself yet."),
     ch("A Face From the Water", "A poleman stood at the orchard gate, hat in hand. Elias Penrose had come a long way from the crossing, and Tamsin could not place him at first. He asked after work, then after the road to Saltmere, and left before the answer. A woman with rope over one shoulder waited by the wall, and Elias called her リオ.", 4),
     ch("The Inn Sign", "A painted sign came upriver on the cart: an inn changing hands. Dorrit Hale, the letters said, was selling. The Warden was named in the small print, and Gil read it twice. That evening a grey cat crossed the orchard wall as if it owned the deed. Behind the cart walked Orrin Blackwood, carrying nothing, and he would not say why he had come inland.", 4),
     ch("Old Ledgers", "A tide ledger arrived wrapped in oilcloth, in a hand Tamsin knew: Cass Merrow's. No note. Later a stranger asked at the gate for salvage work and gave the name Zeph Umber; Gil sent him upvalley. By dark a surveyor's lamp burned on the ridge, and someone said the name Hester Lune.", 4),
-    ch("Instruments", "Hester Lune walked the salt line with brass instruments and wrote to someone nightly. The man who carried her tripod kept his own counsel."),
+    ch("Instruments", "Hester Lune walked the salt line with brass instruments and wrote to someone nightly. The man who carried her tripod kept his own counsel. He said the Drowned paid him in reed rope."),
     ch("What the Salt Takes", "Tamsin and Gil counted the drowned rows. Hester's figures said the valley had three seasons left."),
-    ch("The Grove Warden", "Tamsin took the warden's oath under the oldest tree. The salt kept rising, and the story went on without asking."),
+    ch("The Grove Warden", "Tamsin took the warden's oath under the oldest tree. Across the water the Drowned lit one fire for her. The salt kept rising, and the story went on without asking."),
 }
 
 -- Vol 4: six chapters, so chapter 4 starts at 50%. No X-Ray is planted: a
@@ -425,6 +441,8 @@ local BOOKS = {
             { label = "Chapter 2", json = VOL3_SECTION_CH2,
                 start_page = 5, end_page = 9, timestamp = 1755000310 },
         },
+        -- Oswin Tarr was added by hand from the carried list (B400, B534)
+        aliases = { ["__dormant_promoted"] = { "Oswin Tarr" } },
         sidecar = { koassistant_book_xray_auto = false },
     },
     {

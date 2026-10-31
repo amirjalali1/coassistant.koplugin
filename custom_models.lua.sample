@@ -32,7 +32,7 @@
 --     providers have none — a grant there does nothing.
 --
 --   reasoning_profiles[provider] = { { profile }, { profile }, ... }
---     Same shape as the built-in profiles in model_constraints.lua:
+--     Same shape as the built-in profiles in koassistant/request/model_constraints.lua:
 --       match          - model id prefix ("" = all models)
 --       axis           - "none" | "binary" | "effort" | "budget" | "adaptive_effort"
 --       default_state  - "on" | "off" (model's behavior when nothing is sent)

@@ -14,7 +14,7 @@ local function setupPaths()
     local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -50,7 +50,7 @@ local function restoreMocks()
     package.loaded["libs/libkoreader-lfs"] = _saved.lfs
     package.loaded["docsettings"] = _saved.docsettings
     package.loaded["luasettings"] = _saved.luasettings
-    package.loaded["koassistant_backup_manager"] = nil  -- we mutated its path fields
+    package.loaded["koassistant.storage.backup_manager"] = nil  -- we mutated its path fields
 end
 
 local has_lfs, real_lfs = pcall(require, "lfs")
@@ -150,7 +150,7 @@ if not has_lfs then
     return true
 end
 
-local BackupManager = require("koassistant_backup_manager")
+local BackupManager = require("koassistant.storage.backup_manager")
 
 -- Point every storage root at the temp dir BEFORE :new() (new() ensures dirs).
 local function freshManager()
@@ -246,6 +246,29 @@ TestRunner:test("the domain/behavior counts skip macOS '._' companions (#112)", 
     TestRunner:assertTrue(r and r.success, "backup should succeed")
     TestRunner:assertTrue(r.counts.domains == 1 and r.counts.behaviors == 1,
         "counts should be 1 and 1, got " .. tostring(r.counts.domains) .. " and " .. tostring(r.counts.behaviors))
+end)
+
+TestRunner:test("the content copy leaves macOS '._' companions out (B474)", function()
+    -- tar on macOS folds a "._name" entry back into its file's metadata, so the archive
+    -- cannot show whether one was copied: the filter createBackup hands the directory
+    -- copy is what gets checked
+    local filters = {}
+    local copy = bm._copyDirectory
+    bm._copyDirectory = function(self, src, dest, filter)
+        filters[#filters + 1] = filter
+        return copy(self, src, dest, filter)
+    end
+    local r = bm:createBackup(BACKUP_OPTS)
+    bm._copyDirectory = nil  -- back to the class method
+    TestRunner:assertTrue(r and r.success, "backup should succeed")
+    TestRunner:assertTrue(#filters >= 1, "the content folders are copied through a filter")
+    for _idx, filter in ipairs(filters) do
+        TestRunner:assertTrue(filter("academic.md"), ".md is content")
+        TestRunner:assertTrue(filter("notes.txt"), ".txt is content")
+        TestRunner:assertTrue(not filter("._academic.md"), "a macOS companion is not")
+        TestRunner:assertTrue(not filter(".hidden.txt"), "no dotfile is")
+        TestRunner:assertTrue(not filter("cover.png"), "only .md and .txt")
+    end
 end)
 
 TestRunner:test("ordinary backup excludes API keys and subscription OAuth tokens", function()
@@ -554,6 +577,76 @@ end)
 TestRunner:test("a failing tar is reported as a failure (LuaJIT os.execute returns a number)", function()
     TestRunner:assertTrue(rel_archive_fails == false,
         "_createArchive must return false when tar cannot read the source directory")
+end)
+
+--------------------------------------------------------------------------------
+TestRunner:suite("a Replace restore from a backup without keys keeps the keys you have (B471)")
+
+wipeTmp()
+seed()
+local bm3 = freshManager()
+local sanitized3 = bm3:createBackup({
+    include_settings = true, include_api_keys = false,
+    include_configs = false, include_content = false, include_chats = false,
+})
+-- the live settings hold the keys and the sign-in (seed), plus a key selection
+do
+    local live = LuaSettingsStub:open(TMP .. "/settings/koassistant_settings.lua")
+    local f = live:readSetting("features") or {}
+    f.api_key_selected = { anthropic = "fp-1" }
+    live:saveSetting("features", f)
+    live:flush()
+end
+local restore3 = bm3:restoreBackup(sanitized3.backup_path, {
+    restore_settings = true, restore_configs = false, restore_content = false,
+    restore_api_keys = false, merge_mode = false, skip_restore_point = true,
+})
+
+TestRunner:test("the restore without keys succeeds", function()
+    TestRunner:assertTrue(restore3 and restore3.success, "restore failed: " .. tostring(restore3 and restore3.error))
+end)
+
+TestRunner:test("the keys, the sign-in and the key selection survive the Replace restore", function()
+    local live = LuaSettingsStub:open(TMP .. "/settings/koassistant_settings.lua")
+    local f = live:readSetting("features") or {}
+    TestRunner:assertTrue(f.api_keys ~= nil and f.api_keys.anthropic == "sk-secret", "api key kept")
+    TestRunner:assertTrue(f.openai_codex_oauth ~= nil and f.openai_codex_oauth.access_token == "oauth-access", "sign-in kept")
+    TestRunner:assertTrue(f.api_key_selected ~= nil and f.api_key_selected.anthropic == "fp-1", "selection kept")
+end)
+
+--------------------------------------------------------------------------------
+TestRunner:suite("a restore point is a full copy, API keys included (B475)")
+
+wipeTmp()
+seed()
+local bm4 = freshManager()
+-- The reader never chose to back keys up here. The restore point holds them anyway
+-- (ruled: an undo has to bring back everything), and the restore confirmation says so.
+local rp = bm4:createRestorePoint()
+
+TestRunner:test("the restore point is written and named as one", function()
+    TestRunner:assertTrue(rp and rp.success, "createRestorePoint failed: " .. tostring(rp and rp.error))
+    TestRunner:assertTrue(rp.backup_name:match("^koassistant_restore_point_") ~= nil, "named as a restore point")
+    TestRunner:assertTrue(exists(rp.backup_path), "the archive exists")
+end)
+
+TestRunner:test("it holds the API keys and the sign-in", function()
+    local check = TMP .. "/check_restore_point"
+    mkdirs(check)
+    TestRunner:assertTrue(sh(string.format('tar -xzf "%s" -C "%s"', rp.backup_path, check)), "archive should extract")
+    local body = readFile(check .. "/settings/koassistant_settings.lua") or ""
+    TestRunner:assertTrue(body:find("sk-secret", 1, true) ~= nil, "the API key is in the restore point")
+    TestRunner:assertTrue(body:find("oauth-access", 1, true) ~= nil, "the sign-in is in the restore point")
+end)
+
+TestRunner:test("the restore confirmation says it is a full copy with the keys (structural)", function()
+    local here = debug.getinfo(1, "S").source:match("@?(.*)")
+    local root = here:gsub("/?tests/unit/[^/]+$", "")
+    if root == "" then root = "." end
+    local f = assert(io.open(root .. "/main.lua", "r"))
+    local src = f:read("*all"); f:close()
+    TestRunner:assertTrue(src:find("A restore point will be created automatically. It is a full copy of what you have now, API keys and chats included", 1, true) ~= nil,
+        "the confirmation names what a restore point holds")
 end)
 
 wipeTmp()

@@ -21,7 +21,7 @@ local function setupPaths()
     local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -31,7 +31,7 @@ end
 local plugin_dir = setupPaths()
 require("mock_koreader")
 local TestRunner = require("test_runner"):new()
-local BookToolRunner = require("koassistant_book_tool_runner")
+local BookToolRunner = require("koassistant.tools.book_tool_runner")
 
 local function source(rel)
     local f = assert(io.open(plugin_dir .. "/" .. rel, "r"))
@@ -39,7 +39,7 @@ local function source(rel)
     f:close()
     return s
 end
-local dialogs_src = source("koassistant_dialogs.lua")
+local dialogs_src = source("koassistant/ui/dialogs.lua")
 local main_src = source("main.lua")
 
 local function cut(src, pattern, what)
@@ -80,15 +80,15 @@ local appendSendPosition = assert(load(
     "appendSendPosition"))
 
 local function withExtractor(stats, fn)
-    local saved = package.loaded["koassistant_context_extractor"]
-    package.loaded["koassistant_context_extractor"] = {
+    local saved = package.loaded["koassistant.request.context_extractor"]
+    package.loaded["koassistant.request.context_extractor"] = {
         new = function() return {
             getReadingStats = function() return stats end,
             getReadingProgress = function() return { formatted = stats.progress } end,
         } end,
     }
     local ok, err = pcall(fn)
-    package.loaded["koassistant_context_extractor"] = saved
+    package.loaded["koassistant.request.context_extractor"] = saved
     if not ok then error(err, 0) end
 end
 

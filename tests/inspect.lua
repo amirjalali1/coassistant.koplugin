@@ -43,8 +43,8 @@ require("mock_koreader")
 local TestConfig = require("test_config")
 local RequestInspector = require("request_inspector")
 local TerminalFormatter = require("terminal_formatter")
-local MessageBuilder = require("message_builder")
-local Constants = require("koassistant_constants")
+local MessageBuilder = require("koassistant.request.message_builder")
+local Constants = require("koassistant.core.constants")
 local ConstraintUtils = require("tests.lib.constraint_utils")
 
 -- Load sample context fixture for testing book-level actions (X-Ray, Recap, etc.)
@@ -214,6 +214,13 @@ local function parseArgs(args)
                 table.insert(parsed.providers, args[i])
             end
 
+        elseif arg == "--image" then
+            parsed.mode = "image"
+            if args[i + 1] and not args[i + 1]:match("^%-") then
+                i = i + 1
+                table.insert(parsed.providers, args[i])
+            end
+
         elseif arg == "--list" or arg == "-l" then
             parsed.mode = "list"
 
@@ -322,6 +329,7 @@ MODES:
     --inspect, -i <provider>     Inspect request for a single provider
     --compare, -c <p1> <p2> ...  Compare requests across providers
     --export, -e <provider>      Export request as JSON
+    --image <provider>           The image request (openai, xai, gemini, openrouter): framed prompt + body
     --list, -l                   List supported providers
     --web, -w                    Start web UI server (http://localhost:8080)
     --help, -h                   Show this help
@@ -402,7 +410,7 @@ end
 
 -- Load and merge API keys from both sources (matches plugin behavior)
 -- Priority: GUI-entered keys (from settings) > apikeys.lua file
--- Same behavior as koassistant_gpt_query.lua:getApiKey()
+-- Same behavior as koassistant/request/gpt_query.lua:getApiKey()
 local function loadMergedApiKeys()
     -- Start with apikeys.lua (fallback)
     local api_keys = {}
@@ -467,7 +475,7 @@ local function inspectProvider(provider, options)
         print("")
         print("Supported providers: " .. table.concat(RequestInspector:getAllProviders(), ", "))
         print("")
-        print(c.dim .. "To add support, implement buildRequestBody() in koassistant_api/" .. provider .. ".lua" .. c.reset)
+        print(c.dim .. "To add support, implement buildRequestBody() in koassistant/api/" .. provider .. ".lua" .. c.reset)
         print("")
         return false
     end
@@ -534,6 +542,56 @@ local function exportProvider(provider, options)
     -- Export as JSON (to stdout for redirection)
     print(RequestInspector:exportJSON(request, config))
 
+    return true
+end
+
+-- The image request the plugin builds for one image provider (B064): the
+-- framed prompt and the body exactly as sent, from ImageGenerator's own
+-- builders. No network; the key is never printed (only its header's name).
+local function inspectImage(provider, options)
+    if not pcall(require, "mime") then
+        package.loaded["mime"] = { b64 = function(s) return s end, unb64 = function(s) return s end }
+    end
+    local ImageGenerator = require("koassistant.images.image_generator")
+    local ModelLists = require("koassistant.request.model_lists")
+    if not ModelLists.getImageModels(provider) then
+        io.stderr:write("Error: '" .. tostring(provider) .. "' makes no images here (openai, xai, gemini, openrouter).\n")
+        return false
+    end
+    local features = {}
+    local prompt = ImageGenerator.buildPrompt(options.test_message
+            or "The lighthouse stood on the black rocks at the edge of the bay, its lamp dark.", {
+        book_metadata = { title = "Sample Book", author = "A. Writer" },
+        window = { prev = "The path climbed the headland.", next = " Gulls wheeled over the water. Then the rain came." },
+        after_limit = "sentence",
+    }, features)
+    local model = ModelLists.resolveImageModel(provider, options.model)
+    -- The prompt writer's request first (on by default, image round S5): its
+    -- system text and the material, on the fast model of a sample chat
+    -- provider (Anthropic); the image request below then carries the framed
+    -- prompt, which the writer's paragraph replaces at run time
+    local PromptWriter = require("koassistant.images.prompt_writer")
+    local wp, wm = PromptWriter.target(features, "anthropic")
+    local wcfg = ImageGenerator.writerConfig({ provider = "anthropic", features = {} }, wp, wm,
+        PromptWriter.systemText({}))
+    print("== The prompt writer: " .. tostring(wcfg.provider) .. " / " .. tostring(wm))
+    print("-- system:")
+    print(wcfg.system.text)
+    print("-- material (the user message):")
+    print(PromptWriter.material({
+        passage = options.test_message or "The lighthouse stood on the black rocks at the edge of the bay, its lamp dark.",
+        around = { before = "The path climbed the headland.", after = " Gulls wheeled over the water." },
+        book = { title = "Sample Book", author = "A. Writer" },
+        style = (PromptWriter.styleText(features)),
+        shape = PromptWriter.shapeLine("fit", 1264 / 1680, true),
+    }))
+    print("== The image request (the framed prompt: the writer's fallback, or the prompt with the writer off)")
+    -- The defaults (Fit my screen, Draft), fitted to a 3:4 e-reader screen
+    local request = ImageGenerator.buildRequest(provider, model, prompt, features, { w = 1264, h = 1680 })
+    print("POST " .. request.url)
+    print("Auth header: " .. request.key_header)
+    for name, value in pairs(request.headers or {}) do print(name .. ": " .. tostring(value)) end
+    print(require("json").encode(request.body))
     return true
 end
 
@@ -752,8 +810,8 @@ local function startWebServer(options)
 
     -- GET /api/providers - List all providers with models
     server:route("GET", "/api/providers", function(headers, body)
-        local Defaults = require("koassistant_api.defaults")
-        local ModelLists = require("koassistant_model_lists")
+        local Defaults = require("koassistant.api.defaults")
+        local ModelLists = require("koassistant.request.model_lists")
 
         local providers_data = {}
         for _, provider in ipairs(TestConfig.getAllProviders()) do
@@ -797,7 +855,7 @@ local function startWebServer(options)
 
     -- GET /api/domains - List available domains (uses actual DomainLoader from plugin)
     server:route("GET", "/api/domains", function(headers, body)
-        local DomainLoader = require("domain_loader")
+        local DomainLoader = require("koassistant.prompts.domain_loader")
 
         -- Load custom_domains from settings if available
         local custom_domains = {}
@@ -835,7 +893,7 @@ local function startWebServer(options)
 
     -- GET /api/behaviors - List available behaviors (uses actual SystemPrompts from plugin)
     server:route("GET", "/api/behaviors", function(headers, body)
-        local SystemPrompts = require("prompts.system_prompts")
+        local SystemPrompts = require("koassistant.prompts.system_prompts")
 
         -- Load custom_behaviors from settings if available
         local custom_behaviors = {}
@@ -937,8 +995,8 @@ local function startWebServer(options)
 
     -- GET /api/actions - List all built-in and custom actions
     server:route("GET", "/api/actions", function(headers, body)
-        local Actions = require("prompts.actions")
-        local Templates = require("prompts.templates")
+        local Actions = require("koassistant.prompts.actions")
+        local Templates = require("koassistant.prompts.templates")
 
         local actions_data = {
             highlight = {},
@@ -1166,7 +1224,7 @@ local function startWebServer(options)
 
         -- Resolve translation language using plugin code (handles __PRIMARY__ sentinel)
         if request_data.translation_language or action.id == "translate" then
-            local SystemPrompts = require("prompts.system_prompts")
+            local SystemPrompts = require("koassistant.prompts.system_prompts")
             context_data.translation_language = SystemPrompts.getEffectiveTranslationLanguage({
                 translation_language = request_data.translation_language,
                 translation_use_primary = request_data.translation_use_primary,
@@ -1181,7 +1239,7 @@ local function startWebServer(options)
         -- Load templates getter for template resolution
         local templates_getter = nil
         pcall(function()
-            local Templates = require("prompts/templates")
+            local Templates = require("koassistant.prompts.templates")
             templates_getter = function(name) return Templates.get(name) end
         end)
 
@@ -1394,7 +1452,7 @@ local function startWebServer(options)
 
         -- Resolve translation language using plugin code (handles __PRIMARY__ sentinel)
         if request_data.translation_language or action.id == "translate" then
-            local SystemPrompts = require("prompts.system_prompts")
+            local SystemPrompts = require("koassistant.prompts.system_prompts")
             context_data.translation_language = SystemPrompts.getEffectiveTranslationLanguage({
                 translation_language = request_data.translation_language,
                 translation_use_primary = request_data.translation_use_primary,
@@ -1408,7 +1466,7 @@ local function startWebServer(options)
 
         local templates_getter = nil
         pcall(function()
-            local Templates = require("prompts/templates")
+            local Templates = require("koassistant.prompts.templates")
             templates_getter = function(name) return Templates.get(name) end
         end)
 
@@ -1540,7 +1598,7 @@ local function startWebServer(options)
             if decode_ok then
                 raw_response = decoded
                 -- Try to extract text based on provider
-                local ResponseParser = require("koassistant_api.response_parser")
+                local ResponseParser = require("koassistant.api.response_parser")
                 local parse_ok, success, parsed = pcall(function()
                     return ResponseParser:parseResponse(decoded, provider)
                 end)
@@ -1674,7 +1732,7 @@ local function startWebServer(options)
 
         -- Resolve translation language using plugin code
         if request_data.translation_language or action.id == "translate" then
-            local SystemPrompts = require("prompts.system_prompts")
+            local SystemPrompts = require("koassistant.prompts.system_prompts")
             context_data.translation_language = SystemPrompts.getEffectiveTranslationLanguage({
                 translation_language = request_data.translation_language,
                 translation_use_primary = request_data.translation_use_primary,
@@ -1689,7 +1747,7 @@ local function startWebServer(options)
         -- Load templates getter for template resolution
         local templates_getter = nil
         pcall(function()
-            local Templates = require("prompts/templates")
+            local Templates = require("koassistant.prompts.templates")
             templates_getter = function(name) return Templates.get(name) end
         end)
 
@@ -1817,6 +1875,13 @@ local function main()
     elseif args.mode == "compare" then
         local success = compareProviders(args.providers, args.options)
         return success and 0 or 1
+
+    elseif args.mode == "image" then
+        if #args.providers == 0 then
+            io.stderr:write("Error: Please name an image provider (openai, xai, gemini).\n")
+            return 1
+        end
+        return inspectImage(args.providers[1], args.options) and 0 or 1
 
     elseif args.mode == "web" then
         startWebServer(args.options)

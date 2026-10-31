@@ -19,7 +19,7 @@ local function setupPaths()
 
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -48,8 +48,8 @@ function TestRunner.assert(condition, message)
     end
 end
 
-local ModelLists = require("koassistant_model_lists")
-local ModelOverrides = require("koassistant_model_overrides")
+local ModelLists = require("koassistant.request.model_lists")
+local ModelOverrides = require("koassistant.request.model_overrides")
 
 -- Hermeticity: a developer's local custom_models.lua must not leak in
 -- (mock_koreader already does this; explicit here because these tests depend on it)
@@ -282,7 +282,7 @@ TestRunner.assert(ModelOverrides.userTierOverride("anthropic", "ultrafast") == "
 ModelOverrides.setGuiTiers({ anthropic = { ultrafast = "" }, openai = "not-a-table" })
 TestRunner.assert(ModelOverrides.tierOverride("anthropic", "ultrafast") == "claude-haiku-file",
     "empty-string GUI value falls through to the file layer")
-TestRunner.assert(ModelLists.getModelForTier("openai", "fast", false) == "gpt-5.6-luna",
+TestRunner.assert(ModelLists.getModelForTier("openai", "fast", false) == "gpt-6-luna",
     "non-table GUI provider entry is ignored (curated applies)")
 ModelOverrides._setUserForTests(false)
 
@@ -391,6 +391,17 @@ ModelOverrides.setGuiTiers({ gemini = { fast = "gemini-gui-fast" } })
 TestRunner.assert(ModelLists.getModelForTier("gemini", "fast", false) == "gemini-gui-fast",
     "a GUI tier pick is what the tag names")
 ModelOverrides.setGuiTiers(nil)
+
+print("== subscription catalogue includes current Codex models ==")
+do
+    local listed = {}
+    for _, model in ipairs(ModelLists.openai_codex) do listed[model] = true end
+    for _, model in ipairs({ "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra" }) do
+        TestRunner.assert(listed[model], "subscription picker includes " .. model)
+    end
+    TestRunner.assert(ModelLists.openai_codex[1] == "gpt-5.6-terra",
+        "adding paid-account models does not change the free-served default")
+end
 
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))

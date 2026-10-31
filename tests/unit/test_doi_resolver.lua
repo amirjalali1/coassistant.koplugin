@@ -1,4 +1,4 @@
--- Unit tests for doi_resolver.lua
+-- Unit tests for koassistant/books/doi_resolver.lua
 -- Tests DOI matching, extraction from metadata, page text parsing, and resolution
 -- No API calls - pure logic testing
 
@@ -63,11 +63,11 @@ function TestRunner:assertNotNil(value, msg)
 end
 
 -- Load module under test
-local DOIResolver = require("doi_resolver")
+local DOIResolver = require("koassistant.books.doi_resolver")
 
 print("")
 print(string.rep("=", 50))
-print("  Unit Tests: doi_resolver.lua")
+print("  Unit Tests: koassistant/books/doi_resolver.lua")
 print(string.rep("=", 50))
 
 -- ============================================================

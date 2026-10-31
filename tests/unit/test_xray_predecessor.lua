@@ -53,9 +53,9 @@ for _idx, doc in ipairs({ VOL1, VOL2, VOL3 }) do
     os.execute(string.format("mkdir -p %q", doc .. ".sdr"))
 end
 
-package.loaded["koassistant_action_cache"] = nil
-package.loaded["koassistant_book_groups"] = nil
-package.loaded["koassistant_xray_card"] = nil
+package.loaded["koassistant.artifacts.action_cache"] = nil
+package.loaded["koassistant.books.book_groups"] = nil
+package.loaded["koassistant.xray.xray_card"] = nil
 package.loaded["docsettings"] = nil
 package.loaded["util"] = nil
 -- BookGroups' store needs real read/save/flush semantics, and the runner
@@ -106,9 +106,9 @@ package.loaded["docsettings"] = {
 package.loaded["util"] = {
     makePath = function(dir) os.execute(string.format("mkdir -p %q", dir)) end,
 }
-local ActionCache = require("koassistant_action_cache")
-local BookGroups = require("koassistant_book_groups")
-local XrayParser = require("koassistant_xray_parser")
+local ActionCache = require("koassistant.artifacts.action_cache")
+local BookGroups = require("koassistant.books.book_groups")
+local XrayParser = require("koassistant.xray.xray_parser")
 
 local VOL1_JSON = '{"characters":[{"name":"Zara Flint","description":"Dives for bells and never says who pays."}]}'
 local VOL2_JSON = '{"characters":[{"name":"Petra Lund","role":"Innkeeper","description":"Keeps the crossing inn and hears everything twice."}],'
@@ -164,7 +164,7 @@ end)
 
 TestRunner:suite("card resolve — predecessor tier (D1 order, Q6 hint)")
 
-local XrayCard = require("koassistant_xray_card")
+local XrayCard = require("koassistant.xray.xray_card")
 
 TestRunner:test("live > predecessor > ahead; transitive stubs keep the original source", function()
     assert(ActionCache.set(VOL3, "xray", VOL3_LIVE_JSON, 0.4, { model = "m", used_book_text = true }))
@@ -198,7 +198,7 @@ end)
 TestRunner:suite("carryOne — the manual single-entity seed (Q2)")
 
 TestRunner:test("carries actives and term-keyed entries; refreshes by name", function()
-    local XrayMerge = require("koassistant_xray_merge")
+    local XrayMerge = require("koassistant.xray.xray_merge")
     local parsed = XrayParser.parse(VOL3_LIVE_JSON)
     local petra = { name = "Petra Lund", role = "Innkeeper", aliases = { "the innkeeper" },
         description = "Keeps the crossing inn." }
@@ -240,7 +240,7 @@ TestRunner:test("groupXrays: every earlier X-Rayed book nearest first; parsedXra
 end)
 
 TestRunner:test("role rides on carried entries: carryOne, the seed, JSON round trip, promote and demote", function()
-    local XrayMerge = require("koassistant_xray_merge")
+    local XrayMerge = require("koassistant.xray.xray_merge")
     local DK = XrayParser.DORMANT_KEY
     local parsed = XrayParser.parse(VOL3_LIVE_JSON)
     TestRunner:ok(XrayMerge.carryOne(parsed, { name = "Petra Lund", role = "Innkeeper", description = "d" },
@@ -310,7 +310,7 @@ TestRunner:test("groupXrays + the card follow the injected chain resolver", func
 end)
 
 TestRunner:test("tombstones: removed entries stay out of the seed and the install union; adding by hand clears", function()
-    local XrayMerge = require("koassistant_xray_merge")
+    local XrayMerge = require("koassistant.xray.xray_merge")
     TestRunner:ok(ActionCache.addRemovedStub(VOL3, "Wick"), "record a removal")
     TestRunner:ok(ActionCache.getRemovedStubs(VOL3)["wick"], "lowercased set")
     TestRunner:ok(ActionCache.getUserAliases(VOL3)[ActionCache.REMOVED_STUBS_KEY], "lives in the aliases sidecar")
@@ -331,7 +331,7 @@ TestRunner:test("tombstones: removed entries stay out of the seed and the instal
 end)
 
 TestRunner:test("re-seed keeps a reader-added alias and reports refreshed only on change", function()
-    local XrayMerge = require("koassistant_xray_merge")
+    local XrayMerge = require("koassistant.xray.xray_merge")
     local base = XrayParser.parse(VOL3_LIVE_JSON)
     local src = XrayParser.parse(VOL2_JSON)
     local added = XrayMerge.populateDormant(base, nil, src, "Volume Two", VOL2, "Volume Three", VOL3)
@@ -356,7 +356,7 @@ TestRunner:test("promoteStub keeps the earlier book's text as a background line 
     local item = XrayParser.findByIdentity(base, { "Wick" }, "characters")
     TestRunner:eq(item and item.background and item.background[1].source, "Volume One",
         "background line from the stub's own text")
-    local XrayMerge = require("koassistant_xray_merge")
+    local XrayMerge = require("koassistant.xray.xray_merge")
     local incoming = XrayParser.parse(VOL3_LIVE_JSON)
     TestRunner:eq(XrayMerge.carryActiveBackground(base, incoming), 1,
         "an install re-stubs it instead of dropping it")
@@ -387,7 +387,7 @@ TestRunner:test("hand-added entries: the record lives in the aliases sidecar bes
 end)
 
 TestRunner:test("keepPromoted: a hand-added entry comes back after the carry parked it (B400)", function()
-    local XrayMerge = require("koassistant_xray_merge")
+    local XrayMerge = require("koassistant.xray.xray_merge")
     -- The outgoing X-Ray: the reader added Wick as an entry
     local prev = XrayParser.parse(VOL2_JSON)
     local _stub, idx = XrayParser.findDormantByIdentity(prev, { "Wick" })
@@ -430,7 +430,7 @@ TestRunner:test("keepPromoted: an entity the incoming X-Ray names itself is left
 end)
 
 TestRunner:test("reseedGroup: seeds every member in order, writes only on change, idempotent", function()
-    local XrayMerge = require("koassistant_xray_merge")
+    local XrayMerge = require("koassistant.xray.xray_merge")
     local features = { enable_book_text_extraction = true }
     local written, checked = XrayMerge.reseedGroup(group, features, nil, nil)
     TestRunner:ok(checked >= 2, "vol 2 and vol 3 have sources")
@@ -594,7 +594,7 @@ os.execute(string.format("rm -rf %q", TMP_ROOT))
 TestRunner:suite("S4 device round — project seeding between typeless nonfiction X-Rays")
 
 TestRunner:test("reseedGroup carries between nonfiction members that declare no type", function()
-    local XrayMerge = require("koassistant_xray_merge")
+    local XrayMerge = require("koassistant.xray.xray_merge")
     local PA = TMP_ROOT .. "/proj_a.epub"
     local PB = TMP_ROOT .. "/proj_b.epub"
     for _idx, doc in ipairs({ PA, PB }) do
@@ -636,8 +636,8 @@ TestRunner:test("reseedGroup carries between nonfiction members that declare no 
 end)
 
 package.loaded["luasettings"] = prior_luasettings
-package.loaded["koassistant_book_groups"] = nil
-package.loaded["koassistant_action_cache"] = nil
+package.loaded["koassistant.books.book_groups"] = nil
+package.loaded["koassistant.artifacts.action_cache"] = nil
 
 print("")
 print(string.rep("-", 50))

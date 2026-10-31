@@ -1,0 +1,247 @@
+-- Behavior loader for KOAssistant
+-- Loads behavior definitions from external files
+--
+-- Sources (in priority order):
+--   1. behaviors/           - User behaviors (gitignored, can override built-in)
+--   2. koassistant/prompts/behaviors/   - Built-in behaviors (tracked in git)
+--
+-- Behavior file format:
+--   Filename: behavior_id.md or behavior_id.txt (filename becomes the behavior ID)
+--   First line: # Behavior Name (optional, becomes display name)
+--   Rest of file: Behavior text sent to AI as system prompt
+--
+-- Example file: behaviors/concise.md
+--   # Concise
+--   Be brief and to the point. Avoid unnecessary elaboration...
+--
+-- If no heading is found, the display name is derived from the filename:
+--   concise_expert.md -> "Concise Expert"
+
+local lfs = require("libs/libkoreader-lfs")
+local logger = require("koassistant.core.logger")
+local ScopeResolver = require("koassistant.request.scope_resolver")
+
+local BehaviorLoader = {}
+
+-- The plugin's root folder (the reader's behaviors/ sits there; the built-ins
+-- are under koassistant/prompts/)
+local function getPluginPath()
+    return require("koassistant.core.paths").ROOT
+end
+
+-- Read file contents
+local function readFile(path)
+    local file = io.open(path, "r")
+    if not file then return nil end
+    local content = file:read("*a")
+    file:close()
+    return content
+end
+
+-- Convert filename to display name (snake_case to Title Case)
+-- e.g., "concise_expert" -> "Concise Expert"
+local function filenameToDisplayName(filename)
+    return filename:gsub("_", " "):gsub("(%a)([%w]*)", function(first, rest)
+        return first:upper() .. rest
+    end)
+end
+
+-- Parse metadata from HTML comments
+-- Returns: metadata table and content with comments stripped
+local function parseMetadata(text)
+    local metadata = {}
+
+    -- Extract metadata from HTML-style comments <!-- ... -->
+    for comment in text:gmatch("<!%-%-(.-)%-%->") do
+        -- Parse key: value pairs
+        for line in comment:gmatch("[^\n]+") do
+            local key, value = line:match("^%s*([^:]+):%s*(.+)%s*$")
+            if key and value then
+                key = key:lower():gsub("^%s*", ""):gsub("%s*$", "")
+                value = value:gsub("^%s*", ""):gsub("%s*$", "")
+                metadata[key] = value
+            end
+        end
+    end
+
+    -- Remove HTML-style comments <!-- ... -->
+    -- Using non-greedy match to handle multiple comments
+    local stripped = text:gsub("<!%-%-.-%-%->\n?", "")
+
+    return metadata, stripped
+end
+
+-- Parse a behavior file
+-- Returns: { name = "Display Name", text = "...", metadata = {...} } or nil
+local function parseBehaviorFile(content, fallback_name, source)
+    if not content or content == "" then
+        return nil
+    end
+
+    local name, text
+
+    -- Check for markdown heading on first line
+    local first_line, rest = content:match("^([^\n]*)\n(.*)$")
+    if not first_line then
+        -- Single line file
+        first_line = content
+        rest = ""
+    end
+
+    local heading = first_line:match("^#%s*(.+)%s*$")
+    if heading then
+        name = heading
+        text = rest
+    else
+        -- No heading found, use filename as name
+        name = fallback_name
+        text = content
+    end
+
+    -- Parse and strip metadata comments from text
+    local metadata, stripped = parseMetadata(text)
+    text = stripped
+
+    -- Trim whitespace from text
+    text = text:match("^%s*(.-)%s*$") or ""
+
+    if text == "" then
+        return nil
+    end
+
+    return {
+        name = name,
+        text = text,
+        metadata = metadata,  -- Source, Tokens, Notes, Date, etc.
+        external = true,  -- Mark as loaded from external file
+        source = source or "folder",
+    }
+end
+
+-- Load behaviors from a specific folder path
+-- @param folder_path: Full path to the folder
+-- @param source: Source identifier ("builtin" or "folder")
+-- @return table: behavior_id -> { name, text, external, source }
+--- A behavior/domain file has to BE text. A NUL byte or a broken UTF-8
+--- sequence means the file is not what its name claims (a binary sidecar, a
+--- truncated copy): loading it puts those bytes in the system prompt, and the
+--- provider then rejects the whole request rather than the one bad field (#112).
+local function isLoadableText(content)
+    return not content:find("%z") and ScopeResolver.utf8FirstBad(content) == nil
+end
+
+local function loadFromFolder(folder_path, source)
+    local behaviors = {}
+
+    -- Check if folder exists
+    local attr = lfs.attributes(folder_path)
+    if not attr or attr.mode ~= "directory" then
+        return behaviors
+    end
+
+    -- Iterate through files in the folder
+    for file in lfs.dir(folder_path) do
+        -- Only process .md and .txt files; skip README files and anything whose
+        -- name starts with a dot. That leading dot is what keeps macOS AppleDouble
+        -- sidecars out: copying a plugin folder from a Mac to a Kobo writes a
+        -- "._name" companion next to EVERY file carrying an extended attribute (a
+        -- GitHub download stamps quarantine on all of them), and "._standard.md"
+        -- ends in .md exactly like the real file. Loaded, it becomes a behavior
+        -- made of 4 KB of binary and every request built from it is rejected by
+        -- the provider (#112). Finder never shows these, so the reader cannot see
+        -- what went wrong.
+        local lower_file = file:lower()
+        if file:sub(1, 1) ~= "."
+            and (file:match("%.md$") or file:match("%.txt$"))
+            and not lower_file:match("^readme%.") then
+            local id = file:gsub("%.md$", ""):gsub("%.txt$", "")
+            local content = readFile(folder_path .. file)
+
+            if content and not isLoadableText(content) then
+                logger.warn("BehaviorLoader: ignoring", file, "- not text, bytes:", #content)
+                content = nil
+            end
+
+            if content then
+                local fallback_name = filenameToDisplayName(id)
+                local behavior = parseBehaviorFile(content, fallback_name, source)
+
+                if behavior then
+                    behaviors[id] = behavior
+                end
+            end
+        end
+    end
+
+    return behaviors
+end
+
+-- Load all behaviors from user folder only (for backward compatibility)
+-- Returns: table of behavior_id -> { name, text, external, source }
+function BehaviorLoader.load()
+    local behaviors_path = getPluginPath() .. "behaviors/"
+    return loadFromFolder(behaviors_path, "folder")
+end
+
+-- Load built-in behaviors from koassistant/prompts/behaviors/
+-- Returns: table of behavior_id -> { name, text, external, source }
+function BehaviorLoader.loadBuiltin()
+    local builtin_path = require("koassistant.core.paths").CODE .. "prompts/behaviors/"
+    return loadFromFolder(builtin_path, "builtin")
+end
+
+-- Load all behaviors from all sources
+-- User behaviors override built-in behaviors with same ID
+-- Returns: table of behavior_id -> { name, text, external, source }
+function BehaviorLoader.loadAll()
+    local all_behaviors = {}
+
+    -- Load built-in first (lower priority)
+    local builtin = BehaviorLoader.loadBuiltin()
+    for id, behavior in pairs(builtin) do
+        all_behaviors[id] = behavior
+    end
+
+    -- Load user behaviors (higher priority, overrides built-in)
+    local user = BehaviorLoader.load()
+    for id, behavior in pairs(user) do
+        all_behaviors[id] = behavior
+    end
+
+    return all_behaviors
+end
+
+-- Get sorted list of behavior IDs for UI
+-- Sorts alphabetically by display name
+function BehaviorLoader.getSortedIds(behaviors)
+    local ids = {}
+    for id in pairs(behaviors) do
+        table.insert(ids, id)
+    end
+    table.sort(ids, function(a, b)
+        return (behaviors[a].name or a) < (behaviors[b].name or b)
+    end)
+    return ids
+end
+
+-- Get a single behavior by ID
+function BehaviorLoader.get(behaviors, id)
+    return behaviors[id]
+end
+
+-- Check if any behaviors are available
+function BehaviorLoader.hasAny(behaviors)
+    return next(behaviors) ~= nil
+end
+
+-- Get the user behaviors folder path (for UI display)
+function BehaviorLoader.getFolderPath()
+    return getPluginPath() .. "behaviors/"
+end
+
+-- Get the built-in behaviors folder path
+function BehaviorLoader.getBuiltinPath()
+    return require("koassistant.core.paths").CODE .. "prompts/behaviors/"
+end
+
+return BehaviorLoader

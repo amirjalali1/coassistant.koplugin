@@ -1,4 +1,4 @@
--- Unit tests for koassistant_api/openai_compatible.lua
+-- Unit tests for koassistant/api/openai_compatible.lua
 -- Tests the OpenAI-compatible base handler class
 -- No API calls - tests with mock data
 
@@ -12,7 +12,7 @@ local function setupPaths()
 
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,

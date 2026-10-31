@@ -14,7 +14,8 @@ The test suite must run from within a **KOReader installation** where KOAssistan
 
 | Platform | Path |
 |----------|------|
-| **Kobo/Kindle** | `/mnt/onboard/.adds/koreader/plugins/koassistant.koplugin/` |
+| **Kobo** | `/mnt/onboard/.adds/koreader/plugins/koassistant.koplugin/` |
+| **Kindle** | `/mnt/us/koreader/plugins/koassistant.koplugin/` |
 | **Android** | `/sdcard/koreader/plugins/koassistant.koplugin/` |
 | **macOS** | `~/Library/Application Support/koreader/plugins/koassistant.koplugin/` |
 | **Linux** | `~/.config/koreader/plugins/koassistant.koplugin/` |
@@ -24,7 +25,7 @@ The test suite must run from within a **KOReader installation** where KOAssistan
 
 > **Note:** The `tests/` directory is excluded from release zips to keep downloads small. To run tests, you need to **clone the repository** from GitHub:
 > ```bash
-> git clone https://github.com/zzzsm/koassistant.git
+> git clone https://github.com/zeeyado/koassistant.koplugin.git
 > ```
 > Then copy or symlink the cloned folder to your KOReader plugins directory.
 
@@ -32,10 +33,10 @@ The test suite must run from within a **KOReader installation** where KOAssistan
 2. **Clone KOAssistant** from GitHub (release zips don't include tests)
 3. **Copy to plugins folder** or create a symlink
 4. **Launch KOReader once** to create the settings file
-4. **Add your API keys** via Settings → API Keys (or create `apikeys.lua`)
-5. **Run tests** from the plugin directory
+5. **Add your API keys** via Settings → API Keys & Auth (or create `apikeys.lua`)
+6. **Run tests** from the plugin directory
 
-**Pro tip:** If you already have KOAssistant configured on your e-reader, use [Backup & Restore](../README.md#backup--restore) to export your settings and import them on your computer.
+**Pro tip:** If you already have KOAssistant configured on your e-reader, use [Backups and Updates](https://github.com/zeeyado/koassistant.koplugin/wiki/Backups-and-Updates) to export your settings and import them on your computer.
 
 ## Quick Start
 
@@ -95,11 +96,11 @@ lua tests/run_tests.lua -v
 ### Model Audit & Capability Probe (`model_audit.lua`)
 
 Discovery + empirical probing for model updates (agenda item 20). Fetches each
-keyed provider's live model list, diffs it against `koassistant_model_lists.lua`
+keyed provider's live model list, diffs it against `koassistant/request/model_lists.lua`
 (noise-filtered, snapshots/`-latest` aliases collapsed), then probes chosen
 models for the facts `/models` never reports — temperature acceptance, reasoning
 default, effort ladder, disable support, output ceiling, tools — and emits DRAFT
-`model_constraints.lua` stanzas annotated against the current resolution layer.
+`koassistant/request/model_constraints.lua` stanzas annotated against the current resolution layer.
 Never auto-applies anything; tier placement stays human.
 
 ```bash
@@ -184,7 +185,7 @@ lua tests/inspect.lua --web --port 3000
 - Provider/model selection for every built-in provider
 - Behavior toggles, temperature slider, **max tokens slider**
 - **Domain loading** from your actual `domains/` folder
-- **Action loading** from `prompts/actions.lua` + custom actions from settings
+- **Action loading** from `koassistant/prompts/actions.lua` + custom actions from settings
 - **Ask action** available in all contexts (like plugin)
 - **Settings sync** from your `koassistant_settings.lua` (languages, behavior, temperature)
 - **Context simulation** (highlight text, book title/author, multi-book)
@@ -255,7 +256,7 @@ The 104 files, with what each one pins:
 - `test_loaders.lua` - BehaviorLoader and DomainLoader file loading, sorting, retrieval
 - `test_math.lua` - the LaTeX to readable HTML converter (#105), including the luamd safety rules
 - `test_max_tokens.lua` - `resolveMaxTokens` / `clampMaxTokens`: raise-where-known defaults, pin clamping
-- `test_message_builder.lua` - placeholder resolution in message_builder.lua, including the replace_placeholder loop gotcha
+- `test_message_builder.lua` - placeholder resolution in koassistant/request/message_builder.lua, including the replace_placeholder loop gotcha
 - `test_message_history.lua` - conversation tracking, token estimation, reasoning entries
 - `test_migrations.lua` - the one-time settings upgrade chain, fixture-based, including idempotence
 - `test_minimal_popup_registry.lua` - `Constants.resolveMinimalPopupActions` read-through (nil = defaults, empty stays empty)
@@ -305,6 +306,7 @@ The 104 files, with what each one pins:
 - `test_web_search.lua` - web-search request building, response parsing, streaming detection
 - `test_web_tools.lua` - the SearXNG / Tavily backend module (built but not wired into the plugin yet): request and parse, null sentinels, result formatting
 - `test_update_versions.lua` - update checker version order: SemVer pre-release identifiers (rc.11 > rc.9), one-to-three-part tags, a release beats its rc
+- `test_update_cooldown.lua` - the automatic update check's session gate: one check after a success, never two at once, a failed attempt tried again only after the 30-minute cooldown, and the gate sits before the fork (#121)
 - `test_user_input_placeholder.lua` - `{user_input}` puts the typed text in the prompt in place of the tail block
 - `test_xai_responses.lua` - the xAI Responses routing and request builder
 - `test_xray_auto.lua` - the background auto-update gate matrix and the checkpoint ring
@@ -328,7 +330,7 @@ The 104 files, with what each one pins:
 
 #### Model Validation (`--models`)
 
-Tests every model in `koassistant_model_lists.lua` with ultra-minimal requests to discover:
+Tests every model in `koassistant/request/model_lists.lua` with ultra-minimal requests to discover:
 - Invalid model names (404 errors)
 - Parameter constraints (temperature, max_tokens requirements)
 - Access restrictions
@@ -356,7 +358,7 @@ Detected Constraints:
 
 ### `tests/lib/constraint_utils.lua`
 
-Wrapper around plugin's `model_constraints.lua` module that eliminates duplicated constraint logic in tests.
+Wrapper around plugin's `koassistant/request/model_constraints.lua` module that eliminates duplicated constraint logic in tests.
 
 **Why it exists**: Tests used to duplicate temperature constraints, reasoning defaults, and error parsing logic. This caused drift when plugin constraints changed.
 
@@ -399,6 +401,48 @@ local new_config = ConstraintUtils.buildRetryConfig(original_config, constraint)
 - ✅ Removed 75+ lines of duplicated code
 - ✅ No drift between test expectations and plugin behavior
 - ✅ Adding new constraints automatically updates all tests
+
+### Flow tests: `tests/lib/ui_recorder.lua` and `tests/lib/koamock.lua`
+
+A flow test drives the plugin's real dialog code the way a device round would, without KOReader: open a popup, read its buttons, tap one, type into the box it opens, check what ran. `ui_recorder` replaces `UIManager:show/close` and the dialog widgets' `:new` with recorders (patched in place, put back by `restore()`); `koamock` hands a test the invented books of the device fixture (`tests/fixtures/mock_series/spec.lua`) as parsed data, the same X-Rays `gen.lua` writes to disk. The example is `tests/unit/test_flow_xray_entry.lua`.
+
+```lua
+local Recorder = require("ui_recorder")
+local KoaMock = require("koamock")
+local ui = Recorder.install()               -- before loading the module under test
+local data, path = KoaMock.xray("Mock Series 3")
+-- ... open something ...
+ui:texts()                                  -- the top dialog's buttons
+ui:tap("Names and matching…")               -- run that button's callback
+ui:type("at dusk"); ui:tap("OK")            -- type into the box it opens, confirm
+ui:tapOutside()                             -- a tap outside the top dialog (or the Back key)
+ui:restore()                                -- at the end of the file
+```
+
+### Headless scenarios: `tests/scenarios/` (KOReader itself, no window)
+
+What a flow test cannot reach (the text on a real page: marks, the name index, KOReader's search engine, a checkpoint install, a group hook firing) runs in KOReader's own frontend on its dummy framebuffer, on the same mock books:
+
+```bash
+sh tests/scenarios/run.sh /path/to/a/scratch/folder              # every s*.lua
+sh tests/scenarios/run.sh /path/to/a/scratch/folder s02_capitals # one
+sh tests/scenarios/run.sh /path/to/a/scratch/folder /elsewhere/probe.lua # a one-off probe file
+KOA_CAPS=/path/manifest.lua sh tests/scenarios/run.sh /path/to/a/scratch/folder tests/tools/caps_calibration.lua
+                                                                 # the capitals calibration (its header says the manifest)
+```
+
+Each run makes a NEW folder under the one given (`run-<time>-<pid>/`): `home/` is a fresh KOReader home with this plugin linked into its `plugins/`, `Books/` the fixture with its groups written into that home, `shots/` the screenshots a scenario takes, one log per scenario. Nothing is deleted and nothing of a real KOReader home is read. `boot.lua` refuses to start unless the home sits inside the run folder, stands an empty table in for `apikeys.lua` before the plugin loads, blocks the network (LuaSocket, LuaSec, child processes, the plugin's request functions; a blocked call fails the scenario), turns KOReader's other plugins off and skips the update check. Needs the macOS app at `/Applications/KOReader.app`. The exit code is the number of scenarios that failed.
+
+A scenario is a short Lua file: `local S = dofile(os.getenv("KOA_PLUGIN") .. "/tests/scenarios/boot.lua")`, then `S.features{...}` (the plugin's settings, before the book opens), `S.open("Mock Series 3")`, `S.chapter("Rented Quiet")`, `S.marks()` (the visible page's X-Ray marks with the words under each), `S.settle()` (every scheduled task now: debounces, the marks' deferred scan), `S.check(cond, "what it shows")`, `S.shot("name")`, `S.finish()`. `S.texts()` / `S.tap(text)` read and tap a dialog's buttons or a menu's rows; in a window built by hand (the picture popup, s06) they reach every button and checkbox in its widget tree, radio rows included (`S.buttons()` gives each one's `checked`).
+
+#### Wiki screenshots: `tests/scenarios/wiki_shots.sh`
+
+```bash
+sh tests/scenarios/wiki_shots.sh /path/to/a/scratch/folder                     # every w_*.lua
+sh tests/scenarios/wiki_shots.sh /path/to/a/scratch/folder w_privacy_and_data  # one page's shots
+```
+
+The `w_<page>.lua` scenarios stage and shoot the shots of `docs/assets/wiki_shotlist.txt` (the wiki's manifest), each in a run of its own (a fresh home, so one scenario's settings never reach the next), on a Kobo Clara's screen: `KOA_SCREEN=1072x1448` (the dummy screen's size; off by default), `EMULATE_READER_DPI=300`, a device with no keyboard, keys or D-pad (no shortcut letters in lists, no focus frames; an input box's keyboard is then its own window above it), `KOA_EMOJI` (the plugin's emoji font registered as a UI fallback when the desktop's user font folder has it, read only) and KOReader's Gestures plugin on. The plugin is linked from the working tree, whose own `behaviors/` and `domains/` hold personal files: a wiki run loads none of them, only what a scenario stages in `S.userBehaviors` / `S.userDomains`. The books come from the folder `KOA_BOOKS` names (none without it): `run.sh` COPIES it into the run, and its untracked `koashots.lua` names the files by role (`S.shotsBook("series", 2)`, `"standalone"`, `"nonfiction"`), so no tracked file names a book. At the end the script lists the manifest's names produced and not produced and copies the produced PNGs into `docs/assets/screenshots-src/wiki/` for review; nothing lands in `screenshots/` by itself. Helpers: `S.wiki("name.png")` (the whole stack repainted, then `<run>/wiki/name.png`; a name not in the manifest gets a note), `S.openMenu` / `S.menuTap` / `S.menuPath({ "KOAssistant", "Privacy & Data" })` / `S.menuRows()` (KOReader's main menu, rows matched with or without their emoji), `S.fileManager(dir)` (the file browser, the folder as Home), `S.hold(text)` (a long-press); `tests/scenarios/wiki_lib.lua` stages in the run only: fake keys (`W.FAKE`, `W.fileKeys` for the apikeys.lua stand-in), `W.preSetting(key, value)` (a top-level plugin setting before the plugin loads), `W.prose()` (the first full page of prose), `W.select(skip, count)` (words selected from the page's start, as a drag would, then `W.highlightMenu()`), `W.group(name, kind, books)`, `W.scrollTo(text)` in a long dialog, `W.listPageWith(pattern)` in a long list.
 
 ## Prerequisites
 
@@ -562,10 +606,15 @@ tests/
 ├── fixtures/
 │   ├── sample_context.lua     # Sample context data for tests
 │   └── mock_series/           # Offline mock-book generator (X-Ray/groups device fixture):
-│                              #   lua tests/fixtures/mock_series/gen.lua --out <dir> [--base <target>]
-│                              # 7 tiny invented EPUBs + real-API sidecar data (see gen.lua header)
+│                              #   lua tests/fixtures/mock_series/gen.lua --out <dir> [--base <target>] [--home <KOReader home>]
+│                              # 8 tiny invented EPUBs + real-API sidecar data; --home also writes the three groups (see gen.lua header)
+├── scenarios/                 # Headless KOReader runs on the mock books: sh tests/scenarios/run.sh <scratch dir>
+│   ├── boot.lua               # The run's environment (scratch home, no network, no keys) + helpers
+│   └── s01_boot.lua …         # One scenario per file
 ├── lib/
 │   ├── mock_koreader.lua      # KOReader module mocks
+│   ├── ui_recorder.lua        # Flow tests: records shown dialogs, taps their buttons
+│   ├── koamock.lua            # The mock_series fixture as parsed test data
 │   ├── test_runner.lua        # Assertion/reporting harness every unit file uses
 │   ├── test_helpers.lua       # Integration-test helpers (sync HTTP instead of KOReader subprocesses)
 │   ├── constraint_utils.lua   # Plugin constraint utilities wrapper

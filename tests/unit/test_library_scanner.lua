@@ -1,5 +1,5 @@
 --[[
-Unit Tests for koassistant_library_scanner.lua
+Unit Tests for koassistant/books/library_scanner.lua
 
 Tests the library scanner's metadata extraction, status categorization,
 structured output, and parameterized formatting.
@@ -66,7 +66,7 @@ package.loaded["apps/filemanager/filemanagerbookinfo"] = {
         return props
     end,
 }
-package.loaded["koassistant_doc_settings"] = nil
+package.loaded["koassistant.storage.doc_settings"] = nil
 
 -- Mock DocumentRegistry: all test files are "supported"
 local mock_supported_extensions = { epub = true, pdf = true, djvu = true, mobi = true, fb2 = true, txt = true }
@@ -245,8 +245,8 @@ package.loaded["libs/libkoreader-lfs"] = mock_lfs
 -- ============================================================
 
 -- Clear cached module to pick up our mocks
-package.loaded["koassistant_library_scanner"] = nil
-local LibraryScanner = require("koassistant_library_scanner")
+package.loaded["koassistant.books.library_scanner"] = nil
+local LibraryScanner = require("koassistant.books.library_scanner")
 
 -- ============================================================
 -- Tests

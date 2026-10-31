@@ -1,7 +1,7 @@
 -- Unit tests for the OpenAI Responses API path (responses_api_plan.md R1+R2):
--- routing decision + request builder in koassistant_api/openai.lua, the
+-- routing decision + request builder in koassistant/api/openai.lua, the
 -- openai_responses transformer in response_parser.lua, and the streaming
--- helpers in stream_handler.lua. No API calls — mock data only.
+-- helpers in koassistant/request/stream_handler.lua. No API calls — mock data only.
 
 local function setupPaths()
     local info = debug.getinfo(1, "S")
@@ -21,11 +21,11 @@ end
 setupPaths()
 require("mock_koreader")
 
-local OpenAIHandler = require("koassistant_api.openai")
-local ResponseParser = require("koassistant_api.response_parser")
-local StreamHandler = require("stream_handler")
-local DebugUtils = require("koassistant_debug_utils")
-local ToolWire = require("koassistant_api.tool_wire")
+local OpenAIHandler = require("koassistant.api.openai")
+local ResponseParser = require("koassistant.api.response_parser")
+local StreamHandler = require("koassistant.request.stream_handler")
+local DebugUtils = require("koassistant.core.debug_utils")
+local ToolWire = require("koassistant.api.tool_wire")
 local json = require("json")
 local TestRunner = require("test_runner"):new()
 
@@ -179,7 +179,7 @@ TestRunner:test("reasoning effort rides nested, not top-level", function()
 end)
 
 TestRunner:test("adjustments are loggable (debug mode crashed on a boolean entry)", function()
-    local ModelConstraints = require("model_constraints")
+    local ModelConstraints = require("koassistant.request.model_constraints")
     local tool_config = webConfig()
     tool_config.tools = { specs = { { name = "toc", description = "d",
         parameters = { type = "object" } } }, mode = "AUTO" }

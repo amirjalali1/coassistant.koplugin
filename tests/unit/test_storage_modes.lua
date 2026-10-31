@@ -81,15 +81,15 @@ _G.G_reader_settings = {
 -- Module cache reset (critical when run via run_tests.lua after other test suites)
 -- Must happen BEFORE installing any mocks or loading any plugin modules
 -- ============================================================
-package.loaded["koassistant_chat_history_manager"] = nil
+package.loaded["koassistant.chat.chat_history_manager"] = nil
 -- Save modules we'll override, for restoration after tests
 local _saved_lfs = package.loaded["libs/libkoreader-lfs"]
 local _saved_datastorage = package.loaded["datastorage"]
 local _saved_util = package.loaded["util"]
 
-package.loaded["koassistant_action_cache"] = nil
-package.loaded["koassistant_notebook"] = nil
-package.loaded["koassistant_pinned_manager"] = nil
+package.loaded["koassistant.artifacts.action_cache"] = nil
+package.loaded["koassistant.chat.notebook"] = nil
+package.loaded["koassistant.artifacts.pinned_manager"] = nil
 package.loaded["docsettings"] = nil
 package.loaded["datastorage"] = nil
 package.loaded["libs/libkoreader-lfs"] = nil
@@ -244,7 +244,7 @@ local mock_read_history = { hist = {} }
 package.loaded["readhistory"] = mock_read_history
 
 -- Load ChatHistoryManager
-local ChatHistoryManager = require("koassistant_chat_history_manager")
+local ChatHistoryManager = require("koassistant.chat.chat_history_manager")
 
 -- ============================================================
 -- Test Runner
@@ -509,7 +509,7 @@ print("\n  -- Lazy sidecar migration --")
 
 -- For migration tests, we test the ActionCache module directly
 -- We need to reload it after our mocks are set up
-local ActionCache = require("koassistant_action_cache")
+local ActionCache = require("koassistant.artifacts.action_cache")
 
 TestRunner:test("ActionCache.getPath: returns correct path for doc mode", function()
     storage_mode = "doc"

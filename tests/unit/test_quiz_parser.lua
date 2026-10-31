@@ -1,4 +1,4 @@
--- Unit tests for koassistant_quiz_parser.lua (JSON extraction + unescaped-quote repair).
+-- Unit tests for koassistant/quiz/quiz_parser.lua (JSON extraction + unescaped-quote repair).
 
 local function setupPaths()
     local info = debug.getinfo(1, "S")
@@ -13,7 +13,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local QP = require("koassistant_quiz_parser")
+local QP = require("koassistant.quiz.quiz_parser")
 
 local TestRunner = { passed = 0, failed = 0 }
 function TestRunner:suite(name) print(string.format("\n  [%s]", name)) end

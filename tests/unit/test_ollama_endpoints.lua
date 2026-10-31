@@ -21,7 +21,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local ConfigHelper = require("koassistant_config_helper")
+local ConfigHelper = require("koassistant.core.config_helper")
 local TestRunner = require("test_runner"):new()
 
 print("")
@@ -33,7 +33,7 @@ local norm = ConfigHelper.normalizeServerUrl
 
 -- The URL the provider's handler puts on the wire for a merged config
 local function wireUrl(provider, merged)
-    local handler = require("koassistant_api." .. provider)
+    local handler = require("koassistant.api." .. provider)
     return handler:buildRequestBody({ { role = "user", content = "hi" } }, merged).url
 end
 

@@ -1,5 +1,5 @@
 --[[
-Unit Tests for koassistant_reply_quote.lua
+Unit Tests for koassistant/ui/reply_quote.lua
 
 Covers the pure logic behind the chat viewer's "Add to reply" selection-popup
 action (agenda 1c, chat_viewer_plan.md §2):
@@ -8,7 +8,7 @@ action (agenda 1c, chat_viewer_plan.md §2):
 - eligibility gating: full chat viewer yes; simple_view / translate_view /
   minimal (compact/dictionary) / missing reply seam no
 
-koassistant_chatgptviewer.lua itself can't be loaded under the harness (pulls
+koassistant/ui/chatgptviewer.lua itself can't be loaded under the harness (pulls
 in the KOReader UI stack), so the bug-prone logic lives in the pure module and
 is exercised here.
 
@@ -18,7 +18,7 @@ Run: lua tests/run_tests.lua --unit
 package.path = package.path .. ";./?.lua;./?/init.lua"
 require("tests.lib.mock_koreader")
 
-local ReplyQuote = require("koassistant_reply_quote")
+local ReplyQuote = require("koassistant.ui.reply_quote")
 
 local T = {
     passed = 0,

@@ -20,7 +20,7 @@ local function setupPaths()
     local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -29,8 +29,8 @@ local function setupPaths()
 end
 local plugin_dir = setupPaths()
 require("mock_koreader")
-local Dialogs = require("koassistant_dialogs")
-local A = require("koassistant_attachments")
+local Dialogs = require("koassistant.ui.dialogs")
+local A = require("koassistant.request.attachments")
 local TestRunner = require("test_runner"):new()
 
 local function source(rel)
@@ -39,9 +39,9 @@ local function source(rel)
     f:close()
     return s
 end
-local dialogs_src = source("koassistant_dialogs.lua")
-local history_src = source("koassistant_chat_history_dialog.lua")
-local browser_src = source("koassistant_xray_browser.lua")
+local dialogs_src = source("koassistant/ui/dialogs.lua")
+local history_src = source("koassistant/chat/chat_history_dialog.lua")
+local browser_src = source("koassistant/xray/xray_browser.lua")
 
 -- Stubs this file installs, restored at the end (one Lua process runs every file).
 -- Taken from launchArtifactChat's own upvalues: earlier files in the suite swap
@@ -57,8 +57,8 @@ local function upvalue(fn, name)
     end
 end
 local UIManager = upvalue(Dialogs.launchArtifactChat, "UIManager") or require("ui/uimanager")
-local BTR = upvalue(Dialogs.launchArtifactChat, "BookToolRunner") or require("koassistant_book_tool_runner")
-local SDS = upvalue(Dialogs.launchArtifactChat, "SafeDocSettings") or require("koassistant_doc_settings")
+local BTR = upvalue(Dialogs.launchArtifactChat, "BookToolRunner") or require("koassistant.tools.book_tool_runner")
+local SDS = upvalue(Dialogs.launchArtifactChat, "SafeDocSettings") or require("koassistant.storage.doc_settings")
 local saved = {
     show = UIManager.show, queryWith = BTR.queryWith, resolve = SDS.resolve,
     override = A.notebookOverrideFor, getList = A.getList,
@@ -96,21 +96,41 @@ TestRunner:test("a notebook chat goes to a trusted provider with sharing off", f
     TestRunner:assertEqual(n, 1, "sent")
 end)
 
-TestRunner:test("a run option to an untrusted provider is refused, with a message", function()
+TestRunner:test("a run option to an untrusted provider asks first (the notebook is on Ask there), nothing sent", function()
     override = nil
     local n, msgs = notebookChat(trusted({ _run_variant = { provider = "openai", model = "gpt-5.5" } }),
         "ollama", { notebook = true })
     TestRunner:assertEqual(n, 0, "not sent")
-    TestRunner:assertEqual(#msgs, 1, "one message")
-    TestRunner:assertTrue((msgs[1].text or ""):find("Notebook sharing", 1, true), "names the setting")
+    TestRunner:assertEqual(#msgs, 1, "one dialog: the question")
+    TestRunner:assertTrue((msgs[1].title or ""):find("your notebook", 1, true), "names the notebook")
+    TestRunner:assertTrue((msgs[1].title or ""):find("openai", 1, true) or (msgs[1].title or ""):find("OpenAI", 1, true),
+        "names the provider the chat goes to")
 end)
 
-TestRunner:test("the book's deny beats a trusted provider; its allow passes an untrusted one", function()
+TestRunner:test("a global Never refuses with a door, nothing sent", function()
+    override = nil
+    local n, msgs = notebookChat({ enable_notebook_sharing = "never" }, "openai", { notebook = true })
+    TestRunner:assertEqual(n, 0, "not sent")
+    TestRunner:assertEqual(#msgs, 1, "one dialog: the refusal")
+    TestRunner:assertTrue((msgs[1].title or ""):find("Never for all books", 1, true), "names the layer")
+end)
+
+TestRunner:test("the book's Never beats a trusted provider; its Allow passes an untrusted one", function()
     override = false
-    TestRunner:assertEqual((notebookChat(trusted(), "ollama", { notebook = true })), 0, "deny")
+    local n, msgs = notebookChat(trusted(), "ollama", { notebook = true })
+    TestRunner:assertEqual(n, 0, "deny")
+    TestRunner:assertTrue((msgs[1].title or ""):find("Never for this book", 1, true), "the refusal names the book")
     override = true
     TestRunner:assertEqual((notebookChat(trusted(), "openai", { notebook = true })), 1, "allow")
     override = nil
+end)
+
+TestRunner:test("an allowance for this run on the chat's config sends to an untrusted provider", function()
+    override = nil
+    local f = {}
+    require("koassistant.request.privacy_gates").grantOnce(f, "/books/b.epub", { "notebook" })
+    TestRunner:assertEqual((notebookChat(f, "openai", { notebook = true })), 1, "sent under the once")
+    TestRunner:assertEqual((notebookChat({}, "openai", { notebook = true })), 0, "and not without it")
 end)
 
 TestRunner:test("the notebook viewer marks its chat, and the launcher passes the mark on", function()
@@ -158,8 +178,8 @@ print("\n  [(b) a reply in a resumed chat]")
 
 TestRunner:test("every attachment message passes the send-time check", function()
     local offenders = {}
-    for _idx, rel in ipairs({ "koassistant_dialogs.lua", "koassistant_chat_history_dialog.lua",
-            "koassistant_chatgptviewer.lua", "main.lua", "koassistant_attachments.lua" }) do
+    for _idx, rel in ipairs({ "koassistant/ui/dialogs.lua", "koassistant/chat/chat_history_dialog.lua",
+            "koassistant/ui/chatgptviewer.lua", "main.lua", "koassistant/request/attachments.lua" }) do
         local n = 0
         for line in source(rel):gmatch("[^\n]*") do
             n = n + 1
@@ -201,10 +221,11 @@ print("\n  [(c) the library Send]")
 
 TestRunner:test("the book list is judged for the provider the Send goes to", function()
     local cond = dialogs_src:match(
-        "local scan_folders_to_use\n%s*if (lib_features%.enable_library_scanning.-) then\n%s*scan_folders_to_use = ")
+        "Auto%-attach library scan data.-local scan_folders_to_use\n%s*if (.-) then\n%s*scan_folders_to_use = ")
     TestRunner:assertTrue(cond, "the catalog condition")
-    local allowed = assert(load("local lib_features, send_rv, configuration = ...; return " .. cond,
+    local cond_fn = assert(load("local lib_features, send_rv, configuration = ...; return " .. cond,
         "library catalog"))
+    local function allowed(lib, rv, c) return cond_fn(lib, rv, c) end
     local lib = { enable_library_scanning = false, trusted_providers = { "ollama" } }
     local function cfg(provider, f) return { provider = provider, features = f or {} } end
     TestRunner:assertTrue(allowed(lib, nil, cfg("ollama")), "trusted provider, no re-point")
@@ -217,9 +238,11 @@ TestRunner:test("the book list is judged for the provider the Send goes to", fun
         cfg("openai")), "scanning on")
     TestRunner:assertFalse(cond:find("library_toggle_on", 1, true), "no judgment from the dialog's opening")
     local block = dialogs_src:match("Auto%-attach library scan data(.-)if scan_folders_to_use and #scan_folders_to_use")
-    TestRunner:assertTrue(block:find("elseif library_toggle_on then", 1, true)
-        and block:find("Your book list was left out", 1, true),
+    TestRunner:assertTrue(block:find("elseif library_toggle_on", 1, true)
+        and block:find("Your library scan was left out", 1, true),
         "a list the dialog offered and this Send drops is named, never dropped silently")
+    TestRunner:assertTrue(block:find(".book_list ~= false then", 1, true),
+        "except after the question's Continue without: the reader chose (2026-10-20)")
 end)
 
 -- ------------------------------------------------------------------- (d)
@@ -261,8 +284,8 @@ for _idx, name in ipairs({ "ui/event", "ui/widget/menu", "ui/widget/textviewer" 
         package.loaded[name] = C
     end
 end
-local had_browser = package.loaded["koassistant_xray_browser"]
-local XrayBrowser = require("koassistant_xray_browser")
+local had_browser = package.loaded["koassistant.xray.xray_browser"]
+local XrayBrowser = require("koassistant.xray.xray_browser")
 
 local function chatAbout(features, entity)
     local captured
@@ -290,7 +313,7 @@ end)
 
 TestRunner:test("the freeform Send judges the block for its own provider", function()
     local expr = dialogs_src:match(
-        "if xray_context_prefix then\n%s*sel_text = (require%(\"koassistant_attachments\"%)%.xrayChatTextFor%(.-%))\n%s*end\n%s*table%.insert%(parts, '\"' %.%. sel_text")
+        "if xray_context_prefix then\n%s*sel_text = (require%(\"koassistant.request.attachments\"%)%.xrayChatTextFor%(.-%))\n%s*end\n%s*table%.insert%(parts, '\"' %.%. sel_text")
     TestRunner:assertTrue(expr, "the Send's selected-text expression")
     local text_for = assert(load("local highlighted_text, configuration, send_rv = ...; return " .. expr,
         "freeform Send"))
@@ -306,7 +329,7 @@ end)
 
 TestRunner:test("an action from the X-Ray chat judges the block for the action's provider", function()
     local p_eff = dialogs_src:find("local effective_provider = effectiveDispatchProvider(", 1, true)
-    local p_cut = dialogs_src:find("if xray_prefix then\n        message_data.highlighted_text = require(\"koassistant_attachments\").xrayChatTextFor(\n            message_data.highlighted_text, config.features, effective_provider)", 1, true)
+    local p_cut = dialogs_src:find("if xray_prefix then\n        message_data.highlighted_text = require(\"koassistant.request.attachments\").xrayChatTextFor(\n            message_data.highlighted_text, config.features, effective_provider)", 1, true)
     local p_build = dialogs_src:find("buildConsolidatedMessage(prompt, context, message_data", 1, true)
     TestRunner:assertTrue(p_eff and p_cut and p_build, "all three")
     TestRunner:assertTrue(p_eff < p_cut and p_cut < p_build, "after the dispatch provider, before the message")
@@ -314,13 +337,75 @@ end)
 
 -- ------------------------------------------------------------------- cleanup
 
+-- ------------------------------------------------------------------- (e)
+
+print("\n  [(e) a chat about a text-built artifact]")
+
+local function artifactChat(features, provider, opts)
+    sent, shown = 0, {}
+    local cfg = { provider = provider, model = "m", provider_settings = {}, features = features }
+    Dialogs.launchArtifactChat("Why?", "summary text", "Summary", nil, cfg, nil,
+        { file = "/books/b.epub", title = "B" }, opts)
+    return sent, shown
+end
+
+local function lastText(dialogs)
+    local w = dialogs[#dialogs]
+    return tostring(w and (w.title or w.text) or "")
+end
+
+TestRunner:test("a text-built artifact on Ask asks first, nothing sent", function()
+    local n, dialogs = artifactChat({}, "openai", { stamps = { used_book_text = true } })
+    TestRunner:assertEqual(n, 0, "nothing sent before the answer")
+    TestRunner:assertTrue(lastText(dialogs):find("Chat about this Summary", 1, true) ~= nil, "the question names the chat: " .. lastText(dialogs))
+end)
+
+TestRunner:test("a text-built artifact under a global Never is refused, nothing sent", function()
+    local n, dialogs = artifactChat({ enable_book_text_extraction = "never" }, "openai", { stamps = { used_book_text = true } })
+    TestRunner:assertEqual(n, 0)
+    TestRunner:assertTrue(lastText(dialogs):find("Never", 1, true) ~= nil, "a refusal naming Never: " .. lastText(dialogs))
+end)
+
+TestRunner:test("an artifact built without text, or text allowed, sends without a question", function()
+    local n = artifactChat({}, "openai", { stamps = { used_book_text = false } })
+    TestRunner:assertEqual(n, 1, "no text stamp: sent")
+    n = artifactChat({ enable_book_text_extraction = true }, "openai", { stamps = { used_book_text = true } })
+    TestRunner:assertEqual(n, 1, "Allow: sent")
+    n = artifactChat({ _data_once = { book = "/books/b.epub", kinds = { book_text = true } } }, "openai",
+        { stamps = { used_book_text = true } })
+    TestRunner:assertEqual(n, 1, "the run's allowance on the chat's config: sent")
+end)
+
+TestRunner:test("the source popup's Allow once rides into every scope's run and never stays on the shared config", function()
+    local info = debug.getinfo(1, "S")
+    local here = info.source:match("@?(.*)"):match("(.+)/[^/]+$") or "."
+    local f = assert(io.open(here .. "/../../main.lua", "r"))
+    local src = f:read("*a")
+    f:close()
+    local a = src:find("local function continueWithAction()", 1, true)
+    local b = src:find("THE FUNNEL", a, true) or src:find("\n    end\n  end\nend\n", a, true)
+    local body = src:sub(a, (src:find("local DA = require(\"koassistant.ui.data_access\")", a, true)))
+    local calls, carried = 0, 0
+    for call in body:gmatch("_executeSectionAction%(.-%)\n") do
+        calls = calls + 1
+        if call:find("data_once = state.data_once", 1, true) then carried = carried + 1 end
+    end
+    TestRunner:assertEqual(calls >= 5, true, "the five scope branches found")
+    TestRunner:assertEqual(carried, calls, "every section-path run carries the popup's allowance")
+    local asker = src:sub(a, b)
+    TestRunner:assertEqual(asker:find("local da_feats = configuration.features", 1, true), nil,
+        "the question's features table is a copy, so its once-grant never lingers on the shared config")
+    TestRunner:assertEqual(asker:find("for k, v in pairs(configuration.features or {}) do da_feats[k] = v end", 1, true) ~= nil, true,
+        "the copy")
+end)
+
 UIManager.show = saved.show
 BTR.queryWith = saved.queryWith
 SDS.resolve = saved.resolve
 A.notebookOverrideFor = saved.override
 A.getList = saved.getList
 Dialogs.showChatGPTDialog = saved.showChatGPTDialog
-package.loaded["koassistant_xray_browser"] = had_browser
+package.loaded["koassistant.xray.xray_browser"] = had_browser
 for _idx, name in ipairs(stubbed) do package.loaded[name] = nil end
 
 return TestRunner:summary()

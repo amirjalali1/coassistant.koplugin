@@ -1,0 +1,420 @@
+# Settings Reference
+
+Every row of the KOAssistant menu (Tools → KOAssistant, the first row of KOReader's Tools menu), in menu order, with what it does, its default and its choices, and the page that explains the feature. Generated from the plugin's settings schema by `tests/tools/gen_settings_reference.lua`; do not edit by hand, the test suite compares it with the schema.
+
+A row's type: **toggle** (on or off), **choice** (a list of values), **number**, **action** (opens a screen or runs something), **submenu** (holds more rows). Rows that depend on another row are listed under it; "Settings → …" paths on the other pages follow the same words as this page.
+
+## Contents
+
+- [Top rows](#top-rows)
+- [Model: current model (provider)](#model-current-model-provider)
+- [API Keys & Auth](#api-keys--auth)
+- [Display Settings](#display-settings)
+- [Chat & Export Settings](#chat--export-settings)
+- [Reading & Library](#reading--library)
+- [AI Language Settings](#ai-language-settings)
+- [Dictionary Settings](#dictionary-settings)
+- [Translate Settings](#translate-settings)
+- [Minimal Popup](#minimal-popup)
+- [Highlight Settings](#highlight-settings)
+- [Actions & Prompts](#actions--prompts)
+- [Notebook Settings](#notebook-settings)
+- [Privacy & Data](#privacy--data)
+- [Menus & Buttons](#menus--buttons)
+- [Backup & Reset](#backup--reset)
+- [Advanced](#advanced)
+
+## Top rows
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Quick Settings | action |  |  |  | [Setup, Gestures and Panels](Setup-Gestures-and-Panels) |
+| Quick Actions | action |  |  |  | [Setup, Gestures and Panels](Setup-Gestures-and-Panels) |
+| Book Chat/Action | action |  |  |  | [Contexts and Chat](Contexts-and-Chat) |
+| Book Hub | action |  |  |  | [Book Settings and Book Hub](Book-Settings-and-Book-Hub) |
+| General Chat/Action | action |  |  |  | [Contexts and Chat](Contexts-and-Chat) |
+| Library Chat/Action | action |  |  |  | [Contexts and Chat](Contexts-and-Chat) |
+| Chat History | action |  |  |  | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Browse Notebooks | action |  |  |  | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Browse Artifacts | action |  |  |  | [Artifacts and Caching](Artifacts-and-Caching) |
+| Groups | action |  |  |  | [Book Groups and Series](Book-Groups-and-Series) |
+| Gestures | action | Every KOAssistant gesture action with the gestures it has now. Tap one to give it any KOReader gesture (a gesture in use shows what holds it and can be replaced) or to remove one. Changes apply at once while KOReader's gesture plugin is loaded. |  |  |  |
+| Setup Wizard | action | Re-run any part of the setup: the provider, privacy, your language, the emoji icons and their font, the (KOA) mark on the plugin's buttons, the panels' gestures. Each topic shows whether it is set up. |  |  |  |
+| About KOAssistant | action |  |  |  |  |
+| Auto-check for updates on startup | toggle |  | On |  |  |
+| Check for Updates | action |  |  |  |  |
+
+## Model: current model (provider)
+
+Explained on [Providers and Models](Providers-and-Models).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+
+## API Keys & Auth
+
+Explained on [Providers and Models](Providers-and-Models).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+
+## Display Settings
+
+Explained on [Chat Windows](Chat-Windows).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Rendering | submenu |  |  |  | [Chat Windows](Chat-Windows) |
+| Rendering → View Mode | choice | Markdown renders formatting. Plain Text has better font support for Arabic/CJK. | Markdown | Markdown / Plain Text | [Chat Windows](Chat-Windows) |
+| Rendering → Render Math Formulas | toggle | Show LaTeX math from responses as readable formulas: Greek letters, operators, superscripts, vectors, fractions as a/b. Markdown view only. Saved chats, copies and exports keep the original notation, which Obsidian and similar apps render fully. | On |  | [Chat Windows](Chat-Windows) |
+| Rendering → Latest Reply on New Page | toggle | Present the newest reply from the top of a fresh page. Markdown chats get a real page break before it (older exchanges stay compact; the break moves forward with each reply and never touches saves or exports); Plain Text chats align the view so the reply starts the screen. Chat viewer only. | On |  | [Chat Windows](Chat-Windows) |
+| Rendering → Open Chats at Latest Exchange | toggle | When opening a saved chat, jump to the newest question and reply instead of the top. Replies always land on the newest exchange regardless of this setting. Independent of New Page per Exchange (that one changes the page layout; this one changes where an opened chat starts). | On |  | [Chat Windows](Chat-Windows) |
+| Rendering → Plain Text Options | submenu |  |  |  | [Chat Windows](Chat-Windows) |
+| Rendering → Plain Text Options → Apply Markdown Stripping | toggle | Convert markdown syntax to readable plain text (headers, lists, etc). Disable to show raw markdown. | On |  | [Chat Windows](Chat-Windows) |
+| Rendering → Text Mode for Dictionary | toggle | Use Plain Text mode for dictionary popup. Better font support for non-Latin scripts. | Off |  | [Chat Windows](Chat-Windows) |
+| Rendering → Text Mode for RTL Dictionary | toggle | Use Plain Text mode for dictionary popup when dictionary language is Arabic, Classical Arabic, Persian or Urdu. Grayed out when Text Mode for Dictionary is enabled. | On |  | [Chat Windows](Chat-Windows) |
+| Rendering → Text Mode for RTL Translate | toggle | Use Plain Text mode for translate popup when translation language is Arabic, Classical Arabic, Persian or Urdu. | On |  | [Chat Windows](Chat-Windows) |
+| Rendering → Auto RTL mode for Chat | toggle | Automatically detect RTL content and switch to RTL mode (right-aligned text + Plain Text). Activates when the latest response has more RTL than Latin characters. Disabling removes all automatic RTL adjustments. Grayed out when markdown is disabled. | On |  | [Chat Windows](Chat-Windows) |
+| Emoji | submenu |  |  |  | [Setup, Gestures and Panels](Setup-Gestures-and-Panels) |
+| Emoji → Emoji Font: Installed / Restart KOReader / Not Installed | action | KOReader ships no emoji font, so the icons below show as empty boxes without one. This row installs the bundled Noto Emoji font into KOReader's fonts folder and enables it as a UI fallback font (KOReader restarts afterwards); once installed, it shows a display test that turns the icons on. |  |  | [Setup, Gestures and Panels](Setup-Gestures-and-Panels) |
+| Emoji → Emoji Menu Icons | toggle | Show emoji icons (🔍, 📖) in UI buttons and status indicators. Needs the emoji font (the Emoji Font row above installs it). If icons still appear as boxes or question marks after a restart, turn this off. | Off |  | [Setup, Gestures and Panels](Setup-Gestures-and-Panels) |
+| Emoji → Emoji Panel Icons | toggle | Show emoji icons on Quick Settings and Quick Actions panel buttons (🔗 Provider, 🎭 Behavior, 📜 Chat History, etc.). Needs the emoji font (the Emoji Font row above installs it). | Off |  | [Setup, Gestures and Panels](Setup-Gestures-and-Panels) |
+| Emoji → Emoji Data Access Indicators | toggle | Show emoji indicators on action names showing what data they access: 📄 document text, 🔖 highlights, 📝 annotations, 📓 notebook, 📚 library, 📊 reading stats, 🌐 web search, (🔍) smart retrieval; in a chat with Quick on, ⚡ marks the actions that take the Quick preset. Needs the emoji font (the Emoji Font row above installs it). | Off |  | [Setup, Gestures and Panels](Setup-Gestures-and-Panels) |
+| Panel Alignment | submenu |  |  |  | [Chat Windows](Chat-Windows) |
+| Panel Alignment → Align Quick Settings | toggle | Left-align button text in the Quick Settings panel instead of centering. Also available from the panel's gear menu. | On |  | [Chat Windows](Chat-Windows) |
+| Panel Alignment → Align Quick Actions | toggle | Left-align button text in the Quick Actions panel instead of centering. Also available from the panel's gear menu. | Off |  | [Chat Windows](Chat-Windows) |
+| Highlights | submenu |  |  |  | [Chat Windows](Chat-Windows) |
+| Highlights → Hide Highlighted Text | toggle |  | Off |  | [Chat Windows](Chat-Windows) |
+| Highlights → Hide Long Highlights | toggle | (Grayed out unless Hide Highlighted Text is Off.) | On |  | [Chat Windows](Chat-Windows) |
+| Highlights → Long Highlight Threshold | number | (Grayed out unless Hide Long Highlights is On.) | 280 (min 50, max 1000, step 10) |  | [Chat Windows](Chat-Windows) |
+| Window Size | choice | How much of the screen chat, artifact, translate, dictionary and quiz windows take. Expanded leaves only a hairline around them (and keeps KOReader's status bar visible while a book is open), which fits more text but leaves less room to tap outside. Also on each window's gear menu. Compact dictionary popups are not affected. | Standard | Standard / Expanded | [Chat Windows](Chat-Windows) |
+| Plugin UI Language | choice | Language for plugin menus and dialogs. Does not affect AI responses. Requires restart. | Match KOReader | Match KOReader / English / العربية (Arabic) / বাংলা (Bengali) / Čeština (Czech) / Deutsch (German) / Español (Spanish) / فارسی (Persian) / Suomi (Finnish) / Français (French) / हिन्दी (Hindi) / Bahasa Indonesia / Italiano (Italian) / 日本語 (Japanese) / 한국어 (Korean) / Norsk bokmål (Norwegian) / Nederlands (Dutch) / Polski (Polish) / Português (Portuguese) / Português do Brasil / Русский (Russian) / Svenska (Swedish) / ไทย (Thai) / Türkçe (Turkish) / Українська (Ukrainian) / اردو (Urdu) / Tiếng Việt (Vietnamese) / 中文 (Chinese) | [Chat Windows](Chat-Windows) |
+
+## Chat & Export Settings
+
+Explained on [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Auto-save All Chats | toggle |  | On |  | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Auto-save Continued Chats | toggle | (Grayed out unless Auto-save All Chats is Off.) | On |  | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Streaming | submenu |  |  |  | [Chat Windows](Chat-Windows) |
+| Streaming → Enable Streaming | toggle |  | On |  | [Chat Windows](Chat-Windows) |
+| Streaming → Auto-scroll Streaming | toggle | Follow the arriving text while a response streams. Scrolling up pauses the follow for that response so you can read in place while the rest arrives; the Autoscroll button in the streaming window turns it back on. (Grayed out unless Enable Streaming is On.) | On |  | [Chat Windows](Chat-Windows) |
+| Streaming → Keep Reading Position | toggle | If auto-scroll is off or paused and you are reading while the response streams, the finished chat opens where you were reading instead of at the newest reply. In Markdown it opens on the page containing your spot; in Plain Text your spot starts the view. (Grayed out unless Enable Streaming is On.) | On |  | [Chat Windows](Chat-Windows) |
+| Streaming → Page-based Scroll (e-ink) | toggle | Stream text into empty page space instead of scrolling from the bottom. Reduces full-screen refreshes on e-ink. Disable for continuous bottom-scrolling. (Grayed out unless Enable Streaming is On and Auto-scroll Streaming is On.) | On |  | [Chat Windows](Chat-Windows) |
+| Streaming → Large Stream Dialog | toggle | (Grayed out unless Enable Streaming is On.) | On |  | [Chat Windows](Chat-Windows) |
+| Streaming → Stream Poll Interval (ms) | number | How often to check for new stream data. Lower = snappier but uses more battery. (Grayed out unless Enable Streaming is On.) | 125 (min 25, max 1000, step 25) |  | [Chat Windows](Chat-Windows) |
+| Streaming → Display Refresh Interval (ms) | number | How often to refresh the display during streaming. Higher = better performance on slower devices. (Grayed out unless Enable Streaming is On.) | 250 (min 100, max 500, step 50) |  | [Chat Windows](Chat-Windows) |
+| Quick Answer Preset | submenu |  |  |  | [Contexts and Chat](Contexts-and-Chat) |
+| Quick Answer Preset → Quick Answer On by Default | toggle | Start new chats with the Quick Answer (⚡) button already on. You can still turn it off per chat: and override the default per book from Book Settings or the ⚡ button's menu. | Off |  | [Contexts and Chat](Contexts-and-Chat) |
+| Quick Answer Preset → Brevity nudge: … | action | How strongly Quick Answer asks for brevity: Standard requests a short, direct reply (a few sentences, no preamble); Ultra-brief enforces a hard ceiling (at most 3 short sentences, one plain paragraph, never restate the question); Off sends no brevity instruction. |  |  | [Contexts and Chat](Contexts-and-Chat) |
+| Quick Answer Preset → Turn Reasoning Off | toggle | Disable model reasoning/thinking for Quick Answer chats (models that can't disable it drop to their lowest level). | On |  | [Contexts and Chat](Contexts-and-Chat) |
+| Quick Answer Preset → Turn Web Search Off | toggle |  | On |  | [Contexts and Chat](Contexts-and-Chat) |
+| Quick Answer Preset → Turn Book Tools Off | toggle |  | On |  | [Contexts and Chat](Contexts-and-Chat) |
+| Quick Answer Preset → Skip Domain Lens | toggle | Leave the selected domain lens out of Quick Answer chats. Off by default: the domain shapes identity rather than length, and costs almost nothing in speed. | Off |  | [Contexts and Chat](Contexts-and-Chat) |
+| Quick Answer Preset → Skip Book Background | toggle | Leave the per-book Background note out of Quick Answer chats. Off by default: the Background frames how you read this book, and costs almost nothing in speed. | Off |  | [Contexts and Chat](Contexts-and-Chat) |
+| Quick Answer Preset → Behavior: … | action | Optionally change the AI behavior while Quick Answer is on: keep the current one (default), swap to its Mini variant (same style family when one exists), pin a specific behavior (the built-in Terse suits Quick Answer), or send none at all. Actions that pin a behavior are unaffected. |  |  | [Contexts and Chat](Contexts-and-Chat) |
+| Quick Answer Preset → Model override: … (or Keep current / Fastest for provider / a tier) | action | Optionally switch models while Quick Answer is on (that chat only: your default model is untouched): the active provider's fastest listed model, a tier of the active provider, or a pinned specific model. Custom providers keep the current model unless custom_models.lua gives them tier placements. A model picked for one run (a long press on Send) overrides it. |  |  | [Contexts and Chat](Contexts-and-Chat) |
+| Spoiler Protection | toggle | On by default: the AI is told not to reveal events beyond your current reading position in book and highlight chats, and X-Ray checkpoint updates follow your position instead of installing the newest version. Research mode disables protection. Override per book in Book Settings; per chat via the Spoiler chip (chat input's gear menu → Toolbar Buttons). Custom actions can use the {spoiler_free_nudge} placeholder. | On |  | [Spoiler Protection](Spoiler-Protection) |
+| Content Format | submenu |  |  |  | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Content Format → Export Style | choice | Markdown uses # headers and **bold**. Plain text uses simple formatting. | Markdown | Markdown / Plain Text | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Content Format → Copy Content | choice | What to include when copying chat to clipboard. | Full (metadata + chat) | Ask every time / Full (metadata + chat) / Question + Response / Last response only / Everything (debug) | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Content Format → Note Content | choice | What to include when saving to note. | Question + Response | Ask every time / Full (metadata + chat) / Question + Response / Last response only / Everything (debug) | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Content Format → Save to File Content | choice | What to include when saving chat to file. 'Follow Copy Content' uses your Copy Content setting. | Follow Copy Content | Follow Copy Content / Ask every time / Full (metadata + chat) / Question + Response / Last response only / Everything (debug) | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Content Format → Chat History Export | choice | What to include when exporting from Chat History. | Ask every time | Follow Copy Content / Ask every time / Full (metadata + chat) / Question + Response / Last response only / Everything (debug) | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Save Location | choice |  | KOAssistant exports folder | KOAssistant exports folder / Custom folder / Ask every time | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Save book chats alongside books | toggle | When enabled, book chats are saved to a 'chats' subfolder next to the book file instead of the central location. | Off |  | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+
+## Reading & Library
+
+Explained on [Reading Analysis Actions](Reading-Analysis-Actions).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Chapter Quiz: On / Off | submenu |  |  |  | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| Chapter Quiz: On / Off → Quiz on Chapter End | toggle | Offer a comprehension quiz when you finish reading a chapter. Requires a book with a table of contents. | Off |  | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| Chapter Quiz: On / Off → Quiz Chapter Level | choice | Which TOC level counts as a 'chapter' for end-of-chapter quizzes. A fixed level falls back to the deepest level the book actually has. 'Auto-detect' picks the deepest level whose chapters are at least the minimum length below. 'All TOC headings' follows KOReader's TOC tick settings. Short or skimmed chapters are skipped by the length setting below. (Grayed out unless Quiz on Chapter End is On.) | Level 2 | Auto-detect / Top level (Level 1) / Level 2 / Level 3 / All TOC headings | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| Chapter Quiz: On / Off → Minimum Chapter Length (pages) | number | Skip the chapter-end quiz for chapters shorter than this many pages (0 = no minimum). Also sets the threshold 'Auto-detect' uses to pick the chapter level. Can be overridden per book in Book Settings. (Grayed out unless Quiz on Chapter End is On.) | 5 (min 0, max 30, step 1) |  | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| Chapter Quiz: On / Off → Minimum Reading Time (minutes) | number | Skip the chapter-end quiz unless you spent at least this many minutes reading the chapter (0 = no minimum). Catches flipping quickly through a long chapter. Uses KOReader's reading statistics; if those are unavailable the quiz is still offered. Can be overridden per book in Book Settings. (Grayed out unless Quiz on Chapter End is On.) | 3 (min 0, max 60, step 1) |  | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| Chapter Quiz: On / Off → Question Count | number | Total number of questions to generate per quiz. | 8 (min 3, max 15, step 1) |  | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| Chapter Quiz: On / Off → Difficulty | choice | Easy: straightforward recall. Medium: comprehension and application. Hard: analysis and synthesis. | Medium | Easy / Medium / Hard | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| Chapter Quiz: On / Off → Include Multiple Choice | toggle |  | On |  | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| Chapter Quiz: On / Off → Include Short Answer | toggle |  | On |  | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| Chapter Quiz: On / Off → Include Discussion | toggle |  | On |  | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| X-Ray | submenu |  |  |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Automatic X-Ray (all books) | toggle | Keep the X-Rays you started up to date as you read (flowing formats like EPUB only): checkpoints at chapter-sized steps, always keeping the next checkpoint ready ahead of you; reaching it installs it instantly and the one after starts building. Books with no X-Ray are left alone: start one from the X-Ray popup with "In checkpoints, as I read (automatic)", or switch a book to Automatic individually (X-Ray popup or Book Settings → X-Ray → Automatic X-Ray), which works even with this off; a per-book Off always wins. Spend guards: a cooldown before retrying a step that was declined, failed or cancelled, WiFi only, and the book's text allowed for the book, or a trusted provider (a book on Ask is asked once); background runs extract book text and use API tokens without a per-request tap. Leave off if every request should be explicit. | Off |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Cooldown (minutes) | number | Minimum wait before retrying an automatic checkpoint after one was declined, failed or cancelled (0 = no cooldown). A completed build does not wait. (Grayed out unless Automatic X-Ray (all books) is On.) | 15 (min 0, max 120, step 1) |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Notify on Background Activity | toggle | Show a brief notification when a background X-Ray update or create starts and completes, and when a checkpoint is silently swapped in. Off = fully silent (the X-Ray popup always shows the current coverage). | Off |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Checkpoints at Chapter Ends | toggle | When building X-Ray checkpoints, place each checkpoint at the nearest chapter end (within a few percent) instead of an exact percentage; checkpoints then read as "up to the end of a chapter", and the versions list shows the chapter names. Needs a table of contents. Checkpoint spacing itself adapts to book length: about every 10% of a normal-length book, larger steps for short ones. | On |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Preset for New X-Rays | action | One tap for the three settings below it: what a new X-Ray tracks, whether it keeps the status block ("Where things stand"), and how much each entry carries. Characters only is the cheapest (the cast, no status block); Reference is the default (people, places, ideas and terms); Everything adds the story arc; Light companion and Deep study change the depth as well. Each setting can still be changed on its own; the preset then reads Custom. A book can pick its own preset in Book Settings and a group in its Group Settings. Applies when an X-Ray is created or rebuilt. |  |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Categories for New X-Rays | action | Which category groups a new X-Ray tracks by default. Reference (everything except the timeline) unless changed here; All categories adds the timeline or argument development, Characters only is the lightest. The last checkbox, "Where things stand", is the status block (current state, or the conclusion of a whole-book X-Ray): every update rewrites it, so an X-Ray without it has shorter updates. Applies when an X-Ray is created or rebuilt; individual books can pick their own categories in Book Settings. |  |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Depth of New X-Rays | action | How much each X-Ray entry carries by default. Light: one line per entry, only recurring figures and turning points, about half the cost. Standard: a few sentences per entry, everything the reader meets. Deep: longer entries, every figure and development, richer connections. Applies when an X-Ray is created or rebuilt; checkpoints and updates keep the depth the X-Ray was started with. Individual books can pick their own depth in Book Settings. |  |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Type of New X-Rays | action | Whether a new X-Ray uses the fiction schema (characters, places, story), the nonfiction one (people, concepts, argument) or the academic one (concepts, methods, findings, cited works). Auto, the default, lets the AI decide from the work. Applies when an X-Ray is created or rebuilt; updates keep the X-Ray's own type. Individual books can pick their own type in Book Settings, which is where a book whose X-Ray came out as the wrong type is fixed. |  |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Carried Entries | action | In a series or project group, entries from the group's other books that have not appeared in the open book yet are carried along (in a series: from the earlier books only). They always have their own list, "Carried from earlier books". This sets whether they are also listed inside the X-Ray's own categories, after the book's own entries, with the book each one comes from beside it (the default), or on that list only. A group can set this for all its books in its Group Settings, and a book in Book Settings. It changes the lists only: nothing is sent and no X-Ray is rebuilt. |  |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → X-Ray Entry for Matching Selections | toggle | When a tapped word or selected text exactly matches an X-Ray entity's name or alias, open that X-Ray entry directly, skipping ahead of the dictionary and the highlight menu (including any bypass actions you have set there). Anything that doesn't match falls through to your normal dictionary/highlight behavior. Only does anything for books that have an X-Ray. A very long press at the end of a selection always shows the normal highlight menu. | On |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Passive Marking | toggle | Discreetly underline words on the page that match an X-Ray entity's name or alias, as you read (dotted gray, drawn shortly after the page settles; entirely on-device). Tap a marked word to open its entry. Only active for books that have an X-Ray. EPUB page mode only. | On |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Tap Marked Words to Open | toggle | With passive marking on, a plain tap on a marked word opens its X-Ray entry, like a link (real links in the text still win). Off = marks are visual only; a long press still opens matching entries via "X-Ray Entry for Matching Selections". | On |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Upcoming Entities | toggle | Let marking, matching selections and entity cards recognize entities that first appear past your installed X-Ray coverage, using only the next checkpoint built past your reading position (never a later one). Identification only: such names get short-dash marks and a card that, by default, shows just the tapped name until you ask for the entry. Off = the plugin only knows entities up to your installed coverage. | On |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Upcoming Entity Cards: … | choice | What the card shows first for an upcoming entity, known only from the next checkpoint built ahead of you. Name only shows the tapped name and its category; a tap on the card adds the entry's first sentence, and another tap opens the full entry behind a spoiler confirmation. First sentence right away skips the first step (it can reveal that a name is another character's alias). Can be overridden per book. | Name only, tap to show a one-line description | Name only, tap to show a one-line description / First sentence right away | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Card Shows: … | choice | How much of an entry the card shows for entities already in your installed X-Ray. First sentence keeps the card to a one-line identification, with the full entry a tap away. Full entry shows the whole description (swipe to scroll the footnote panel; the floating popup cuts it where it runs out of room). Can be overridden per book. | First sentence only | First sentence only / Full entry | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Entity Card First | toggle | Exact entity hits (tapping a marked word, or selecting text that matches an entity) open a compact card first: the name, category and role, and a one-line identification, with the full entry a tap on the card away. The identification may come from the newest built checkpoint, so newly appearing names are known on sight; the full entry stays at your reading position, behind a confirmation, while spoiler protection is on. Off = open the full entry directly. | On |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Card Style: Footnote Panel / Floating Popup | choice | How the entity card is presented. The footnote panel slides in at the bottom of the screen, like KOReader's footnote popups, and follows the book's margins and font size. The floating popup is a small window anchored next to the tapped word. In both, tapping the card opens the full entry; tapping elsewhere dismisses it. | Footnote panel (bottom of the screen) | Footnote panel (bottom of the screen) / Floating popup (near the tapped word) | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Marking Density: All Occurrences / Once per Page / After 10 Unseen Pages / After 25 Unseen Pages / First Appearance Only | choice | How often an entity gets marked. Once per page marks its first occurrence on every page it appears. The unseen-pages options re-mark it only after it has been absent that long, so newly returning names stand out while constant companions stay quiet. First appearance marks it once in the whole book; all occurrences marks every one. | Only after 10 unseen pages | Once per page / Only after 10 unseen pages / Only after 25 unseen pages / First appearance only / All occurrences | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Mark: All Entities / People Only / People & Places | choice | Which kinds of X-Ray entities get marked on the page. People covers characters and key figures; places adds locations. | All entities | All entities / People only / People and places | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Chapter Appearances Rows: KOReader ToC Settings / Compact | choice | Row density for the Chapter Appearances tree in the X-Ray browser. Compact fits 20 rows per page; the other option follows KOReader's own Table of Contents items-per-page and font-size settings. | Compact (20 rows per page) | Compact (20 rows per page) / Follow KOReader's ToC settings | [Using X-Ray](Using-X-Ray) |
+| X-Ray → X-Ray Versions to Keep | number | Whenever an update or redo overwrites the X-Ray, the outgoing version is archived: browse, view, or restore them via "All versions" in the X-Ray popup and browser menu. This sets how many are kept per book; the versions covering the least of the book are dropped first, oldest first among equally covering ones. 0 stops archiving new versions; already-archived ones stay until you delete them or the X-Ray itself. Checkpoints are stored separately and are never trimmed by this. | 5 (min 0, max 20, step 1) |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Connection Buttons per Entry | number | An entity page turns each of its connections into a tappable button. A richly connected character can carry dozens, which crowd the description off the screen. This caps how many BOXES the connection block may use: past it the last box becomes an overflow row opening the full list. At or under it every connection is drawn and the list lives in the entry's More menu. Repeated links to the same entity are always collapsed, whatever this is set to. 0 draws no buttons and lists every connection instead. | 9 (min 0, max 30, step 1) |  | [Using X-Ray](Using-X-Ray) |
+| X-Ray → Spoiler Protection | toggle | Mirrors the Spoiler Protection setting in Chat & Export Settings. It also lives here because it steers X-Ray updates: when on, checkpoint installs follow your reading position; when off, the newest built checkpoint installs right away. Override per book in Book Settings (the Spoiler Protection and X-Ray updates rows). | On |  | [Spoiler Protection](Spoiler-Protection) |
+| **Recap Reminder** | | | | | |
+| Remind to Recap on Book Open | toggle | Show a reminder to run Recap when you open a book you haven't read in a while. | Off |  | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| Days Before Reminder | number | Number of days since last reading before the reminder appears. (Grayed out unless Remind to Recap on Book Open is On.) | 7 (min 1, max 90, step 1) |  | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| **End of Book** | | | | | |
+| Suggest Next Read on Finish | toggle | When you reach the end of a book, offer to suggest what to read next from your library. Needs Library Scan allowed (Ask asks first) and a folder to suggest from: a default scan folder, or one you picked before. | On |  | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| **Library** | | | | | |
+| Library Scan | choice | The same value as in Privacy & Data: whether the titles, authors and reading status of the books in your scan folders may go to the AI for the library actions. Ask (the default) asks at each run, showing the folders to tick; Allow sends without a question; Never refuses those actions. A library action lets you pick its folders for that run: the default scan folders below start ticked, and you can add others. | Ask | Ask / Allow / Never | [Reading Analysis Actions](Reading-Analysis-Actions) |
+| Default Scan Folders: … | submenu | The folders a library action starts with: ticked by default, and you can untick them or add others for that run. None has to be set here. |  |  | [Privacy and Data](Privacy-and-Data) |
+
+## AI Language Settings
+
+Explained on [Languages](Languages).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Your Languages: … | submenu |  |  |  | [Languages](Languages) |
+| Primary Language: … | submenu |  |  |  | [Languages](Languages) |
+| Additional Languages: … | submenu |  |  |  | [Languages](Languages) |
+| Tell the AI the Book's Language | choice | Off by default: most readers read and chat in one language. When on, book-tool sessions tell the AI what language the book's text is in (from the book's metadata, when recorded) so its searches use that language even if you ask in another. Override per book or group in Book Settings ▸ Languages, where you can also pick or type a language. | Off | Off / From the book's metadata | [Languages](Languages) |
+
+## Dictionary Settings
+
+Explained on [Dictionary and Translation](Dictionary-and-Translation).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Response Language: … | submenu |  |  |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Context Mode: Sentence / Paragraph / Characters / None | submenu | How much text around the looked-up word is sent with dictionary actions. The Ctx button on the dictionary popup toggles it per lookup; Book Settings can override it per book. |  |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Context Characters | number | Number of characters to include before/after the word when Context Mode is 'Characters' | 100 (min 20, max 500, step 10) |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Show Excerpt | toggle | Show a short excerpt of the text around the looked-up word above the answer, with the word in bold. Only for lookups that send context (Context Mode is not None). Nothing extra is sent. Also on the gear menu of dictionary windows. | Off |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Disable Auto-save for Dictionary | toggle | When enabled, dictionary lookups are not auto-saved. When disabled, dictionary chats follow your general chat saving settings. You can always save manually from an expanded view. | On |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Copy Content | choice | What to include when copying in dictionary view. | Definition only (Recommended) | Follow global setting / Ask every time / Full (metadata + chat) / Question + Response / Definition only (Recommended) / Everything (debug) | [Dictionary and Translation](Dictionary-and-Translation) |
+| Note Content | choice | What to include when saving dictionary results to a note. | Definition only (Recommended) | Follow global setting / Ask every time / Full (metadata + chat) / Question + Response / Definition only (Recommended) / Everything (debug) | [Dictionary and Translation](Dictionary-and-Translation) |
+| Enable Streaming | toggle | Stream dictionary responses in real-time. Disable to wait for complete response. | On |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Bypass KOReader Dictionary | toggle | Skip KOReader's dictionary and go directly to AI when tapping words. Can also be toggled via gesture. | Off |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Bypass Action: … | submenu | Action to trigger when dictionary bypass is enabled. With Look up in X-Ray, a tapped word that has an X-Ray entry opens it directly; any other word falls through to the normal dictionary. |  |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Bypass: Follow Vocab Builder Auto-add | toggle | When enabled, dictionary bypass follows KOReader's Vocabulary Builder auto-add setting. Disable if you use bypass for analysis of words you already know and don't want them added. | On |  | [Dictionary and Translation](Dictionary-and-Translation) |
+
+## Translate Settings
+
+Explained on [Dictionary and Translation](Dictionary-and-Translation).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Translate to Primary Language | toggle | Use your primary language as the translation target. Disable to choose a different target. | On |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Translation Target: … | submenu | (Grayed out unless Translate to Primary Language is Off.) |  |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Disable Auto-Save for Translate | toggle | Translations are not auto-saved. Save manually via → Chat button. | On |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Enable Streaming | toggle | Stream translation responses in real-time. | On |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Include Surrounding Context | toggle | Send the text around the highlight along with translations, so the AI can resolve pronouns, tone, and ambiguous words. Uses the Surrounding Context mode from Highlight Settings (sentence when that is off). Never applies to full-page translation. | Off |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Copy Content | choice | What to include when copying in translate view. | Translation only | Follow global setting / Ask every time / Full (metadata + chat) / Question + Response / Translation only / Everything (debug) | [Dictionary and Translation](Dictionary-and-Translation) |
+| Note Content | choice | What to include when saving to note in translate view. | Translation only | Follow global setting / Ask every time / Full (metadata + chat) / Question + Response / Translation only / Everything (debug) | [Dictionary and Translation](Dictionary-and-Translation) |
+| Original Text: Follow Global / Always Hide / Hide Long / Never Hide | choice |  | Hide Long (by character count) | Follow Global (Display Settings) / Always Hide / Hide Long (by character count) / Never Hide | [Dictionary and Translation](Dictionary-and-Translation) |
+| Long Text Threshold | number | Character count above which text is considered 'long'. Used when Original Text is set to 'Hide Long'. | 280 (min 50, max 1000, step 10) |  | [Dictionary and Translation](Dictionary-and-Translation) |
+| Hide for Full Page Translate | toggle | Always hide original text for full page translations. Overrides all other visibility settings when enabled. Disable to use your normal Original Text setting above. | On |  | [Dictionary and Translation](Dictionary-and-Translation) |
+
+## Minimal Popup
+
+Explained on [Chat Windows](Chat-Windows).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Minimal Popup View | choice | Show responses from the actions below in a small popup next to the highlighted text: just the response, no buttons. Tap the popup to open the full window; tap outside to dismiss. 'When it fits' shows the popup only when the whole response fits inside it; longer responses open the full window directly. 'Always' shows the popup regardless, trimmed with an ellipsis. Streaming is skipped for these requests. Never applies to full-page translation. | When it fits | Off / When it fits / Always | [Chat Windows](Chat-Windows) |
+| Actions Using Minimal Popup: … | submenu | Which highlight actions open in the minimal popup. Translate, Quick Define and Quick Explain by default. |  |  | [Chat Windows](Chat-Windows) |
+
+## Highlight Settings
+
+Explained on [Contexts and Chat](Contexts-and-Chat).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Surrounding Context | choice | Automatically send the text around a highlight with highlight questions and actions, so the AI sees the passage in context. Capped at 2000 characters. Dictionary lookups and actions with their own scope selection are unaffected. Can be overridden per book in Book Settings. | None (off) | None (off) / Sentence / Paragraph(s) / Characters | [Contexts and Chat](Contexts-and-Chat) |
+| Context Direction | choice | Which side of the selection surrounding context is taken from. Also applies to dictionary context. While spoiler protection is on for a book, the after side is additionally limited by the next setting. | Both sides | Both sides / Before the selection only | [Contexts and Chat](Contexts-and-Chat) |
+| Context Under Spoiler Protection | choice | How far past the selection context may reach while spoiler protection is on. The context window can otherwise include up to 1000 characters after the selection, which may be text you have not read yet; the sentence or paragraph you are selecting from is on the page in front of you. Applies to highlight and dictionary context. | To the end of its paragraph | Nothing after the selection / To the end of its sentence / To the end of its paragraph / No limit | [Contexts and Chat](Contexts-and-Chat) |
+| Context Paragraphs | number | Number of paragraphs to include on each side of the highlight when Surrounding Context is 'Paragraph(s)'. 1 = the paragraph containing the highlight. | 1 (min 1, max 5, step 1) |  | [Contexts and Chat](Contexts-and-Chat) |
+| Context Characters | number | Number of characters to include before/after the highlight when Surrounding Context is 'Characters'. | 100 (min 20, max 1000, step 10) |  | [Contexts and Chat](Contexts-and-Chat) |
+| Enable Highlight Bypass | toggle | Immediately trigger an action when text is selected, skipping the highlight menu. Can also be toggled via gesture. | Off |  | [Contexts and Chat](Contexts-and-Chat) |
+| Bypass Action: … | submenu | Action to trigger when highlight bypass is enabled |  |  | [Contexts and Chat](Contexts-and-Chat) |
+
+## Actions & Prompts
+
+Explained on [Actions and Menus](Actions-and-Menus).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Manage Actions | action |  |  |  | [Actions and Menus](Actions-and-Menus) |
+| Manage Behaviors (N) | action | Select or create AI behavior styles that define how the AI communicates. |  |  | [Actions and Menus](Actions-and-Menus) |
+| Manage Domains... | action | Manage knowledge domains. The selected domain applies globally or per book. |  |  | [Actions and Menus](Actions-and-Menus) |
+| Default Domain & Research (…) | action | The default domain and research mode for AI requests. Individual books can override both in Book Settings. |  |  | [Actions and Menus](Actions-and-Menus) |
+
+## Notebook Settings
+
+Explained on [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Browse Notebooks... | action |  |  |  | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Content Format | choice | What to include when saving to notebook. Q&A includes the highlighted text + your question + the response. Full Q&A adds anything you attached with the paperclip (notes, artifacts, chats, files). | Full Q&A (recommended) | Response only / Q&A / Full Q&A (recommended) | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Viewer Mode | choice | Chat Viewer shows notebook with editing and export buttons. KOReader opens as a full document with navigation. | Chat Viewer | Chat Viewer / KOReader | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+| Save Location | choice |  | Alongside book | Alongside book / KOAssistant notebooks folder / Custom folder | [Conversations, Notebooks and Export](Conversations-Notebooks-and-Export) |
+
+## Privacy & Data
+
+Explained on [Privacy and Data](Privacy-and-Data).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Trusted Providers: … | action | Providers you trust (a local Ollama, say) follow their own column of values, "What trusted providers may use", Allow for everything unless you change it, so nothing is asked for requests that go to them. A book's own Never still wins. A standing Allow is also what background features (Automatic X-Ray, checkpoint builds) need: with a trusted provider they build without a question. |  |  | [Privacy and Data](Privacy-and-Data) |
+| What trusted providers may use | submenu | The value of each kind of data for requests that go to a trusted provider. Allow by default: nothing is asked. Ask or Never here applies to trusted providers only; every other provider follows the rows below. |  |  | [Privacy and Data](Privacy-and-Data) |
+| What trusted providers may use → Book text | choice |  | Allow | Allow / Ask / Never | [Privacy and Data](Privacy-and-Data) |
+| What trusted providers may use → Highlights | choice |  | Allow | Allow / Ask / Never | [Privacy and Data](Privacy-and-Data) |
+| What trusted providers may use → Annotation notes | choice |  | Allow | Allow / Ask / Never | [Privacy and Data](Privacy-and-Data) |
+| What trusted providers may use → Notebook | choice |  | Allow | Allow / Ask / Never | [Privacy and Data](Privacy-and-Data) |
+| What trusted providers may use → Reading position | toggle | Your reading progress, the current chapter and the time since you last read. Sent or not; never asked. | On |  | [Privacy and Data](Privacy-and-Data) |
+| What trusted providers may use → Reading habits | choice |  | Allow | Allow / Ask / Never | [Privacy and Data](Privacy-and-Data) |
+| What trusted providers may use → Library Scan | choice |  | Allow | Allow / Ask / Never | [Privacy and Data](Privacy-and-Data) |
+| What trusted providers may use → Text around what you tap | choice |  | Allow | Allow / Ask / Never | [Privacy and Data](Privacy-and-Data) |
+| Preset: Default (Ask) / Allow everything / Block everything / Custom | action | One tap sets every kind of data below for all books. Default (Ask) puts every value back to the one it ships with: Ask, with reading position and the text around what you tap sent, and Allow for trusted providers. Allow everything sends every kind without a question, book text included (it raises token costs). Block everything sets every kind to Never: only your question, the selected text and the book info go (and the behavior, domain and Background texts, which no preset touches); reading position goes off too, so spoiler protection no longer knows where you are. Allow everything and Block everything leave the trusted providers' own values alone, and every preset keeps the books' own values and Book info. The row names the preset your values match, or Custom. |  |  | [Privacy and Data](Privacy-and-Data) |
+| Tip: Per-book values | action | Every kind of data here can have its own value for one book (Book Settings → Privacy & Data, or "Allow for this book" in the question). A book's Never always wins, even over trusted providers; its Allow sends without asking. |  |  | [Privacy and Data](Privacy-and-Data) |
+| Annotation notes | choice | Your personal notes attached to highlights. Allowing notes allows highlights too. Used by Analyze Notes, Connect with Notes, and actions with {annotations} placeholders. | Ask | Ask / Allow / Never | [Privacy and Data](Privacy-and-Data) |
+| Highlights | choice | Your highlighted passages, without the notes. Never here is Never for notes too. Used by Recap, Analyze Notes, and actions with {highlights} placeholders. X-Ray does not send them: it only matches them locally, to offer them on an entity page. | Ask | Ask / Allow / Never | [Privacy and Data](Privacy-and-Data) |
+| Notebook | choice | Your notebook for the book. Used by Connect with Notes, "Chat about this notebook", the Attach chip and actions with the {notebook} placeholder. | Ask | Ask / Allow / Never | [Privacy and Data](Privacy-and-Data) |
+| Reading position | toggle | Your reading progress (percentage), the current chapter, chapters read and the time since you last read. On by default: spoiler protection relies on it. Sent or not; never asked. Used by X-Ray, Recap. | On |  | [Privacy and Data](Privacy-and-Data) |
+| Library Scan | choice | The titles, authors and reading status of the books in your scan folders, for the library actions. A library action lets you pick its folders for that run: your default scan folders (Reading & Library) start ticked, and you can add others. The question offers "Always allow", which sets Allow here. | Ask | Ask / Allow / Never | [Privacy and Data](Privacy-and-Data) |
+| Reading habits | choice | Groups made from your reading statistics (books read extensively, stalled reads, briefly started), computed on the device; only the lists leave it. Used by the library actions. | Ask | Ask / Allow / Never | [Privacy and Data](Privacy-and-Data) |
+| Text around what you tap | choice | The bounded text around a selection (the context of a highlight or a dictionary lookup), your current page (page translate, the Scope chip's "Current page") and the text around an image prompt: a few sentences or one page, never more. Allow by default; independent of book text, so a book can keep its text to itself while these still work. | Allow | Allow / Ask / Never | [Privacy and Data](Privacy-and-Data) |
+| Book info | choice | What the AI is told about the book with every request: the title, the author, and with "Title, author & position" your reading progress, chapter and page (when Reading position is on). Never asked, and the presets leave it alone. None sends nothing that names the book: no book line, and an action's own prompt says "this book" where it would name the title; actions that answer from what the AI knows about the book (About, Find Similar, Reviews…) cannot run then, and say so. Image prompts follow it too. Override per book in Book Settings → Privacy & Data; one chat can switch it with the gear menu's Send book info, one run with the hold menu's Without book info. | Title & author | None / Title only / Title & author / Title, author & position | [Privacy and Data](Privacy-and-Data) |
+| Text Extraction (book text: Ask / Allow / Never) | submenu |  |  |  | [Privacy and Data](Privacy-and-Data) |
+| Text Extraction (book text: Ask / Allow / Never) → Book text | choice | The book's own text, up to your position or the whole of it: X-Ray, Recap, Summarize, book tools and actions with text placeholders. Ask (the default): the first action that wants it asks, and "Allow for this book" keeps your answer. Allow: sent without a question, and background features (Automatic X-Ray, checkpoint builds) run on it. Never: those actions are refused. Text raises token costs. Tip: Use Hidden Flows to exclude front matter, appendices, etc. You can also focus actions on a specific section or section range to extract only a chapter or part; for X-Ray, checkpoints cover the book in bounded incremental steps. | Ask | Ask / Allow / Never | [Privacy and Data](Privacy-and-Data) |
+| Text Extraction (book text: Ask / Allow / Never) → Max Text Characters | number | Maximum characters to extract (100,000-10,000,000). Higher = more context but more tokens. Default: 4,000,000 (~1M tokens). The API will reject requests that exceed the model's context window. Tip: Use Hidden Flows to exclude irrelevant content, or focus on a specific section instead of the full document. | 4000000 (min 100000, max 10000000, step 100000) |  | [Privacy and Data](Privacy-and-Data) |
+| Text Extraction (book text: Ask / Allow / Never) → Max Pages (PDF, DJVU, CBZ…) | number | Maximum pages to extract from page-based formats like PDF, DJVU, and CBZ (100-5,000). Higher = more context but slower. Default: 2,000. Tip: Use Hidden Flows to exclude irrelevant pages, or focus on a specific section instead of the full document. | 2000 (min 100, max 5000, step 100) |  | [Privacy and Data](Privacy-and-Data) |
+| Text Extraction (book text: Ask / Allow / Never) → Don't warn about truncated extractions | toggle | When unchecked, a blocking warning is shown before sending requests when extracted text was truncated to fit the character limit. Shows coverage percentage so you know how much of the book was included. Background runs (Automatic X-Ray, checkpoint builds) never show this warning: a truncated background extraction aborts the run instead of sending dishonest coverage. Check this if you don't need the reminder. | Off |  | [Privacy and Data](Privacy-and-Data) |
+| Text Extraction (book text: Ask / Allow / Never) → Don't warn about large extractions | toggle | When unchecked, a warning is shown before sending requests with large text extractions (over 500K characters / ~125K tokens). Most models have smaller context windows and will reject oversized requests. Background runs (Automatic X-Ray, checkpoint builds) never show this warning; their size is bounded instead: automatic updates by the Maximum Progress Gap, checkpoints by their incremental steps. Check this if you know your model's limits and don't need the reminder. | Off |  | [Privacy and Data](Privacy-and-Data) |
+
+## Menus & Buttons
+
+Explained on [Actions and Menus](Actions-and-Menus).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| **Control where KOAssistant appears in KOReader** | | | | | |
+| **Highlight menu** | | | | | |
+| Show Chat/Action button | toggle | Add the main 'Chat/Action' button to the highlight menu. Takes effect the next time the menu opens. | On |  | [Actions and Menus](Actions-and-Menus) |
+| Show quick actions | toggle | Add action shortcuts (Explain, Translate, etc.) to the highlight menu. Takes effect the next time the menu opens. | On |  | [Actions and Menus](Actions-and-Menus) |
+| Show Add to Notebook button | toggle | Add an 'Add to notebook' button to the highlight menu, saving the selected text directly to this book's notebook. Takes effect the next time the menu opens. | Off |  | [Actions and Menus](Actions-and-Menus) |
+| Show (KOA) on KOAssistant's buttons | toggle | Mark KOAssistant's buttons in the highlight menu with '(KOA)', to tell them apart from KOReader's own. Takes effect the next time the menu opens. | On |  | [Actions and Menus](Actions-and-Menus) |
+| Highlight Menu Actions | action | Choose which actions appear in the highlight menu. Changes take effect the next time the menu opens (up to 15 shown). |  |  | [Actions and Menus](Actions-and-Menus) |
+| **Dictionary popup** | | | | | |
+| Show AI buttons | toggle | Add AI buttons to KOReader's dictionary popup. | On |  | [Actions and Menus](Actions-and-Menus) |
+| Show (KOA) on KOAssistant's buttons | toggle | Mark KOAssistant's buttons in the dictionary popup with '(KOA)', to tell them apart from KOReader's own. Takes effect on the next lookup. (Grayed out unless Show AI buttons is On.) | On |  | [Actions and Menus](Actions-and-Menus) |
+| Dictionary Popup Actions | action | Configure which actions appear in the dictionary popup |  |  | [Actions and Menus](Actions-and-Menus) |
+| **Input dialogs** | | | | | |
+| Show View Artifacts button | toggle | Show the 'View Artifacts' button in book and highlight input dialogs. It only appears for books that have artifacts. Takes effect the next time the dialog opens. | On |  | [Actions and Menus](Actions-and-Menus) |
+| Show Group button | toggle | Show the 'Group' button in input dialogs for books that belong to a group. Takes effect the next time the dialog opens. | On |  | [Actions and Menus](Actions-and-Menus) |
+| Input Dialog Actions | action | Choose which actions appear in each input dialog (open book, closed book, highlight, X-Ray chat, library, general). Toolbar chips are configured from the input dialog's gear menu (Toolbar Buttons). |  |  | [Actions and Menus](Actions-and-Menus) |
+| **File browser** | | | | | |
+| Show KOAssistant actions | toggle | Add KOAssistant buttons to file browser context menus. | On |  | [Actions and Menus](Actions-and-Menus) |
+| Show Chat/Action button | toggle | Show 'Chat/Action' button when long-pressing books in the file browser. | On |  | [Actions and Menus](Actions-and-Menus) |
+| Show Notebook button | toggle | Show 'Notebook' button when long-pressing books in the file browser. | On |  | [Actions and Menus](Actions-and-Menus) |
+| Only for books with notebooks | toggle | Only show button if notebook already exists. Disable to allow creating new notebooks from file browser. (Grayed out unless Show Notebook button is On.) | On |  | [Actions and Menus](Actions-and-Menus) |
+| Show Chat History button | toggle | Show 'Chat History' button when long-pressing books in the file browser. Only appears for books with saved chats. | On |  | [Actions and Menus](Actions-and-Menus) |
+| Show View Artifacts button | toggle | Show 'View Artifacts' button when long-pressing books in the file browser. Only appears for books with artifacts. | On |  | [Actions and Menus](Actions-and-Menus) |
+| Show Book Hub button | toggle | Show 'Book Hub' button when long-pressing books in the file browser. | On |  | [Actions and Menus](Actions-and-Menus) |
+| Show Book Settings button | toggle | Show 'Book Settings' button when long-pressing books in the file browser. | On |  | [Actions and Menus](Actions-and-Menus) |
+| Show (KOA) on KOAssistant's buttons | toggle | Mark KOAssistant's buttons in the file browser's long-press menu with '(KOA)', to tell them apart from KOReader's own. | On |  | [Actions and Menus](Actions-and-Menus) |
+| File Browser Items | action | Choose which buttons and actions appear in the file browser long-press menu. |  |  | [Actions and Menus](Actions-and-Menus) |
+| **Quick panels** | | | | | |
+| Panel Actions | action | Choose which actions appear on the Quick Actions panel. |  |  | [Actions and Menus](Actions-and-Menus) |
+| Panel Utilities | action | Choose and order the utility buttons on the Quick Actions panel. |  |  | [Actions and Menus](Actions-and-Menus) |
+| Quick Settings Items | action | Choose and order the tiles on the Quick Settings panel. |  |  | [Actions and Menus](Actions-and-Menus) |
+| **Gestures** | | | | | |
+| Register gesture actions | toggle | Register KOAssistant actions in KOReader's gesture dispatcher. Requires restart. | On |  | [Actions and Menus](Actions-and-Menus) |
+| **Text selection in viewers** | | | | | |
+| Enhance text selection | toggle | Add dictionary lookup and action popup to text selection in KOReader viewers (Dictionary, TextViewer, etc.). Single word → dictionary, long press single word or multi-word → popup with Copy, Dictionary, Translate. Requires restart. | Off |  | [Actions and Menus](Actions-and-Menus) |
+
+## Backup & Reset
+
+Explained on [Backups and Updates](Backups-and-Updates).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Create Backup | action | Create a backup of your settings, API keys, and custom content. |  |  | [Backups and Updates](Backups-and-Updates) |
+| Restore from Backup | action | Restore settings from a previous backup. |  |  | [Backups and Updates](Backups-and-Updates) |
+| View Backups | action | View and manage existing backups. |  |  | [Backups and Updates](Backups-and-Updates) |
+| **Backups are stored in: koassistant_backups/** | | | | | |
+| Validate Data Indexes | action | Checks chat history, artifact, notebook, and pinned indexes for stale entries (books that were moved or deleted outside KOReader) and fixes count mismatches. This runs automatically for individual entries when browsing, but you can run a full validation here if needed. |  |  | [Backups and Updates](Backups-and-Updates) |
+| Rebuild Data Indexes | action | Finds books whose KOAssistant data (artifacts, chats, notebooks, pinned) exists on disk but doesn't show in this device's browsers, e.g. after syncing sidecar files from another device, restoring a backup, or migrating devices. Checks your reading history, KOReader's sidecar locations, and the scan folders configured below, then removes stale entries. Books on unmounted storage get pruned; run again with the storage mounted to re-add them. May take a while on large libraries. |  |  | [Backups and Updates](Backups-and-Updates) |
+| Index Scan Folders: … | submenu | Folders to scan during index rebuild: point this at your synced book folders. Only these folders are ever scanned: by a rebuild, and by a backup or restore point gathering per-book settings. Folders that don't exist on this device are skipped. Note: a settings reset clears this list. |  |  | [Backups and Updates](Backups-and-Updates) |
+| Auto-Rebuild on Startup | toggle | Also run the index rebuild automatically after KOReader starts: at most once per day, only when scan folders are configured, quietly in the background. | Off |  | [Backups and Updates](Backups-and-Updates) |
+| Reset Settings... | submenu |  |  |  | [Backups and Updates](Backups-and-Updates) |
+| Reset Settings... → Quick: Settings only | action | Resets ALL settings in this menu to defaults: • Provider, model, temperature • Streaming, display, export settings • Dictionary & translation settings • Reasoning & debug settings Keeps: API keys, your languages and selections (behavior, domain, trusted providers, X-Ray defaults, favorite models, toolbar buttons, export folder), all actions, custom behaviors/domains, custom providers/models, gesture registrations, chat history. |  |  | [Backups and Updates](Backups-and-Updates) |
+| Reset Settings... → Quick: Actions only | action | Resets all action-related settings: • Custom actions you created • Edits to built-in actions • Disabled actions (re-enables all) • All action menus (highlight, dictionary, quick actions, input dialogs, general, file browser), the QA Panel Utilities and the QS Panel Items Keeps: All settings, API keys, custom behaviors/domains, custom providers/models, gesture registrations, chat history. |  |  | [Backups and Updates](Backups-and-Updates) |
+| Reset Settings... → Quick: Fresh start | action | Resets everything except API keys and chat history: • All settings (provider, model, temperature, all toggles) • All actions (custom, edits, menus, the + Gesture Menu list) • Custom behaviors & domains • Custom providers & models Keeps: API keys, your languages, gesture registrations, chat history only. Offers the Setup Wizard when it is done. |  |  | [Backups and Updates](Backups-and-Updates) |
+| Reset Settings... → Custom reset... | action | Opens a checklist to choose exactly what to reset: • Settings (all toggles and preferences) • Custom actions • Action edits • Action menus • Custom providers & models • Behaviors & domains • API keys (with warning) |  |  | [Backups and Updates](Backups-and-Updates) |
+| Reset Settings... → Clear all chat history | action | Deletes all saved conversations across all books. |  |  | [Backups and Updates](Backups-and-Updates) |
+
+## Advanced
+
+Explained on [Advanced Configuration and Development](Advanced-Configuration-and-Development).
+
+| Row | Type | Does | Default | Choices | Page |
+|---|---|---|---|---|---|
+| Reasoning | submenu |  |  |  | [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools) |
+| Reasoning → Global stance: Minimal / Default / Maximum | choice | How much reasoning across all models, as far as each model allows. Override individual models below. | Default (let each model decide) | Minimal (off where possible) / Default (let each model decide) / Maximum (most reasoning) | [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools) |
+| Reasoning → Per-model reasoning | submenu |  |  |  | [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools) |
+| Reasoning → Show Indicator in Chat | toggle | Include reasoning in the combined usage indicator line (e.g. '*[Reasoning/Thinking was used]*') when reasoning is requested or used. Full reasoning content is always viewable via 'Show Reasoning' button. | On |  | [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools) |
+| Temperature | number | Applies to free-form chat: most built-in actions set their own temperature. Some models ignore this setting or accept only a fixed value; the row says so when the current model is one of them. | 0.7 (min 0, max 2, step 0.1) |  | [Providers and Models](Providers-and-Models) |
+| Faster Models for Quick Actions | toggle | Actions that declare a speed tier (Translate, Quick Define and Quick Explain by default; configurable per action in the action editor) use a faster model from your current provider for that request. Only the model changes; the prompt and settings stay the same. Providers without tier data keep the current model. Turn off to always use your configured model. | On |  | [Providers and Models](Providers-and-Models) |
+| Tier Models (Global) | submenu |  |  |  | [Providers and Models](Providers-and-Models) |
+| Web Search | submenu |  |  |  | [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools) |
+| Web Search → Supported: Anthropic, Gemini, OpenAI, OpenAI Subscription, xAI, Perplexity, OpenRouter, Z.AI, Qwen (other providers currently ignore this) | note |  |  |  | [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools) |
+| Web Search → Enable Web Search | toggle | Allow AI to search the web for current information. Supported providers: Anthropic, Gemini, OpenAI, OpenAI Subscription, xAI, Perplexity, OpenRouter, Z.AI, Qwen. Gemini supports it only on Search-grounding-capable models; OpenAI on GPT-5 models and xAI on Grok-4 models (via their Responses APIs); OpenRouter works for any model via the :online suffix. Perplexity searches BY DEFAULT (its native behavior); the Web toggle can now actually turn it off per chat or per book. Other providers currently ignore this setting. This is a global default: per-request toggles (input dialog, chat viewer) adapt to the active provider. Increases token usage/cost. Note: on Gemini, web search means Google Search grounding, which is billed against its own quota -- separate from normal requests, and on the free tier sometimes zero. If searching actions fail with a quota error while plain ones work, that is the usual cause. | Off |  | [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools) |
+| Web Search → Web Search Effort: Light / Standard / Thorough | choice | How much web searching the AI may do per question. Light: fewest searches, fastest and cheapest. Standard: balanced (provider defaults). Thorough: most searches and context, slower and costlier. Applies where the provider offers control: Anthropic (up to 2/5/10 searches), OpenAI and Perplexity (search context size), OpenRouter (3/5/10 results), Z.AI (result count and snippet size). Gemini and xAI decide automatically. (Grayed out unless Enable Web Search is On.) | Standard | Light (fewest searches) / Standard / Thorough (most searches) | [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools) |
+| Web Search → Show Indicator in Chat | toggle | Include web search in the combined usage indicator line (e.g. '*[Web search was used]*') when web search is used. Streaming indicator ('Searching the web...') is always shown. | On |  | [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools) |
+| Image Generation | submenu |  |  |  | [Image Generation](Image-Generation) |
+| Image Generation → Generate images from highlighted text (button in the highlight menu) | note |  |  |  | [Image Generation](Image-Generation) |
+| Image Generation → Provider: Follow main provider / … | choice | Which provider generates images. 'Follow main provider' uses your current chat provider when it supports images (OpenAI, xAI, Gemini, OpenRouter). Picking one explicitly lets image generation work no matter which chat provider is active: it uses that provider's own API key. The highlight-menu button appears when the provider in effect has an API key. If your chat provider can't make images, it appears when any image provider has a key, and the first tap asks which one to use (the answer is saved here). | Follow main provider | Follow main provider / OpenAI / xAI (Grok) / Gemini / OpenRouter | [Image Generation](Image-Generation) |
+| Image Generation → OpenAI model: … | choice | gpt-image-2.5-flare is fast (about 11 s at low quality) and cheap; gpt-image-2.5-sunburst gives the finest detail but is slower. | Default (gpt-image-2.5-flare) | Default (gpt-image-2.5-flare) / gpt-image-2.5-flare / gpt-image-2.5-sunburst / gpt-image-2 / gpt-image-1-mini | [Image Generation](Image-Generation) |
+| Image Generation → xAI model: … | choice | grok-imagine-image is fast and the cheapest; grok-imagine-image-2.0 makes better pictures at about twice the price. | Default (grok-imagine-image) | Default (grok-imagine-image) / grok-imagine-image / grok-imagine-image-2.0 | [Image Generation](Image-Generation) |
+| Image Generation → Gemini model: … | choice | Nano Banana 2.1 is Google's everyday image model; Flash Lite is the fastest and cheapest; 3 Pro gives the finest detail but is slower. | Default (gemini-nano-banana-2.1) | Default (gemini-nano-banana-2.1) / gemini-nano-banana-2.1 / gemini-3.1-flash-lite-image / gemini-3-pro-image | [Image Generation](Image-Generation) |
+| Image Generation → OpenRouter model: … (the listed models, More models…) | submenu | OpenRouter draws with many makers' models through one key. GPT Image 2.5 Flare is fast and the cheapest (about half a cent at Draft); Nano Banana 2.1 is Google's everyday model; FLUX 3 (Black Forest Labs, about 5 cents), its small model FLUX 3 Klein (about a cent, and quick) and Seedream 5.0 Flash (ByteDance, about 2 cents) are other makers'; Recraft v4.1 Flash (under a cent) leans to illustration. More models… lists OpenRouter's whole image catalog. Shape and Detail adapt to what the picked model takes. |  |  | [Image Generation](Image-Generation) |
+| Image Generation → Shape: Fit my screen / Portrait / Landscape / Square / Let the model choose | choice | The picture's proportions, for every image provider. Fit my screen matches your screen as you hold it, so the picture fills an e-reader's page. Portrait, Landscape and Square are fixed. Let the model choose leaves it to the provider, which often draws a square or a wide picture. Each model gets the nearest proportions it can draw; OpenAI's 2.5 models draw your screen's own. | Fit my screen | Fit my screen / Portrait / Landscape / Square / Let the model choose | [Image Generation](Image-Generation) |
+| Image Generation → Detail: Draft / Standard / Best | choice | How much detail a picture gets, for every image provider. Draft is the fastest and cheapest; Best is the slowest and costs the most. OpenAI: quality low, medium or high (xhigh on the 2.5 models). xAI: grok-imagine-image-2.0 draws at low or medium quality, and Best at 2k. Gemini: Best draws at 2K, Draft and Standard at 1K, and at Draft Nano Banana 2.1 and Pro think as little as they can before drawing, which makes a picture faster. Grayed out while the model in use has a single setting (grok-imagine-image, Gemini Flash Lite). | Draft | Draft / Standard / Best | [Image Generation](Image-Generation) |
+| Image Generation → Write the prompt with AI | toggle | Before each picture, a text model (Prompt writer, below) writes the prompt the image model receives: from the passage, the text around it, the book's title and author, the book's Background, the X-Ray entries the passage names and your note, under rules that keep it to what the book says (and, with spoiler protection on, to nothing later than the passage). It adds one text request (usually a fraction of a cent) and sends that material to your chat provider (or to the provider a global Fast tier pin names, with the fast model) as well. The viewer's caption and the gallery say who wrote the prompt and from what. Off: the passage goes to the image model framed as before. | On |  | [Image Generation](Image-Generation) |
+| Image Generation → Prompt writer: Chat model / Fast model | choice | The model that writes the prompt when Write the prompt with AI is on. Chat model (the default): the model you chat with. Fast model: your chat provider's fast model (or the one a global Fast tier pin names), quicker and cheaper but less careful with the writer's rules. A provider without a fast model uses the chat model either way. | Chat model | Chat model / Fast model | [Image Generation](Image-Generation) |
+| Image Generation → Style: Book illustration / Watercolor / Ink drawing / Pencil sketch / Woodcut / Photographic / Comic / Map or diagram / Custom… | submenu | How pictures look, for every image provider: Book illustration (the default), Watercolor, Ink drawing, Pencil sketch, Woodcut, Photographic, Comic, Map or diagram, or Custom… (your own words, such as "a 1920s travel poster"). The prompt writer works it into the prompt; with the writer off it is one line at the end of the prompt. |  |  | [Image Generation](Image-Generation) |
+| Image Generation → Include book title/author in prompt | toggle | Frame image prompts with the book's title and author, so illustrations can match the work's setting and era. Applies when generating from a book. | On |  | [Image Generation](Image-Generation) |
+| Image Generation → Include surrounding text in prompt | toggle | Add a short slice of the text around the selection, marked as context only, so the illustration reflects the scene the passage sits in. | On |  | [Image Generation](Image-Generation) |
+| Image Generation → Prompt template… | action | Shows what goes to the models, with your current settings applied: the prompt writer's instructions and the material it reads when Write the prompt with AI is on, and the framed prompt (the writer's fallback, or the prompt itself with the writer off). |  |  | [Image Generation](Image-Generation) |
+| Image Generation → Generated images… | action | The images generated so far, as thumbnails, by book: tap one to view it; hold it to read its prompt, draw that prompt again (as it stands or edited, in the Style now in effect, beside the old picture or in its place), change the image settings on the spot, or delete it. |  |  | [Image Generation](Image-Generation) |
+| Provider Settings | submenu |  |  |  | [Providers and Models](Providers-and-Models) |
+| Provider Settings → Z.AI Region: International / China | choice | Select the Z.AI API endpoint. The same API key works on both endpoints: - International: api.z.ai - China: open.bigmodel.cn | International (api.z.ai) | International (api.z.ai) / China (open.bigmodel.cn) | [Providers and Models](Providers-and-Models) |
+| Provider Settings → Z.AI Search Engine: … | choice | Search engine used for Z.AI web search. The international engines (Jina, Bing) return much better sources for non-Chinese queries. The Chinese-web engines suit Chinese-language content. | Jina (international, default) | Jina (international, default) / Bing (international) / Quark (Chinese web) / Sogou (Chinese web) / Pro (Chinese web) / Basic (Chinese web) | [Providers and Models](Providers-and-Models) |
+| Provider Settings → Gemini Content Filter: Google default / Relaxed for books | choice | Google's default content filter can block answers about violent or sexual passages in books. The reply then arrives empty, with the reason named. Relaxed turns the four adjustable filter categories off for this plugin's requests. Google default sends no filter setting. | Relaxed for books (default) | Relaxed for books (default) / Google default | [Providers and Models](Providers-and-Models) |
+| Provider Settings → Qwen Region: International / China / US | choice | Select your Alibaba Cloud region. API keys are region-specific and NOT interchangeable: - International: Singapore (dashscope-intl) - China: Beijing (dashscope) - US: Virginia (dashscope-us) | International (Singapore) | International (Singapore) / China (Beijing) / US (Virginia) | [Providers and Models](Providers-and-Models) |
+| Provider Settings → Kimi Region: International / China | choice | Select the Kimi (Moonshot) platform your API key was issued on. Keys are NOT interchangeable between the two platforms: - International: platform.kimi.ai (api.moonshot.ai) - China: platform.moonshot.cn (api.moonshot.cn) | International (api.moonshot.ai) | International (api.moonshot.ai) / China (api.moonshot.cn) | [Providers and Models](Providers-and-Models) |
+| AI Book Tools | toggle | EXPERIMENTAL: for providers and models that support tool calls (Test provider shows whether yours does). Book tools let the AI search the open book's text, read specific pages, and view the table of contents, so it can ground answers in the actual book instead of guessing. Requires the book's text to be allowed (a book on Ask is asked first). This sets whether the Tools chip in book chats starts ON or OFF; you can always flip it per chat, and the AI still decides per question whether to actually search. Predefined actions are unaffected either way; they never use tools unless they explicitly offer smart retrieval. Override per book in Book Settings. Work in progress; behavior may change. | Off |  | [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools) |
+| Book Tools Mode: Gather then answer / Interactive | choice | How AI Book Tools answer. Gather then answer: the AI quietly collects passages from the book first, then answers as a normal request: the answer streams and web search stays available. Interactive: the original agentic loop; the AI narrates its way through lookups; no streaming or web search while tools run. | Gather then answer (streams; recommended) | Gather then answer (streams; recommended) / Interactive agentic loop | [Advanced Configuration and Development](Advanced-Configuration-and-Development) |
+| Book Tools Lookup Effort: Quick / Standard / Thorough | choice | How much searching AI Book Tools may do per question. Quick: up to 4 lookups in 2 rounds, fastest, for simple factual questions. Standard: up to 8 lookups in 4 rounds, a good balance. Thorough: up to 16 lookups in 6 rounds, with a larger passage budget; slower and costlier, for questions that need evidence from many places in the book. | Standard (up to 8 lookups) | Quick (up to 4 lookups) / Standard (up to 8 lookups) / Thorough (up to 16 lookups) | [Advanced Configuration and Development](Advanced-Configuration-and-Development) |
+| AI Book Tools: Read Short Texts Whole | choice | When the readable text (up to your position while spoiler protection is on) is no longer than this, the AI gets it in one piece instead of searching it. Small: about 16,000 characters (some 4,000 tokens). Medium: 64,000, the default. Large: 128,000. Non-Latin scripts count two to three bytes per character. The text goes with every message of a chat, placed so that providers which cache prompts charge the repeats at a fraction; when the model's known limits cannot take it, the book is searched instead. Off: always search, whatever the length. | Medium (64,000 characters) | Off / Small (16,000 characters) / Medium (64,000 characters) / Large (128,000 characters) | [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools) |
+| AI Book Tools: Show Indicator in Chat | toggle | Include book lookups in the combined usage indicator line (e.g. '*[Book search (3 lookups) was used]*') when AI Book Tools ran for a response. The individual lookups are always viewable via the chat menu's 'Show Sources' entry. | On |  | [Advanced Configuration and Development](Advanced-Configuration-and-Development) |
+| AI Book Tools: Show Lookups (debug) | toggle | Append the tool lookups, raw tool results, and token usage to each answer when AI Book Tools run. For debugging the experimental tools: leave off for clean answers. Note: the raw tool results can include book-text snippets. | Off |  | [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools) |
+| Console Debug | toggle | Log requests, responses, routing decisions and feature diagnostics to the console/crash log, for developers. Large content is truncated (see below); API keys are never logged. Slows page turns slightly while X-Ray marking is on. | Off |  | [Advanced Configuration and Development](Advanced-Configuration-and-Development) |
+| Show Debug in Chat | toggle | Display debug information in chat viewer | Off |  | [Advanced Configuration and Development](Advanced-Configuration-and-Development) |
+| Debug Detail Level: Minimal / Names / Full | choice | (Grayed out unless Show Debug in Chat is On.) | Names (config summary) | Minimal (messages only) / Names (config summary) / Full (system blocks) | [Advanced Configuration and Development](Advanced-Configuration-and-Development) |
+| Truncate Large Content (debug) | toggle | Truncate long content (book text, cached responses) in debug output. A field over 5,000 characters shows its first and last 2,000, with a truncation notice. (Grayed out unless Console Debug is On.) | On |  | [Advanced Configuration and Development](Advanced-Configuration-and-Development) |
+| Test Connection | action |  |  |  | [Advanced Configuration and Development](Advanced-Configuration-and-Development) |
+| Setup Wizard (dev tools) | action | (Grayed out unless Console Debug is On.) |  |  | [Advanced Configuration and Development](Advanced-Configuration-and-Development) |
+
+## Related
+
+- [Book Settings and Book Hub](Book-Settings-and-Book-Hub): the per-book rows, which follow these unless set for one book.
+- [Setup, Gestures and Panels](Setup-Gestures-and-Panels): the Quick Settings panel, which holds the rows most people change.

@@ -15,7 +15,7 @@ local function setupPaths()
 
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -96,9 +96,9 @@ function TestRunner:summary()
 end
 
 -- Load modules
-local ModelConstraints = require("model_constraints")
+local ModelConstraints = require("koassistant.request.model_constraints")
 local ResponseParser = require("response_parser")
-local _ = require("koassistant_gettext")
+local _ = require("koassistant.core.gettext")
 
 print("")
 print(string.rep("=", 50))
@@ -176,8 +176,25 @@ TestRunner:test("opencode: Minimal stance disables deepseek-v4-flash with 'none'
     local g = ModelConstraints.resolveReasoning("opencode", "glm-5.3-flash", { global_stance = "minimal" })
     local gp = {}
     ModelConstraints.applyReasoningParams("opencode", gp, g)
-    TestRunner:assertEqual(gp.opencode_reasoning and gp.opencode_reasoning.effort, "low",
-        "GLM cannot disable: Minimal = lowest effort, never 'none' (rejected upstream)")
+    TestRunner:assertEqual(gp.opencode_reasoning and gp.opencode_reasoning.effort, "minimal",
+        "GLM-5.3 cannot disable: Minimal = its lowest level (minimal since 2026-10-20), never 'none' (rejected upstream)")
+    local older = ModelConstraints.resolveReasoning("opencode", "glm-5.2", { global_stance = "minimal" })
+    TestRunner:assertEqual(older.effort, "low", "the glm- family entry still gives the older ids low")
+end)
+
+TestRunner:test("opencode Zen facts of 2026-10-20: the default, kimi-k3's ladder, the DeepSeek minimal", function()
+    local ModelLists = require("koassistant.request.model_lists")
+    TestRunner:assertEqual(ModelLists.opencode[1], "deepseek-v4.1-flash",
+        "the Zen default is deepseek-v4.1-flash (deepseek-v4-flash is off on a new workspace)")
+    TestRunner:assertEqual(ModelLists._retired.opencode_go["deepseek-v4-flash"], "deepseek-v4.1-flash",
+        "Go: deepseek-v4-flash left the catalog, retired to v4.1-flash")
+    local k = ModelConstraints.getReasoningProfile("opencode", "kimi-k3")
+    TestRunner:assertEqual(table.concat(k.options, ","), "low,high,max",
+        "kimi-k3 on Zen: low/high/max only (minimal, medium, xhigh refused)")
+    local kmax = ModelConstraints.resolveReasoning("opencode", "kimi-k3", { global_stance = "maximum" })
+    TestRunner:assertEqual(kmax.effort, "max", "kimi-k3 Maximum = max")
+    local d = ModelConstraints.getReasoningProfile("opencode", "deepseek-v4.1-flash")
+    TestRunner:assertEqual(d.options[1], "minimal", "deepseek-v4.1-flash takes minimal (2026-10-20)")
 end)
 
 TestRunner:test("opencode_go: its own facts (glm-5.3-flash ladder low/high/max, kimi-k3 off = none)", function()
@@ -194,8 +211,9 @@ TestRunner:test("opencode_go: its own facts (glm-5.3-flash ladder low/high/max, 
     TestRunner:assertTrue(ModelConstraints.supportsCapability("opencode_go", "kimi-k3", "tools"), "kimi-k3 tools granted on Go")
     TestRunner:assertFalse(ModelConstraints.supportsCapability("opencode_go", "kimi-k2.6", "tools"), "kimi-k2.6 NO tools on Go (forced calls rejected)")
     TestRunner:assertTrue(ModelConstraints.supportsCapability("opencode", "qwen3.8-max", "tools"), "qwen3.8-max tools on Zen (forced calls accepted there)")
-    TestRunner:assertFalse(ModelConstraints.supportsCapability("opencode_go", "qwen3.8-max", "tools"), "qwen3.8-max NO tools on Go (forced calls rejected)")
-    local opt = ModelConstraints.resolveReasoning("opencode_go", "deepseek-v4-flash", { global_stance = "maximum" })
+    TestRunner:assertTrue(ModelConstraints.supportsCapability("opencode_go", "qwen3.8-max", "no_forced_tool_choice"),
+        "qwen3.8-max on Go: tools asked with auto (forced calls rejected there, B368)")
+    local opt = ModelConstraints.resolveReasoning("opencode_go", "deepseek-v4.1-flash", { global_stance = "maximum" })
     TestRunner:assertEqual(opt.axis, "none", "opt-in unprobed id on Go: axis none")
 end)
 
@@ -234,13 +252,13 @@ TestRunner:test("a2agent: binary on sends enabled only where reasoning is not th
     TestRunner:assertNil(a2agentWire("deepseek-v4-pro", "maximum").thinking, "deepseek-v4-pro reasons by default")
 end)
 
-TestRunner:test("a2agent: unprobed ids send nothing; kimi-k3 temperature forced; qwen gets no tools", function()
+TestRunner:test("a2agent: unprobed ids send nothing; kimi-k3 temperature forced; qwen tools ask with auto", function()
     local d = ModelConstraints.resolveReasoning("a2agent", "glm-5", { global_stance = "maximum" })
     TestRunner:assertEqual(d.axis, "none", "unprobed id: axis none")
     local params = ModelConstraints.apply("a2agent", "kimi-k3", { temperature = 0.7 })
     TestRunner:assertEqual(params.temperature, 1.0, "kimi-k3 accepts only 0, 0.6 and 1.0")
-    TestRunner:assertFalse(ModelConstraints.supportsCapability("a2agent", "qwen3.8-max", "tools"),
-        "qwen refuses forced tool calls while thinking")
+    TestRunner:assertTrue(ModelConstraints.supportsCapability("a2agent", "qwen3.8-max", "no_forced_tool_choice"),
+        "qwen refuses forced tool calls while thinking: gather rounds ask with auto (B368)")
     TestRunner:assertTrue(ModelConstraints.supportsCapability("a2agent", "deepseek-v4-flash", "tools"), "deepseek tools granted")
 end)
 
@@ -1149,7 +1167,7 @@ TestRunner:test("action override still beats the sentinel", function()
 end)
 
 TestRunner:test("summaryLabel for sentinel says Model default", function()
-    local ReasoningPrefs = require("reasoning_prefs")
+    local ReasoningPrefs = require("koassistant.request.reasoning_prefs")
     local f = { reasoning_prefs = { stance = "maximum", models = {
         ["deepseek/deepseek-v4-pro"] = { state = "default" },
     } } }
@@ -1218,7 +1236,7 @@ end)
 
 TestRunner:suite("ReasoningPrefs store")
 
-local ReasoningPrefs = require("reasoning_prefs")
+local ReasoningPrefs = require("koassistant.request.reasoning_prefs")
 
 TestRunner:test("modelKey composes provider/model", function()
     TestRunner:assertEqual(ReasoningPrefs.modelKey("anthropic", "claude-opus-4-8"),
@@ -1276,7 +1294,7 @@ end)
 TestRunner:suite("B4: quiz reasoning disabled on adaptive-default-ON models")
 
 TestRunner:test("quiz action reasoning_config='off' emits thinking disabled on sonnet-5", function()
-    local Actions = require("prompts.actions")
+    local Actions = require("koassistant.prompts.actions")
     local quiz = Actions.getById("quiz")
     TestRunner:assertNotNil(quiz, "quiz action exists")
     TestRunner:assertEqual(quiz.reasoning_config, "off", "quiz pins reasoning off")
@@ -1457,6 +1475,59 @@ TestRunner:test("refresh 2026-09-28: new prefixes do not catch neighbouring ids"
         "every OR qwen3.8 id gets auto on gather rounds")
     TestRunner:assertFalse(ModelConstraints.supportsCapability("openrouter", "qwen/qwen3-max", "no_forced_tool_choice"),
         "qwen3-max keeps the forced call")
+end)
+
+-- B368 (batteries 2026-10-14): Qwen's thinking switch and the tools it unlocks
+TestRunner:test("qwen: off sends enable_thinking=false; tool sessions always turn it off", function()
+    for _idx, model in ipairs({ "qwen3.8-max", "qwen3.8-flash", "qwen3.5-plus", "qwen3.5-flash" }) do
+        local ap = offWire("qwen", model)
+        TestRunner:assertEqual(ap.qwen_thinking and ap.qwen_thinking.enabled, false, model .. ": Minimal is off")
+        ap = offWire("qwen", model, { global_stance = "default" })
+        TestRunner:assertEqual(ap.qwen_thinking, nil, model .. ": Default sends nothing")
+        ap = offWire("qwen", model, { global_stance = "maximum" })
+        TestRunner:assertEqual(ap.qwen_thinking, nil, model .. ": on is the API default, nothing sent")
+        TestRunner:assertTrue(ModelConstraints.supportsCapability("qwen", model, "tools"), model .. ": tools")
+    end
+    TestRunner:assertFalse(ModelConstraints.supportsCapability("qwen", "qwen3.8-27b", "tools"),
+        "an unprobed Fetch-models id gets no tools grant")
+    TestRunner:assertFalse(ModelConstraints.reasoningDisplayEnabled({ qwen_thinking = { enabled = false } }),
+        "the off reads as reasoning off")
+
+    local Qwen = require("koassistant.api.qwen")
+    local body = Qwen:customizeRequestBody({}, { api_params = { qwen_thinking = { enabled = false } } })
+    TestRunner:assertEqual(body.enable_thinking, false, "the off reaches the wire")
+    body = Qwen:customizeRequestBody({}, { api_params = {}, tools = { specs = {} } })
+    TestRunner:assertEqual(body.enable_thinking, false, "a tool session turns thinking off")
+    body = Qwen:customizeRequestBody({}, { api_params = {} })
+    TestRunner:assertEqual(body.enable_thinking, nil, "otherwise the model's default stands")
+end)
+
+-- B368's gateway half (batteries 2026-10-14): Qwen ids that refuse a forced call while
+-- they think get tools, and the gather round their handler builds asks with auto
+TestRunner:test("gateway Qwen: tools, and gather rounds ask with auto where forced is refused", function()
+    local function gatherChoice(provider, model)
+        local handler = require("koassistant.api." .. provider)
+        local built = handler:buildRequestBody({ { role = "user", content = "hi" } }, {
+            provider = provider, model = model, api_key = "test-key", system = { text = "sys" },
+            api_params = {}, features = { enable_streaming = false },
+            tools = { mode = "ANY", specs = { { name = "search_book", description = "Search.",
+                parameters = { type = "object", properties = {} } } } } })
+        return built.body.tool_choice
+    end
+    for _idx, case in ipairs({
+        { "opencode", "qwen3.8-flash" },
+        { "opencode_go", "qwen3.8-max" }, { "opencode_go", "qwen3.8-flash" }, { "opencode_go", "qwen3.7-plus" },
+        { "a2agent", "qwen3.8-max" }, { "a2agent", "qwen3.8-flash" },
+    }) do
+        local label = case[1] .. " " .. case[2]
+        TestRunner:assertTrue(ModelConstraints.supportsCapability(case[1], case[2], "tools"), label .. ": tools")
+        TestRunner:assertEqual(gatherChoice(case[1], case[2]), "auto", label .. ": the gather round asks with auto")
+    end
+    TestRunner:assertEqual(gatherChoice("opencode", "qwen3.8-max"), "required", "Zen's qwen3.8-max takes the forced call")
+    TestRunner:assertEqual(gatherChoice("a2agent", "kimi-k3"), "required", "A2Agent's other models keep the forced call")
+    local ap = offWire("opencode", "qwen3.8-flash")
+    TestRunner:assertEqual(ap.opencode_reasoning and ap.opencode_reasoning.effort, "none",
+        "Zen qwen3.8-flash: Minimal sends none (checked off against the reply)")
 end)
 
 -- Sonnet 5.5 (probed 2026-09-29): its own rows, not Sonnet 5's by prefix

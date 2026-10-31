@@ -29,8 +29,8 @@ setupPaths()
 
 require("mock_koreader")
 
-local MessageBuilder = require("message_builder")
-local ContextExtractor = require("koassistant_context_extractor")
+local MessageBuilder = require("koassistant.request.message_builder")
+local ContextExtractor = require("koassistant.request.context_extractor")
 
 -- Test suite
 local TestRunner = {
@@ -879,8 +879,8 @@ local function runGatingTests()
         scan = function() return { books = {}, by_status = {}, by_folder = {}, stats = { total = 3 } } end,
         format = function() return '3 books:\n- "Dune" by Frank Herbert' end,
     }
-    local saved_library_scanner = package.loaded["koassistant_library_scanner"]
-    package.loaded["koassistant_library_scanner"] = mock_library_scanner
+    local saved_library_scanner = package.loaded["koassistant.books.library_scanner"]
+    package.loaded["koassistant.books.library_scanner"] = mock_library_scanner
 
     TestRunner:test("library blocked when enable_library_scanning=false (default)", function()
         local extractor = createMockExtractor({})  -- nil = default disabled (opt-in)
@@ -955,46 +955,46 @@ local function runGatingTests()
         TestRunner:assertEquals(data.library_content, nil)
     end)
 
-    TestRunner:test("_unavailable_data: 'library (scanning disabled)' when global off", function()
+    TestRunner:test("_unavailable_data: 'library scan (not allowed for this request)' when global off", function()
         local extractor = createMockExtractor({ library_scan_folders = { "/test/books" } })
         local data = extractor:extractForAction({ use_library = true })
         TestRunner:assert(data._unavailable_data, "should have _unavailable_data")
         local found = false
         for _idx, msg in ipairs(data._unavailable_data) do
-            if msg:find("library (scanning disabled)", 1, true) then found = true end
+            if msg:find("library scan (not allowed for this request)", 1, true) then found = true end
         end
-        TestRunner:assert(found, "should contain 'library (scanning disabled)'")
+        TestRunner:assert(found, "should contain 'library scan (not allowed for this request)'")
     end)
 
-    TestRunner:test("_unavailable_data: 'library (no folders configured)' when folders missing", function()
+    TestRunner:test("_unavailable_data: 'library scan (no folder picked)' when folders missing", function()
         local extractor = createMockExtractor({ enable_library_scanning = true })
         local data = extractor:extractForAction({ use_library = true })
         TestRunner:assert(data._unavailable_data, "should have _unavailable_data")
         local found = false
         for _idx, msg in ipairs(data._unavailable_data) do
-            if msg:find("library (no folders configured)", 1, true) then found = true end
+            if msg:find("library scan (no folder picked)", 1, true) then found = true end
         end
-        TestRunner:assert(found, "should contain 'library (no folders configured)'")
+        TestRunner:assert(found, "should contain 'library scan (no folder picked)'")
     end)
 
-    TestRunner:test("_unavailable_data: 'library (no books found)' when allowed but empty", function()
+    TestRunner:test("_unavailable_data: 'library scan (no books found)' when allowed but empty", function()
         local empty_scanner = {
             scan = function() return { books = {}, by_status = {}, by_folder = {}, stats = { total = 0 } } end,
             format = function() return "" end,
         }
-        package.loaded["koassistant_library_scanner"] = empty_scanner
+        package.loaded["koassistant.books.library_scanner"] = empty_scanner
         local extractor = createMockExtractor({
             enable_library_scanning = true,
             library_scan_folders = { "/test/books" },
         })
         local data = extractor:extractForAction({ use_library = true })
         TestRunner:assert(data._unavailable_data, "should have _unavailable_data")
+        package.loaded["koassistant.books.library_scanner"] = mock_library_scanner  -- restore (before any assert)
         local found = false
         for _idx, msg in ipairs(data._unavailable_data) do
-            if msg:find("library (no books found)", 1, true) then found = true end
+            if msg:find("library scan (no books found)", 1, true) then found = true end
         end
-        TestRunner:assert(found, "should contain 'library (no books found)'")
-        package.loaded["koassistant_library_scanner"] = mock_library_scanner  -- restore
+        TestRunner:assert(found, "should contain 'library scan (no books found)'")
     end)
 
     -- =========================================================================
@@ -1041,7 +1041,7 @@ local function runGatingTests()
     end)
 
     -- Restore original module state
-    package.loaded["koassistant_library_scanner"] = saved_library_scanner
+    package.loaded["koassistant.books.library_scanner"] = saved_library_scanner
 
     -- =========================================================================
     -- Annotations Degradation (annotations → highlights fallback)
@@ -1101,7 +1101,7 @@ local function runGatingTests()
     -- =========================================================================
     print("\n--- ContextExtractor: Annotations _unavailable_data ---")
 
-    TestRunner:test("_unavailable_data: 'annotations (sharing disabled)' when both off", function()
+    TestRunner:test("_unavailable_data: 'annotations (not allowed for this request)' when both off", function()
         local extractor = createMockExtractor({
             enable_highlights_sharing = false,
             enable_annotations_sharing = false,
@@ -1110,9 +1110,9 @@ local function runGatingTests()
         TestRunner:assert(data._unavailable_data, "should have _unavailable_data")
         local found = false
         for _, msg in ipairs(data._unavailable_data) do
-            if msg:find("annotations (sharing disabled)", 1, true) then found = true end
+            if msg:find("annotations (not allowed for this request)", 1, true) then found = true end
         end
-        TestRunner:assert(found, "should contain 'annotations (sharing disabled)'")
+        TestRunner:assert(found, "should contain 'annotations (not allowed for this request)'")
     end)
 
     TestRunner:test("_unavailable_data: 'annotations (using highlights only)' when degraded", function()
@@ -2389,14 +2389,14 @@ local function runSubstituteVariablesTests()
 
     -- Nudges
     TestRunner:test("substituteVariables: {conciseness_nudge} substituted", function()
-        local Templates = require("prompts.templates")
+        local Templates = require("koassistant.prompts.templates")
         local result = MessageBuilder.substituteVariables("Be brief. {conciseness_nudge}", {})
         TestRunner:assertNotContains(result, "{conciseness_nudge}")
         TestRunner:assertContains(result, Templates.CONCISENESS_NUDGE)
     end)
 
     TestRunner:test("substituteVariables: {hallucination_nudge} substituted", function()
-        local Templates = require("prompts.templates")
+        local Templates = require("koassistant.prompts.templates")
         local result = MessageBuilder.substituteVariables("Answer. {hallucination_nudge}", {})
         TestRunner:assertNotContains(result, "{hallucination_nudge}")
         TestRunner:assertContains(result, Templates.HALLUCINATION_NUDGE)
@@ -2811,6 +2811,64 @@ end
 -- Run All Tests
 -- =============================================================================
 
+-- The text around what you tap (the eighth kind, B395): {page_text} only
+-- where it may go, and the gates at the other seams stay in place
+local function runNearbyTextTests()
+    print("\n--- The text around what you tap (page text, the seams) ---")
+    local function withPage(settings)
+        local extractor = createMockExtractor(settings)
+        extractor.getVisiblePageText = function() return { text = "THE VISIBLE PAGE", char_count = 16 } end
+        return extractor
+    end
+    TestRunner:test("{page_text}: sent by default (Allow)", function()
+        local data = withPage({}):extractForAction({ prompt = "Explain {page_text_section}" })
+        TestRunner:assertEquals(data.page_text, "THE VISIBLE PAGE")
+    end)
+    TestRunner:test("{page_text}: Never leaves the page out, and the note says why", function()
+        local data = withPage({ nearby_text_sharing = "never" }):extractForAction({ prompt = "Explain {page_text_section}" })
+        TestRunner:assertEquals(data.page_text, "")
+        local note = table.concat(data._unavailable_data or {}, "; ")
+        TestRunner:assertContains(note, "current page (set to Never)")
+    end)
+    TestRunner:test("{page_text}: Ask unanswered sends nothing; Allow once sends", function()
+        local data = withPage({ nearby_text_sharing = "ask" }):extractForAction({ prompt = "{page_text}" })
+        TestRunner:assertEquals(data.page_text, "")
+        data = withPage({ nearby_text_sharing = "ask", _data_once = { kinds = { nearby_text = true } } })
+            :extractForAction({ prompt = "{page_text}" })
+        TestRunner:assertEquals(data.page_text, "THE VISIBLE PAGE")
+    end)
+    TestRunner:test("the dispatch, the Send and Page translate gate the text around what you tap", function()
+        local function read(path)
+            local f = assert(io.open(path, "r")); local t = f:read("*a"); f:close(); return t
+        end
+        local dialogs = read("koassistant/ui/dialogs.lua")
+        TestRunner:assert(dialogs:find('NearbyGates.allows("nearby_text"', 1, true) ~= nil,
+            "the dispatch drops the surrounding and dictionary context")
+        TestRunner:assert(dialogs:find('message_data.surrounding_context = nil', 1, true) ~= nil,
+            "the dispatch gate clears the surrounding context")
+        TestRunner:assert(dialogs:find('.allows("nearby_text",', 1, true) ~= nil
+            and dialogs:find('{ kind = "nearby_text", required = false }', 1, true) ~= nil,
+            "the freeform Send gates and asks for its ambient context")
+        TestRunner:assert(dialogs:find("if not is_xray_chat then\n                configuration.features._data_once = nil", 1, true) ~= nil,
+            "a new dialog starts without the last chat's allowance (the X-Ray chat keeps its own)")
+        -- The chat's allowance ends with it
+        TestRunner:assert(dialogs:find("shared_features._data_once = nil", 1, true) ~= nil,
+            "the Send's private copy takes the chat's allowance; the shared table drops it")
+        local _n, closes = dialogs:gsub("configuration.features._data_once = nil\n        end\n", "")
+        TestRunner:assertEquals(closes, 2, "both user exits of the dialog end the chat's allowance")
+        TestRunner:assert(dialogs:find('{ kind = "book_list", required = false }', 1, true) ~= nil
+            and dialogs:find('{ kind = "book_list", required = true }', 1, true) ~= nil,
+            "a library chat's list: optional beside picked books, required without them")
+        TestRunner:assert(dialogs:find("resolveBookInfoLevel(\n        artifact_ds, configuration.features)", 1, true) ~= nil,
+            "the artifact chat's book line follows Book info")
+        local main = read("main.lua")
+        local tp = main:find("function AskGPT:translateCurrentPage", 1, true)
+        local tp_end = tp and main:find("\nend\n", tp, true)
+        TestRunner:assert(tp and tp_end and main:sub(tp, tp_end):find('kinds = { "nearby_text" }', 1, true) ~= nil,
+            "Page translate asks for the current page")
+    end)
+end
+
 local function runAll()
     print("\n=== Testing Prompt Building & Gating ===")
 
@@ -2829,6 +2887,7 @@ local function runAll()
     runSubstituteVariablesTests()
     runMultiBookSidecarTests()
     runHighlightedTextContextTests()
+    runNearbyTextTests()
 
     print(string.format("\n=== Results: %d passed, %d failed ===\n", TestRunner.passed, TestRunner.failed))
     return TestRunner.failed == 0

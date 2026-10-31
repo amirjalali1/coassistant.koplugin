@@ -28,8 +28,8 @@ end
 setupPaths()
 require("mock_koreader")
 
-local ConfigHelper = require("koassistant_config_helper")
-local Defaults = require("koassistant_api.defaults")
+local ConfigHelper = require("koassistant.core.config_helper")
+local Defaults = require("koassistant.api.defaults")
 local TestRunner = require("test_runner"):new()
 
 print("")
@@ -42,7 +42,7 @@ local function wireUrl(provider, features, provider_settings)
     local merged = ConfigHelper:mergeWithDefaults({
         provider = provider, features = features or {}, provider_settings = provider_settings,
     })
-    local handler = require("koassistant_api." .. provider)
+    local handler = require("koassistant.api." .. provider)
     return handler:buildRequestBody({ { role = "user", content = "hi" } }, merged).url
 end
 

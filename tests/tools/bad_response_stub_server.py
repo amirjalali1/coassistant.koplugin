@@ -48,7 +48,7 @@ SHAPES = ["empty", "headers-only", "whitespace", "null", "scalar",
           "truncated", "html", "hangup", "ok"]
 
 # The "ok" answer is valid X-Ray JSON, not prose. A ladder rung whose answer does
-# not parse is cached AS-IS when the book has no X-Ray yet (koassistant_dialogs.lua,
+# not parse is cached AS-IS when the book has no X-Ray yet (koassistant/ui/dialogs.lua,
 # the round-28 ruling: some models produce usable prose), so a prose "ok" writes a
 # junk X-Ray into whatever book the round is run against and every later rung then
 # aborts with "incremental update not applicable". Valid JSON keeps the ladder round

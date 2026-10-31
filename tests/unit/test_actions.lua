@@ -1,5 +1,5 @@
 --[[
-Unit Tests for prompts/actions.lua
+Unit Tests for koassistant/prompts/actions.lua
 
 Tests the placeholder gating and flag cascading logic:
 - PLACEHOLDER_TO_FLAG mapping
@@ -15,7 +15,7 @@ Run: lua tests/run_tests.lua --unit
 package.path = package.path .. ";./?.lua;./?/init.lua"
 require("tests.lib.mock_koreader")
 
-local Actions = require("prompts.actions")
+local Actions = require("koassistant.prompts.actions")
 
 -- Test suite
 local TestActions = {
@@ -59,7 +59,7 @@ function TestActions:assertContains(tbl, value, message)
 end
 
 function TestActions:runAll()
-    print("\n=== Testing prompts/actions.lua ===\n")
+    print("\n=== Testing koassistant/prompts/actions.lua ===\n")
 
     -- Test PLACEHOLDER_TO_FLAG mapping exists
     self:test("PLACEHOLDER_TO_FLAG is defined", function()

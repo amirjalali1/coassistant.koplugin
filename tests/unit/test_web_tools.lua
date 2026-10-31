@@ -1,5 +1,5 @@
 --[[
-Unit Tests for koassistant_web_tools.lua
+Unit Tests for koassistant/tools/web_tools.lua
 
 Covers the pure half of the web-search backend engine
 (docs/web_search_tool_plan.md phase 1):
@@ -24,7 +24,7 @@ package.path = package.path .. ";./?.lua;./?/init.lua"
 require("tests.lib.mock_koreader")
 
 local json = require("json")
-local WebTools = require("koassistant_web_tools")
+local WebTools = require("koassistant.tools.web_tools")
 
 local T = {
     passed = 0,

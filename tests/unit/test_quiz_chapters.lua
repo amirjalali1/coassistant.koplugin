@@ -1,4 +1,4 @@
--- Unit tests for koassistant_quiz_chapters.lua (pure chapter-boundary resolution).
+-- Unit tests for koassistant/quiz/quiz_chapters.lua (pure chapter-boundary resolution).
 
 local function setupPaths()
     local info = debug.getinfo(1, "S")
@@ -12,7 +12,7 @@ local function setupPaths()
 end
 setupPaths()
 
-local QC = require("koassistant_quiz_chapters")
+local QC = require("koassistant.quiz.quiz_chapters")
 
 local TestRunner = { passed = 0, failed = 0 }
 function TestRunner:suite(name) print(string.format("\n  [%s]", name)) end

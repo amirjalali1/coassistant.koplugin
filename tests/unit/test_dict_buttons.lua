@@ -1,5 +1,5 @@
 --[[
-Unit Tests for koassistant_dict_buttons.lua
+Unit Tests for koassistant/ui/dict_buttons.lua
 
 Covers the dependency-free decision logic shared by both dictionary-popup
 button adapters in main.lua (new addToDictButtons API + legacy onDictButtonsReady):
@@ -19,7 +19,7 @@ Run: lua tests/run_tests.lua --unit
 package.path = package.path .. ";./?.lua;./?/init.lua"
 require("tests.lib.mock_koreader")
 
-local DictButtons = require("koassistant_dict_buttons")
+local DictButtons = require("koassistant.ui.dict_buttons")
 
 local T = {
     passed = 0,

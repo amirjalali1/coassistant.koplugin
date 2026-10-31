@@ -1,5 +1,5 @@
 --[[
-Unit Tests for koassistant_message_history.lua
+Unit Tests for koassistant/request/message_history.lua
 
 Tests MessageHistory creation, message management, turn counting,
 reasoning entries, clear, fromSavedMessages, getSuggestedTitle,
@@ -28,7 +28,7 @@ setupPaths()
 
 require("mock_koreader")
 
-local MessageHistory = require("koassistant_message_history")
+local MessageHistory = require("koassistant.request.message_history")
 
 -- Test suite
 local TestRunner = {

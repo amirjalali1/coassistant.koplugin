@@ -25,7 +25,7 @@ local function setupPaths()
     local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -34,7 +34,7 @@ local function setupPaths()
 end
 local plugin_dir = setupPaths()
 require("mock_koreader")
-local Dialogs = require("koassistant_dialogs")
+local Dialogs = require("koassistant.ui.dialogs")
 local TestRunner = require("test_runner"):new()
 
 local function source(rel)
@@ -43,7 +43,7 @@ local function source(rel)
     f:close()
     return s
 end
-local dialogs_src = source("koassistant_dialogs.lua")
+local dialogs_src = source("koassistant/ui/dialogs.lua")
 local main_src = source("main.lua")
 
 --- A reader's expression, cut from the source and compiled as a function of
@@ -79,8 +79,8 @@ TestRunner:test("the mark follows what the model answered, through the real pars
     -- The handler's own condition, cut from the source
     local built_nothing = assert(load("local using_cache, incomplete, parsed, XrayParser = ...; return "
         .. MARK_COND:gsub("\n", " "), "dialogs mark condition"))
-    local XrayParser = require("koassistant_xray_parser")
-    local RP = require("koassistant_api.response_parser")
+    local XrayParser = require("koassistant.xray.xray_parser")
+    local RP = require("koassistant.api.response_parser")
     local function marks(answer, using_cache)
         return built_nothing(using_cache or false, RP.isIncomplete(answer), XrayParser.parse(answer), XrayParser)
             and true or false
@@ -155,7 +155,7 @@ TestRunner:test("and the skip is what it does with it", function()
         "create-mode steps skip on the mark")
     -- A step it cannot skip stops with a reason the popup names
     local stop = main_src:match('local err_text = %(nothing_built and "([^"]+)"%)')
-    TestRunner:assertEqual(require("koassistant_xray_auto").classifyStopReason(stop), "nothing_built",
+    TestRunner:assertEqual(require("koassistant.xray.xray_auto").classifyStopReason(stop), "nothing_built",
         "the stop text is the classifier's")
     TestRunner:assertTrue(main_src:find('if kind == "nothing_built" then return _(', 1, true), "and it has a label")
 end)
@@ -182,10 +182,10 @@ end)
 
 print("\n  [a cut-off answer saves nothing, and nothing opens an older copy (B362)]")
 
-local RP = require("koassistant_api.response_parser")
+local RP = require("koassistant.api.response_parser")
 
 TestRunner:test("the parser's repair reads a cut-off answer as whole, so the X-Ray block checks the cut itself", function()
-    local XrayParser = require("koassistant_xray_parser")
+    local XrayParser = require("koassistant.xray.xray_parser")
     local answer = '{"type": "fiction", "characters": [{"name": "Anna", "description": "A doctor."}, '
         .. '{"name": "Bert", "description": "Her bro' .. RP.TRUNCATION_NOTICE
     TestRunner:assertTrue(RP.isIncomplete(answer), "the notice marks it")
@@ -219,7 +219,7 @@ TestRunner:test("the notice survives rendering and the checkpoint step reads it 
     TestRunner:assertTrue(read((Dialogs._headlessResult(history(shown), {}))), "cut: the step names it")
     TestRunner:assertFalse(read((Dialogs._headlessResult(history("# X-Ray"), {}))), "whole: not")
     TestRunner:assertFalse(read(nil), "no reply: not")
-    local kind = require("koassistant_xray_auto").classifyStopReason(
+    local kind = require("koassistant.xray.xray_auto").classifyStopReason(
         main_src:match('or %(cut and "([^"]+)"%)'))
     TestRunner:assertEqual(kind, "cut_off", "the stop text is the classifier's")
 end)
@@ -233,7 +233,7 @@ TestRunner:test("a background update that saved nothing is not reported as done,
     TestRunner:assertTrue(succeeded(Dialogs._headlessResult(history("the X-Ray"), {})), "unmarked: done")
     TestRunner:assertFalse(succeeded(Dialogs._headlessResult(nil, "503 overloaded")), "an error: a failure")
     local msg = main_src:match('local msg = %(cut and "([^"]+)"%)')
-    TestRunner:assertEqual(require("koassistant_xray_auto").classifyStopReason(msg), "cut_off",
+    TestRunner:assertEqual(require("koassistant.xray.xray_auto").classifyStopReason(msg), "cut_off",
         "the recorded reason is one the popup names")
 end)
 

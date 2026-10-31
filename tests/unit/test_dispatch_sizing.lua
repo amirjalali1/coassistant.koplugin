@@ -15,7 +15,7 @@ local function setupPaths()
     plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -39,8 +39,8 @@ end
 function TestRunner:assertTrue(v, msg) if not v then error(msg or "expected truthy") end end
 function TestRunner:assertNil(v, msg) if v ~= nil then error((msg or "expected nil") .. ", got " .. tostring(v)) end end
 
-local ModelConstraints = require("model_constraints")
-local Defaults = require("koassistant_api.defaults")
+local ModelConstraints = require("koassistant.request.model_constraints")
+local Defaults = require("koassistant.api.defaults")
 
 -- A custom provider list as it lives on features.custom_providers.
 local function customs(default_model)
@@ -118,7 +118,7 @@ end)
 TestRunner:suite("one key: the memo written and read through the resolver agree")
 
 TestRunner:test("a nil-model config records and reads the plan under the same key (F3)", function()
-    local RL = require("koassistant_rate_limits")
+    local RL = require("koassistant.request.rate_limits")
     RL._reset()
     -- The probe learns the allowance for the model it tested...
     local probe_key = ModelConstraints.dispatchModel({ provider = "groq", model = Defaults.ProviderDefaults.groq.model })
@@ -135,7 +135,7 @@ TestRunner:test("a nil-model config records and reads the plan under the same ke
 end)
 
 -- ===========================================================================
--- Router-level cases: what koassistant_gpt_query.lua actually puts on the wire.
+-- Router-level cases: what koassistant/request/gpt_query.lua actually puts on the wire.
 --
 -- The cap block runs synchronously inside dispatchRequest, before handler:query,
 -- and a handler whose `query` returns a plain string takes the router's
@@ -144,31 +144,31 @@ end)
 -- widgets the pre-send notice raised.
 --
 -- The STREAMING half is covered by the structural gate below on the one line
--- that feeds it (stream_handler.lua records the plan headers under
+-- that feeds it (koassistant/request/stream_handler.lua records the plan headers under
 -- settings.model, which the router fills from the resolved id) plus
 -- tests/unit/test_stream_ratelimit_marker.lua, which drives the real streaming
 -- loop over a recorded pipe.
 -- ===========================================================================
 
-local RL = require("koassistant_rate_limits")
+local RL = require("koassistant.request.rate_limits")
 
 -- Everything the router touches on this path, restored at the end of the file:
 -- the harness loadfile()s every unit test into ONE Lua state.
 local SAVED_KEYS = {
-    "ui/network/manager", "koassistant_api.ollama", "ui/uimanager",
-    "ui/widget/infomessage", "ui/widget/notification", "koassistant_gpt_query",
+    "ui/network/manager", "koassistant.api.ollama", "ui/uimanager",
+    "ui/widget/infomessage", "ui/widget/notification", "koassistant.request.gpt_query",
 }
 local saved = {}
 for _idx, k in ipairs(SAVED_KEYS) do saved[k] = package.loaded[k] end
 
 -- The stub handler. The router fills its handlers table with
--- require("koassistant_api." .. name) at LOAD time, so this preloaded entry
+-- require("koassistant.api." .. name) at LOAD time, so this preloaded entry
 -- must be in place before the module is required (below). Provider "ollama"
 -- needs no API key.
 local calls = {}
-package.loaded["koassistant_api.ollama"] = {
+package.loaded["koassistant.api.ollama"] = {
     query = function(_self, _message_history, cfg)
-        calls[#calls + 1] = { max_tokens = cfg.api_params and cfg.api_params.max_tokens }
+        calls[#calls + 1] = { max_tokens = cfg.api_params and cfg.api_params.max_tokens, model = cfg.model }
         return "ok"
     end,
 }
@@ -195,8 +195,8 @@ package.loaded["ui/uimanager"] = {
     scheduleIn = function(_self, _sec, fn) if fn then fn() end end,
 }
 
-package.loaded["koassistant_gpt_query"] = nil
-local Query = require("koassistant_gpt_query")
+package.loaded["koassistant.request.gpt_query"] = nil
+local Query = require("koassistant.request.gpt_query")
 
 --- One request through the real router. Returns nothing: the assertions read
 --- `calls` (the wire) and `shown` (the widgets).
@@ -230,6 +230,26 @@ TestRunner:test("a nil-model config is capped by the plan recorded for its defau
     RL._reset()
 end)
 
+TestRunner:test("a retired id stored outside the selected model goes out as its replacement", function()
+    -- A favorite, a pin or a preferred default can still name a retired id (the
+    -- startup refresh moves only the selected model); the router maps it once,
+    -- before the id that keys the request is resolved.
+    RL._reset()
+    local ModelLists = require("koassistant.request.model_lists")
+    local had = ModelLists._retired.ollama
+    ModelLists._retired.ollama = { ["gone-model"] = "llama4" }
+    local ok, err = pcall(function()
+        runQuery({ provider = "ollama", model = "gone-model", features = {} })
+        TestRunner:assertEqual(#calls, 1, "one request went out")
+        TestRunner:assertEqual(calls[1].model, "llama4", "the replacement is on the wire")
+        runQuery({ provider = "ollama", model = "llama3.3", features = {} })
+        TestRunner:assertEqual(calls[1].model, "llama3.3", "a served id is untouched")
+    end)
+    ModelLists._retired.ollama = had
+    RL._reset()
+    if not ok then error(err, 0) end
+end)
+
 TestRunner:test("the plan filed under the WRONG key never binds (a2, the measured F3 failure)", function()
     RL._reset()
     local cfg = { provider = "ollama", features = {} }
@@ -250,7 +270,7 @@ TestRunner:test("a provider_settings model entry is NOT the key (d): no handler 
     RL._reset()
     local cfg = { provider = "ollama", features = {},
         provider_settings = { ollama = { model = "stale-entry" } } }
-    local Defaults = require("koassistant_api.defaults")
+    local Defaults = require("koassistant.api.defaults")
     TestRunner:assertEqual(ModelConstraints.dispatchModel(cfg), Defaults.ProviderDefaults.ollama.model,
         "resolves to the provider default the wire carries")
     RL.record("ollama", "stale-entry", { limit_tokens = "8000" }, "header")
@@ -419,7 +439,7 @@ TestRunner:test("the second pass and the non-streaming consumer are wired (sourc
     -- fire on the FIRST pass only; (2) the resend is sized from the refusal's
     -- exact prompt count; (3) the non-streaming consumer strips the marker line
     -- and records it under the ONE dispatch model.
-    local fh = io.open(plugin_dir .. "/koassistant_gpt_query.lua", "r")
+    local fh = io.open(plugin_dir .. "/koassistant/request/gpt_query.lua", "r")
     TestRunner:assertTrue(fh ~= nil, "cannot read the router")
     local src = fh:read("*a")
     fh:close()
@@ -443,7 +463,7 @@ TestRunner:test("the second pass and the non-streaming consumer are wired (sourc
 end)
 
 TestRunner:test("ConfigHelper:getModelInfo records the wire's model id, never the provider_settings slot", function()
-    local ConfigHelper = require("koassistant_config_helper")
+    local ConfigHelper = require("koassistant.core.config_helper")
     local cfg = { provider = "ollama", provider_settings = { ollama = { model = "stale-entry" } }, features = {} }
     TestRunner:assertEqual(ConfigHelper:getModelInfo(cfg), ModelConstraints.dispatchModel(cfg),
         "the same id the memo and the budget use")
@@ -477,16 +497,16 @@ end)
 TestRunner:suite("the second pass, driven through a fake stream handler")
 
 do
-    local handler = package.loaded["koassistant_api.ollama"]
+    local handler = package.loaded["koassistant.api.ollama"]
     local real_query = handler.query
-    local saved_stream = package.loaded["stream_handler"]
+    local saved_stream = package.loaded["koassistant.request.stream_handler"]
     -- What the fake provider refuses with, per case: a function of the budget sent.
     local refusal_for = nil
     handler.query = function(_self, _message_history, cfg)
         calls[#calls + 1] = { max_tokens = cfg.api_params and cfg.api_params.max_tokens, cfg = cfg }
         return function() end  -- a stream_fn
     end
-    package.loaded["stream_handler"] = {
+    package.loaded["koassistant.request.stream_handler"] = {
         new = function()
             return {
                 showStreamDialog = function(_s, _fn, _prov, _model, _settings, cb)
@@ -586,7 +606,7 @@ do
 
     refusal_for = nil
     handler.query = real_query
-    package.loaded["stream_handler"] = saved_stream
+    package.loaded["koassistant.request.stream_handler"] = saved_stream
     RL._reset()
 end
 
@@ -610,7 +630,7 @@ TestRunner:suite("structural gate: one model id, checked in the source")
 TestRunner:test("no bare config.model reaches a sizing consumer", function()
     local dir = plugin_dir
     local offenders = {}
-    for _idx, name in ipairs({ "koassistant_gpt_query.lua", "koassistant_dialogs.lua" }) do
+    for _idx, name in ipairs({ "koassistant/request/gpt_query.lua", "koassistant/ui/dialogs.lua" }) do
         local fh = io.open(dir .. "/" .. name, "r")
         TestRunner:assertTrue(fh ~= nil, "cannot read " .. name)
         local n, prev = 0, ""
@@ -633,7 +653,7 @@ TestRunner:test("no bare config.model reaches a sizing consumer", function()
             -- The stream settings feed: stream_handler records the plan headers
             -- under settings.model. Router only: `model = config.model` is an
             -- ordinary table field elsewhere (the quick-reply snapshot).
-            if name == "koassistant_gpt_query.lua"
+            if name == "koassistant/request/gpt_query.lua"
                 and line:find("model = config.model", 1, true) and not exempt then
                 offenders[#offenders + 1] = name .. ":" .. n .. "  (stream settings feed)"
             end
@@ -652,7 +672,7 @@ TestRunner:test("the router's prompt-size figure is the module's own (B14 call s
     -- test_prompt_chars.lua proves promptChars matches the old closure; this line
     -- proves the router still feeds it the same two arguments (a changed call
     -- site would silently stop the notice for system-prompt-heavy requests).
-    local fh = io.open(plugin_dir .. "/koassistant_gpt_query.lua", "r")
+    local fh = io.open(plugin_dir .. "/koassistant/request/gpt_query.lua", "r")
     local src = fh:read("*a"); fh:close()
     TestRunner:assertTrue(src:find(
         "RateLimits.promptChars(config.system and config.system.text, message_history)", 1, true) ~= nil,
@@ -663,7 +683,7 @@ TestRunner:test("the router records a per-minute refusal BEFORE it decides not t
     -- Source order, because the behaviour is a control-flow fact: a burst must
     -- still teach the session its allowance, and only then stand down; and the
     -- burst return must sit ahead of the resend arithmetic.
-    local fh = io.open(plugin_dir .. "/koassistant_gpt_query.lua", "r")
+    local fh = io.open(plugin_dir .. "/koassistant/request/gpt_query.lua", "r")
     TestRunner:assertTrue(fh ~= nil, "cannot read the router")
     local n, at_record, at_burst, at_retry = 0, nil, nil, nil
     for line in fh:lines() do
@@ -686,7 +706,7 @@ end)
 
 -- ---------------------------------------------------------------------------
 RL._reset()
-package.loaded["koassistant_gpt_query"] = nil
+package.loaded["koassistant.request.gpt_query"] = nil
 for _idx, k in ipairs(SAVED_KEYS) do package.loaded[k] = saved[k] end
 
 print(string.format("\n  test_dispatch_sizing: %d passed, %d failed", TestRunner.passed, TestRunner.failed))

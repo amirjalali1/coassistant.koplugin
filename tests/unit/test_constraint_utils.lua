@@ -15,7 +15,7 @@ package.path = package.path .. ";./?.lua;./?/init.lua"
 require("tests.lib.mock_koreader")
 
 local ConstraintUtils = require("tests.lib.constraint_utils")
-local ModelConstraints = require("model_constraints")
+local ModelConstraints = require("koassistant.request.model_constraints")
 
 -- Test suite
 local TestConstraintUtils = {

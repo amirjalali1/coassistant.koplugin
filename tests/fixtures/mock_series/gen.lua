@@ -11,9 +11,15 @@ byte-authentic.
 
 Usage (from the repo root; needs `zip` on PATH; run while KOReader is closed):
 
-    lua tests/fixtures/mock_series/gen.lua --out <dir> [--base <target dir>]
+    lua tests/fixtures/mock_series/gen.lua --out <dir> [--base <target dir>] [--home <KOReader home>]
 
   --out   Where to write the folders (Mock Series/, Mock Project/, Mock Shelf/).
+  --home  A KOReader home (the folder holding settings/) to write the three
+          groups into, one per folder with its kind (Mock Series = series,
+          Mock Project = project, Mock Shelf = plain), so a round starts
+          without making them by hand. A group of the same name already there
+          keeps its members; every other group and key stays; the old file is
+          copied aside first (koassistant_book_groups.lua.bak-<time>).
   --base  The path where those folders will LIVE when tested (defaults to
           --out). Pass it when generating for a device: cross-book provenance
           is path identity, so stub `file` fields must match the device paths.
@@ -26,10 +32,11 @@ Sidecars are written side-by-side (`Book.sdr/` next to `Book.epub`, KOReader's
 default "doc" location) and travel with the folder copy. Re-running into the
 same --out regenerates the plugin sidecar files from scratch (they are fixture
 output, not user data), so an X-Ray a round built on "Mock Series 4" (the one
-book planted without one) is gone again. The three GROUPS are created by hand
-on the target with "New group from folder…" — group creation is itself an
-entry point under test; a group that already exists keeps its members, and a
-book added to the fixture later is added to it by hand ("Add from files…").
+book planted without one) is gone again. The three GROUPS are written with
+--home, or created by hand on the target with "New group from folder…" (group
+creation is itself an entry point under test); a group that already exists
+keeps its members, and a book added to the fixture later is added to it by hand
+("Add from files…").
 
 After writing, everything is read back through the real loaders and parsed with
 the real XrayParser; the script exits non-zero if any piece fails.
@@ -55,7 +62,7 @@ end
 setupPaths()
 
 -- ---------------------------------------------------------------------- args
-local OUT, BASE
+local OUT, BASE, HOME
 do
     local i = 1
     while i <= #arg do
@@ -63,6 +70,8 @@ do
             OUT = arg[i + 1]; i = i + 2
         elseif arg[i] == "--base" then
             BASE = arg[i + 1]; i = i + 2
+        elseif arg[i] == "--home" then
+            HOME = arg[i + 1]; i = i + 2
         else
             io.stderr:write("Unknown argument: " .. tostring(arg[i]) .. "\n")
             os.exit(1)
@@ -70,7 +79,7 @@ do
     end
 end
 if not OUT or OUT == "" then
-    io.stderr:write("Usage: lua tests/fixtures/mock_series/gen.lua --out <dir> [--base <target dir>]\n")
+    io.stderr:write("Usage: lua tests/fixtures/mock_series/gen.lua --out <dir> [--base <target dir>] [--home <KOReader home>]\n")
     os.exit(1)
 end
 OUT = OUT:gsub("/+$", "")
@@ -114,8 +123,8 @@ package.loaded["luasettings"] = {
     open = function() return { readSetting = function() return nil end, close = function() end } end,
 }
 
-local ActionCache = require("koassistant_action_cache")
-local XrayParser = require("koassistant_xray_parser")
+local ActionCache = require("koassistant.artifacts.action_cache")
+local XrayParser = require("koassistant.xray.xray_parser")
 
 local spec = dofile(script_dir .. "/spec.lua")
 
@@ -392,6 +401,82 @@ end
 -- ----------------------------------------------------------------------- run
 print("Mock X-Ray fixture -> " .. OUT)
 if BASE ~= OUT then print("Target base (path identity in the data): " .. BASE) end
+-- ------------------------------------------------------------------ groups
+-- --home: one group per folder in that KOReader home's groups file (BookGroups'
+-- LuaSettings shape: { book_groups = { version, next_id, groups } }), books in
+-- the spec's order, which is the reading order inside each folder.
+local GROUP_FOLDERS = {
+    { folder = "Mock Series", kind = "series" },
+    { folder = "Mock Project", kind = "project" },
+    { folder = "Mock Shelf", kind = "plain" },
+}
+
+local function serializeLua(v, indent)
+    indent = indent or ""
+    if type(v) == "string" then return string.format("%q", v) end
+    if type(v) == "number" or type(v) == "boolean" then return tostring(v) end
+    if type(v) ~= "table" then return "nil" end
+    local inner = indent .. "    "
+    local parts, n = {}, #v
+    for i = 1, n do parts[#parts + 1] = inner .. serializeLua(v[i], inner) .. "," end
+    local keys = {}
+    for k in pairs(v) do
+        if not (type(k) == "number" and k % 1 == 0 and k >= 1 and k <= n) then keys[#keys + 1] = k end
+    end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    for _idx, k in ipairs(keys) do
+        local key = type(k) == "string" and string.format("[%q]", k) or ("[" .. tostring(k) .. "]")
+        parts[#parts + 1] = inner .. key .. " = " .. serializeLua(v[k], inner) .. ","
+    end
+    if #parts == 0 then return "{}" end
+    return "{\n" .. table.concat(parts, "\n") .. "\n" .. indent .. "}"
+end
+
+local function writeGroups(home)
+    local path = home:gsub("/+$", "") .. "/settings/koassistant_book_groups.lua"
+    local file_data = {}
+    local f = io.open(path, "r")
+    if f then
+        local old = f:read("*a")
+        f:close()
+        -- the way LuaSettings itself reads it
+        local ok, t = pcall(dofile, path)
+        if not ok or type(t) ~= "table" then fail("cannot read " .. path) end
+        file_data = t
+        writeFile(path .. ".bak-" .. os.date("%Y%m%d_%H%M%S"), old)
+    end
+    local data = type(file_data.book_groups) == "table" and file_data.book_groups or {}
+    data.version = data.version or 1
+    data.next_id = tonumber(data.next_id) or 1
+    data.groups = type(data.groups) == "table" and data.groups or {}
+    local have = {}
+    for _idx, g in ipairs(data.groups) do
+        if type(g) == "table" and g.name then have[g.name] = true end
+    end
+    for _idx, spec_group in ipairs(GROUP_FOLDERS) do
+        if have[spec_group.folder] then
+            print("  group " .. spec_group.folder .. ": already there, members kept")
+        else
+            local books = {}
+            for n, b in ipairs(spec.books) do
+                if b.folder == spec_group.folder then books[#books + 1] = targetPath(n) end
+            end
+            data.groups[#data.groups + 1] = {
+                id = "g" .. data.next_id, name = spec_group.folder, kind = spec_group.kind,
+                -- the round-27 mirror setKind writes beside the kind
+                ordered = spec_group.kind ~= "series" and false or nil,
+                books = books,
+            }
+            data.next_id = data.next_id + 1
+            print(string.format("  group %s: %s, %d books", spec_group.folder, spec_group.kind, #books))
+        end
+    end
+    file_data.book_groups = data
+    writeFile(path, "-- we can read Lua syntax here!\nreturn " .. serializeLua(file_data) .. "\n")
+    local back = dofile(path)
+    if type(back) ~= "table" or type(back.book_groups) ~= "table" then fail(path .. " did not read back") end
+end
+
 for n, book in ipairs(spec.books) do
     buildEpub(book)
     plantBook(n)
@@ -400,11 +485,16 @@ print("")
 for n = 1, #spec.books do
     verifyBook(n)
 end
+if HOME and HOME ~= "" then
+    print("")
+    print("Groups -> " .. HOME .. "/settings/koassistant_book_groups.lua")
+    writeGroups(HOME)
+end
 print([[
 
 Done. Next, on the target:
   1. If --base differs from --out, copy the three folders to the base path.
-  2. Create the groups by hand (group creation is an entry point under test):
+  2. Without --home, create the groups by hand (group creation is an entry point under test):
      KOAssistant menu > Groups > "New group from folder...", once per folder,
      picking the kind when asked:
        Mock Series  -> kind Series

@@ -1,4 +1,4 @@
--- Unit tests for koassistant_book_tools.lua
+-- Unit tests for koassistant/tools/book_tools.lua
 
 local function setupPaths()
     local info = debug.getinfo(1, "S")
@@ -18,7 +18,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local BookTools = require("koassistant_book_tools")
+local BookTools = require("koassistant.tools.book_tools")
 
 local TestRunner = require("test_runner"):new()
 

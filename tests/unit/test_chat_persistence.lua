@@ -153,7 +153,7 @@ if mock_lfs then
 end
 
 -- Now load ChatHistoryManager
-local ChatHistoryManager = require("koassistant_chat_history_manager")
+local ChatHistoryManager = require("koassistant.chat.chat_history_manager")
 
 -- ============================================================
 -- Test Runner

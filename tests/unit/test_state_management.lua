@@ -28,7 +28,7 @@ setupPaths()
 
 require("mock_koreader")
 
-local ContextExtractor = require("koassistant_context_extractor")
+local ContextExtractor = require("koassistant.request.context_extractor")
 
 -- Test suite
 local TestRunner = {
@@ -81,7 +81,7 @@ end
 -- Contract reimplementations
 -- =============================================================================
 
---- Reimplementation of getPromptContext() from koassistant_dialogs.lua:159-171
+--- Reimplementation of getPromptContext() from koassistant/ui/dialogs.lua:159-171
 --- If the production function changes, tests using this will fail, signaling
 --- that the contract has changed and tests need review.
 local function getPromptContext(config)
@@ -174,7 +174,7 @@ local function mergeSettingsIntoConfig(config, saved_features)
     config.features.is_full_page_translate = nil
 end
 
---- Reimplementation of transient flag consumption from koassistant_dialogs.lua:2515-2522.
+--- Reimplementation of transient flag consumption from koassistant/ui/dialogs.lua:2515-2522.
 --- @param configuration table The configuration object
 --- @return boolean|nil hide_artifacts
 --- @return table|nil exclude_action_flags

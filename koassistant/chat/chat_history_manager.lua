@@ -1,0 +1,2288 @@
+local DataStorage = require("datastorage")
+local LuaSettings = require("luasettings")
+local SafeDocSettings = require("koassistant.storage.doc_settings")
+local BookStore = require("koassistant.storage.book_store")
+local logger = require("koassistant.core.logger")
+local util = require("util")
+local lfs = require("libs/libkoreader-lfs")
+local _ = require("koassistant.core.gettext")
+
+local ChatHistoryManager = {}
+
+-- Mutex flag to detect/prevent concurrent index updates
+-- Lua is single-threaded but KOReader's event loop can interleave callbacks
+local index_operation_pending = false
+
+-- Constants
+ChatHistoryManager.CHAT_DIR = DataStorage:getDataDir() .. "/koassistant_chats"
+ChatHistoryManager.GENERAL_CHAT_FILE = DataStorage:getSettingsDir() .. "/koassistant_general_chats.lua"
+ChatHistoryManager.LIBRARY_CHAT_FILE = DataStorage:getSettingsDir() .. "/koassistant_library_chats.lua"
+
+-- Migration: rename old multi_book chat file to new library chat file
+do
+    local old_file = DataStorage:getSettingsDir() .. "/koassistant_multi_book_chats.lua"
+    local new_file = ChatHistoryManager.LIBRARY_CHAT_FILE
+    if lfs.attributes(old_file, "mode") == "file" and not lfs.attributes(new_file, "mode") then
+        os.rename(old_file, new_file)
+        logger.info("KOAssistant: Migrated multi_book chats file to library chats file")
+    end
+end
+
+--[[
+    Helper function for safe metadata writes with validation
+    Must be defined early as it's used by many methods below.
+--]]
+
+-- Validate chat data structure before writing
+-- @param chat: Chat object to validate
+-- @return true if valid, false + error message if invalid
+local function validateChatData(chat)
+    if not chat then
+        return false, "Chat data is nil"
+    end
+    if not chat.id then
+        return false, "Missing chat ID"
+    end
+    if not chat.messages or type(chat.messages) ~= "table" then
+        return false, "Invalid messages structure"
+    end
+    if not chat.timestamp or type(chat.timestamp) ~= "number" then
+        return false, "Invalid timestamp"
+    end
+    return true
+end
+
+--- Safely write a book's chats table to its koassistant_chats.lua sidecar
+--- file (Track 37: chats no longer live in KOReader's metadata.lua).
+--- Validates every chat, then BookStore.writeChats does the write + read-back
+--- verify. An empty table removes the file.
+--- @param document_path: Document file path
+--- @param chats: Table of chat_id -> chat_data
+--- @return true on success, false + error message on failure
+local function safeWriteChats(document_path, chats)
+    for chat_id, chat in pairs(chats) do
+        local valid, err = validateChatData(chat)
+        if not valid then
+            return false, "Invalid chat " .. chat_id .. ": " .. err
+        end
+    end
+    return BookStore.writeChats(document_path, chats)
+end
+
+local function safeWriteToLuaSettings(file_path, chats)
+    -- Validate each chat
+    for chat_id, chat in pairs(chats) do
+        local valid, err = validateChatData(chat)
+        if not valid then
+            return false, "Invalid chat " .. chat_id .. ": " .. err
+        end
+    end
+
+    -- Attempt write with error handling
+    local ok, err = pcall(function()
+        local settings = LuaSettings:open(file_path)
+        settings:saveSetting("chats", chats)
+        settings:flush()
+    end)
+
+    if not ok then
+        return false, "Write failed: " .. (err or "unknown error")
+    end
+
+    -- Verify the write succeeded by reading back
+    local verify_ok, verify_err = pcall(function()
+        local verify_settings = LuaSettings:open(file_path)
+        local read_back = verify_settings:readSetting("chats")
+        if not read_back then
+            error("Verification failed: data not found after write")
+        end
+    end)
+
+    if not verify_ok then
+        return false, "Verification failed: " .. (verify_err or "unknown error")
+    end
+
+    return true
+end
+
+function ChatHistoryManager:new()
+    local manager = {}
+    setmetatable(manager, self)
+    self.__index = self
+    
+    -- Ensure chat directory exists
+    
+    return manager
+end
+
+
+-- Check if there are actual v1 chats to migrate (not just empty directory)
+function ChatHistoryManager:hasV1Chats()
+    local dir = self.CHAT_DIR
+    if not lfs.attributes(dir, "mode") then
+        return false
+    end
+    -- Look for subdirectories (doc hashes) containing .lua chat files
+    for doc_hash in lfs.dir(dir) do
+        if doc_hash ~= "." and doc_hash ~= ".." then
+            local doc_dir = dir .. "/" .. doc_hash
+            if lfs.attributes(doc_dir, "mode") == "directory" then
+                for filename in lfs.dir(doc_dir) do
+                    if filename:match("%.lua$") and filename ~= "." and filename ~= ".." then
+                        return true  -- Found at least one chat file
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+
+
+
+
+-- Generate a unique ID for a new chat
+-- Format: timestamp_random (e.g., "1706889600_847291")
+-- Using 6-digit random for ~1/900000 collision chance per second
+function ChatHistoryManager:generateChatId()
+    return os.time() .. "_" .. math.random(100000, 999999)
+end
+
+-- Capture a chat's per-chat control state for persistence (controls parity
+-- §8c, maintainer 2026-07-20: resume should REACTIVATE the chat's controls,
+-- not lock them). Pure/static — call as ChatHistoryManager.captureControlState.
+-- Reads the chat config's session-state keys (kept on every chat's private
+-- config since the same-day rebase fix) plus the baked web/tools flags.
+-- Returns nil when the chat carries no control state (field stays absent).
+-- Restore side: continueChat maps this back onto the resumed chat's private
+-- config as ordinary session state, so every reply-side control still works.
+function ChatHistoryManager.captureControlState(config)
+    local f = config and config.features or {}
+    local cs = {}
+    if f._session_quick_answer ~= nil then
+        cs.quick_answer = f._session_quick_answer == true
+    end
+    local sr = f._session_reasoning
+    if sr and sr.force then
+        cs.reasoning = { force = sr.force }
+    elseif sr == nil and (f._run_reasoning == "on" or f._run_reasoning == "off") then
+        -- A run option's reasoning pick (B345): the resumed chat keeps it
+        cs.reasoning = { force = f._run_reasoning }
+    end
+    local sm = f._session_model
+    if sm and sm.provider then
+        cs.model = { provider = sm.provider, model = sm.model }
+    elseif sm == nil and type(f._run_model) == "table" and f._run_model.provider then
+        -- A run option's model (B345): the resumed chat continues on it
+        cs.model = { provider = f._run_model.provider, model = f._run_model.model }
+    end
+    if config and config.enable_web_search ~= nil then
+        cs.web_search = config.enable_web_search == true
+    end
+    if f._tools_active ~= nil then
+        cs.tools = f._tools_active == true
+    end
+    -- Spoiler protection (spoiler_posture_plan.md C4 REVISED 2026-08-11,
+    -- PROVISIONAL): capture ELIGIBILITY, not the answer. The nudge is turn-level
+    -- and live — every send re-resolves posture and position — so a resumed chat
+    -- follows the book's CURRENT state (read on and the boundary moves; toggling
+    -- protection takes effect). Three-state from the hub: true = participates,
+    -- explicit false = artifact chat (must survive resume — the restore's legacy
+    -- book-chat default would otherwise re-enable it), nil = not applicable
+    -- (general/library/skip-action; captured as nothing, keeping bare configs at
+    -- "no control state").
+    if f._spoiler_live ~= nil then
+        cs.spoiler_live = f._spoiler_live == true
+    end
+    -- Per-chat view mode (2026-08-12): present only when the chat's MD/TXT was
+    -- explicitly tapped (_chat_view_mode transient) — absent = the chat follows
+    -- the global default on resume.
+    if f._chat_view_mode ~= nil then
+        cs.render_markdown = f._chat_view_mode == true
+    end
+    if next(cs) == nil then return nil end
+    return cs
+end
+
+
+
+-- Load a chat from file
+function ChatHistoryManager:loadChat(chat_path)
+    local ok, settings = pcall(LuaSettings.open, LuaSettings, chat_path)
+    if not ok or not settings then
+        logger.warn("Failed to open chat file: " .. chat_path)
+        return nil
+    end
+    
+    local chat_data = settings:readSetting("chat")
+    if not chat_data then
+        logger.warn("No chat data found in file: " .. chat_path)
+        return nil
+    end
+    
+    -- Validate required fields
+    if not chat_data.id then
+        logger.warn("Chat missing ID in file: " .. chat_path)
+        chat_data.id = string.gsub(chat_path, "^.*/([^/]+)%.lua$", "%1")
+    end
+    
+    if not chat_data.messages or #chat_data.messages == 0 then
+        logger.warn("Chat has no messages in file: " .. chat_path)
+    end
+    
+    return chat_data
+end
+
+-- Get a specific chat by ID
+function ChatHistoryManager:getChatById(document_path, chat_id)
+    if not document_path or not chat_id then return nil end
+
+    -- Route to v2 or v1 storage
+    -- v2: metadata.lua, general chats, or library chats storage
+    if document_path == "__GENERAL_CHATS__" then
+        return self:getGeneralChatById(chat_id)
+    elseif document_path == "__LIBRARY_CHATS__" then
+        return self:getLibraryChatById(chat_id)
+    else
+        -- Read chat from metadata.lua
+        if lfs.attributes(document_path, "mode") then
+            local chats = BookStore.readChats(document_path)
+            return chats[chat_id]
+        else
+            logger.warn("getChatById: Document not found: " .. document_path)
+            return nil
+        end
+    end
+end
+
+-- Delete a chat
+function ChatHistoryManager:deleteChat(document_path, chat_id)
+    if not document_path or not chat_id then return false end
+
+    -- Route to v2 or v1 storage
+    -- v2: DocSettings-based storage
+    if document_path == "__GENERAL_CHATS__" then
+        return self:deleteGeneralChat(chat_id)
+    elseif document_path == "__LIBRARY_CHATS__" then
+        return self:deleteLibraryChat(chat_id)
+    else
+        return self:deleteChatFromDocSettings(nil, chat_id, document_path)
+    end
+end
+
+-- Delete all chats for a specific document
+function ChatHistoryManager:deleteAllChatsForDocument(document_path)
+    if not document_path then return 0 end
+
+    -- v2: DocSettings-based storage
+    if document_path == "__GENERAL_CHATS__" then
+        local chats = self:getGeneralChats()
+        local count = #chats
+        if count > 0 then
+            local settings = LuaSettings:open(self.GENERAL_CHAT_FILE)
+            settings:saveSetting("chats", {})
+            settings:flush()
+        end
+        logger.info("Deleted " .. count .. " general chats")
+        return count
+    elseif document_path == "__LIBRARY_CHATS__" then
+        local chats = self:getLibraryChats()
+        local count = #chats
+        if count > 0 then
+            local settings = LuaSettings:open(self.LIBRARY_CHAT_FILE)
+            settings:saveSetting("chats", {})
+            settings:flush()
+        end
+        logger.info("Deleted " .. count .. " library chats")
+        return count
+    else
+        -- Book chats: remove the chats file
+        if not lfs.attributes(document_path, "mode") then return 0 end
+        local chats = BookStore.readChats(document_path)
+        local count = 0
+        for _ in pairs(chats) do count = count + 1 end
+        if count > 0 then
+            local ok, err = BookStore.writeChats(document_path, {})
+            if not ok then
+                logger.warn("deleteAllChatsForDocument: " .. (err or "Write failed"))
+                return 0
+            end
+            -- Update chat index
+            self:updateChatIndex(document_path, "delete", nil, {})
+        end
+        logger.info("Deleted " .. count .. " chats for document: " .. document_path)
+        return count
+    end
+end
+
+-- Delete all chats across all documents
+function ChatHistoryManager:deleteAllChats()
+    local total_deleted = 0
+    local docs_deleted = 0
+
+    -- v2: Delete general chats
+    local general_count = self:deleteAllChatsForDocument("__GENERAL_CHATS__")
+    if general_count > 0 then
+        total_deleted = total_deleted + general_count
+        docs_deleted = docs_deleted + 1
+    end
+
+    -- Delete library chats (formerly multi-book)
+    local library_count = self:deleteAllChatsForDocument("__LIBRARY_CHATS__")
+    if library_count > 0 then
+        total_deleted = total_deleted + library_count
+        docs_deleted = docs_deleted + 1
+    end
+
+    -- Delete book chats via chat index
+    local index = self:getChatIndex()
+    for doc_path, _info in pairs(index) do
+        local count = self:deleteAllChatsForDocument(doc_path)
+        if count > 0 then
+            total_deleted = total_deleted + count
+            docs_deleted = docs_deleted + 1
+        end
+    end
+
+    -- Clear the chat index
+    G_reader_settings:saveSetting("koassistant_chat_index", {})
+    G_reader_settings:flush()
+
+    logger.info("Deleted " .. total_deleted .. " chats from " .. docs_deleted .. " documents")
+    return total_deleted, docs_deleted
+end
+
+-- Rename a chat
+function ChatHistoryManager:renameChat(document_path, chat_id, new_title)
+    if not document_path or not chat_id or not new_title then
+        logger.warn("Cannot rename chat: missing document path, chat ID, or new title")
+        return false
+    end
+
+    -- Route to v2 or v1 storage
+    -- v2: DocSettings-based storage
+    if document_path == "__GENERAL_CHATS__" then
+        return self:updateGeneralChat(chat_id, { title = new_title })
+    elseif document_path == "__LIBRARY_CHATS__" then
+        return self:updateLibraryChat(chat_id, { title = new_title })
+    else
+        return self:updateChatInDocSettings(nil, chat_id, { title = new_title }, document_path)
+    end
+end
+
+-- Export chat to text format
+function ChatHistoryManager:exportChatAsText(document_path, chat_id)
+    local chat = self:getChatById(document_path, chat_id)
+    if not chat then return nil end
+
+    local result = {}
+    table.insert(result, "Chat: " .. chat.title)
+    table.insert(result, "Date: " .. os.date("%Y-%m-%d %H:%M", chat.timestamp))
+    table.insert(result, "Document: " .. chat.document_path)
+    table.insert(result, "Model: " .. (chat.model or "Unknown"))
+
+    -- Include launch context if available (for general chats launched from a book)
+    if chat.launch_context and chat.launch_context.title then
+        local launch_info = "Launched from: " .. chat.launch_context.title
+        if chat.launch_context.author then
+            launch_info = launch_info .. " by " .. chat.launch_context.author
+        end
+        table.insert(result, launch_info)
+    end
+
+    table.insert(result, "")
+    
+    -- Format messages
+    for _idx, msg in ipairs(chat.messages) do
+        local role = msg.role:gsub("^%l", string.upper)
+        local content = msg.content
+        
+        -- Skip context messages in export by default
+        if not msg.is_context then
+            table.insert(result, role .. ": " .. content)
+            table.insert(result, "")
+        end
+    end
+    
+    return table.concat(result, "\n")
+end
+
+-- Export chat to markdown format
+function ChatHistoryManager:exportChatAsMarkdown(document_path, chat_id)
+    local chat = self:getChatById(document_path, chat_id)
+    if not chat then return nil end
+
+    local result = {}
+    table.insert(result, "# " .. chat.title)
+    table.insert(result, "**Date:** " .. os.date("%Y-%m-%d %H:%M", chat.timestamp))
+    table.insert(result, "**Document:** " .. chat.document_path)
+    table.insert(result, "**Model:** " .. (chat.model or "Unknown"))
+
+    -- Include launch context if available (for general chats launched from a book)
+    if chat.launch_context and chat.launch_context.title then
+        local launch_info = "**Launched from:** " .. chat.launch_context.title
+        if chat.launch_context.author then
+            launch_info = launch_info .. " by " .. chat.launch_context.author
+        end
+        table.insert(result, launch_info)
+    end
+
+    table.insert(result, "")
+    
+    -- Format messages
+    for _idx, msg in ipairs(chat.messages) do
+        local role = msg.role:gsub("^%l", string.upper)
+        local content = msg.content
+        
+        -- Skip context messages in export by default
+        if not msg.is_context then
+            table.insert(result, "### " .. role)
+            table.insert(result, content)
+            table.insert(result, "")
+        end
+    end
+    
+    return table.concat(result, "\n")
+end
+
+-- Unified export method using Export module (respects user settings)
+-- @param document_path string document path
+-- @param chat_id string chat ID
+-- @param content string "full" | "qa" | "response" (what to include)
+-- @param style string "markdown" | "text" (how to format)
+-- @return string formatted export text
+function ChatHistoryManager:exportChat(document_path, chat_id, content, style)
+    local chat = self:getChatById(document_path, chat_id)
+    if not chat then return nil end
+
+    local Export = require("koassistant.chat.export")
+    local data = Export.fromSavedChat(chat)
+    return Export.format(data, content, style)
+end
+
+-- Get the most recently saved chat across all documents
+function ChatHistoryManager:getMostRecentChat()
+    local most_recent_chat = nil
+    local most_recent_timestamp = 0
+    local most_recent_doc_path = nil
+
+    -- Route to v2/v3 or v1 storage
+    -- v2/v3: Scan chat index + general chats for most recent timestamp
+
+    -- Check general chats first
+    local general_chats = self:getGeneralChats()
+    for _idx, chat in ipairs(general_chats) do
+        if chat and chat.timestamp and chat.timestamp > 0 and
+           chat.messages and #chat.messages > 0 and
+           chat.timestamp > most_recent_timestamp then
+            most_recent_chat = chat
+            most_recent_timestamp = chat.timestamp
+            most_recent_doc_path = "__GENERAL_CHATS__"
+        end
+    end
+
+    -- Check library chats
+    local library_chats = self:getLibraryChats()
+    for _idx, chat in ipairs(library_chats) do
+        if chat and chat.timestamp and chat.timestamp > 0 and
+           chat.messages and #chat.messages > 0 and
+           chat.timestamp > most_recent_timestamp then
+            most_recent_chat = chat
+            most_recent_timestamp = chat.timestamp
+            most_recent_doc_path = "__LIBRARY_CHATS__"
+        end
+    end
+
+    -- Scan all documents from chat index
+    local index = self:getChatIndex()
+    for doc_path, info in pairs(index) do
+        if doc_path ~= "__GENERAL_CHATS__" and lfs.attributes(doc_path, "mode") then
+            -- Read chats from metadata.lua for this document
+            local chats_table = BookStore.readChats(doc_path)
+
+            -- Check each chat's timestamp
+            for chat_id, chat in pairs(chats_table) do
+                if chat and chat.timestamp and chat.timestamp > 0 and
+                   chat.messages and #chat.messages > 0 and
+                   chat.timestamp > most_recent_timestamp then
+                    most_recent_chat = chat
+                    most_recent_timestamp = chat.timestamp
+                    most_recent_doc_path = doc_path
+                end
+            end
+        end
+    end
+
+    if most_recent_chat and most_recent_doc_path then
+        logger.dbg("Found most recent chat: " .. (most_recent_chat.title or "Untitled") ..
+                   " with timestamp: " .. most_recent_timestamp)
+        return most_recent_chat, most_recent_doc_path
+    end
+
+    return nil, nil
+end
+
+-- Settings file for tracking last opened chat
+local LAST_OPENED_FILE = DataStorage:getSettingsDir() .. "/koassistant_last_opened.lua"
+
+-- Track the last opened chat (called when a chat is opened/continued)
+-- @param document_path: The document path
+-- @param chat_id: The chat ID
+-- @param message_count: Optional message count to track if chat was modified
+function ChatHistoryManager:setLastOpenedChat(document_path, chat_id, message_count)
+    if not document_path or not chat_id then
+        logger.warn("setLastOpenedChat: Missing document_path or chat_id")
+        return false
+    end
+
+    local settings = LuaSettings:open(LAST_OPENED_FILE)
+    settings:saveSetting("last_opened", {
+        document_path = document_path,
+        chat_id = chat_id,
+        timestamp = os.time(),
+        message_count = message_count or 0,
+    })
+    settings:flush()
+    logger.dbg("Saved last opened chat: " .. chat_id .. " for document: " .. document_path ..
+                (message_count and (" with " .. message_count .. " messages") or ""))
+    return true
+end
+
+-- Get the last opened chat (regardless of when it was last saved)
+function ChatHistoryManager:getLastOpenedChat()
+    local settings = LuaSettings:open(LAST_OPENED_FILE)
+    local last_opened = settings:readSetting("last_opened")
+
+    if not last_opened or not last_opened.document_path or not last_opened.chat_id then
+        logger.dbg("No last opened chat found")
+        return nil, nil
+    end
+
+    -- Try to load the chat from disk
+    local chat
+    -- v2: metadata.lua, general, or library storage
+    if last_opened.document_path == "__GENERAL_CHATS__" then
+        chat = self:getGeneralChatById(last_opened.chat_id)
+    elseif last_opened.document_path == "__LIBRARY_CHATS__" then
+        chat = self:getLibraryChatById(last_opened.chat_id)
+    else
+        -- Read chat from metadata.lua for that document
+        if lfs.attributes(last_opened.document_path, "mode") then
+            local chats = BookStore.readChats(last_opened.document_path)
+            chat = chats[last_opened.chat_id]
+        end
+    end
+
+    if not chat then
+        logger.warn("Last opened chat no longer exists: " .. last_opened.chat_id)
+        return nil, nil
+    end
+
+    return chat, last_opened.document_path
+end
+
+-- Get all chats grouped by domain
+-- Returns a table with domain IDs as keys and arrays of {chat, document_path} as values
+-- Chats without a domain are grouped under "untagged"
+function ChatHistoryManager:getChatsByDomain()
+    local domains = {}
+    domains["untagged"] = {}
+
+    -- v2: Scan metadata.lua files, general chats, and library chats
+
+    -- 1. Scan general chats
+    local general_chats = self:getGeneralChats()
+    for _idx, chat in ipairs(general_chats) do
+        if chat and chat.messages and #chat.messages > 0 then
+            local domain_key = chat.domain or "untagged"
+            if not domains[domain_key] then
+                domains[domain_key] = {}
+            end
+            table.insert(domains[domain_key], {
+                chat = chat,
+                document_path = "__GENERAL_CHATS__"
+            })
+        end
+    end
+
+    -- 2. Scan library chats
+    local library_chats = self:getLibraryChats()
+    for _idx, chat in ipairs(library_chats) do
+        if chat and chat.messages and #chat.messages > 0 then
+            local domain_key = chat.domain or "untagged"
+            if not domains[domain_key] then
+                domains[domain_key] = {}
+            end
+            table.insert(domains[domain_key], {
+                chat = chat,
+                document_path = "__LIBRARY_CHATS__"
+            })
+        end
+    end
+
+    -- 3. Scan document chats from chat index
+    local index = self:getChatIndex()
+    for doc_path, info in pairs(index) do
+        if doc_path ~= "__GENERAL_CHATS__" and lfs.attributes(doc_path, "mode") then
+            -- Read chats from metadata.lua for this document
+            local chats_table = BookStore.readChats(doc_path)
+
+            for chat_id, chat in pairs(chats_table) do
+                if chat and chat.messages and #chat.messages > 0 then
+                    local domain_key = chat.domain or "untagged"
+                    if not domains[domain_key] then
+                        domains[domain_key] = {}
+                    end
+                    table.insert(domains[domain_key], {
+                        chat = chat,
+                        document_path = doc_path
+                    })
+                end
+            end
+        end
+    end
+
+    -- Sort chats within each domain by timestamp (newest first)
+    for domain_key, chats in pairs(domains) do
+        table.sort(chats, function(a, b)
+            return (a.chat.timestamp or 0) > (b.chat.timestamp or 0)
+        end)
+    end
+
+    return domains
+end
+
+-- Get count of chats per domain
+function ChatHistoryManager:getDomainChatCounts()
+    local chats_by_domain = self:getChatsByDomain()
+    local counts = {}
+
+    for domain_key, chats in pairs(chats_by_domain) do
+        counts[domain_key] = #chats
+    end
+
+    return counts
+end
+
+-- Add a tag to a chat
+function ChatHistoryManager:addTagToChat(document_path, chat_id, tag)
+    if not document_path or not chat_id or not tag or tag == "" then
+        logger.warn("Cannot add tag: missing required parameters")
+        return false
+    end
+
+    -- Normalize the tag (trim whitespace)
+    tag = tag:match("^%s*(.-)%s*$")
+    if tag == "" then return false end
+
+    -- Route to v2 or v1 storage
+    -- v2: Load chat from metadata.lua, general, or library storage, add tag, update
+    local chat
+    if document_path == "__GENERAL_CHATS__" then
+        chat = self:getGeneralChatById(chat_id)
+    elseif document_path == "__LIBRARY_CHATS__" then
+        chat = self:getLibraryChatById(chat_id)
+    else
+        if lfs.attributes(document_path, "mode") then
+            local chats = BookStore.readChats(document_path)
+            chat = chats[chat_id]
+        end
+    end
+
+    if not chat then
+        logger.warn("Cannot add tag: chat not found")
+        return false
+    end
+
+    -- Initialize tags if not present
+    if not chat.tags then
+        chat.tags = {}
+    end
+
+    -- Check if tag already exists
+    for _idx, existing_tag in ipairs(chat.tags) do
+        if existing_tag == tag then
+            return true  -- Tag already exists, consider it success
+        end
+    end
+
+    -- Add the tag
+    table.insert(chat.tags, tag)
+
+    -- Save back
+    if document_path == "__GENERAL_CHATS__" then
+        return self:updateGeneralChat(chat_id, { tags = chat.tags })
+    elseif document_path == "__LIBRARY_CHATS__" then
+        return self:updateLibraryChat(chat_id, { tags = chat.tags })
+    else
+        return self:updateChatInDocSettings(nil, chat_id, { tags = chat.tags }, document_path)
+    end
+end
+
+-- Remove a tag from a chat
+function ChatHistoryManager:removeTagFromChat(document_path, chat_id, tag)
+    if not document_path or not chat_id or not tag then
+        logger.warn("Cannot remove tag: missing required parameters")
+        return false
+    end
+
+    -- Route to v2 or v1 storage
+    -- v2: Load chat from metadata.lua, general, or library storage, remove tag, update
+    local chat
+    if document_path == "__GENERAL_CHATS__" then
+        chat = self:getGeneralChatById(chat_id)
+    elseif document_path == "__LIBRARY_CHATS__" then
+        chat = self:getLibraryChatById(chat_id)
+    else
+        if lfs.attributes(document_path, "mode") then
+            local chats = BookStore.readChats(document_path)
+            chat = chats[chat_id]
+        end
+    end
+
+    if not chat then
+        logger.warn("Cannot remove tag: chat not found")
+        return false
+    end
+
+    if not chat.tags then
+        return true  -- No tags to remove
+    end
+
+    -- Remove the tag
+    local new_tags = {}
+    for _idx, existing_tag in ipairs(chat.tags) do
+        if existing_tag ~= tag then
+            table.insert(new_tags, existing_tag)
+        end
+    end
+
+    chat.tags = new_tags
+
+    -- Save back
+    if document_path == "__GENERAL_CHATS__" then
+        return self:updateGeneralChat(chat_id, { tags = new_tags })
+    elseif document_path == "__LIBRARY_CHATS__" then
+        return self:updateLibraryChat(chat_id, { tags = new_tags })
+    else
+        return self:updateChatInDocSettings(nil, chat_id, { tags = new_tags }, document_path)
+    end
+end
+
+
+-- Get all unique tags across all chats
+function ChatHistoryManager:getAllTags()
+    local tags_set = {}
+
+    -- v2: Scan metadata.lua files, general chats, and library chats
+
+    -- 1. Scan general chats
+    local general_chats = self:getGeneralChats()
+    for _idx, chat in ipairs(general_chats) do
+        if chat and chat.tags then
+            for _tidx, tag in ipairs(chat.tags) do
+                tags_set[tag] = true
+            end
+        end
+    end
+
+    -- 2. Scan library chats
+    local library_chats = self:getLibraryChats()
+    for _idx, chat in ipairs(library_chats) do
+        if chat and chat.tags then
+            for _tidx, tag in ipairs(chat.tags) do
+                tags_set[tag] = true
+            end
+        end
+    end
+
+    -- 3. Scan document chats from chat index
+    local index = self:getChatIndex()
+    for doc_path, info in pairs(index) do
+        if doc_path ~= "__GENERAL_CHATS__" and lfs.attributes(doc_path, "mode") then
+            -- Read chats from metadata.lua for this document
+            local chats_table = BookStore.readChats(doc_path)
+
+            for chat_id, chat in pairs(chats_table) do
+                if chat and chat.tags then
+                    for _tidx, tag in ipairs(chat.tags) do
+                        tags_set[tag] = true
+                    end
+                end
+            end
+        end
+    end
+
+    -- Convert set to sorted array
+    local tags = {}
+    for tag in pairs(tags_set) do
+        table.insert(tags, tag)
+    end
+    table.sort(tags)
+
+    return tags
+end
+
+-- Get all chats with a specific tag
+function ChatHistoryManager:getChatsByTag(tag)
+    local chats = {}
+
+    if not tag then return chats end
+
+    -- v2: Scan metadata.lua files, general chats, and library chats
+
+    -- 1. Scan general chats
+    local general_chats = self:getGeneralChats()
+    for _idx, chat in ipairs(general_chats) do
+        if chat and chat.tags and chat.messages and #chat.messages > 0 then
+            for _tidx, chat_tag in ipairs(chat.tags) do
+                if chat_tag == tag then
+                    table.insert(chats, {
+                        chat = chat,
+                        document_path = "__GENERAL_CHATS__"
+                    })
+                    break
+                end
+            end
+        end
+    end
+
+    -- 2. Scan library chats
+    local library_chats = self:getLibraryChats()
+    for _idx, chat in ipairs(library_chats) do
+        if chat and chat.tags and chat.messages and #chat.messages > 0 then
+            for _tidx, chat_tag in ipairs(chat.tags) do
+                if chat_tag == tag then
+                    table.insert(chats, {
+                        chat = chat,
+                        document_path = "__LIBRARY_CHATS__"
+                    })
+                    break
+                end
+            end
+        end
+    end
+
+    -- 3. Scan document chats from chat index
+    local index = self:getChatIndex()
+    for doc_path, info in pairs(index) do
+        if doc_path ~= "__GENERAL_CHATS__" and lfs.attributes(doc_path, "mode") then
+            -- Read chats from metadata.lua for this document
+            local chats_table = BookStore.readChats(doc_path)
+
+            for chat_id, chat in pairs(chats_table) do
+                if chat and chat.tags and chat.messages and #chat.messages > 0 then
+                    for _tidx, chat_tag in ipairs(chat.tags) do
+                        if chat_tag == tag then
+                            table.insert(chats, {
+                                chat = chat,
+                                document_path = doc_path
+                            })
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Sort by timestamp (newest first)
+    table.sort(chats, function(a, b)
+        return (a.chat.timestamp or 0) > (b.chat.timestamp or 0)
+    end)
+
+    return chats
+end
+
+-- Get count of chats per tag
+function ChatHistoryManager:getTagChatCounts()
+    local counts = {}
+
+    -- v2: Scan metadata.lua files, general chats, and library chats
+
+    -- 1. Scan general chats
+    local general_chats = self:getGeneralChats()
+    for _idx, chat in ipairs(general_chats) do
+        if chat and chat.tags and chat.messages and #chat.messages > 0 then
+            for _tidx, tag in ipairs(chat.tags) do
+                counts[tag] = (counts[tag] or 0) + 1
+            end
+        end
+    end
+
+    -- 2. Scan library chats
+    local library_chats = self:getLibraryChats()
+    for _idx, chat in ipairs(library_chats) do
+        if chat and chat.tags and chat.messages and #chat.messages > 0 then
+            for _tidx, tag in ipairs(chat.tags) do
+                counts[tag] = (counts[tag] or 0) + 1
+            end
+        end
+    end
+
+    -- 3. Scan document chats from chat index
+    local index = self:getChatIndex()
+    for doc_path, info in pairs(index) do
+        if doc_path ~= "__GENERAL_CHATS__" and lfs.attributes(doc_path, "mode") then
+            -- Read chats from metadata.lua for this document
+            local chats_table = BookStore.readChats(doc_path)
+
+            for chat_id, chat in pairs(chats_table) do
+                if chat and chat.tags and chat.messages and #chat.messages > 0 then
+                    for _tidx, tag in ipairs(chat.tags) do
+                        counts[tag] = (counts[tag] or 0) + 1
+                    end
+                end
+            end
+        end
+    end
+
+    return counts
+end
+
+-- =============================================================================
+-- Star / Unstar
+-- =============================================================================
+
+--- Star a chat (mark as favorite).
+--- @param document_path string Document path or special key
+--- @param chat_id string Chat ID
+--- @return boolean success
+function ChatHistoryManager:starChat(document_path, chat_id)
+    if not document_path or not chat_id then
+        logger.warn("Cannot star chat: missing required parameters")
+        return false
+    end
+
+    if document_path == "__GENERAL_CHATS__" then
+        return self:updateGeneralChat(chat_id, { starred = true })
+    elseif document_path == "__LIBRARY_CHATS__" then
+        return self:updateLibraryChat(chat_id, { starred = true })
+    else
+        return self:updateChatInDocSettings(nil, chat_id, { starred = true }, document_path)
+    end
+end
+
+--- Patch a saved chat's control_state in place (read-modify-write, star's
+--- update router). For per-chat controls that must persist WITHOUT a full chat
+--- save — a viewer MD/TXT tap followed by close-without-reply never hits a
+--- save site, which is exactly the reopen-revert the 2026-08-12 device rounds
+--- kept finding.
+--- @param document_path string Document path or store sentinel
+--- @param chat_id string
+--- @param patch table Fields merged into the stored control_state
+--- @return boolean success
+function ChatHistoryManager:updateChatControlState(document_path, chat_id, patch)
+    if not document_path or not chat_id or type(patch) ~= "table" then return false end
+    local chat = self:getChatById(document_path, chat_id)
+    if not chat then return false end
+    local cs = chat.control_state or {}
+    for k, v in pairs(patch) do cs[k] = v end
+    if document_path == "__GENERAL_CHATS__" then
+        return self:updateGeneralChat(chat_id, { control_state = cs })
+    elseif document_path == "__LIBRARY_CHATS__" then
+        return self:updateLibraryChat(chat_id, { control_state = cs })
+    else
+        return self:updateChatInDocSettings(nil, chat_id, { control_state = cs }, document_path)
+    end
+end
+
+--- Unstar a chat.
+--- @param document_path string Document path or special key
+--- @param chat_id string Chat ID
+--- @return boolean success
+function ChatHistoryManager:unstarChat(document_path, chat_id)
+    if not document_path or not chat_id then
+        logger.warn("Cannot unstar chat: missing required parameters")
+        return false
+    end
+
+    if document_path == "__GENERAL_CHATS__" then
+        return self:updateGeneralChat(chat_id, { starred = false })
+    elseif document_path == "__LIBRARY_CHATS__" then
+        return self:updateLibraryChat(chat_id, { starred = false })
+    else
+        return self:updateChatInDocSettings(nil, chat_id, { starred = false }, document_path)
+    end
+end
+
+--- Get all starred chats across all storage types.
+--- @return table Array of { chat, document_path } sorted by timestamp desc
+function ChatHistoryManager:getStarredChats()
+    local starred = {}
+
+
+    -- 1. Scan general chats
+    local general_chats = self:getGeneralChats()
+    for _idx, chat in ipairs(general_chats) do
+        if chat and chat.starred and chat.messages and #chat.messages > 0 then
+            table.insert(starred, {
+                chat = chat,
+                document_path = "__GENERAL_CHATS__"
+            })
+        end
+    end
+
+    -- 2. Scan library chats
+    local library_chats = self:getLibraryChats()
+    for _idx, chat in ipairs(library_chats) do
+        if chat and chat.starred and chat.messages and #chat.messages > 0 then
+            table.insert(starred, {
+                chat = chat,
+                document_path = "__LIBRARY_CHATS__"
+            })
+        end
+    end
+
+    -- 3. Scan document chats from chat index
+    local index = self:getChatIndex()
+    for doc_path, _info in pairs(index) do
+        if doc_path ~= "__GENERAL_CHATS__" and lfs.attributes(doc_path, "mode") then
+            local chats_table = BookStore.readChats(doc_path)
+            for _chat_id, chat in pairs(chats_table) do
+                if chat and chat.starred and chat.messages and #chat.messages > 0 then
+                    table.insert(starred, {
+                        chat = chat,
+                        document_path = doc_path
+                    })
+                end
+            end
+        end
+    end
+
+    -- Sort by timestamp (newest first)
+    table.sort(starred, function(a, b)
+        return (a.chat.timestamp or 0) > (b.chat.timestamp or 0)
+    end)
+
+    return starred
+end
+
+--- Get count of starred chats across all storage types.
+--- @return number count
+function ChatHistoryManager:getStarredChatCount()
+    local count = 0
+
+
+    local general_chats = self:getGeneralChats()
+    for _idx, chat in ipairs(general_chats) do
+        if chat and chat.starred and chat.messages and #chat.messages > 0 then
+            count = count + 1
+        end
+    end
+
+    local library_chats = self:getLibraryChats()
+    for _idx, chat in ipairs(library_chats) do
+        if chat and chat.starred and chat.messages and #chat.messages > 0 then
+            count = count + 1
+        end
+    end
+
+    local index = self:getChatIndex()
+    for doc_path, info in pairs(index) do
+        if doc_path ~= "__GENERAL_CHATS__" and lfs.attributes(doc_path, "mode") then
+            if type(info.starred) == "number" then
+                -- Fix S (2026-08-17): the index carries the starred tally —
+                -- no sidecar parse
+                count = count + info.starred
+            else
+                -- Legacy entry not yet healed (getAllDocumentsUnified heals
+                -- on browse) — one-time sidecar read
+                local chats_table = BookStore.readChats(doc_path)
+                for _chat_id, chat in pairs(chats_table) do
+                    if chat and chat.starred and chat.messages and #chat.messages > 0 then
+                        count = count + 1
+                    end
+                end
+            end
+        end
+    end
+
+    return count
+end
+
+--[[ ============================================================================
+     NEW STORAGE SYSTEM (v2) - Metadata.lua Integration
+     ============================================================================
+
+     These methods implement storage in KOReader's native metadata.lua file
+     within each book's .sdr folder. This fixes the critical bug where chat
+     history was lost when files were moved by leveraging KOReader's built-in
+     DocSettings.updateLocation() mechanism.
+
+     Benefits:
+     - Chats automatically migrate when files move (via DocSettings.updateLocation())
+     - Works across all storage modes ("doc", "dir", "hash")
+     - No plugin hooks needed - KOReader handles migration
+     - Atomic writes with validation and verification
+     - Namespaced keys prevent conflicts with KOReader metadata
+
+     Storage format:
+     - Document chats: book.epub.sdr/koassistant_chats.lua (Track 37, 2026-09-02;
+       was metadata.lua's "koassistant_chats" key until then)
+     - General chats: Stored in dedicated global settings file
+     - Chat index: Lightweight index in global settings for fast browsing
+
+     Safety measures:
+     - Validation of chat data before writes
+     - Atomic writes using LuaSettings temp file + rename pattern
+     - Post-write verification by reading back
+     - Our own sidecar file: KOReader never rewrites it, we never rewrite metadata.lua
+
+     Version history (G_reader_settings chat_storage_version):
+     - v1: Hash-based directories (koassistant_chats/{hash}/) — import path only
+     - v2: Stored in metadata.lua (2026-02 .. 2026-09)
+     - v3: koassistant_chats.lua sidecar file, moved by the DocSettings.updateLocation
+       patch like every other plugin sidecar file (current)
+--]]
+
+
+--[[
+    Storage methods for document chats
+--]]
+
+-- Save chat to metadata.lua
+-- @param ui: ReaderUI object (optional, kept for backwards compatibility)
+-- @param chat_data: Complete chat data structure (must include document_path)
+-- @return chat_id on success, false on failure
+function ChatHistoryManager:saveChatToDocSettings(ui, chat_data)
+    if not chat_data or not chat_data.id then
+        logger.warn("saveChatToDocSettings: Missing chat_data or chat_data.id")
+        return false
+    end
+
+    if not chat_data.document_path or chat_data.document_path == "__GENERAL_CHATS__" or chat_data.document_path == "__LIBRARY_CHATS__" then
+        logger.warn("saveChatToDocSettings: Invalid document_path, use saveGeneralChat or saveLibraryChat instead")
+        return false
+    end
+
+    -- Verify document exists
+    if not lfs.attributes(chat_data.document_path, "mode") then
+        logger.warn("saveChatToDocSettings: Document not found: " .. chat_data.document_path)
+        return false
+    end
+
+    -- Read existing chats — live doc_settings when the book is open (may have
+    -- unsaved changes), fresh instance from disk otherwise
+    local doc_settings = SafeDocSettings.resolve(chat_data.document_path, ui)
+    local chats = BookStore.readChats(chat_data.document_path)
+
+    -- Add or update this chat (keyed by ID)
+    chats[chat_data.id] = chat_data
+
+    -- Safe write to metadata.lua with validation
+    -- Pass ui to use its doc_settings if document is open (prevents race with KOReader flush)
+    local ok, err = safeWriteChats(chat_data.document_path, chats)
+    if not ok then
+        logger.warn("saveChatToDocSettings: " .. (err or "Write failed"))
+        return false
+    end
+
+    -- Update chat index (doc_props: Fix M title/author)
+    self:updateChatIndex(chat_data.document_path, "save", chat_data.id, chats,
+        { doc_props = doc_settings:readSetting("doc_props"), has_props = true })
+
+    -- Track as last opened chat
+    self:setLastOpenedChat(chat_data.document_path, chat_data.id)
+
+    logger.dbg("Saved chat to metadata.lua: " .. chat_data.id .. " (" .. chat_data.document_path .. ")")
+    return chat_data.id
+end
+
+-- Load all chats for document from metadata.lua
+-- @param ui: ReaderUI object or document_path string
+-- @return array of chat objects sorted by timestamp (newest first)
+function ChatHistoryManager:getChatsFromDocSettings(ui)
+    -- Extract document path from ui or use directly if string
+    local document_path
+    if type(ui) == "string" then
+        document_path = ui
+    elseif ui and ui.document and ui.document.file then
+        document_path = ui.document.file
+    else
+        logger.warn("getChatsFromDocSettings: Missing ui or document_path")
+        return {}
+    end
+
+    -- Verify document exists
+    if not lfs.attributes(document_path, "mode") then
+        logger.warn("getChatsFromDocSettings: Document not found: " .. document_path)
+        return {}
+    end
+
+    -- Read chats from metadata.lua
+    local chats_table = BookStore.readChats(document_path)
+
+    -- Convert table to sorted array
+    local chats = {}
+    for chat_id, chat_data in pairs(chats_table) do
+        table.insert(chats, chat_data)
+    end
+
+    -- Sort by timestamp (newest first)
+    table.sort(chats, function(a, b)
+        return (a.timestamp or 0) > (b.timestamp or 0)
+    end)
+
+    logger.dbg("Loaded " .. #chats .. " chats from metadata.lua")
+    return chats
+end
+
+-- Get specific chat by ID from metadata.lua
+-- @param ui: ReaderUI object or document_path string
+-- @param chat_id: Chat ID to load
+-- @return chat data or nil if not found
+function ChatHistoryManager:getChatByIdFromDocSettings(ui, chat_id)
+    if not chat_id then
+        logger.warn("getChatByIdFromDocSettings: Missing chat_id")
+        return nil
+    end
+
+    -- Extract document path from ui or use directly if string
+    local document_path
+    if type(ui) == "string" then
+        document_path = ui
+    elseif ui and ui.document and ui.document.file then
+        document_path = ui.document.file
+    else
+        logger.warn("getChatByIdFromDocSettings: Missing ui or document_path")
+        return nil
+    end
+
+    -- Verify document exists
+    if not lfs.attributes(document_path, "mode") then
+        logger.warn("getChatByIdFromDocSettings: Document not found: " .. document_path)
+        return nil
+    end
+
+    -- Read chats from metadata.lua
+    local chats = BookStore.readChats(document_path)
+
+    return chats[chat_id]
+end
+
+-- Delete chat from metadata.lua
+-- @param ui: ReaderUI object or nil
+-- @param chat_id: Chat ID to delete
+-- @param document_path: Document path (required if ui is nil or doesn't have document.file)
+-- @return true on success, false on failure
+function ChatHistoryManager:deleteChatFromDocSettings(ui, chat_id, document_path)
+    if not chat_id then
+        logger.warn("deleteChatFromDocSettings: Missing chat_id")
+        return false
+    end
+
+    -- Extract document path from ui or use provided document_path
+    local actual_doc_path = document_path
+    if ui and ui.document and ui.document.file then
+        actual_doc_path = ui.document.file
+    end
+
+    if not actual_doc_path then
+        logger.warn("deleteChatFromDocSettings: Missing document_path")
+        return false
+    end
+
+    -- Verify document exists
+    if not lfs.attributes(actual_doc_path, "mode") then
+        logger.warn("deleteChatFromDocSettings: Document not found: " .. actual_doc_path)
+        return false
+    end
+
+    -- Read chats — live doc_settings when the book is open, disk otherwise
+    local doc_settings = SafeDocSettings.resolve(actual_doc_path, ui)
+    local chats = BookStore.readChats(actual_doc_path)
+
+    -- Check if chat exists
+    if not chats[chat_id] then
+        logger.warn("deleteChatFromDocSettings: Chat not found: " .. chat_id)
+        return false
+    end
+
+    local stored_path = chats[chat_id].document_path
+
+    -- Delete the chat
+    chats[chat_id] = nil
+
+    -- Safe write back to metadata.lua
+    -- Pass ui to use its doc_settings if document is open (prevents race with KOReader flush)
+    local ok, err = safeWriteChats(actual_doc_path, chats)
+    if not ok then
+        logger.warn("deleteChatFromDocSettings: " .. (err or "Write failed"))
+        return false
+    end
+
+    -- Update chat index
+    if stored_path and stored_path ~= "__GENERAL_CHATS__" then
+        self:updateChatIndex(stored_path, "delete", chat_id, chats,
+            { doc_props = doc_settings:readSetting("doc_props"), has_props = true })
+    end
+
+    logger.dbg("Deleted chat from metadata.lua: " .. chat_id)
+    return true
+end
+
+-- Update chat in metadata.lua (for rename, tags, etc.)
+-- @param ui: ReaderUI object or nil
+-- @param chat_id: Chat ID to update
+-- @param updates: Table of fields to update
+-- @param document_path: Document path (required if ui is nil or doesn't have document.file)
+-- @return true on success, false on failure
+function ChatHistoryManager:updateChatInDocSettings(ui, chat_id, updates, document_path)
+    if not chat_id or not updates then
+        logger.warn("updateChatInDocSettings: Missing chat_id or updates")
+        return false
+    end
+
+    -- Extract document path from ui or use provided document_path
+    local actual_doc_path = document_path
+    if ui and ui.document and ui.document.file then
+        actual_doc_path = ui.document.file
+    end
+
+    if not actual_doc_path then
+        logger.warn("updateChatInDocSettings: Missing document_path")
+        return false
+    end
+
+    -- Verify document exists
+    if not lfs.attributes(actual_doc_path, "mode") then
+        logger.warn("updateChatInDocSettings: Document not found: " .. actual_doc_path)
+        return false
+    end
+
+    -- Read chats — live doc_settings when the book is open, disk otherwise
+    local doc_settings = SafeDocSettings.resolve(actual_doc_path, ui)
+    local chats = BookStore.readChats(actual_doc_path)
+
+    -- Check if chat exists
+    if not chats[chat_id] then
+        logger.warn("updateChatInDocSettings: Chat not found: " .. chat_id)
+        return false
+    end
+
+    -- Apply updates
+    for key, value in pairs(updates) do
+        chats[chat_id][key] = value
+    end
+
+    -- Safe write back to metadata.lua
+    -- Pass ui to use its doc_settings if document is open (prevents race with KOReader flush)
+    local ok, err = safeWriteChats(actual_doc_path, chats)
+    if not ok then
+        logger.warn("updateChatInDocSettings: " .. (err or "Write failed"))
+        return false
+    end
+
+    -- Keep the index's starred tally live (Fix S, 2026-08-17): star/unstar and
+    -- other patches write through here without touching any save-path index
+    -- update. "refresh" preserves last_modified and no-ops when nothing
+    -- indexed changed.
+    self:updateChatIndex(actual_doc_path, "refresh", nil, chats,
+        { doc_props = doc_settings:readSetting("doc_props"), has_props = true })
+
+    logger.dbg("Updated chat in metadata.lua: " .. chat_id)
+    return true
+end
+
+--[[
+    General chat storage methods (for chats without a document context)
+--]]
+
+-- Save general chat to dedicated settings file
+-- @param chat_data: Complete chat data structure
+-- @return chat_id on success, false on failure
+function ChatHistoryManager:saveGeneralChat(chat_data)
+    if not chat_data or not chat_data.id then
+        logger.warn("saveGeneralChat: Missing chat_data or chat_data.id")
+        return false
+    end
+
+    -- Read existing chats
+    local settings = LuaSettings:open(self.GENERAL_CHAT_FILE)
+    local chats = settings:readSetting("chats", {})
+
+    -- Add or update this chat (keyed by ID)
+    chats[chat_data.id] = chat_data
+
+    -- Safe write with validation and verification
+    local ok, err = safeWriteToLuaSettings(self.GENERAL_CHAT_FILE, chats)
+    if not ok then
+        logger.warn("saveGeneralChat: " .. (err or "Write failed"))
+        return false
+    end
+
+    -- Track as last opened chat
+    self:setLastOpenedChat("__GENERAL_CHATS__", chat_data.id)
+
+    logger.dbg("Saved general chat: " .. chat_data.id)
+    return chat_data.id
+end
+
+-- Load all general chats from dedicated settings file
+-- @return array of chat objects sorted by timestamp (newest first)
+function ChatHistoryManager:getGeneralChats()
+    -- Open general chats file
+    local settings = LuaSettings:open(self.GENERAL_CHAT_FILE)
+
+    -- Read chats table
+    local chats_table = settings:readSetting("chats", {})
+
+    -- Convert table to sorted array
+    local chats = {}
+    for chat_id, chat_data in pairs(chats_table) do
+        table.insert(chats, chat_data)
+    end
+
+    -- Sort by timestamp (newest first)
+    table.sort(chats, function(a, b)
+        return (a.timestamp or 0) > (b.timestamp or 0)
+    end)
+
+    logger.dbg("Loaded " .. #chats .. " general chats")
+    return chats
+end
+
+-- Get specific general chat by ID
+-- @param chat_id: Chat ID to load
+-- @return chat data or nil if not found
+function ChatHistoryManager:getGeneralChatById(chat_id)
+    if not chat_id then
+        logger.warn("getGeneralChatById: Missing chat_id")
+        return nil
+    end
+
+    -- Open general chats file
+    local settings = LuaSettings:open(self.GENERAL_CHAT_FILE)
+
+    -- Read chats table
+    local chats = settings:readSetting("chats", {})
+
+    return chats[chat_id]
+end
+
+-- Delete general chat by ID
+-- @param chat_id: Chat ID to delete
+-- @return true on success, false on failure
+function ChatHistoryManager:deleteGeneralChat(chat_id)
+    if not chat_id then
+        logger.warn("deleteGeneralChat: Missing chat_id")
+        return false
+    end
+
+    -- Read existing chats
+    local settings = LuaSettings:open(self.GENERAL_CHAT_FILE)
+    local chats = settings:readSetting("chats", {})
+
+    -- Check if chat exists
+    if not chats[chat_id] then
+        logger.warn("deleteGeneralChat: Chat not found: " .. chat_id)
+        return false
+    end
+
+    -- Delete the chat
+    chats[chat_id] = nil
+
+    -- Safe write with validation and verification
+    local ok, err = safeWriteToLuaSettings(self.GENERAL_CHAT_FILE, chats)
+    if not ok then
+        logger.warn("deleteGeneralChat: " .. (err or "Write failed"))
+        return false
+    end
+
+    logger.dbg("Deleted general chat: " .. chat_id)
+    return true
+end
+
+-- Update general chat (for rename, tags, etc.)
+-- @param chat_id: Chat ID to update
+-- @param updates: Table of fields to update
+-- @return true on success, false on failure
+function ChatHistoryManager:updateGeneralChat(chat_id, updates)
+    if not chat_id or not updates then
+        logger.warn("updateGeneralChat: Missing chat_id or updates")
+        return false
+    end
+
+    -- Read existing chats
+    local settings = LuaSettings:open(self.GENERAL_CHAT_FILE)
+    local chats = settings:readSetting("chats", {})
+
+    -- Check if chat exists
+    if not chats[chat_id] then
+        logger.warn("updateGeneralChat: Chat not found: " .. chat_id)
+        return false
+    end
+
+    -- Apply updates
+    for key, value in pairs(updates) do
+        chats[chat_id][key] = value
+    end
+
+    -- Safe write with validation and verification
+    local ok, err = safeWriteToLuaSettings(self.GENERAL_CHAT_FILE, chats)
+    if not ok then
+        logger.warn("updateGeneralChat: " .. (err or "Write failed"))
+        return false
+    end
+
+    logger.dbg("Updated general chat: " .. chat_id)
+    return true
+end
+
+--[[
+    Library chat storage (dedicated file for library/multi-book comparisons)
+    Similar to general chats but for library context
+--]]
+
+-- Save library chat to dedicated settings file
+-- @param chat_data: Chat object with id, title, messages, etc.
+-- @return chat_id on success, false on failure
+function ChatHistoryManager:saveLibraryChat(chat_data)
+    if not chat_data or not chat_data.id then
+        logger.warn("saveLibraryChat: Missing chat_data or chat_data.id")
+        return false
+    end
+
+    -- Read existing chats
+    local settings = LuaSettings:open(self.LIBRARY_CHAT_FILE)
+    local chats = settings:readSetting("chats", {})
+
+    -- Add or update this chat (keyed by ID)
+    chats[chat_data.id] = chat_data
+
+    -- Safe write with validation and verification
+    local ok, err = safeWriteToLuaSettings(self.LIBRARY_CHAT_FILE, chats)
+    if not ok then
+        logger.warn("saveLibraryChat: " .. (err or "Write failed"))
+        return false
+    end
+
+    -- Track as last opened chat
+    self:setLastOpenedChat("__LIBRARY_CHATS__", chat_data.id)
+
+    logger.dbg("Saved library chat: " .. chat_data.id)
+    return chat_data.id
+end
+
+-- Load all library chats from dedicated settings file
+-- @return array of chat objects sorted by timestamp (newest first)
+function ChatHistoryManager:getLibraryChats()
+    -- Open library chats file
+    local settings = LuaSettings:open(self.LIBRARY_CHAT_FILE)
+
+    -- Read chats table
+    local chats_table = settings:readSetting("chats", {})
+
+    -- Convert table to sorted array
+    local chats = {}
+    for chat_id, chat_data in pairs(chats_table) do
+        table.insert(chats, chat_data)
+    end
+
+    -- Sort by timestamp (newest first)
+    table.sort(chats, function(a, b)
+        return (a.timestamp or 0) > (b.timestamp or 0)
+    end)
+
+    logger.dbg("Loaded " .. #chats .. " library chats")
+    return chats
+end
+
+-- Get specific library chat by ID
+-- @param chat_id: Chat ID to load
+-- @return chat data or nil if not found
+function ChatHistoryManager:getLibraryChatById(chat_id)
+    if not chat_id then
+        logger.warn("getLibraryChatById: Missing chat_id")
+        return nil
+    end
+
+    -- Open library chats file
+    local settings = LuaSettings:open(self.LIBRARY_CHAT_FILE)
+
+    -- Read chats table
+    local chats = settings:readSetting("chats", {})
+
+    return chats[chat_id]
+end
+
+-- Delete library chat by ID
+-- @param chat_id: Chat ID to delete
+-- @return true on success, false on failure
+function ChatHistoryManager:deleteLibraryChat(chat_id)
+    if not chat_id then
+        logger.warn("deleteLibraryChat: Missing chat_id")
+        return false
+    end
+
+    -- Read existing chats
+    local settings = LuaSettings:open(self.LIBRARY_CHAT_FILE)
+    local chats = settings:readSetting("chats", {})
+
+    -- Check if chat exists
+    if not chats[chat_id] then
+        logger.warn("deleteLibraryChat: Chat not found: " .. chat_id)
+        return false
+    end
+
+    -- Delete the chat
+    chats[chat_id] = nil
+
+    -- Safe write with validation and verification
+    local ok, err = safeWriteToLuaSettings(self.LIBRARY_CHAT_FILE, chats)
+    if not ok then
+        logger.warn("deleteLibraryChat: " .. (err or "Write failed"))
+        return false
+    end
+
+    logger.dbg("Deleted library chat: " .. chat_id)
+    return true
+end
+
+-- Update library chat (for rename, tags, etc.)
+-- @param chat_id: Chat ID to update
+-- @param updates: Table of fields to update
+-- @return true on success, false on failure
+function ChatHistoryManager:updateLibraryChat(chat_id, updates)
+    if not chat_id or not updates then
+        logger.warn("updateLibraryChat: Missing chat_id or updates")
+        return false
+    end
+
+    -- Read existing chats
+    local settings = LuaSettings:open(self.LIBRARY_CHAT_FILE)
+    local chats = settings:readSetting("chats", {})
+
+    -- Check if chat exists
+    if not chats[chat_id] then
+        logger.warn("updateLibraryChat: Chat not found: " .. chat_id)
+        return false
+    end
+
+    -- Apply updates
+    for key, value in pairs(updates) do
+        chats[chat_id][key] = value
+    end
+
+    -- Safe write with validation and verification
+    local ok, err = safeWriteToLuaSettings(self.LIBRARY_CHAT_FILE, chats)
+    if not ok then
+        logger.warn("updateLibraryChat: " .. (err or "Write failed"))
+        return false
+    end
+
+    logger.dbg("Updated library chat: " .. chat_id)
+    return true
+end
+
+--[[
+    Chat index maintenance for fast browsing
+
+    The index stores lightweight metadata about which documents have chats:
+    {
+        ["/path/to/book.epub"] = {
+            count = 3,
+            last_modified = timestamp,
+            chat_ids = {id1, id2, id3}
+        }
+    }
+--]]
+
+-- Update chat index when chats are saved/deleted
+-- @param document_path: Document path
+-- @param operation: "save" or "delete"
+-- @param chat_id: Chat ID being saved/deleted
+-- @param chats_table: Current chats table (for counting)
+-- Compare two chat-id arrays as sets. Both the stored and freshly-computed
+-- arrays are built via pairs() (nondeterministic order), so element-wise
+-- comparison would spuriously report a change on every call.
+local function sameChatIdSet(a, b)
+    a, b = a or {}, b or {}
+    if #a ~= #b then return false end
+    local set = {}
+    for _idx, id in ipairs(a) do set[id] = true end
+    for _idx, id in ipairs(b) do
+        if not set[id] then return false end
+    end
+    return true
+end
+
+-- Fix M (2026-09-02): the index carries the book's title/author so the chat
+-- browser renders its document list without opening any DocSettings. Writers
+-- that have a DocSettings in hand pass `opts.doc_props` (the book's doc_props
+-- table, nil when the book has none); the entry stores `false` for a missing
+-- field so "known absent" (false: render the filename) is distinguishable from
+-- "never looked" (nil: legacy entry, healed once by the browser). Without
+-- opts.doc_props the previous entry's title/author are preserved.
+-- The stored value is the EFFECTIVE title/author: KOReader keeps a title
+-- edited in Book information in the sidecar's custom_metadata.lua, never in
+-- metadata.lua's doc_props, so the overlay goes through KOReader's own
+-- BookInfo.extendProps (raw doc_props when that module is unavailable).
+local function indexTitleAuthor(doc_props, prev, has_props, doc_path)
+    if has_props then
+        doc_props = SafeDocSettings.overlayCustomProps(doc_props, doc_path)
+        local title = doc_props and doc_props.title
+        local author = doc_props and doc_props.authors
+        return (title ~= nil and title ~= "") and title or false,
+               (author ~= nil and author ~= "") and author or false
+    end
+    if prev then return prev.title, prev.author end
+    return nil, nil
+end
+
+function ChatHistoryManager:updateChatIndex(document_path, operation, chat_id, chats_table, opts)
+    if not document_path or document_path == "__GENERAL_CHATS__" or document_path == "__LIBRARY_CHATS__" then
+        return
+    end
+    -- doc_props may legitimately be nil (book never opened in the reader):
+    -- the caller signals "I looked" with opts.has_props, or by passing a table
+    local has_props = opts and (opts.has_props or opts.doc_props ~= nil) or false
+
+    -- Check for concurrent index operations
+    -- Lua is single-threaded but callbacks can interleave in KOReader's event loop
+    if index_operation_pending then
+        logger.warn("KOAssistant: Index update collision detected for " .. document_path ..
+                   " (operation: " .. operation .. "). Proceeding anyway but this may cause issues.")
+    end
+    index_operation_pending = true
+
+    -- G_reader_settings is a global in KOReader
+    local index = G_reader_settings:readSetting("koassistant_chat_index", {})
+    local title, author = indexTitleAuthor(opts and opts.doc_props, index[document_path], has_props, document_path)
+
+    -- Count chats in the provided table
+    local count = 0
+    local chat_ids = {}
+    local max_timestamp = 0
+    local starred = 0
+
+    for id, chat in pairs(chats_table) do
+        count = count + 1
+        table.insert(chat_ids, id)
+
+        -- Starred tally rides the same pass (Fix S, 2026-08-17): the browser's
+        -- Starred row reads it from the index instead of re-parsing sidecars.
+        -- Predicate matches getStarredChatCount's.
+        if chat.starred and chat.messages and #chat.messages > 0 then
+            starred = starred + 1
+        end
+
+        -- Track the most recent chat timestamp
+        if chat.timestamp and chat.timestamp > max_timestamp then
+            max_timestamp = chat.timestamp
+        end
+    end
+
+    if count > 0 then
+        -- Determine the appropriate timestamp
+        local timestamp
+        if operation == "save" then
+            -- Actual modification - use current time
+            timestamp = os.time()
+        elseif operation == "delete" or operation == "refresh" then
+            -- Preserve existing timestamp or use max chat timestamp
+            -- This prevents spurious timestamp updates on book open/refresh
+            if index[document_path] and index[document_path].last_modified then
+                timestamp = index[document_path].last_modified
+            else
+                timestamp = max_timestamp > 0 and max_timestamp or os.time()
+            end
+        else
+            -- Unknown operation - default to current time
+            timestamp = os.time()
+        end
+
+        -- Refresh is a read-driven heal (book open / index rebuild): skip the
+        -- write entirely when the stored entry already matches. Scoped to
+        -- "refresh" only — save must always bump last_modified.
+        if operation == "refresh" then
+            local prev = index[document_path]
+            -- prev.starred nil (legacy entry) fails the equality even against 0,
+            -- so the first refresh after the Fix S upgrade heals the field
+            if prev and prev.count == count and prev.starred == starred
+                and prev.title == title and prev.author == author
+                and sameChatIdSet(prev.chat_ids, chat_ids) then
+                index_operation_pending = false
+                return
+            end
+        end
+
+        -- Document has chats, update index entry
+        index[document_path] = {
+            count = count,
+            last_modified = timestamp,
+            chat_ids = chat_ids,
+            starred = starred,
+            title = title,
+            author = author,
+        }
+
+        logger.dbg("Chat index update: operation=" .. operation .. ", timestamp=" ..
+                   (operation == "save" and "NEW" or "PRESERVED"))
+    else
+        if operation == "refresh" and index[document_path] == nil then
+            -- Nothing stored and nothing found — no-op
+            index_operation_pending = false
+            return
+        end
+        -- No chats left, remove from index
+        index[document_path] = nil
+    end
+
+    G_reader_settings:saveSetting("koassistant_chat_index", index)
+    if not (opts and opts.no_flush) then
+        G_reader_settings:flush()
+    end
+
+    -- Clear mutex flag
+    index_operation_pending = false
+
+    logger.dbg("Updated chat index for: " .. document_path .. " (operation: " .. operation .. ", count: " .. count .. ")")
+end
+
+-- Refresh the chat index entry for one document by reading its sidecar.
+-- Read-driven heal (issue #92): used by heal-on-open and the index rebuilder.
+-- Never flushes the book's DocSettings; writes the index only on change
+-- (see the "refresh" no-op branch in updateChatIndex).
+-- @param document_path string The document file path
+-- @param ui table|nil ReaderUI/FileManager instance for live DocSettings resolution
+-- @param opts table|nil { no_flush = true } to skip G_reader_settings:flush()
+function ChatHistoryManager:refreshChatIndexEntry(document_path, ui, opts)
+    if not document_path
+        or document_path == "__GENERAL_CHATS__"
+        or document_path == "__LIBRARY_CHATS__" then
+        return
+    end
+    local doc_settings = SafeDocSettings.resolve(document_path, ui)
+    local chats = BookStore.readChats(document_path)
+    -- Fix M: the heal also carries the current title/author, so a book whose
+    -- metadata was edited in KOReader re-labels in the browser on next open
+    local merged = { no_flush = opts and opts.no_flush,
+                     doc_props = doc_settings:readSetting("doc_props"), has_props = true }
+    self:updateChatIndex(document_path, "refresh", nil, chats, merged)
+end
+
+-- Get the chat index
+-- @return table of document paths to chat metadata
+function ChatHistoryManager:getChatIndex()
+    -- G_reader_settings is a global in KOReader
+    return G_reader_settings:readSetting("koassistant_chat_index", {})
+end
+
+-- Validate chat index on startup
+-- Checks each indexed document's metadata.lua to ensure counts match
+-- Removes orphan entries (documents that no longer exist or have no chats)
+-- This is NOT a full device scan - only validates existing index entries
+function ChatHistoryManager:validateChatIndex()
+    local index = G_reader_settings:readSetting("koassistant_chat_index", {})
+    local needs_update = false
+
+    for doc_path, entry in pairs(index) do
+        -- Check if document still exists
+        if not lfs.attributes(doc_path, "mode") then
+            logger.info("KOAssistant: Removing orphan index entry (document gone): " .. doc_path)
+            index[doc_path] = nil
+            needs_update = true
+        else
+            -- Verify chat count matches metadata.lua
+            local chats = BookStore.readChats(doc_path)
+
+            local actual_ids = {}
+            local actual_count = 0
+            for id in pairs(chats) do
+                actual_count = actual_count + 1
+                table.insert(actual_ids, id)
+            end
+
+            if actual_count ~= entry.count then
+                logger.dbg("KOAssistant: Fixing index count mismatch for: " .. doc_path ..
+                           " (index=" .. entry.count .. ", actual=" .. actual_count .. ")")
+                if actual_count == 0 then
+                    index[doc_path] = nil
+                else
+                    entry.count = actual_count
+                    entry.chat_ids = actual_ids
+                    -- Preserve existing timestamp
+                end
+                needs_update = true
+            end
+            -- Fix M: heal title/author (doc_props still come from KOReader's DocSettings)
+            if index[doc_path] then
+                local doc_settings = SafeDocSettings.resolve(doc_path)
+                local title, author = indexTitleAuthor(doc_settings:readSetting("doc_props"), entry, true, doc_path)
+                if entry.title ~= title or entry.author ~= author then
+                    entry.title = title
+                    entry.author = author
+                    needs_update = true
+                end
+            end
+        end
+    end
+
+    if needs_update then
+        G_reader_settings:saveSetting("koassistant_chat_index", index)
+        G_reader_settings:flush()
+        logger.dbg("KOAssistant: Chat index validated and updated")
+    else
+        logger.dbg("KOAssistant: Chat index validation complete - no changes needed")
+    end
+end
+
+-- Rebuild chat index by discovering documents with chats (for recovery/maintenance)
+-- Uses two-phase discovery:
+--   Phase A: Index-based — collects known doc paths from ReadHistory + KOAssistant indices (all storage modes)
+--   Phase B: Filesystem scan — supplements Phase A for dir/hash modes where scan roots are well-defined
+-- No doc-mode filesystem scan: the old scan root (DataStorage parent) doesn't match book locations
+-- on most platforms. Phase A covers doc mode via ReadHistory.
+-- @return count of documents indexed
+function ChatHistoryManager:rebuildChatIndex()
+    logger.info("KOAssistant: Rebuilding chat index...")
+
+    local DocSettings = require("docsettings")
+    local index = {}
+    local doc_count = 0
+    local seen = {}
+
+    local function indexDocument(book_path)
+        if not book_path or seen[book_path] then return end
+        seen[book_path] = true
+        if lfs.attributes(book_path, "mode") ~= "file" then return end
+        local chats = BookStore.readChats(book_path)
+        if chats and next(chats) then
+            local doc_settings = SafeDocSettings.resolve(book_path)
+            local chat_ids = {}
+            local count = 0
+            for id in pairs(chats) do
+                count = count + 1
+                table.insert(chat_ids, id)
+            end
+            local title, author = indexTitleAuthor(doc_settings:readSetting("doc_props"), nil, true, book_path)
+            index[book_path] = {
+                count = count,
+                last_modified = os.time(),
+                chat_ids = chat_ids,
+                title = title,
+                author = author,
+            }
+            doc_count = doc_count + 1
+            logger.dbg("KOAssistant: Indexed:", book_path, "(" .. count .. " chats)")
+        end
+    end
+
+    -- Phase A: Index-based discovery (mode-independent, primary)
+    local ok_rh, ReadHistory = pcall(require, "readhistory")
+    if ok_rh and ReadHistory and ReadHistory.hist then
+        for _idx, item in ipairs(ReadHistory.hist) do
+            if item.file then indexDocument(item.file) end
+        end
+    end
+    for doc_path in pairs(G_reader_settings:readSetting("koassistant_notebook_index", {})) do
+        indexDocument(doc_path)
+    end
+    for doc_path in pairs(G_reader_settings:readSetting("koassistant_artifact_index", {})) do
+        indexDocument(doc_path)
+    end
+    for doc_path in pairs(G_reader_settings:readSetting("koassistant_pinned_index", {})) do
+        if doc_path ~= "__GENERAL_CHATS__" and doc_path ~= "__LIBRARY_CHATS__" then
+            indexDocument(doc_path)
+        end
+    end
+
+    -- Phase B: Filesystem scan for dir/hash modes (well-defined roots)
+    local location = G_reader_settings:readSetting("document_metadata_folder", "doc")
+    if location == "dir" then
+        self:_scanDirModeSdr(indexDocument)
+    elseif location == "hash" then
+        self:_scanHashModeSdr(indexDocument)
+    end
+
+    -- Save rebuilt index
+    G_reader_settings:saveSetting("koassistant_chat_index", index)
+    G_reader_settings:flush()
+
+    logger.info("KOAssistant: Chat index rebuilt:", doc_count, "documents indexed")
+    return doc_count
+end
+
+--- Scan centralized docsettings directory for .sdr folders (dir storage mode)
+-- Reconstructs book paths by stripping the docsettings prefix and finding the
+-- file extension from metadata.{ext}.lua inside each .sdr folder.
+-- @param indexDocument function(book_path, sdr_path) called per mapped sidecar
+-- @param on_unmapped function|nil (sdr_path) called when no book path can be derived
+function ChatHistoryManager:_scanDirModeSdr(indexDocument, on_unmapped)
+    local docsettings_dir = DataStorage:getDocSettingsDir()
+
+    local function scan(dir, depth)
+        if depth > 8 then return end
+        local ok, iter = pcall(lfs.dir, dir)
+        if not ok then return end
+        for entry in iter do
+            if entry ~= "." and entry ~= ".." then
+                local path = dir .. "/" .. entry
+                local attr = lfs.attributes(path)
+                if attr and attr.mode == "directory" then
+                    if entry:match("%.sdr$") then
+                        -- Reconstruct book path: strip docsettings prefix + .sdr suffix
+                        local relative = path:sub(#docsettings_dir + 1):gsub("%.sdr$", "")
+                        -- Find extension from metadata file inside
+                        local mapped = false
+                        local meta_ok, meta_iter = pcall(lfs.dir, path)
+                        if meta_ok then
+                            for meta_entry in meta_iter do
+                                local ext = meta_entry:match("^metadata%.(.+)%.lua$")
+                                if ext then
+                                    local book_path = relative .. "." .. ext
+                                    indexDocument(book_path, path)
+                                    mapped = true
+                                    break
+                                end
+                            end
+                        end
+                        if not mapped and on_unmapped then
+                            on_unmapped(path)
+                        end
+                    else
+                        scan(path, depth + 1)
+                    end
+                end
+            end
+        end
+    end
+
+    logger.dbg("KOAssistant: Scanning dir-mode sidecar location:", docsettings_dir)
+    scan(docsettings_dir, 0)
+end
+
+--- Scan hash-based docsettings directory for .sdr folders (hash storage mode)
+-- Structure: {hash_dir}/{2char_prefix}/{full_hash}.sdr/metadata.{ext}.lua
+-- Reads metadata files to extract the original doc_path.
+-- @param indexDocument function(book_path, sdr_path) called per mapped sidecar
+-- @param on_unmapped function|nil (sdr_path) called when no book path can be derived
+function ChatHistoryManager:_scanHashModeSdr(indexDocument, on_unmapped)
+    local DocSettings = require("docsettings")
+    local hash_dir = DataStorage:getDocSettingsHashDir()
+    if not lfs.attributes(hash_dir, "mode") then return end
+
+    logger.dbg("KOAssistant: Scanning hash-mode sidecar location:", hash_dir)
+    local ok_top, top_iter = pcall(lfs.dir, hash_dir)
+    if not ok_top then return end
+
+    for prefix in top_iter do
+        if prefix ~= "." and prefix ~= ".." and #prefix == 2 then
+            local prefix_dir = hash_dir .. "/" .. prefix
+            local ok_sub, sub_iter = pcall(lfs.dir, prefix_dir)
+            if ok_sub then
+                for entry in sub_iter do
+                    if entry:match("%.sdr$") then
+                        local sdr_path = prefix_dir .. "/" .. entry
+                        -- Find metadata file and read doc_path from it
+                        local mapped = false
+                        local ok_sdr, sdr_iter = pcall(lfs.dir, sdr_path)
+                        if ok_sdr then
+                            for meta_entry in sdr_iter do
+                                if meta_entry:match("^metadata%..+%.lua$") then
+                                    local meta_path = sdr_path .. "/" .. meta_entry
+                                    local settings = DocSettings.openSettingsFile(meta_path)
+                                    if settings and settings.data and settings.data.doc_path then
+                                        indexDocument(settings.data.doc_path, sdr_path)
+                                        mapped = true
+                                    end
+                                    break
+                                end
+                            end
+                        end
+                        if not mapped and on_unmapped then
+                            on_unmapped(sdr_path)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+--- Public wrapper over the central-sidecar scanners for external discovery
+-- (index rebuilder, issue #92). Only scans in dir/hash storage modes; doc
+-- mode has no central location (books can live anywhere).
+-- @param callback function(book_path, sdr_path) per mapped sidecar
+-- @param on_unmapped function|nil (sdr_path) per sidecar with no derivable book path
+function ChatHistoryManager:scanCentralSdrPaths(callback, on_unmapped)
+    local location = G_reader_settings:readSetting("document_metadata_folder", "doc")
+    if location == "dir" then
+        self:_scanDirModeSdr(callback, on_unmapped)
+    elseif location == "hash" then
+        self:_scanHashModeSdr(callback, on_unmapped)
+    end
+end
+
+--[[
+    Unified wrapper methods for UI compatibility
+
+    These methods automatically route to v1 or v2 storage based on chat_storage_version.
+    This allows UI code to remain unchanged while supporting both storage systems.
+--]]
+
+-- Unified method to get all documents with chats
+-- @param ui: ReaderUI object (optional, only needed for v2 if opening specific book)
+-- @return array of document objects with {path, title, author}
+function ChatHistoryManager:getAllDocumentsUnified(ui)
+    -- v2/v3: Use chat index + general chats file
+    local documents = {}
+
+    -- Helper to get max timestamp from a list of chats
+    local function getMaxTimestamp(chats)
+        local max_ts = 0
+        for _idx, chat in ipairs(chats) do
+            if chat.timestamp and chat.timestamp > max_ts then
+                max_ts = chat.timestamp
+            end
+        end
+        return max_ts
+    end
+
+    -- Starred tally (same predicate as the index/getStarredChatCount);
+    -- pairs() so it serves both the array stores and keyed sidecar tables
+    local function countStarred(chats)
+        local n = 0
+        for _idx, chat in pairs(chats) do
+            if chat and chat.starred and chat.messages and #chat.messages > 0 then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
+    -- Fix S (2026-08-17): document entries carry count/starred so the
+    -- browser renders its rows and the Starred folder without re-reading
+    -- any store or sidecar (they used to be parsed 3x per open).
+
+    -- Add general chats as a pseudo-document
+    local general_chats = self:getGeneralChats()
+    if #general_chats > 0 then
+        table.insert(documents, {
+            path = "__GENERAL_CHATS__",
+            title = _("General AI Chats"),
+            author = nil,
+            last_modified = getMaxTimestamp(general_chats),
+            count = #general_chats,
+            starred = countStarred(general_chats),
+        })
+    end
+
+    -- Add library chats as a pseudo-document
+    local library_chats = self:getLibraryChats()
+    if #library_chats > 0 then
+        table.insert(documents, {
+            path = "__LIBRARY_CHATS__",
+            title = _("Library Chats"),
+            author = nil,
+            last_modified = getMaxTimestamp(library_chats),
+            count = #library_chats,
+            starred = countStarred(library_chats),
+        })
+    end
+
+    -- Add documents from chat index
+    local index = self:getChatIndex()
+    local healed = false
+    for doc_path, info in pairs(index) do
+        if doc_path ~= "__GENERAL_CHATS__" then
+            -- Filter out documents that no longer exist at this path
+            -- (moved or deleted outside KOReader). Index entry is preserved
+            -- so it reappears if the book is moved back. Use "Validate Data
+            -- Indexes" in settings for intentional cleanup.
+            if lfs.attributes(doc_path, "mode") then
+                -- Fix M (2026-09-02): title/author come from the index.
+                -- Only a legacy entry (no `starred` tally, or title never
+                -- looked up = nil) pays a DocSettings parse, ONCE: the
+                -- refresh below stores what it found (false = known
+                -- absent), so the next open is index-only.
+                local starred = info.starred
+                local title, author = info.title, info.author
+                if type(starred) ~= "number" or title == nil then
+                    local doc_settings = SafeDocSettings.resolve(doc_path)
+                    local doc_props = doc_settings:readSetting("doc_props") -- raw-props: overlaid in indexTitleAuthor
+                    local chats_table = BookStore.readChats(doc_path)
+                    starred = countStarred(chats_table)
+                    title, author = indexTitleAuthor(doc_props, nil, true, doc_path)
+                    self:updateChatIndex(doc_path, "refresh", nil, chats_table,
+                        { no_flush = true, doc_props = doc_props, has_props = true })
+                    healed = true
+                end
+
+                table.insert(documents, {
+                    path = doc_path,
+                    title = title or doc_path:match("([^/]+)$"),
+                    author = author or nil,
+                    last_modified = info.last_modified or 0,
+                    count = info.count or 0,
+                    starred = starred,
+                })
+            end
+        end
+    end
+    if healed then
+        G_reader_settings:flush()
+    end
+
+    -- Sort: General/Library chats first, then by last_modified descending
+    table.sort(documents, function(a, b)
+        -- Special paths always come first
+        local a_special = a.path == "__GENERAL_CHATS__" or a.path == "__LIBRARY_CHATS__"
+        local b_special = b.path == "__GENERAL_CHATS__" or b.path == "__LIBRARY_CHATS__"
+        if a_special and not b_special then return true end
+        if b_special and not a_special then return false end
+        -- If both special, General before Library
+        if a_special and b_special then
+            return a.path == "__GENERAL_CHATS__"
+        end
+        -- Both regular: sort by date (newest first)
+        return (a.last_modified or 0) > (b.last_modified or 0)
+    end)
+
+    return documents
+end
+
+-- Unified method to get chats for a document
+-- @param ui: ReaderUI object (needed for v2 to access doc_settings)
+-- @param document_path: Path to document or "__GENERAL_CHATS__"
+-- @return array of chat objects sorted by timestamp (newest first)
+function ChatHistoryManager:getChatsUnified(ui, document_path)
+    -- v2: Load from metadata.lua, general chats, or library chats file
+    if document_path == "__GENERAL_CHATS__" then
+        return self:getGeneralChats()
+    elseif document_path == "__LIBRARY_CHATS__" then
+        return self:getLibraryChats()
+    else
+        -- Need to read chats from metadata.lua for the document
+        if ui and ui.document and ui.document.file == document_path then
+            -- Current document is open - use getChatsFromDocSettings for efficiency
+            return self:getChatsFromDocSettings(ui)
+        else
+            -- Different document or no document open - read from metadata.lua
+            if lfs.attributes(document_path, "mode") then
+                local chats_table = BookStore.readChats(document_path)
+
+                -- Convert table to sorted array
+                local chats = {}
+                for chat_id, chat_data in pairs(chats_table) do
+                    table.insert(chats, chat_data)
+                end
+
+                -- Sort by timestamp (newest first)
+                table.sort(chats, function(a, b)
+                    return (a.timestamp or 0) > (b.timestamp or 0)
+                end)
+
+                return chats
+            else
+                logger.warn("Document not found: " .. document_path)
+                return {}
+            end
+        end
+    end
+end
+
+return ChatHistoryManager

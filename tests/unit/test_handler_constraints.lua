@@ -1,6 +1,6 @@
 -- Every parameter constraint reaches the request its handler builds.
 --
--- model_constraints.lua holds forced parameter values (temperature = 1.0 for
+-- koassistant/request/model_constraints.lua holds forced parameter values (temperature = 1.0 for
 -- models that reject any other), and tests/model_audit.lua reads them as
 -- "what we send". That holds only when the provider's handler runs
 -- ModelConstraints.apply: the kimi-k2.6 rule sat in the table from 2026-08-15
@@ -30,9 +30,9 @@ end
 setupPaths()
 require("mock_koreader")
 
-local ModelConstraints = require("model_constraints")
-local ModelOverrides = require("koassistant_model_overrides")
-local Defaults = require("koassistant_api.defaults")
+local ModelConstraints = require("koassistant.request.model_constraints")
+local ModelOverrides = require("koassistant.request.model_overrides")
+local Defaults = require("koassistant.api.defaults")
 local json = require("json")
 local TestRunner = require("test_runner"):new()
 
@@ -59,7 +59,7 @@ end
 
 -- The body the provider's handler builds (handler module defaults to the provider id)
 local function build(provider, model, api_params, extra, module)
-    local handler = require("koassistant_api." .. (module or provider))
+    local handler = require("koassistant.api." .. (module or provider))
     return handler:buildRequestBody(MESSAGES, makeConfig(provider, model, api_params, extra)).body
 end
 
@@ -145,7 +145,7 @@ TestRunner:test("Ollama's and Cohere's wire copies and xAI's Responses route app
     -- Both build the body again inside query(); capture what would be sent
     for _idx, provider in ipairs({ "ollama", "cohere" }) do
         for _j, streaming in ipairs({ false, true }) do
-            local handler = require("koassistant_api." .. provider)
+            local handler = require("koassistant.api." .. provider)
             local own = rawget(handler, "backgroundRequest")
             local sent
             rawset(handler, "backgroundRequest", function(_self, _url, _headers, body)
@@ -161,7 +161,7 @@ TestRunner:test("Ollama's and Cohere's wire copies and xAI's Responses route app
             TestRunner:assertEqual(sentTemperature(json.decode(sent)), SWEPT, label)
         end
     end
-    local xai = require("koassistant_api.xai")
+    local xai = require("koassistant.api.xai")
     TestRunner:assertEqual(xai:buildResponsesRequest(MESSAGES, makeConfig("xai", "sweep-model"),
         "sweep-model").body.temperature, SWEPT, "xai Responses")
     ModelOverrides._setUserForTests(false)

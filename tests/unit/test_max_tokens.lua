@@ -18,7 +18,7 @@ local function setupPaths()
 
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -46,8 +46,8 @@ function TestRunner.assert(condition, message)
     end
 end
 
-local ModelConstraints = require("model_constraints")
-local ModelOverrides = require("koassistant_model_overrides")
+local ModelConstraints = require("koassistant.request.model_constraints")
+local ModelOverrides = require("koassistant.request.model_overrides")
 
 print("test_max_tokens: resolveMaxTokens / clampMaxTokens (item 27)")
 
@@ -253,7 +253,7 @@ end
 -- Learned-ceiling layer: user > LEARNED > curated, and the learned value feeds
 -- both the default and the clamp exactly like any other ceiling.
 do
-    local ModelOverrides = require("koassistant_model_overrides")
+    local ModelOverrides = require("koassistant.request.model_overrides")
     -- Curated says sonnet-5 = 128000 -> default 32768. A learned 12000 must win.
     ModelOverrides._setDerivedForTests({
         anthropic = { ["claude-sonnet-5"] = { fetched = 0, params = {}, max_output = 12000 } },

@@ -28,7 +28,7 @@ end
 setupPaths()
 
 local TestRunner = require("test_runner"):new()
-local Constants = require("koassistant_constants")
+local Constants = require("koassistant.core.constants")
 
 local ALL = Constants.SESSION_CHIP_IDS
 

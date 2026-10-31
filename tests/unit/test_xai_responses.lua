@@ -1,5 +1,5 @@
 -- Unit tests for the xAI Responses API path (responses_api_plan.md R4):
--- routing decision + request builder in koassistant_api/xai.lua. The response
+-- routing decision + request builder in koassistant/api/xai.lua. The response
 -- side (openai_responses transformer, response.* stream events, usage) is
 -- shared with OpenAI and covered by test_openai_responses.lua.
 -- No API calls — mock data only.
@@ -22,8 +22,8 @@ end
 setupPaths()
 require("mock_koreader")
 
-local XAIHandler = require("koassistant_api.xai")
-local ModelConstraints = require("model_constraints")
+local XAIHandler = require("koassistant.api.xai")
+local ModelConstraints = require("koassistant.request.model_constraints")
 local TestRunner = require("test_runner"):new()
 
 print("")

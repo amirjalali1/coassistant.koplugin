@@ -24,7 +24,7 @@ local function setupPaths()
 
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -80,12 +80,12 @@ function TestRunner:summary()
     return self.failed == 0
 end
 
-local GptQuery = require("koassistant_gpt_query")
-local RateLimits = require("koassistant_rate_limits")
+local GptQuery = require("koassistant.request.gpt_query")
+local RateLimits = require("koassistant.request.rate_limits")
 local decode = GptQuery.decodeResponseBody
 local readOutcome = GptQuery.readOutcome
 
--- Platform errno values, the same split koassistant_gpt_query.lua makes.
+-- Platform errno values, the same split koassistant/request/gpt_query.lua makes.
 local EINTR = 4
 local EAGAIN = (require("ffi").os == "OSX") and 35 or 11
 

@@ -260,7 +260,7 @@ end
 -- Run all tests for a provider
 function FullProviderTests:runAllTests(provider, api_key, verbose)
     -- Load handler
-    local handler_ok, handler = pcall(require, "koassistant_api." .. provider)
+    local handler_ok, handler = pcall(require, "koassistant.api." .. provider)
     if not handler_ok then
         self:log(provider, "Load handler", "fail", "Failed to load: " .. tostring(handler), 0)
         return false

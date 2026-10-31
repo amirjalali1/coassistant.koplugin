@@ -1,4 +1,4 @@
--- Test provider sends what a real request sends (koassistant_provider_probe.lua).
+-- Test provider sends what a real request sends (koassistant/api/provider_probe.lua).
 --
 -- The probe used to write its own OpenAI-shaped requests, so it tested requests
 -- the plugin never sends: DeepSeek's "Forced tool use" failed on every model
@@ -27,9 +27,9 @@ end
 setupPaths()
 require("mock_koreader")
 
-local ConfigHelper = require("koassistant_config_helper")
-local ModelOverrides = require("koassistant_model_overrides")
-local ProviderProbe = require("koassistant_provider_probe")
+local ConfigHelper = require("koassistant.core.config_helper")
+local ModelOverrides = require("koassistant.request.model_overrides")
+local ProviderProbe = require("koassistant.api.provider_probe")
 local json = require("json")
 local TestRunner = require("test_runner"):new()
 
@@ -53,7 +53,7 @@ local function probe(provider, model, step, opts)
         features = opts.features or {}, provider_settings = opts.provider_settings,
     })
     if opts.base_url then base.base_url = opts.base_url end
-    local handler = require("koassistant_api." .. (opts.module or provider))
+    local handler = require("koassistant.api." .. (opts.module or provider))
     local req = ProviderProbe.request(handler, base, step)
     return req, json.decode(req.payload)
 end
@@ -129,6 +129,23 @@ TestRunner:test("a configuration.lua base_url reaches the probe as it reaches th
         features = { kimi_region = "china" }, provider_settings = { kimi = { base_url = proxy } },
     })
     TestRunner:assertEqual(req.url, proxy, "override beats the region")
+end)
+
+TestRunner:test("the parser's verdict on the plain step's 200 (B484)", function()
+    local handler = { getResponseParserKey = function() return "openai" end }
+    local kind, text = ProviderProbe.answer(handler, '{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}', false)
+    TestRunner:assertEqual(kind, "text", "an answer")
+    TestRunner:assertEqual(text, "ok", "its text")
+    kind = ProviderProbe.answer(handler, '{"choices":[{"message":{"content":""},"finish_reason":"length"}]}', false)
+    TestRunner:assertEqual(kind, "empty", "a starved reasoning model: readable, no text")
+    kind = ProviderProbe.answer(handler, '{"id":"x","object":"weird"}', false)
+    TestRunner:assertEqual(kind, "unreadable", "a shape the parser cannot read")
+    kind = ProviderProbe.answer(handler, "not json at all", false)
+    TestRunner:assertEqual(kind, "unreadable", "not JSON")
+    kind, text = ProviderProbe.answer(handler,
+        '{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}', true)
+    TestRunner:assertEqual(kind, "text", "the Responses shape through its own parser")
+    TestRunner:assertEqual(text, "ok", "its text")
 end)
 
 ModelOverrides._setUserForTests(saved_user)

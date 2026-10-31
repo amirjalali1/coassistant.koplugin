@@ -21,7 +21,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local AnthropicHandler = require("koassistant_api.anthropic")
+local AnthropicHandler = require("koassistant.api.anthropic")
 local TestRunner = require("test_runner"):new()
 
 print("")
@@ -181,7 +181,7 @@ TestRunner:test("explicit disabled thinking survives the carve-out (Sonnet 5)", 
 end)
 
 TestRunner:test("Sonnet 5.5 off reaches the wire as between_tools (it refuses disabled)", function()
-    local ModelConstraints = require("model_constraints")
+    local ModelConstraints = require("koassistant.request.model_constraints")
     local d = ModelConstraints.resolveReasoning("anthropic", "claude-sonnet-5-5", { global_stance = "minimal" })
     local api_params = {}
     ModelConstraints.applyReasoningParams("anthropic", api_params, d)

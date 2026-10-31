@@ -33,22 +33,36 @@ end
 
 print("\n  [the zip]")
 
-TestRunner:test("the build script leaves out what the release workflow leaves out", function()
-    local function excludes(src)
-        local seen, list = {}, {}
-        for name in src:gmatch("%-%-exclude='([^']+)'") do
-            if not seen[name] then
-                seen[name] = true
-                list[#list + 1] = name
-            end
-        end
-        table.sort(list)
-        return table.concat(list, ",")
+TestRunner:test("the release workflow builds its zip with the build script (one zip: the tested one is the downloaded one)", function()
+    local workflow = read(".github/workflows/release.yml")
+    TestRunner:assertTrue(workflow:find("sh scripts/build_release_zip.sh HEAD build/koassistant.koplugin.zip", 1, true) ~= nil,
+        "release.yml runs scripts/build_release_zip.sh")
+    TestRunner:assertTrue(workflow:find("--exclude=", 1, true) == nil, "release.yml keeps no exclude list of its own")
+    local script = read("scripts/build_release_zip.sh")
+    for _idx, name in ipairs({ "docs", "tests", "scripts", "hooks", "wiki", "screenshots", "*.pot", ".luacheckrc", "OWNER", ".gitignore", ".git-blame-ignore-revs" }) do
+        TestRunner:assertTrue(script:find("--exclude='" .. name .. "'", 1, true) ~= nil, "the script leaves out " .. name)
     end
-    local workflow = excludes(read(".github/workflows/release.yml"))
-    TestRunner:assertTrue(#workflow > 0, "the workflow's list is found")
-    TestRunner:assertEqual(excludes(read("scripts/build_release_zip.sh")), workflow,
-        "the tester's zip holds what readers download")
+end)
+
+TestRunner:test("the transitional shims list names old paths that are gone and modules that exist", function()
+    local f = io.open(plugin_dir .. "/scripts/release_shims.txt", "r")
+    if not f then return end   -- the list is deleted at the v0.25.0 open; nothing to check then
+    local n = 0
+    for line in f:lines() do
+        if not line:match("^%s*#") and not line:match("^%s*$") then
+            local old, mod = line:match("^(%S+) (%S+)$")
+            TestRunner:assertTrue(old ~= nil, "a line is '<old path> <module id>': " .. line)
+            TestRunner:assertTrue(io.open(plugin_dir .. "/" .. old, "r") == nil, old .. " must not exist in the tree (the zip writes it)")
+            local new_rel = mod:gsub("%.", "/") .. ".lua"
+            local g = io.open(plugin_dir .. "/" .. new_rel, "r")
+            TestRunner:assertTrue(g ~= nil, mod .. " must be a module of the tree")
+            if g then g:close() end
+            n = n + 1
+        end
+    end
+    f:close()
+    TestRunner:assertTrue(n > 0, "the list is not empty")
+    TestRunner:assertTrue(read("scripts/build_release_zip.sh"):find("release_shims.txt", 1, true) ~= nil, "the build script writes the shims")
 end)
 
 TestRunner:test("main.lua and _meta.lua stay at the top: every updater checks both there", function()
@@ -58,32 +72,30 @@ end)
 
 TestRunner:test("_meta.lua needs nothing an older updater's process lacks", function()
     local meta = read("_meta.lua")
-    local reqs = {}
-    for name in meta:gmatch('require%(%s*"([^"]+)"%s*%)') do
-        reqs[#reqs + 1] = name
-    end
-    TestRunner:assertEqual(table.concat(reqs, ","), "koassistant_gettext",
-        "only the gettext module every release has had")
+    TestRunner:assertTrue(meta:find("require%(") == nil, "no bare require: an older updater's process reads" ..
+        " this file to check the version and cannot resolve the modules of a newer layout")
+    TestRunner:assertTrue(meta:find('pcall%(require, "koassistant%.core%.gettext"%)') ~= nil, "the gettext module, under pcall")
+    TestRunner:assertTrue(meta:find("if not ok then", 1, true) ~= nil, "a fallback when it cannot be loaded")
     TestRunner:assertTrue(meta:find('version = "[^"]+"'), "a version the updater compares with the tag")
 end)
 
 print("\n  [the updater]")
 
 TestRunner:test("its deletes never follow a link", function()
-    local uc = read("koassistant_update_checker.lua")
+    local uc = read("koassistant/storage/update_checker.lua")
     TestRunner:assertFalse(uc:find("ffiutil%.purgeDir[,(]"),
         "no purgeDir call: it empties a linked folder's target")
     TestRunner:assertTrue(uc:find('lfs.symlinkattributes(path, "mode")', 1, true), "purgeTree reads the link itself")
 end)
 
 TestRunner:test("any .git, a folder or a worktree's file, is a checkout it never replaces", function()
-    local uc = read("koassistant_update_checker.lua")
+    local uc = read("koassistant/storage/update_checker.lua")
     TestRunner:assertFalse(uc:find('".git", "mode") == "directory"', 1, true), "the guard is not folder-only")
     TestRunner:assertFalse(uc:find('".git", "mode") ~= "directory"', 1, true), "Update Now is not folder-only")
 end)
 
 TestRunner:test("the download is checked before anything is extracted", function()
-    local uc = read("koassistant_update_checker.lua")
+    local uc = read("koassistant/storage/update_checker.lua")
     local body = uc:match("performUpdate = function%(update_info%)(.-)\nend\n")
     TestRunner:assertTrue(body, "performUpdate found")
     local check = body and body:find("verifyDownload(archive_path, update_info)", 1, true)

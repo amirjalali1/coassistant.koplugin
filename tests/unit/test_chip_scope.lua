@@ -1,6 +1,6 @@
 -- Unit tests for the freeform Scope-chip range resolution (flexible_scope_plan.md
 -- phase 3): ScopeResolver.chipScope — kind × spoiler × position matrix. The chip's
--- UI, gating, and extraction live in koassistant_dialogs.lua; this file pins the
+-- UI, gating, and extraction live in koassistant/ui/dialogs.lua; this file pins the
 -- pure range policy only.
 
 local function setupPaths()
@@ -19,7 +19,7 @@ local function setupPaths()
 end
 setupPaths()
 
-local ScopeResolver = require("koassistant_scope_resolver")
+local ScopeResolver = require("koassistant.request.scope_resolver")
 
 -- Simple test framework (matches the other unit tests)
 local TestRunner = { passed = 0, failed = 0 }

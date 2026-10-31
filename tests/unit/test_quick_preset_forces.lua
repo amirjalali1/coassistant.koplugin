@@ -16,7 +16,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local QPF = require("koassistant_dialogs").quickPresetForces
+local QPF = require("koassistant.ui.dialogs").quickPresetForces
 
 local TestRunner = { passed = 0, failed = 0 }
 function TestRunner:test(name, fn)
@@ -56,6 +56,8 @@ local CASES = {
         "tools", true, { _session_tools_touched = true }, nil, false },
     { "tools survives: preset component disabled",
         "tools", true, { quick_preset_tools_off = false }, nil, false },
+    { "book info is no facet (removed 2026-10-20): never forced",
+        "book_info", true, { quick_preset_book_info_off = true }, nil, false },
     { "unknown facet never forces",
         "reasoning", true, {}, nil, false },
     { "nil features never forces",

@@ -21,8 +21,8 @@ local function setupPaths()
 end
 setupPaths()
 
-local ScopeResolver = require("koassistant_scope_resolver")
-local QuizChapters = require("koassistant_quiz_chapters")
+local ScopeResolver = require("koassistant.request.scope_resolver")
+local QuizChapters = require("koassistant.quiz.quiz_chapters")
 
 -- Simple test framework (matches the other unit tests)
 local TestRunner = { passed = 0, failed = 0 }

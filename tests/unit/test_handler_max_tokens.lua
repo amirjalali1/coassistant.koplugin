@@ -24,7 +24,7 @@ local function setupPaths()
 
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -73,33 +73,33 @@ end
 
 print("test_handler_max_tokens: every handler resolves AND clamps (item 27)")
 
-local TARGET = require("model_constraints").MAX_TOKENS_TARGET
+local TARGET = require("koassistant.request.model_constraints").MAX_TOKENS_TARGET
 
 -- provider, handler module, model with a KNOWN ceiling, that ceiling
 local CASES = {
-    { "anthropic",  "koassistant_api.anthropic",         "claude-sonnet-5",          128000 },
-    { "openai",     "koassistant_api.openai",            "gpt-5.6-terra",            128000 },
-    { "gemini",     "koassistant_api.gemini",            "gemini-3.6-flash",          65536 },
-    { "deepseek",   "koassistant_api.deepseek",          "deepseek-v4-pro",          384000 },
-    { "xai",        "koassistant_api.xai",               "grok-4.5",                  32768 },
-    { "zai",        "koassistant_api.zai",               "glm-5.2",                  128000 },
-    { "openrouter", "koassistant_api.openrouter",        "anthropic/claude-sonnet-5",128000 },
+    { "anthropic",  "koassistant.api.anthropic",         "claude-sonnet-5",          128000 },
+    { "openai",     "koassistant.api.openai",            "gpt-5.6-terra",            128000 },
+    { "gemini",     "koassistant.api.gemini",            "gemini-3.6-flash",          65536 },
+    { "deepseek",   "koassistant.api.deepseek",          "deepseek-v4-pro",          384000 },
+    { "xai",        "koassistant.api.xai",               "grok-4.5",                  32768 },
+    { "zai",        "koassistant.api.zai",               "glm-5.2",                  128000 },
+    { "openrouter", "koassistant.api.openrouter",        "anthropic/claude-sonnet-5",128000 },
     -- Cohere: each model's own refusal, probed 2026-09-29 (every X-Ray failed on
     -- the 65536 pin, and every request on R7B / A 03-2025 on the 16384 default)
-    { "cohere",     "koassistant_api.cohere",            "command-a-plus-05-2026",    64000 },
-    { "cohere",     "koassistant_api.cohere",            "command-r7b-12-2024",        4096 },
-    { "groq",       "koassistant_api.groq",              "llama-3.3-70b-versatile",   32768 },
+    { "cohere",     "koassistant.api.cohere",            "command-a-plus-05-2026",    64000 },
+    { "cohere",     "koassistant.api.cohere",            "command-r7b-12-2024",        4096 },
+    { "groq",       "koassistant.api.groq",              "llama-3.3-70b-versatile",   32768 },
     -- Perplexity Agent API (B078): no curated ceiling for its default model; the
     -- 16384 fallback was probed accepted (and 65536/131072 on Sonar)
-    { "perplexity", "koassistant_api.perplexity",        "perplexity/sonar",            nil },
+    { "perplexity", "koassistant.api.perplexity",        "perplexity/sonar",            nil },
     -- No curated ceiling: NVIDIA states none and any real cap is learned by the
     -- max_tokens self-heal. Exercises the no-ceiling resolve+clamp path.
-    { "nvidia",     "koassistant_api.nvidia",            "nvidia/nemotron-3-super-120b-a12b", nil },
+    { "nvidia",     "koassistant.api.nvidia",            "nvidia/nemotron-3-ultra-550b-a55b", nil },
     -- OpenCode (#107): no curated ceiling either; the 16384 fallback was probed accepted.
-    { "opencode",   "koassistant_api.opencode",          "glm-5.3-flash",               nil },
-    { "opencode_go", "koassistant_api.opencode_go",      "glm-5.3-flash",               nil },
+    { "opencode",   "koassistant.api.opencode",          "glm-5.3-flash",               nil },
+    { "opencode_go", "koassistant.api.opencode_go",      "glm-5.3-flash",               nil },
     -- A2Agent (#108): no curated ceiling; oversized asks were accepted and clamped upstream.
-    { "a2agent",    "koassistant_api.a2agent",           "deepseek-v4-flash",           nil },
+    { "a2agent",    "koassistant.api.a2agent",           "deepseek-v4-flash",           nil },
 }
 
 for _idx, case in ipairs(CASES) do
@@ -146,7 +146,7 @@ end
 -- and still pass every assertion above — verified: reverting cohere's wiring
 -- left the curated-data loop green.
 do
-    local ModelOverrides = require("koassistant_model_overrides")
+    local ModelOverrides = require("koassistant.request.model_overrides")
     for _idx, case in ipairs(CASES) do
         local provider, module_name, model = case[1], case[2], case[3]
         local ok, handler = pcall(require, module_name)
@@ -173,8 +173,8 @@ end
 -- id (custom_<slug>), not the handler's static "custom" key. A user ceiling
 -- declared in custom_models.lua must therefore reach both roles.
 do
-    local ModelOverrides = require("koassistant_model_overrides")
-    local ok, CustomHandler = pcall(require, "koassistant_api.custom_openai")
+    local ModelOverrides = require("koassistant.request.model_overrides")
+    local ok, CustomHandler = pcall(require, "koassistant.api.custom_openai")
     if ok and type(CustomHandler) == "table" then
         ModelOverrides._setUserForTests({
             max_output_tokens = { custom_lmstudio = { ["local-big"] = 100000, ["local-small"] = 2048 } },
@@ -202,7 +202,7 @@ end
 -- Built-in actions must not reintroduce a starving pin. Only deliberate RAISES
 -- (>= the target) are allowed; the 4096/8192 pins were removed by item 27.
 do
-    local Actions = require("prompts.actions")
+    local Actions = require("koassistant.prompts.actions")
     local offenders = {}
     for id, action in pairs(Actions) do
         local pin = type(action) == "table" and type(action.api_params) == "table"

@@ -13,11 +13,11 @@
 --                     "library" - Multiple books selected
 --                     "general" - Standalone chat, no context
 --                     "both" - Highlight and book contexts
---                     "all" - All contexts
+--                     (an unknown value here is reported in the log and the action skipped)
 --   prompt          - The instruction sent to AI [REQUIRED]
 --                     Use {highlighted_text}, {title}, {author}, etc.
 --
---   behavior_variant - Pick from: "minimal", "full", "none", or nil (use global)
+--   behavior_variant - A behavior id: "mini", "standard", "full", any file in behaviors/ (without .md), "none", or nil (use global)
 --   behavior_override - Custom behavior text (replaces variant if set)
 --
 --   api_params      - Optional API overrides: { temperature, max_tokens }
@@ -56,7 +56,7 @@ return {
     {
         text = "Explain Simply",
         context = "highlight",
-        behavior_variant = "minimal",  -- Brief, focused responses
+        behavior_variant = "mini",  -- Brief, focused responses
         prompt = "Explain this in simple terms a child could understand: {highlighted_text}",
         include_book_context = true,  -- Include book title/author
     },
@@ -90,7 +90,7 @@ return {
     {
         text = "Reading Order",
         context = "library",
-        behavior_variant = "minimal",  -- Brief response
+        behavior_variant = "mini",  -- Brief response
         prompt = "Suggest an optimal reading order for these {count} books:\n{books_list}\n\nConsider chronology, difficulty, and thematic connections.",
     },
 

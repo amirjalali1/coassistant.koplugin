@@ -49,18 +49,12 @@ ignore = {
 }
 
 -- CRITICAL: We do NOT ignore "431/_" - this catches the gettext bug:
---   local _ = require("koassistant_gettext")
+--   local _ = require("koassistant.core.gettext")
 --   for _, x in ipairs(...) -- CAUGHT! shadowing _ breaks translations
 
 -- Per-file overrides
-files["ui/prompts_manager.lua"] = {
-    ignore = { "423" },  -- Shadowing loop variable (nested loops with _idx)
-}
 files["main.lua"] = {
     ignore = { "432/self" },  -- Shadowing self in nested callbacks
-}
-files["dialogs.lua"] = {
-    ignore = { "421/prompt_type" },  -- Argument shadowing in callback
 }
 files["tests/**/*.lua"] = {
     ignore = { "113", "421", "431" },  -- Tests can be more relaxed

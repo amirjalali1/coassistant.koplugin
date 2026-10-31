@@ -35,8 +35,8 @@ local DOC_PATH = TMP_ROOT .. "/book.epub"
 os.execute(string.format("mkdir -p %q", SIDECAR_DIR))
 
 -- Module cache reset BEFORE installing mocks (matters when run via run_tests.lua)
-package.loaded["koassistant_action_cache"] = nil
-package.loaded["koassistant_gettext"] = nil
+package.loaded["koassistant.artifacts.action_cache"] = nil
+package.loaded["koassistant.core.gettext"] = nil
 package.loaded["docsettings"] = nil
 package.loaded["util"] = nil
 package.loaded["luasettings"] = nil
@@ -66,7 +66,7 @@ package.loaded["luasettings"] = {
     open = function() return { readSetting = function() return nil end, close = function() end } end,
 }
 
-local ActionCache = require("koassistant_action_cache")
+local ActionCache = require("koassistant.artifacts.action_cache")
 local TestRunner = require("test_runner"):new()
 
 print("Running: test_action_cache_parity")
@@ -80,9 +80,13 @@ local FULL_METADATA = {
     used_highlights = true,
     used_annotations = true,
     used_book_text = true,
+    used_notebook = true,
+    provider = "anthropic",
     previous_progress_decimal = 0.25,
     flow_visible_pages = 310,
     progress_page = 123,
+    -- Where that page starts in the text (B503)
+    progress_xpointer = "/body/DocFragment[12]/body/p[34]/text().56",
     full_document = true,
     used_reasoning = true,
     web_search_used = true,
@@ -206,6 +210,23 @@ TestRunner:test("updateField(quiz_state) round-trips nested tables", function()
     TestRunner:assertEqual(entry.quiz_state.correct[3], false, "correct[3]")
     TestRunner:assertEqual(entry.quiz_state.current_index, 3, "current_index")
     TestRunner:assertEqual(entry.quiz_state.phase, "review", "phase")
+end)
+
+TestRunner:test("the saved page's position rides a checkpoint, a promotion, the archive and a restore (B503)", function()
+    local XP = "/body/DocFragment[7]/body/p[3]/text().0"
+    assert(ActionCache.pushXrayLadderRung(DOC_PATH, { result = '{"rung": 1}', progress_decimal = 0.4,
+        progress_page = 80, progress_xpointer = XP, timestamp = 1790000000 }))
+    local ladder = ActionCache.getXrayLadder(DOC_PATH)
+    TestRunner:assertEqual(ladder[1].progress_xpointer, XP, "a built checkpoint keeps its position")
+    assert(ActionCache.promoteXrayLadderRung(DOC_PATH, ladder[1], 0, { manual = true }))
+    TestRunner:assertEqual(ActionCache.getXrayCache(DOC_PATH).progress_xpointer, XP, "an install carries it")
+    TestRunner:assertEqual(ActionCache.get(DOC_PATH, "xray").progress_xpointer, XP, "on both cache keys")
+    assert(ActionCache.pushXrayCheckpoint(DOC_PATH, ActionCache.getXrayCache(DOC_PATH), 5))
+    TestRunner:assertEqual(ActionCache.getXrayCheckpoints(DOC_PATH)[1].progress_xpointer, XP,
+        "an archived version keeps it")
+    assert(ActionCache.setXrayCache(DOC_PATH, '{"later": 1}', 0.6, { progress_page = 120 }))
+    assert(ActionCache.restoreXrayCheckpoint(DOC_PATH, 1, 5))
+    TestRunner:assertEqual(ActionCache.getXrayCache(DOC_PATH).progress_xpointer, XP, "a restore brings it back")
 end)
 
 -- Cleanup

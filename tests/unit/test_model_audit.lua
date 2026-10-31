@@ -14,7 +14,7 @@ local function setupPaths()
 
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -125,6 +125,17 @@ TestRunner:check("deliberate skip bucketed with its reason",
     #skip_diff.deliberate == 1 and skip_diff.deliberate[1].id == "claude-opus-4-6"
     and type(skip_diff.deliberate[1].reason) == "string")
 TestRunner:check("deliberate skip stays out of new", #skip_diff.new == 0)
+
+-- An id the plugin retired but the provider still lists (Google routes 3.7-flash to
+-- 3.8-flash and keeps listing it) is `retired`, never new; the real table drives it.
+local retired_diff = ModelAudit.diffLists("gemini", { "gemini-3.8-flash" },
+    { ["gemini-3.8-flash"] = {}, ["gemini-3.7-flash"] = { created = NOW - 86400 } }, NOW,
+    { retired = require("koassistant.request.model_lists")._retired.gemini })
+TestRunner:check("retired id bucketed with its replacement",
+    #retired_diff.retired == 1 and retired_diff.retired[1].id == "gemini-3.7-flash"
+    and retired_diff.retired[1].to == "gemini-3.8-flash")
+TestRunner:check("retired id stays out of new", #retired_diff.new == 0)
+TestRunner:check("no retired table: the bucket stays empty", #diff.retired == 0)
 
 --==========================================================================
 TestRunner:suite("modelTimestamp")
@@ -262,7 +273,7 @@ TestRunner:check("reasoning_gated drafted (efforts accepted, default OFF)",
 TestRunner:check("max_completion_tokens note points at openai.lua",
     otext:find("openai.lua", 1, true) ~= nil)
 TestRunner:check("model_lists reminder present",
-    otext:find("koassistant_model_lists.lua", 1, true) ~= nil)
+    otext:find("koassistant/request/model_lists.lua", 1, true) ~= nil)
 
 --==========================================================================
 TestRunner:suite("draftStanzas: binary axis (deepseek-shaped)")
@@ -349,7 +360,7 @@ TestRunner:check("nil fetched tolerated (no-adapter providers)",
     ModelAudit.watchStatus("x", wcurated, nil) == "watching")
 TestRunner:check("every WATCH entry names an UNCURATED id (else the reminder is stale)",
     (function()
-        local ModelLists = require("koassistant_model_lists")
+        local ModelLists = require("koassistant.request.model_lists")
         for provider, entries in pairs(ModelAudit.WATCH) do
             local cset = {}
             for _i, id in ipairs(ModelLists[provider] or {}) do cset[id] = true end
@@ -907,6 +918,60 @@ local rel = ModelAudit.vendorReleases({
 }, { openai = { "gpt-6-sol" }, anthropic = { "claude-sonnet-5-5" }, qwen = { "qwen3.8-max" } }, now, 30)
 TestRunner:check("vendor releases: recent, on no list, noise, variants and snapshots skipped, newest first",
     #rel == 2 and rel[1].id == "openai/gpt-6.1-sol" and rel[2].id == "google/gemini-3.9-flash")
+
+TestRunner:suite("Image lists (--images, docs/image_round_plan.md S1)")
+
+local oa = ModelAudit.imageIdsFrom("openai", { data = {
+    { id = "gpt-image-2.5-flare" }, { id = "gpt-image-2-2026-04-21" }, { id = "chatgpt-image-latest" },
+    { id = "dall-e-3" }, { id = "gpt-6-sol" } } })
+TestRunner:check("image ids, OpenAI: the image families only",
+    oa["gpt-image-2.5-flare"] and oa["chatgpt-image-latest"] and oa["dall-e-3"] and not oa["gpt-6-sol"])
+local gm = ModelAudit.imageIdsFrom("gemini", { models = {
+    { name = "models/gemini-nano-banana-2.1" }, { name = "models/gemini-3.1-flash-lite-image" },
+    { name = "models/gemini-3.8-flash" } } })
+TestRunner:check("image ids, Gemini: \"banana\" counts (gemini-nano-banana-2.1 has no \"image\")",
+    gm["gemini-nano-banana-2.1"] and gm["gemini-3.1-flash-lite-image"] and not gm["gemini-3.8-flash"])
+local xs, xa = ModelAudit.imageIdsFrom("xai", { models = {
+    { id = "grok-imagine-image", aliases = { "grok-imagine-image-2026-03-02" } } } })
+TestRunner:check("image ids, xAI: aliases map to their model",
+    xs["grok-imagine-image"] and xa["grok-imagine-image-2026-03-02"] == "grok-imagine-image")
+
+local d = ModelAudit.diffImageLists(
+    { "gpt-image-2.5-flare", "gpt-image-gone" },
+    { ["old-image"] = "gpt-image-2.5-flare" },
+    { ["gpt-image-1"] = "left the picker" },
+    { ["gpt-image-2.5-flare"] = true, ["gpt-image-2.5-flare-2026-09-08"] = true, ["gpt-image-1"] = true,
+      ["old-image"] = true, ["gpt-image-3"] = true }, {})
+TestRunner:check("image diff: a listed id the provider dropped",
+    #d.missing == 1 and d.missing[1] == "gpt-image-gone")
+TestRunner:check("image diff: new ids, a dated snapshot of a listed one is not new",
+    #d.new == 1 and d.new[1] == "gpt-image-3")
+TestRunner:check("image diff: retired and skipped ids still listed are reported apart",
+    d.retired_listed[1] == "old-image" and d.skipped[1] == "gpt-image-1")
+
+-- OpenRouter's catalog: the arrivals of the last 30 days are named (B497)
+local inow = os.time({ year = 2026, month = 10, day = 16, hour = 12 })
+local recent = ModelAudit.recentImageModels({ data = {
+    { id = "black-forest-labs/flux-3-image-klein", created = inow - 86400 },
+    { id = "black-forest-labs/flux-3-image", created = inow - 15 * 86400 },   -- listed
+    { id = "somevendor/new-image", created = inow - 3 * 86400 },
+    { id = "somevendor/old-image", created = inow - 90 * 86400 },              -- too old
+    { id = "somevendor/undated" },
+} }, { "black-forest-labs/flux-3-image" }, inow, 30)
+TestRunner:check("recent image models: unlisted arrivals within 30 days, newest first",
+    #recent == 2 and recent[1].id == "black-forest-labs/flux-3-image-klein"
+        and recent[2].id == "somevendor/new-image")
+TestRunner:check("recent image models: nothing from an answer that is not a catalog",
+    #ModelAudit.recentImageModels(nil, {}, inow, 30) == 0)
+
+-- The probe's pixel size (S2): PNG's IHDR, a JPEG's frame marker after an APP0
+local png = "\137PNG\r\n\26\n\0\0\0\13IHDR\0\0\4\128\0\0\6\0rest"
+local pw, ph = ModelAudit.imageDimensions(png)
+TestRunner:check("image size: PNG", pw == 1152 and ph == 1536)
+local jpg = "\255\216" .. "\255\224\0\16JFIF\0\1\1\0\0\1\0\1\0\0" .. "\255\192\0\17\8\4\128\3\96\3"
+local jw, jh = ModelAudit.imageDimensions(jpg)
+TestRunner:check("image size: JPEG (width 864, height 1152)", jw == 864 and jh == 1152)
+TestRunner:check("image size: anything else is unread", ModelAudit.imageDimensions("GIF89a") == nil)
 
 -- Summary
 print(string.format("\n%d passed, %d failed", TestRunner.passed, TestRunner.failed))

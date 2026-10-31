@@ -1,5 +1,5 @@
 --[[
-Unit Tests for the notebook snippet capture path (koassistant_notebook.lua)
+Unit Tests for the notebook snippet capture path (koassistant/chat/notebook.lua)
 
 Covers:
 - Notebook.formatSnippet() — pure formatter: Note vs Highlight headers, separator shape
@@ -33,7 +33,7 @@ require("mock_koreader")
 -- Save originals for teardown (suite runs all files in one Lua process)
 local orig_G_reader_settings = _G.G_reader_settings
 local orig_docsettings = package.loaded["docsettings"]
-local orig_safe_docsettings = package.loaded["koassistant_doc_settings"]
+local orig_safe_docsettings = package.loaded["koassistant.storage.doc_settings"]
 
 -- G_reader_settings mock (LuaSettings-shaped: readSetting(key, default))
 local grs_store = {}
@@ -52,7 +52,7 @@ package.loaded["docsettings"] = {
     getSidecarDir = function(_, path) return "/tmp/koassistant_test_sdr" .. path .. ".sdr" end,
     isHashLocationEnabled = function() return false end,
 }
-package.loaded["koassistant_doc_settings"] = {
+package.loaded["koassistant.storage.doc_settings"] = {
     resolve = function() return nil end,
 }
 -- util.makePath (used by Notebook.append). The suite runs all files in ONE Lua
@@ -68,8 +68,8 @@ if not util_mod.makePath then
 end
 
 -- Force a fresh module load so OUR mocks (not an earlier test file's) are captured
-package.loaded["koassistant_notebook"] = nil
-local Notebook = require("koassistant_notebook")
+package.loaded["koassistant.chat.notebook"] = nil
+local Notebook = require("koassistant.chat.notebook")
 
 local TestRunner = { passed = 0, failed = 0 }
 
@@ -288,8 +288,30 @@ local function teardown()
     -- Restore shared-process state so later suite files don't inherit our mocks
     _G.G_reader_settings = orig_G_reader_settings
     package.loaded["docsettings"] = orig_docsettings
-    package.loaded["koassistant_doc_settings"] = orig_safe_docsettings
-    package.loaded["koassistant_notebook"] = nil
+    package.loaded["koassistant.storage.doc_settings"] = orig_safe_docsettings
+    package.loaded["koassistant.chat.notebook"] = nil
+end
+
+-- B445: a chat about a closed book beside an open one must not record the
+-- open book's page in the other book's notebook
+local function runPageInfoGuardTests()
+    print("\n--- getPageInfo: a reader open on another book (B445) ---")
+    local function reader(file)
+        return { document = { file = file, info = { number_of_pages = 10, has_pages = true } },
+                 view = { state = { page = 7 } } }
+    end
+    local other = reader("/tmp/books/other.epub")
+    local info = Notebook.getPageInfo(other, "/tmp/books/this.epub")
+    check("another book's reader lends no page", info.page == nil and info.total_pages == nil, tostring(info.page))
+    local orig = package.loaded["apps/reader/readerui"]
+    package.loaded["apps/reader/readerui"] = { instance = other }
+    local info2 = Notebook.getPageInfo(nil, "/tmp/books/this.epub")
+    check("the fallback instance is checked too", info2.page == nil, tostring(info2.page))
+    package.loaded["apps/reader/readerui"] = orig
+    local info3 = Notebook.getPageInfo(reader("/tmp/books/this.epub"), "/tmp/books/this.epub")
+    check("the book's own reader gives the page", info3.page == 7 and info3.progress == 70, tostring(info3.page))
+    local info4 = Notebook.getPageInfo(other, nil)
+    check("without an expected file the reader is used", info4.page == 7, tostring(info4.page))
 end
 
 local function runAll()
@@ -298,6 +320,7 @@ local function runAll()
     runFormatEntryTests()
     runSaveChatScopeTests()
     runGuardTests()
+    runPageInfoGuardTests()
     runRoundTripTests()
     teardown()
     print(string.format("\n=== Results: %d passed, %d failed ===\n", TestRunner.passed, TestRunner.failed))

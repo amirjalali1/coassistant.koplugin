@@ -17,7 +17,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local ChatGPTViewer = require("koassistant_chatgptviewer")
+local ChatGPTViewer = require("koassistant.ui.chatgptviewer")
 
 local TestRunner = { passed = 0, failed = 0 }
 function TestRunner:test(name, fn)

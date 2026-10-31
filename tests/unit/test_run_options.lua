@@ -1,4 +1,4 @@
--- Run options (koassistant_run_options.lua, B345, docs/run_options_plan.md): the
+-- Run options (koassistant/request/run_options.lua, B345, docs/run_options_plan.md): the
 -- hold menu's "Run once with:" buttons per action and state, the dispatch-scoped
 -- model stash (B295: a model written for one action never rides into the next),
 -- the trust gate's mirror of the run option, and the saved-chat capture.
@@ -13,7 +13,7 @@ local function setupPaths()
     local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -21,7 +21,7 @@ local function setupPaths()
 end
 setupPaths()
 require("mock_koreader")
-local RunOptions = require("koassistant_run_options")
+local RunOptions = require("koassistant.request.run_options")
 local TestRunner = require("test_runner"):new()
 
 local TIERS = { fast = "claude-haiku-4-5" }
@@ -33,6 +33,7 @@ local function state(over)
         quick = { receptive = true, on = false },
         reasoning = { pinned = false, mode = "on", can_disable = true },
         web = { pinned = false, on = false, capable = true },
+        book_info = { applies = false },
         configured = function() return true end,
         resolveTier = function(p, tier)
             if TIERS[tier] then return p, TIERS[tier] end
@@ -53,6 +54,27 @@ end
 local PROSE = { id = "explain", accept_quick_answer = true }
 
 -- ---------------------------------------------------------------- buttons
+TestRunner:test("book info: the half that changes the level in effect, only where it applies", function()
+    local b = RunOptions.buttons(RunOptions.DEFAULTS, PROSE, state({ book_info = { applies = true, level = "basic" } }))
+    TestRunner:assertEqual(labels(b), "Quick answer | Without book info | claude-haiku-4-5 | No reasoning | With web search",
+        "the level in effect names the book: offer Without")
+    b = RunOptions.buttons(RunOptions.DEFAULTS, PROSE, state({ book_info = { applies = true, level = "none" } }))
+    TestRunner:assertEqual(labels(b), "Quick answer | With book info | claude-haiku-4-5 | No reasoning | With web search",
+        "None in effect (the book, all books or the Quick switch): offer With")
+    TestRunner:assertEqual(b[2].variant.book_info, "on", "the variant")
+    b = RunOptions.buttons(RunOptions.DEFAULTS, PROSE, state({ book_info = { applies = false } }))
+    TestRunner:assertEqual(labels(b), "Quick answer | claude-haiku-4-5 | No reasoning | With web search",
+        "a general action, or one that cannot run without the title: no button")
+    b = RunOptions.buttons(RunOptions.DEFAULTS, { id = "summary", use_response_caching = true },
+        state({ book_info = { applies = true, level = "basic" } }))
+    TestRunner:assertEqual(labels(b), "Without book info | claude-haiku-4-5",
+        "an artifact builder takes the model and the book info, nothing else")
+    local send = RunOptions.list({}, { send = true })
+    for _idx, e in ipairs(send) do
+        TestRunner:assertEqual(e.book_info, nil, "Send's menu has no book info entry")
+    end
+end)
+
 
 TestRunner:test("defaults: a receptive prose action gets one button per pair", function()
     local b = RunOptions.buttons(RunOptions.DEFAULTS, PROSE, state())
@@ -159,8 +181,10 @@ TestRunner:test("list(): the defaults with recent picks ahead of Fast; bad entri
     local l = RunOptions.list({})
     TestRunner:assertEqual(#l, #RunOptions.DEFAULTS, "no recents: the defaults")
     l = RunOptions.list({ run_recent_models = { { provider = "openai", model = "gpt-6-luna" }, "junk", { provider = 1 } } })
-    TestRunner:assertEqual(l[3].model, "gpt-6-luna", "recent before Fast")
-    TestRunner:assertEqual(l[4].tier, "fast", "then Fast")
+    local fast_at
+    for i, e in ipairs(l) do if e.tier == "fast" then fast_at = i end end
+    TestRunner:assertEqual(l[fast_at - 1].model, "gpt-6-luna", "recent before Fast")
+    TestRunner:assertEqual(l[fast_at - 2].book_info, "on", "after the Quick and book info pairs")
     TestRunner:assertEqual(#l, #RunOptions.DEFAULTS + 1, "junk dropped")
 end)
 
@@ -253,7 +277,7 @@ local function fakePlugin(features)
 end
 
 TestRunner:test("stateFor: live state for an unpinned prose action yields tier buttons on the active provider", function()
-    local ModelLists = require("koassistant_model_lists")
+    local ModelLists = require("koassistant.request.model_lists")
     local fast = ModelLists.resolveTierModel("anthropic", "fast")
     TestRunner:assertTrue(fast ~= nil, "anthropic has a fast tier")
     local plugin = fakePlugin({ provider = "anthropic", model = ModelLists.anthropic[1] })
@@ -374,7 +398,7 @@ end)
 
 -- ---------------------------------------------------------------- trust gate + saved state
 
-local Dialogs = require("koassistant_dialogs")
+local Dialogs = require("koassistant.ui.dialogs")
 
 TestRunner:test("trust gate: a run option's picked model beats the action's pin", function()
     local p = Dialogs.effectiveDispatchProvider(
@@ -476,7 +500,7 @@ end)
 -- ---------------------------------------------------------------- attachments
 
 TestRunner:test("attachments: a notebook reaches only a provider allowed to have it", function()
-    local A = require("koassistant_attachments")
+    local A = require("koassistant.request.attachments")
     local saved = A.notebookOverrideFor
     local override = nil
     A.notebookOverrideFor = function() return override end
@@ -497,7 +521,7 @@ TestRunner:test("attachments: a notebook reaches only a provider allowed to have
 end)
 
 TestRunner:test("saved chat state keeps a run option's model and reasoning; a chat pick wins", function()
-    local CHM = require("koassistant_chat_history_manager")
+    local CHM = require("koassistant.chat.chat_history_manager")
     local cs = CHM.captureControlState({ features = {
         _run_model = { provider = "openai", model = "gpt-5.5" }, _run_reasoning = "off" } })
     TestRunner:assertEqual(cs.model.provider, "openai", "model")
@@ -506,6 +530,24 @@ TestRunner:test("saved chat state keeps a run option's model and reasoning; a ch
         _run_model = { provider = "openai", model = "gpt-5.5" },
         _session_model = { provider = "anthropic", model = "claude-opus-5-5" } } })
     TestRunner:assertEqual(cs.model.provider, "anthropic", "a later chat pick wins")
+end)
+
+TestRunner:test("namesBook: the book-info run option is offered only where the book's name goes", function()
+    local NB = RunOptions.namesBook
+    TestRunner:assertEqual(NB({ context = "highlight", include_book_context = false,
+        prompt = "Translate: {highlighted_text}" }), false, "Translate never names the book")
+    TestRunner:assertEqual(NB({ context = "highlight", prompt = "Define: {highlighted_text}" }),
+        false, "a highlight action without the flag or a placeholder")
+    TestRunner:assertEqual(NB({ context = "highlight", include_book_context = true,
+        prompt = "Explain: {highlighted_text}" }), true, "include_book_context")
+    TestRunner:assertEqual(NB({ context = "highlight", prompt = "In \"{title}\": {highlighted_text}" }),
+        true, "a title placeholder")
+    TestRunner:assertEqual(NB({ context = "highlight", prompt = "{highlighted_text}{author_clause}" }),
+        true, "an author placeholder")
+    TestRunner:assertEqual(NB({ context = "book", prompt = "Summarize." }), true, "a book action")
+    TestRunner:assertEqual(NB({ context = "both", prompt = "Connect: {highlighted_text}" }), true,
+        "a highlight-and-book action")
+    TestRunner:assertEqual(NB(nil), false, "no action")
 end)
 
 return TestRunner:summary()

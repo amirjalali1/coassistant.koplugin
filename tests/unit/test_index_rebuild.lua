@@ -91,13 +91,13 @@ for _idx, name in ipairs(_overridden) do
     _saved[name] = package.loaded[name]
 end
 
-package.loaded["koassistant_index_rebuilder"] = nil
-package.loaded["koassistant_chat_history_manager"] = nil
-package.loaded["koassistant_action_cache"] = nil
-package.loaded["koassistant_notebook"] = nil
-package.loaded["koassistant_pinned_manager"] = nil
-package.loaded["koassistant_library_scanner"] = nil
-package.loaded["koassistant_doc_settings"] = nil
+package.loaded["koassistant.artifacts.index_rebuilder"] = nil
+package.loaded["koassistant.chat.chat_history_manager"] = nil
+package.loaded["koassistant.artifacts.action_cache"] = nil
+package.loaded["koassistant.chat.notebook"] = nil
+package.loaded["koassistant.artifacts.pinned_manager"] = nil
+package.loaded["koassistant.books.library_scanner"] = nil
+package.loaded["koassistant.storage.doc_settings"] = nil
 package.loaded["docsettings"] = nil
 package.loaded["datastorage"] = nil
 package.loaded["libs/libkoreader-lfs"] = nil
@@ -275,10 +275,10 @@ package.loaded["document/documentregistry"] = {
 }
 
 -- Load modules under test (after all mocks are in place)
-local ChatHistoryManager = require("koassistant_chat_history_manager")
-local Notebook = require("koassistant_notebook")
-local PinnedManager = require("koassistant_pinned_manager")
-local IndexRebuilder = require("koassistant_index_rebuilder")
+local ChatHistoryManager = require("koassistant.chat.chat_history_manager")
+local Notebook = require("koassistant.chat.notebook")
+local PinnedManager = require("koassistant.artifacts.pinned_manager")
+local IndexRebuilder = require("koassistant.artifacts.index_rebuilder")
 
 -- ============================================================
 -- Test Runner
@@ -838,13 +838,13 @@ for _idx, name in ipairs(_overridden) do
 end
 logger_mock.warn = _saved_warn
 -- Drop plugin modules loaded against our mocks; later suites reload fresh
-package.loaded["koassistant_index_rebuilder"] = nil
-package.loaded["koassistant_chat_history_manager"] = nil
-package.loaded["koassistant_action_cache"] = nil
-package.loaded["koassistant_notebook"] = nil
-package.loaded["koassistant_pinned_manager"] = nil
-package.loaded["koassistant_library_scanner"] = nil
-package.loaded["koassistant_doc_settings"] = nil
+package.loaded["koassistant.artifacts.index_rebuilder"] = nil
+package.loaded["koassistant.chat.chat_history_manager"] = nil
+package.loaded["koassistant.artifacts.action_cache"] = nil
+package.loaded["koassistant.chat.notebook"] = nil
+package.loaded["koassistant.artifacts.pinned_manager"] = nil
+package.loaded["koassistant.books.library_scanner"] = nil
+package.loaded["koassistant.storage.doc_settings"] = nil
 
 -- ============================================================
 -- Summary

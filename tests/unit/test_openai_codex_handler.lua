@@ -16,8 +16,8 @@ end
 setupPaths()
 require("mock_koreader")
 
-local Handler = require("koassistant_api.openai_codex")
-local ModelConstraints = require("model_constraints")
+local Handler = require("koassistant.api.openai_codex")
+local ModelConstraints = require("koassistant.request.model_constraints")
 local json = require("json")
 local TestRunner = require("test_runner"):new()
 
@@ -95,7 +95,7 @@ TestRunner:test("buildRequestBody keeps responses tools wire and include for too
 end)
 
 TestRunner:test("non-streaming query uses collected SSE transport with Codex headers", function()
-    local BaseHandler = require("koassistant_api.base")
+    local BaseHandler = require("koassistant.api.base")
     local original_resolve = BaseHandler.resolveForSubprocess
     local original_fetch = BaseHandler.fetchInSubprocess
     local original_write = BaseHandler.writeAllToFD

@@ -27,7 +27,7 @@ end
 setupPaths()
 
 local TestRunner = require("test_runner"):new()
-local Constants = require("koassistant_constants")
+local Constants = require("koassistant.core.constants")
 
 local function count(set)
     local n = 0

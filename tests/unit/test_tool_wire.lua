@@ -1,4 +1,4 @@
--- Unit tests for koassistant_api/tool_wire.lua (provider tool-turn adapters)
+-- Unit tests for koassistant/api/tool_wire.lua (provider tool-turn adapters)
 
 local function setupPaths()
     local info = debug.getinfo(1, "S")
@@ -18,7 +18,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local ToolWire = require("koassistant_api.tool_wire")
+local ToolWire = require("koassistant.api.tool_wire")
 local TestRunner = require("test_runner"):new()
 
 print("")
@@ -41,7 +41,7 @@ TestRunner:test("wave-1 providers alias the openai chat-wire adapter", function(
             provider .. " aliases the openai adapter")
     end
     -- Z.AI deliberately excluded: tool_choice only supports "auto" (gather/final
-    -- passes need required/none) — see model_constraints.lua zai note.
+    -- passes need required/none) — see koassistant/request/model_constraints.lua zai note.
     TestRunner:assertFalse(ToolWire.hasAdapter("zai"), "zai stays out of wave 1")
 end)
 

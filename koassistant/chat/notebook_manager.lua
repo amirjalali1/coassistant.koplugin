@@ -1,0 +1,329 @@
+--[[--
+Notebook Manager for KOAssistant
+
+Browser UI for viewing all notebooks across documents.
+- Shows list of documents with notebooks (sorted by last modified)
+- Tap for options menu (View, Edit, Delete)
+- Auto-cleanup stale index entries
+
+@module koassistant.chat.notebook_manager
+]]
+
+local ButtonDialog = require("ui/widget/buttondialog")
+local ConfirmBox = require("ui/widget/confirmbox")
+local DocSettings = require("docsettings")
+local SafeDocSettings = require("koassistant.storage.doc_settings")
+local InfoMessage = require("ui/widget/infomessage")
+local Menu = require("ui/widget/menu")
+local Screen = require("device").screen
+local UIManager = require("ui/uimanager")
+local logger = require("koassistant.core.logger")
+local Constants = require("koassistant.core.constants")
+local _ = require("koassistant.core.gettext")
+
+local NotebookManager = {}
+
+--- Show the notebook browser (list of all documents with notebooks)
+--- @param opts table|nil Optional config: { enable_emoji = bool }
+function NotebookManager:showNotebookBrowser(opts)
+    local Notebook = require("koassistant.chat.notebook")
+    local index = G_reader_settings:readSetting("koassistant_notebook_index", {})
+
+    -- If index is empty, try rebuilding from vault directory scan
+    if not next(index) then
+        local rebuilt = Notebook.scanAndRebuildIndex()
+        if rebuilt > 0 then
+            index = G_reader_settings:readSetting("koassistant_notebook_index", {})
+        end
+    end
+
+    local needs_cleanup = false
+
+    -- Build sorted list (newest first), validate entries exist
+    local docs = {}
+    for doc_path, stats in pairs(index) do
+        if Notebook.exists(doc_path) then
+            -- Get book title and author from metadata, falling back to filename
+            local doc_settings = DocSettings:open(doc_path)
+            local doc_props = SafeDocSettings.overlayCustomProps(doc_settings:readSetting("doc_props"), doc_path)
+            local title = doc_props and (doc_props.display_title or doc_props.title) or nil
+            if not title or title == "" then
+                title = doc_path:match("([^/]+)%.[^%.]+$") or doc_path
+            end
+            local author = doc_props and doc_props.authors or nil
+            table.insert(docs, {
+                path = doc_path,
+                title = title,
+                author = author,
+                modified = stats.modified or 0,
+                size = stats.size or 0,
+            })
+        else
+            -- Stale entry - file no longer exists
+            index[doc_path] = nil
+            needs_cleanup = true
+            logger.dbg("KOAssistant Notebook: Cleaning stale index entry:", doc_path)
+        end
+    end
+
+    -- Persist cleanup if needed
+    if needs_cleanup then
+        G_reader_settings:saveSetting("koassistant_notebook_index", index)
+        G_reader_settings:flush()
+        logger.info("KOAssistant Notebook: Cleaned up stale index entries")
+    end
+
+    -- Handle empty state
+    if #docs == 0 then
+        UIManager:show(InfoMessage:new{
+            text = _("No notebooks yet.\n\nUse the Notebook button in chat viewer to save conversations to a per-book notebook."),
+            timeout = 5,
+        })
+        return
+    end
+
+    -- Sort by last modified (newest first)
+    table.sort(docs, function(a, b) return a.modified > b.modified end)
+
+    -- Build menu items
+    local menu_items = {}
+    local self_ref = self
+
+    local enable_emoji = opts and opts.enable_emoji
+    for _idx, doc in ipairs(docs) do
+        local captured_doc = doc
+        local date_str = doc.modified > 0 and os.date("%Y-%m-%d", doc.modified) or _("Unknown")
+
+        local display_text = doc.title
+        if doc.author and doc.author ~= "" then
+            display_text = display_text .. " \u{00B7} " .. doc.author
+        end
+        display_text = Constants.getEmojiText("\u{1F4D3}", display_text, enable_emoji)
+
+        table.insert(menu_items, {
+            text = display_text,
+            mandatory = date_str,
+            mandatory_dim = true,
+            help_text = doc.path,
+            callback = function()
+                self_ref:showNotebookOptions(captured_doc.path, captured_doc.title)
+            end,
+        })
+    end
+
+    -- Close existing menu if re-showing (e.g., after delete)
+    if self.current_menu then
+        UIManager:close(self.current_menu)
+        self.current_menu = nil
+    end
+
+    -- Create menu
+    local menu = Menu:new{
+        title = _("Notebooks"),
+        item_table = menu_items,
+        is_borderless = true,
+        is_popout = false,
+        width = Screen:getWidth(),
+        height = Screen:getHeight(),
+        title_bar_left_icon = "appbar.menu",
+        onLeftButtonTap = function()
+            self_ref:showBrowserMenuOptions(opts)
+        end,
+        -- Override onMenuSelect to prevent close_callback from firing on item tap.
+        -- Without this, clicking an item clears current_menu, making the hamburger
+        -- unable to close the browser when switching.
+        onMenuSelect = function(_self_menu, item)
+            if item and item.callback then item.callback() end
+            return true
+        end,
+        onMenuHold = function(_self_menu, item)
+            if item and item.hold_callback then item.hold_callback() end
+            return true
+        end,
+        multilines_show_more_text = true,
+        items_max_lines = 2,
+        single_line = false,
+        multilines_forced = true,
+        items_font_size = 18,
+        items_mandatory_font_size = 14,
+    }
+
+    -- close_callback: only fires from onCloseAllMenus (back/X button),
+    -- NOT from item tap (we override onMenuSelect above).
+    menu.close_callback = function()
+        if self_ref.current_menu == menu then
+            self_ref.current_menu = nil
+        end
+    end
+
+    self.current_menu = menu
+    UIManager:show(menu)
+end
+
+--- Show options menu for a notebook
+--- @param doc_path string The document file path
+--- @param doc_title string The document title for display
+function NotebookManager:showNotebookOptions(doc_path, doc_title)
+    local Notebook = require("koassistant.chat.notebook")
+    local notebook_path = Notebook.getPath(doc_path)
+    local self_ref = self
+
+    local dialog
+    -- Close previous options dialog if still open
+    if self._current_options_dialog then
+        UIManager:close(self._current_options_dialog)
+        self._current_options_dialog = nil
+    end
+    dialog = ButtonDialog:new{
+        title = doc_title,
+        buttons = {
+            {
+                {
+                    text = _("View"),
+                    callback = function()
+                        UIManager:close(dialog)
+                        local AskGPT = self_ref:getAskGPTInstance()
+                        if AskGPT then
+                            AskGPT:openNotebookForFile(doc_path)  -- view mode
+                        end
+                    end,
+                },
+                {
+                    text = _("Edit"),
+                    callback = function()
+                        UIManager:close(dialog)
+                        local AskGPT = self_ref:getAskGPTInstance()
+                        if AskGPT then
+                            AskGPT:openNotebookForFile(doc_path, true)  -- edit mode
+                        end
+                    end,
+                },
+            },
+            {
+                {
+                    text = _("Open Book"),
+                    callback = function()
+                        UIManager:close(dialog)
+                        if self_ref.current_menu then
+                            UIManager:close(self_ref.current_menu)
+                            self_ref.current_menu = nil
+                        end
+                        local ReaderUI = require("apps/reader/readerui")
+                        ReaderUI:showReader(doc_path)
+                    end,
+                },
+                {
+                    text = _("Delete Notebook"),
+                    callback = function()
+                        UIManager:close(dialog)
+                        UIManager:show(ConfirmBox:new{
+                            text = _("Delete this notebook?\n\nThis cannot be undone."),
+                            ok_text = _("Delete"),
+                            ok_callback = function()
+                                -- Delete file
+                                local ok, err = os.remove(notebook_path)
+                                if ok == nil and err then
+                                    logger.warn("KOAssistant Notebook: Failed to delete:", err)
+                                end
+                                -- Drop the book's pointer to it (vault/central modes keep one;
+                                -- it used to outlive the file — storage sweep 2026-09-03)
+                                local ds = doc_path and SafeDocSettings.resolve(doc_path)
+                                if ds then ds:saveSetting("koassistant_notebook_ref", nil) end
+                                -- Update index
+                                local AskGPT = self_ref:getAskGPTInstance()
+                                if AskGPT then
+                                    AskGPT:updateNotebookIndex(doc_path, "remove")
+                                end
+                                -- Refresh view (re-show browser)
+                                self_ref:showNotebookBrowser()
+                            end,
+                        })
+                    end,
+                },
+            },
+            {
+                {
+                    text = _("Cancel"),
+                    callback = function()
+                        UIManager:close(dialog)
+                    end,
+                },
+            },
+        },
+    }
+    self._current_options_dialog = dialog
+    UIManager:show(dialog)
+end
+
+--- Show hamburger menu with cross-browser navigation
+--- @param opts table|nil Config passed through for refresh
+function NotebookManager:showBrowserMenuOptions(opts)
+    local self_ref = self
+    local dialog
+
+    local function navClose()
+        UIManager:close(dialog)
+        if self_ref._current_options_dialog then
+            UIManager:close(self_ref._current_options_dialog)
+            self_ref._current_options_dialog = nil
+        end
+        local menu_to_close = self_ref.current_menu
+        self_ref.current_menu = nil
+        return menu_to_close
+    end
+
+    dialog = ButtonDialog:new{
+        buttons = {
+            -- Uniform browser carousel (maintainer 2026-08-13): same three rows
+            -- in the same order everywhere — " →" leaves this browser, the
+            -- grayed "● " row is the current one
+            {{ text = _("Chat History") .. " →", align = "left", callback = function()
+                local mc = navClose()
+                UIManager:nextTick(function()
+                    if mc then UIManager:close(mc) end
+                    local AskGPT = self_ref:getAskGPTInstance()
+                    -- all_books: this browser is a cross-book surface, so the
+                    -- swap lands on the top level — without it, an open book
+                    -- jumped the swap into that book's chats (device 2026-08-17)
+                    if AskGPT then AskGPT:showChatHistory({ all_books = true }) end
+                end)
+            end }},
+            {{ text = "● " .. _("Notebooks"), align = "left", enabled = false,
+               callback = function() end }},
+            {{ text = _("Artifacts") .. " →", align = "left", callback = function()
+                local mc = navClose()
+                UIManager:nextTick(function()
+                    if mc then UIManager:close(mc) end
+                    local AskGPT = self_ref:getAskGPTInstance()
+                    if AskGPT then AskGPT:showArtifactBrowser() end
+                end)
+            end }},
+        },
+        shrink_unneeded_width = true,
+        anchor = function()
+            return self_ref.current_menu.title_bar.left_button.image.dimen, true
+        end,
+    }
+    UIManager:show(dialog)
+end
+
+--- Get AskGPT plugin instance
+--- @return table|nil AskGPT The plugin instance or nil
+function NotebookManager:getAskGPTInstance()
+    -- Try to get from FileManager first
+    local FileManager = require("apps/filemanager/filemanager")
+    if FileManager.instance and FileManager.instance.koassistant then
+        return FileManager.instance.koassistant
+    end
+
+    -- Try to get from ReaderUI
+    local ReaderUI = require("apps/reader/readerui")
+    if ReaderUI.instance and ReaderUI.instance.koassistant then
+        return ReaderUI.instance.koassistant
+    end
+
+    logger.warn("KOAssistant Notebook: Could not get AskGPT instance")
+    return nil
+end
+
+return NotebookManager

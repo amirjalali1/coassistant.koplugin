@@ -30,8 +30,8 @@ end
 setupPaths()
 
 -- Reset module cache before requiring (matters under run_tests.lua)
-package.loaded["koassistant_gettext"] = nil
-local Gettext = require("koassistant_gettext")
+package.loaded["koassistant.core.gettext"] = nil
+local Gettext = require("koassistant.core.gettext")
 local TestRunner = require("test_runner"):new()
 
 -- Write a temp .po whose msgids exercise the escape cases, then parse it off disk.

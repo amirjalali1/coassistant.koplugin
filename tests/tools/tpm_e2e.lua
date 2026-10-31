@@ -1,5 +1,5 @@
 -- End-to-end transport check for per-minute admission limits, WITHOUT provider
--- credentials: drives the REAL koassistant_api/base.lua fetch paths against
+-- credentials: drives the REAL koassistant/api/base.lua fetch paths against
 -- tests/tools/tpm_stub_server.py under KOReader's bundled LuaJIT + ffi.
 --
 --   python3 tests/tools/tpm_stub_server.py &          # port 8765, limit 8000
@@ -13,11 +13,11 @@
 -- fitting budget. Exit code 1 on any failure.
 local plugin_dir = arg[1] or "."
 require("setupkoenv")
-package.path = plugin_dir .. "/?.lua;" .. plugin_dir .. "/koassistant_api/?.lua;" .. package.path
+package.path = plugin_dir .. "/?.lua;" .. plugin_dir .. "/koassistant/api/?.lua;" .. package.path
 local ffiutil = require("ffi/util")
 local json = require("json")
-local BaseHandler = require("koassistant_api.base")
-local RL = require("koassistant_rate_limits")
+local BaseHandler = require("koassistant.api.base")
+local RL = require("koassistant.request.rate_limits")
 
 local URL = os.getenv("TPM_STUB_URL") or "http://127.0.0.1:8765/v1/chat/completions"
 local failed = 0

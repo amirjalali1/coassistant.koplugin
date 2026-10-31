@@ -1,5 +1,5 @@
 --[[
-Unit Tests for koassistant_constants.lua
+Unit Tests for koassistant/core/constants.lua
 
 Tests the centralized constants module to ensure:
 - Context lists are correct
@@ -14,7 +14,7 @@ Run: lua tests/run_tests.lua --unit
 package.path = package.path .. ";./?.lua;./?/init.lua"
 require("tests.lib.mock_koreader")
 
-local Constants = require("koassistant_constants")
+local Constants = require("koassistant.core.constants")
 
 -- Test suite
 local TestConstants = {
@@ -49,7 +49,7 @@ function TestConstants:assertEquals(actual, expected, message)
 end
 
 function TestConstants:runAll()
-    print("\n=== Testing koassistant_constants.lua ===\n")
+    print("\n=== Testing koassistant/core/constants.lua ===\n")
 
     -- Test context constants
     self:test("CONTEXTS constants are strings", function()
@@ -204,11 +204,11 @@ function TestConstants:runAll()
 
     self:test("every (KOA) label goes through koaLabel (so the checkboxes reach it)", function()
         local offenders, scanned = {}, 0
-        for _idx, sub in ipairs({ ".", "koassistant_ui", "prompts" }) do
-            local handle = io.popen('ls "' .. sub .. '"/*.lua 2>/dev/null')
+        for _idx, cmd in ipairs({ 'ls ./*.lua', 'find ./koassistant -name "*.lua" | sort' }) do
+            local handle = io.popen(cmd .. ' 2>/dev/null')
             if handle then
                 for path in handle:lines() do
-                    if not path:find("koassistant_constants%.lua$") then
+                    if not path:find("koassistant/core/constants%.lua$") then
                         local fh = io.open(path, "r")
                         if fh then
                             scanned = scanned + 1

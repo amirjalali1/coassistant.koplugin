@@ -68,7 +68,11 @@ G_reader_settings = stubs["luasettings"].open()  -- luacheck: ignore
 -- The installed plugin's modules come first, as in KOReader
 package.path = plugin .. "/?.lua;" .. package.path
 
-local UC = assert(loadfile(plugin .. "/koassistant_update_checker.lua"))()
+-- the installed updater: under koassistant/storage/ since v0.24.0, at the root in older releases
+local uc_path = plugin .. "/koassistant/storage/update_checker.lua"
+local probe = io.open(uc_path, "r")
+if probe then probe:close() else uc_path = plugin .. "/" .. "koassistant_update_checker" .. ".lua" end
+local UC = assert(loadfile(uc_path))()
 
 local function upvalue(fn, name)
     local i = 1

@@ -1,0 +1,6 @@
+# Commits git blame skips: whole-tree moves and renames, no logic. Picked up by
+# GitHub automatically; locally after
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# The plugin code moved under koassistant/, one folder per area (B481, 2026-10-14)
+ef311a299d9c4dec63fa5c2cc76e98943328f51b

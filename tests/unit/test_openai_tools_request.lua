@@ -23,7 +23,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local OpenAIHandler = require("koassistant_api.openai")
+local OpenAIHandler = require("koassistant.api.openai")
 local TestRunner = require("test_runner"):new()
 
 print("")
@@ -121,7 +121,7 @@ end)
 
 -- OpenRouter rides the same OpenAI wire format through openai_compatible.lua
 TestRunner:test("openrouter (compatible family): declaration + tool turns survive", function()
-    local OpenRouterHandler = require("koassistant_api.openrouter")
+    local OpenRouterHandler = require("koassistant.api.openrouter")
     local result = OpenRouterHandler:buildRequestBody({
         { role = "user", content = "Where is Daisy first mentioned?" },
         { role = "assistant", content = nil, tool_calls = {

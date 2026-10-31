@@ -1,9 +1,9 @@
 -- The streaming consumer must learn the plan's per-minute allowance from the
 -- pipe marker the forked fetch child writes -- on BOTH transports.
 --
--- koassistant_api/base.lua writes RateLimits.PROTOCOL_MARKER BEFORE the body on
+-- koassistant/api/base.lua writes RateLimits.PROTOCOL_MARKER BEFORE the body on
 -- the macOS raw-SSL path and AFTER the body on the http.request path that every
--- device uses. stream_handler.lua's line loop returns out of the whole poll
+-- device uses. koassistant/request/stream_handler.lua's line loop returns out of the whole poll
 -- callback at "data: [DONE]" (and at the SSE/NDJSON error branches), so on the
 -- device transport the marker lands in partial_data and the session memo stays
 -- empty -- the #106 protection never arms before the first refusal.
@@ -25,7 +25,7 @@ local function setupPaths()
     local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -56,7 +56,7 @@ function TestRunner:assertTrue(v, msg) if not v then error(msg or "expected trut
 -- ------------------------------------------------------------------
 local SAVED_KEYS = {
     "ffi", "ffi/util", "ui/uimanager", "device",
-    "ui/widget/inputtext", "ui/widget/inputdialog", "stream_handler",
+    "ui/widget/inputtext", "ui/widget/inputdialog", "koassistant.request.stream_handler",
 }
 local saved = {}
 for _idx, k in ipairs(SAVED_KEYS) do saved[k] = package.loaded[k] end
@@ -172,9 +172,9 @@ function InputDialogStub:new(o)
 end
 package.loaded["ui/widget/inputdialog"] = InputDialogStub
 
-package.loaded["stream_handler"] = nil
-local StreamHandler = require("stream_handler")
-local RL = require("koassistant_rate_limits")
+package.loaded["koassistant.request.stream_handler"] = nil
+local StreamHandler = require("koassistant.request.stream_handler")
+local RL = require("koassistant.request.rate_limits")
 
 -- ------------------------------------------------------------------
 -- Fixtures. The marker line is produced by the module that writes it on the
@@ -430,8 +430,61 @@ TestRunner:test("SSE id:/retry:/event: lines never reach the answer", function()
 end)
 
 -- ------------------------------------------------------------------
+-- 2026-10-19: the waiting animation and the think machine's leftovers
+-- ------------------------------------------------------------------
+
+--- Nothing arrives, the reader taps Stop. The waiting animation's tick used to
+--- re-arm itself forever (its handle held scheduleIn's nil) and repaint the
+--- closed dialog every 0.4 s until KOReader restarted.
+local function cancelBeforeFirstToken()
+    RL._reset()
+    pipe.segs, pipe.idx, pipe.pos, pipe.tick, pipe.ready_at, held =
+        { { text = SSE_BODY, delay = 1000000 } }, 1, 1, 0, 0, ""
+    queue = {}
+    local completions = 0
+    StreamHandler:new{}:showStreamDialog(
+        function() end, "groq", "openai/gpt-oss-20b",
+        { provider_name = "groq", model = "openai/gpt-oss-20b",
+          poll_interval_ms = 125, display_interval_ms = 1, prompt_chars = 100 },
+        function() completions = completions + 1 end)
+    for _ = 1, 10 do
+        if #queue == 0 then break end
+        table.remove(queue, 1)()
+    end
+    last_dialog.title_bar.close_callback()
+    local paints = 0
+    last_dialog._input_widget.setText = function() paints = paints + 1 end
+    for _ = 1, 60 do
+        if #queue == 0 then break end
+        table.remove(queue, 1)()
+    end
+    return paints, completions, #queue
+end
+
+TestRunner:test("a Stop before the first token stops the waiting animation", function()
+    local paints, completions, left = cancelBeforeFirstToken()
+    TestRunner:assertEqual(completions, 1, "the stream finished once")
+    TestRunner:assertEqual(paints, 0, "no repaint of the closed dialog after the Stop")
+    TestRunner:assertTrue(left <= 1, "only cleanup's collection task remains, left " .. tostring(left))
+end)
+
+-- The think machine engages on a LEADING <think> only; a block that starts
+-- mid-text streamed as answer text and was saved that way (the non-stream
+-- path removed it wherever it was).
+TestRunner:test("a <think> block that starts mid-text is split off at the stream end", function()
+    local body = 'data: {"choices":[{"index":0,"delta":{"content":"Sure. <think>deep thought</think> The answer."},"finish_reason":null}]}\n\n'
+        .. 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' .. 'data: [DONE]\n\n'
+    local ok, content = runStream(body)
+    TestRunner:assertTrue(ok, "stream completed")
+    TestRunner:assertTrue(type(content) == "string" and content:find("<think>", 1, true) == nil,
+        "no think tag in the answer: " .. tostring(content))
+    TestRunner:assertTrue(content:find("The answer.", 1, true) ~= nil, "the answer kept: " .. tostring(content))
+    TestRunner:assertTrue(content:find("deep thought", 1, true) == nil, "the reasoning left the answer")
+end)
+
+-- ------------------------------------------------------------------
 RL._reset()
-package.loaded["stream_handler"] = nil
+package.loaded["koassistant.request.stream_handler"] = nil
 for _idx, k in ipairs(SAVED_KEYS) do package.loaded[k] = saved[k] end
 
 print(string.format("\n  test_stream_ratelimit_marker: %d passed, %d failed",

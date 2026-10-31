@@ -31,9 +31,9 @@ setupPaths()
 
 require("mock_koreader")
 
-local Actions = require("prompts.actions")
-local ActionService = require("action_service")
-local Constants = require("koassistant_constants")
+local Actions = require("koassistant.prompts.actions")
+local ActionService = require("koassistant.prompts.action_service")
+local Constants = require("koassistant.core.constants")
 
 -- ============================================================
 -- Test Runner
@@ -105,7 +105,7 @@ local function createService(settings_data)
     local settings = createMockSettings(settings_data)
     local service = ActionService:new(settings)
     service.Actions = Actions
-    local ok, Templates = pcall(require, "prompts.templates")
+    local ok, Templates = pcall(require, "koassistant.prompts.templates")
     if ok then service.Templates = Templates end
     return service
 end

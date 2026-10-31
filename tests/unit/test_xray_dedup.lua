@@ -1,7 +1,7 @@
 --[[
-Unit tests: X-Ray entity dedup (koassistant_xray_dedup.lua) + never-merge
-storage (koassistant_action_cache.lua reserved key) + the section-merge
-prompts' never-pairs injection (koassistant_xray_merge.lua) —
+Unit tests: X-Ray entity dedup (koassistant/xray/xray_dedup.lua) + never-merge
+storage (koassistant/artifacts/action_cache.lua reserved key) + the section-merge
+prompts' never-pairs injection (koassistant/xray/xray_merge.lua) —
 xray_ecosystem_plan.md §6 slice 4.
 
 Scan heuristics, merge application, sidecar absorb, AI-merge prompt sentinel
@@ -36,10 +36,10 @@ setupPaths()
 local TMP_ROOT = "/tmp/koassistant_xray_dedup_test_" .. tostring(os.time()) .. "_" .. tostring(math.random(10000))
 local SIDECAR_DIR = TMP_ROOT .. "/book.sdr"
 os.execute(string.format("mkdir -p %q", SIDECAR_DIR))
-package.loaded["koassistant_action_cache"] = nil
-package.loaded["koassistant_xray_dedup"] = nil
-package.loaded["koassistant_xray_merge"] = nil
-package.loaded["koassistant_gettext"] = nil
+package.loaded["koassistant.artifacts.action_cache"] = nil
+package.loaded["koassistant.xray.xray_dedup"] = nil
+package.loaded["koassistant.xray.xray_merge"] = nil
+package.loaded["koassistant.core.gettext"] = nil
 package.loaded["docsettings"] = nil
 package.loaded["util"] = nil
 package.loaded["luasettings"] = nil
@@ -65,9 +65,9 @@ package.loaded["luasettings"] = {
     open = function() return { readSetting = function() return nil end, close = function() end } end,
 }
 
-local XrayDedup = require("koassistant_xray_dedup")
-local XrayMerge = require("koassistant_xray_merge")
-local ActionCache = require("koassistant_action_cache")
+local XrayDedup = require("koassistant.xray.xray_dedup")
+local XrayMerge = require("koassistant.xray.xray_merge")
+local ActionCache = require("koassistant.artifacts.action_cache")
 local TestRunner = require("test_runner"):new()
 local DOC_PATH = TMP_ROOT .. "/book.epub"
 
@@ -349,6 +349,70 @@ TestRunner:test("addNeverMergePair round-trips with alias entries intact", funct
     TestRunner:assertEqual(reread["Jack Torrance"].ignore[1], "caretaker", "ignore list intact")
 end)
 
+TestRunner:test("B533: a rename record round-trips, alone or beside search terms", function()
+    local all = ActionCache.getUserAliases(DOC_PATH)
+    all["Grey Host"] = { ai_name = "The Pale Ones", typed = { "Grey Host" } }
+    all["Corin Vale"] = { add = { "Cor" }, ignore = { "the boy" }, ai_name = "the boy", typed = { 'Corin "Wren" Vale' } }
+    TestRunner:assertEqual(ActionCache.setUserAliases(DOC_PATH, all), true, "save")
+    local back = ActionCache.getUserAliases(DOC_PATH)
+    TestRunner:assertEqual(back["Grey Host"].ai_name, "The Pale Ones", "a record with only a rename is kept")
+    TestRunner:assertEqual(back["Grey Host"].typed[1], "Grey Host")
+    TestRunner:assertEqual(#(back["Grey Host"].add or {}), 0, "never read as the old list format")
+    TestRunner:assertEqual(back["Corin Vale"].ai_name, "the boy")
+    TestRunner:assertEqual(back["Corin Vale"].typed[1], 'Corin "Wren" Vale', "quotes survive")
+    TestRunner:assertEqual(back["Corin Vale"].add[1], "Cor", "search terms beside it")
+    TestRunner:assertEqual(back["Corin Vale"].ignore[1], "the boy")
+    TestRunner:assertEqual(#ActionCache.getNeverMergePairs(DOC_PATH), 1, "the pairs stay")
+    -- the record follows a rename, merged into one already there
+    back["Corin Wren"] = { add = { "Wren" } }
+    ActionCache.setUserAliases(DOC_PATH, back)
+    ActionCache.renameEntityKeys(DOC_PATH, "characters", "Corin Vale", "Corin Wren")
+    local moved = ActionCache.getUserAliases(DOC_PATH)["Corin Wren"]
+    TestRunner:assertEqual(moved.ai_name, "the boy", "the AI's name moves")
+    TestRunner:assertEqual(moved.typed[1], 'Corin "Wren" Vale', "the typed names move")
+    TestRunner:assertEqual(#moved.add, 2, "the search terms merge")
+    -- leave the file as the next tests expect it
+    local clean = ActionCache.getUserAliases(DOC_PATH)
+    clean["Grey Host"], clean["Corin Wren"], clean["Danny"] = nil, nil, clean["Danny"]
+    ActionCache.setUserAliases(DOC_PATH, clean)
+end)
+
+TestRunner:test("B533 S2: names set to capitals only round-trip, alone or beside the rest, and follow a rename", function()
+    local all = ActionCache.getUserAliases(DOC_PATH)
+    all["The Reed Folk"] = { case = { ["the reed folk"] = "capitals" } }
+    all["Marrow"] = { add = { "the Marrow" }, case = { ["marrow"] = "capitals", ['the "old" marrow'] = "capitals" } }
+    -- S3: Any case picked is the reader's too; the automatic choices never land here
+    all["The Summer Court"] = { case = { ["the summer court"] = "any" } }
+    all[require("koassistant.xray.xray_parser").AUTO_CAPS_KEY] = { ["the reed folk"] = true }
+    TestRunner:assertEqual(ActionCache.setUserAliases(DOC_PATH, all), true, "save")
+    local back = ActionCache.getUserAliases(DOC_PATH)
+    TestRunner:assertEqual(back["The Reed Folk"].case["the reed folk"], "capitals", "a record with only capitals is kept")
+    TestRunner:assertEqual(back["The Summer Court"].case["the summer court"], "any", "Any case round-trips")
+    TestRunner:assertEqual(back[require("koassistant.xray.xray_parser").AUTO_CAPS_KEY], nil, "nothing automatic stored")
+    back["The Summer Court"] = nil
+    TestRunner:assertEqual(#(back["The Reed Folk"].add or {}), 0, "never read as the old list format")
+    TestRunner:assertEqual(back["Marrow"].case['the "old" marrow'], "capitals", "quotes survive")
+    TestRunner:assertEqual(back["Marrow"].add[1], "the Marrow", "search terms beside it")
+    -- the record follows a rename, merged into one already there
+    back["Old Marrow"] = { case = { ["old marrow"] = "capitals" } }
+    ActionCache.setUserAliases(DOC_PATH, back)
+    ActionCache.renameEntityKeys(DOC_PATH, "characters", "Marrow", "Old Marrow")
+    local moved = ActionCache.getUserAliases(DOC_PATH)["Old Marrow"]
+    TestRunner:assertEqual(moved.case["marrow"], "capitals", "the old name's choice moves")
+    TestRunner:assertEqual(moved.case["old marrow"], "capitals", "beside the one already there")
+    -- the view: mergeUserAliases marks the names, matchTermSet asks their capitals
+    local XrayParser = require("koassistant.xray.xray_parser")
+    local data = { characters = { { name = "The Reed Folk" } } }
+    XrayParser.mergeUserAliases(data, ActionCache.getUserAliases(DOC_PATH))
+    TestRunner:assertEqual(data.characters[1]._caps["the reed folk"], true, "marked on the entry")
+    TestRunner:assertEqual(XrayParser.matchTermSet(data.characters[1]).caps["the reed folk"], 6,
+        "Reed and Folk required, The free")
+    -- leave the file as the next tests expect it
+    local clean = ActionCache.getUserAliases(DOC_PATH)
+    clean["The Reed Folk"], clean["Old Marrow"] = nil, nil
+    ActionCache.setUserAliases(DOC_PATH, clean)
+end)
+
 TestRunner:test("second pair appends; quotes in names survive %q escaping", function()
     TestRunner:assertEqual(ActionCache.addNeverMergePair(DOC_PATH, 'The "Duke"', "El Duque"), true, "add quoted")
     local pairs_list = ActionCache.getNeverMergePairs(DOC_PATH)
@@ -477,7 +541,7 @@ TestRunner:test("keepBothText: both, one, neither", function()
 end)
 
 TestRunner:test("applyMergeToRungs: folds rungs holding both, leaves single-name rungs, keeps identity", function()
-    local XrayParser = require("koassistant_xray_parser")
+    local XrayParser = require("koassistant.xray.xray_parser")
     local rungs = {
         { timestamp = 111, progress_decimal = 0.5,
           result = '{"characters":[{"name":"Mara Cole","description":"early"},{"name":"Mara Ellison","description":"older text","aliases":["Elli"]}]}' },

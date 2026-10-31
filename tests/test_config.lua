@@ -160,7 +160,7 @@ function TestConfig.buildFullConfig(provider, api_key, options)
     options = options or {}
 
     -- Load SystemPrompts for behavior/language/domain building
-    local SystemPrompts = require("prompts.system_prompts")
+    local SystemPrompts = require("koassistant.prompts.system_prompts")
 
     -- Build unified system using the real pipeline
     local system = SystemPrompts.buildUnifiedSystem({
@@ -215,7 +215,7 @@ end
 
 -- Get list of all providers (derived from model_lists.lua - single source of truth)
 function TestConfig.getAllProviders()
-    local ModelLists = require("koassistant_model_lists")
+    local ModelLists = require("koassistant.request.model_lists")
     -- Use the built-in function which correctly filters out non-table keys
     return ModelLists.getAllProviders()
 end

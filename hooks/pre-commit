@@ -2,7 +2,7 @@
 # Pre-commit hook for KOAssistant
 # Runs luacheck and custom checks on staged Lua files
 
-STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.lua$')
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACMR | grep '\.lua$')
 if [ -z "$STAGED_FILES" ]; then
     exit 0
 fi

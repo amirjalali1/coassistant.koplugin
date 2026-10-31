@@ -28,7 +28,7 @@ setupPaths()
 require("mock_koreader")
 
 local json = require("json")
-local BaseHandler = require("koassistant_api.base")
+local BaseHandler = require("koassistant.api.base")
 local TestRunner = require("test_runner"):new()
 
 local encode = BaseHandler.encodeBody
@@ -159,12 +159,12 @@ TestRunner:test("no handler encodes a request body directly", function()
         if n > 0 then offenders[#offenders + 1] = path .. " (" .. n .. ")" end
     end
 
-    local handle = io.popen('ls "' .. plugin_dir .. '"/koassistant_api/*.lua 2>/dev/null')
+    local handle = io.popen('ls "' .. plugin_dir .. '"/koassistant/api/*.lua 2>/dev/null')
     if handle then
         for line in handle:lines() do scan(line) end
         handle:close()
     end
-    scan(plugin_dir .. "/koassistant_image_generator.lua")
+    scan(plugin_dir .. "/koassistant/images/image_generator.lua")
 
     TestRunner:assertEqual(table.concat(offenders, ", "), "",
         "these must call BaseHandler.encodeBody instead")

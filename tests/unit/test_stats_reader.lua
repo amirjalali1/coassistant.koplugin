@@ -1,5 +1,5 @@
 --[[
-Unit Tests for koassistant_stats_reader.lua
+Unit Tests for koassistant/books/stats_reader.lua
 
 Tests engagement group computation, book enrichment, group formatting,
 and engagement label priority. Uses mock data — no real DB access.
@@ -86,7 +86,7 @@ package.loaded["datastorage"] = {
     getSettingsDir = function() return "/tmp/nonexistent" end,
 }
 
-local StatsReader = require("koassistant_stats_reader")
+local StatsReader = require("koassistant.books.stats_reader")
 
 -- ============================================================
 -- Test data helpers

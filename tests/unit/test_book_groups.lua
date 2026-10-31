@@ -1,5 +1,5 @@
 --[[
-Unit tests: Book groups store (koassistant_book_groups.lua) — item 46, #90.
+Unit tests: Book groups store (koassistant/books/book_groups.lua) — item 46, #90.
 
 CRUD, manual ordering, first-group neighbor rule, move re-keying policy
 (move re-keys / copy never joins / delete keeps), and the merge picker's
@@ -36,8 +36,8 @@ package.loaded["docsettings"] = package.loaded["docsettings"] or {
     open = function() return { readSetting = function() end, close = function() end } end,
 }
 
-package.loaded["koassistant_book_groups"] = nil
-local BookGroups = require("koassistant_book_groups")
+package.loaded["koassistant.books.book_groups"] = nil
+local BookGroups = require("koassistant.books.book_groups")
 
 -- Functional in-memory store (the real one is LuaSettings over a settings-dir file)
 local mem = {}
@@ -121,6 +121,26 @@ TestRunner:test("updateForMove: move re-keys, copy never joins, delete keeps", f
     -- Overwrite-move onto an existing member: no duplicate
     BookGroups.updateForMove("/other.epub", "/new.epub", false)
     TestRunner:assertEqual(#BookGroups.byId(g.id).books, 1, "overwrite-move dedupes")
+    BookGroups.remove(g.id)
+end)
+
+TestRunner:test("updateForFolderMove: the members inside follow in their places (B507)", function()
+    local g = BookGroups.create("Saga")
+    for _idx, p in ipairs({ "/b/Saga/1.epub", "/b/Saga 2/x.epub", "/b/Saga/sub/2.epub", "/b/other.epub" }) do
+        BookGroups.addBook(g.id, p)
+    end
+    TestRunner:assertEqual(BookGroups.updateForFolderMove("/b/Saga", "/b/Done"), 2, "two re-keyed")
+    local books = BookGroups.byId(g.id).books
+    TestRunner:assertEqual(books[1], "/b/Done/1.epub", "inside: re-keyed, first still")
+    TestRunner:assertEqual(books[2], "/b/Saga 2/x.epub", "a folder named alike is another folder")
+    TestRunner:assertEqual(books[3], "/b/Done/sub/2.epub", "a subfolder follows")
+    TestRunner:assertEqual(books[4], "/b/other.epub", "outside: unchanged")
+    -- A member already at the new path: the old slot goes, no duplicate
+    BookGroups.addBook(g.id, "/b/New/1.epub")
+    BookGroups.updateForFolderMove("/b/Done", "/b/New")
+    books = BookGroups.byId(g.id).books
+    TestRunner:assertEqual(#books, 4, "no duplicate")
+    TestRunner:assertEqual(BookGroups.updateForFolderMove("/b/Elsewhere", "/b/Moved"), 0, "nothing inside")
     BookGroups.remove(g.id)
 end)
 
@@ -465,9 +485,9 @@ TestRunner:test("group settings: get/set/clear, settingsOf copy, no on_change; l
 end)
 
 TestRunner:test("follow-group helpers: a marker of a group that no longer exists reads as follow-global", function()
-    local BookSettings = require("koassistant_book_settings")
-    local BookStore = require("koassistant_book_store")
-    local GroupSettings = require("koassistant_group_settings")
+    local BookSettings = require("koassistant.books.book_settings")
+    local BookStore = require("koassistant.storage.book_store")
+    local GroupSettings = require("koassistant.books.group_settings")
     local g = BookGroups.create("Series")
     local key = "koassistant_book_research_mode"
     local function fakeDS(marker) return { readRaw = function(_, k) if k == key then return marker end end } end
@@ -476,6 +496,25 @@ TestRunner:test("follow-group helpers: a marker of a group that no longer exists
     TestRunner:assertEqual(BookSettings.followGroupLabel(fakeDS(BookStore.marker("gone")), key, "On"), nil, "missing group: caller keeps its label")
     TestRunner:assertEqual(BookSettings.followingGroup(fakeDS(true), key), nil, "own value: not following")
     TestRunner:assertEqual(GroupSettings.replacedNotice(key, "gone"), nil, "missing group: no toast text")
+    BookGroups.remove(g.id)
+end)
+
+TestRunner:test("carriedSourceLabeler: Book N in a series, the source title otherwise (B537)", function()
+    local g = BookGroups.create("Label Saga")
+    BookGroups.addBook(g.id, "/saga/one.epub")
+    BookGroups.addBook(g.id, "/saga/two.epub")
+    BookGroups.addBook(g.id, "/saga/three.epub")
+    BookGroups.setKind(g.id, BookGroups.KIND_SERIES)
+    local label = BookGroups.carriedSourceLabeler("/saga/three.epub")
+    local text, short = label({ file = "/saga/two.epub", source = "Two" })
+    TestRunner:assertEqual(text, "Book 2", "the book's place in the series")
+    TestRunner:assertEqual(short, true)
+    text, short = label({ file = "/elsewhere/x.epub", source = "Elsewhere" })
+    TestRunner:assertEqual(text, "Elsewhere", "a book outside the series: its title")
+    TestRunner:assertEqual(short, false)
+    BookGroups.setKind(g.id, BookGroups.KIND_PROJECT)
+    TestRunner:assertEqual(BookGroups.carriedSourceLabeler("/saga/three.epub")({ file = "/saga/two.epub", source = "Two" }),
+        "Two", "a project has no numbers")
     BookGroups.remove(g.id)
 end)
 
@@ -490,7 +529,7 @@ TestRunner:test("shortName: UTF-8 safe cap with an ellipsis", function()
 end)
 
 TestRunner:test("the hub's files row adds one tapped book, and still takes a folder (B405)", function()
-    local GroupsUI = require("koassistant_book_groups_ui")
+    local GroupsUI = require("koassistant.books.book_groups_ui")
     local saved = {}
     for _i, name in ipairs({ "ui/widget/pathchooser", "libs/libkoreader-lfs", "document/documentregistry" }) do
         saved[name] = package.loaded[name]
@@ -544,8 +583,8 @@ TestRunner:test("the hub's files row adds one tapped book, and still takes a fol
 end)
 
 TestRunner:test("a hub add row's picker stays on that row's source (B407)", function()
-    local GroupsUI = require("koassistant_book_groups_ui")
-    local BookPicker = require("koassistant_book_picker")
+    local GroupsUI = require("koassistant.books.book_groups_ui")
+    local BookPicker = require("koassistant.ui.book_picker")
     local names = { "ui/widget/pathchooser", "libs/libkoreader-lfs", "document/documentregistry",
         "ui/widget/buttondialog" }
     local saved = {}

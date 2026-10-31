@@ -14,7 +14,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local ActionService = require("action_service")
+local ActionService = require("koassistant.prompts.action_service")
 local DT = ActionService.getActionDisplayText
 
 local TestRunner = { passed = 0, failed = 0 }
@@ -89,6 +89,31 @@ TestRunner:test("smart retrieval badge only when tools could actually run", func
     TestRunner:hasnt(off, "🔍")
     local on = DT({ text = "A", smart_retrieval = true }, IND, { tools_allowed = true })
     TestRunner:has(on, "(🔍)")
+end)
+
+TestRunner:test("the Quick mark and the smart retrieval badge under Quick (2026-10-20)", function()
+    local takes = { text = "A", accept_quick_answer = true, smart_retrieval = true }
+    local plain = { text = "B", smart_retrieval = true }
+    TestRunner:has(DT(takes, IND, { quick_on = true }), "⚡")
+    TestRunner:hasnt(DT(plain, IND, { quick_on = true }), "⚡")
+    TestRunner:hasnt(DT(takes, IND, { quick_on = false }), "⚡")
+    TestRunner:hasnt(DT(takes, IND, { quick_on = true, tools_allowed = true, quick_tools_strip = true }), "🔍")
+    TestRunner:has(DT(plain, IND, { quick_on = true, tools_allowed = true, quick_tools_strip = true }), "(🔍)")
+end)
+
+TestRunner:test("the input dialog's (🔍) counts book text on Ask: offer = true (2026-10-20)", function()
+    local info = debug.getinfo(1, "S")
+    local unit_dir = info.source:match("@?(.*)"):match("(.+)/[^/]+$") or "."
+    local tests_dir = unit_dir:match("(.+)/[^/]+$") or "."
+    local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
+    local f = assert(io.open(plugin_dir .. "/koassistant/ui/dialogs.lua", "r"))
+    local src = f:read("*a"); f:close()
+    local block = src:match("local indicator_opts = {(.-)\n        }")
+    assert(block, "the input dialog's indicator_opts block is found")
+    TestRunner:has(block, "smartRetrievalAllowed(configuration, ui_instance, { offer = true })",
+        "the mark asks the offer gate (Ask counts, only Never hides it), like the popup's row")
+    TestRunner:hasnt(block, "session_book_tools",
+        "the Tools chip does not gate the mark: the popup offers the row either way (B479)")
 end)
 
 print("")

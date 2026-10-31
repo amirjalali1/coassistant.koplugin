@@ -1,4 +1,4 @@
--- Unit tests for koassistant_storage_registry.lua (Track 33).
+-- Unit tests for koassistant/storage/storage_registry.lua (Track 33).
 -- Guards that the registry stays the single source of truth:
 --   * schema validity + unique ids
 --   * the consumed accessors still equal the pre-refactor hardcoded lists
@@ -19,7 +19,7 @@ local function setupPaths()
 
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -102,7 +102,7 @@ local function assertListEqual(actual, expected, msg)
     end
 end
 
-local Registry = require("koassistant_storage_registry")
+local Registry = require("koassistant.storage.storage_registry")
 
 print("")
 print(string.rep("=", 50))
@@ -220,7 +220,7 @@ TestRunner:suite("Coverage guard (source-literal scan)")
 local function scanStorageLiterals(plugin_dir)
     local cmd = string.format(
         'grep -rhE "getSettingsDir|getDataDir" --include="*.lua" '
-        .. '--exclude="koassistant_storage_registry.lua" --exclude-dir=tests %q 2>/dev/null',
+        .. '--exclude="storage_registry.lua" --exclude-dir=tests %q 2>/dev/null',
         plugin_dir)
     local handle = io.popen(cmd)
     if not handle then return {} end
@@ -491,14 +491,14 @@ TestRunner:test("dead stamps are gone: prompts_migrated_v2 is neither written no
     local internal = {}
     for _idx, key in ipairs(Registry.SETTINGS_SUBKEYS.internal) do internal[key] = true end
     TestRunner:assertTrue(not internal["prompts_migrated_v2"] and not internal["_reasoning_hint_shown"], "removed from the internal bucket")
-    local f = assert(io.open(PLUGIN_DIR .. "/koassistant_settings_schema.lua", "r"))
+    local f = assert(io.open(PLUGIN_DIR .. "/koassistant/ui/settings_schema.lua", "r"))
     local src = f:read("*all"); f:close()
     TestRunner:assertTrue(src:find("prompts_migrated_v2", 1, true) == nil, "schema no longer writes it")
 end)
 
 TestRunner:test("only ONE sidecar-relocation implementation remains (registry.migrateSidecarFile)", function()
     local dup = 0
-    for _idx, name in ipairs({ "koassistant_action_cache.lua", "koassistant_notebook.lua", "koassistant_pinned_manager.lua", "koassistant_book_store.lua" }) do
+    for _idx, name in ipairs({ "koassistant/artifacts/action_cache.lua", "koassistant/chat/notebook.lua", "koassistant/artifacts/pinned_manager.lua", "koassistant/storage/book_store.lua" }) do
         local f = assert(io.open(PLUGIN_DIR .. "/" .. name, "r"))
         local src = f:read("*all"); f:close()
         if src:find('readSetting%("document_metadata_folder"') then dup = dup + 1 end

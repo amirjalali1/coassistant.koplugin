@@ -15,7 +15,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local OllamaHandler = require("koassistant_api/ollama")
+local OllamaHandler = require("koassistant.api.ollama")
 
 local TestRunner = { passed = 0, failed = 0 }
 function TestRunner:test(name, fn)
@@ -130,7 +130,7 @@ end)
 -- know the window" is not an answer: ollama is asked. /api/ps reports the
 -- EFFECTIVE window of a loaded runner; a cold model is loaded first with
 -- ollama's own load-only call.
-local Base = require("koassistant_api.base")
+local Base = require("koassistant.api.base")
 local real_fetch = Base.fetchInSubprocess
 local fetch_log = {}
 local function stubServer(ps_window, opts)

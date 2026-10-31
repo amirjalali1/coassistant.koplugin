@@ -18,7 +18,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local GeminiHandler = require("koassistant_api.gemini")
+local GeminiHandler = require("koassistant.api.gemini")
 
 local TestRunner = require("test_runner"):new()
 

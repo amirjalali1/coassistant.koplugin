@@ -1,4 +1,4 @@
--- Unit tests for message_builder.lua (audit quick win, the deep one):
+-- Unit tests for koassistant/request/message_builder.lua (audit quick win, the deep one):
 -- ALL placeholders resolve here, and the file carries the plugin's oldest
 -- fixed gotcha (2026-02-07 replace_placeholder infinite loop) with no
 -- regression coverage until now.
@@ -21,8 +21,8 @@ package.loaded["logger"] = {
     dbg = function() end, err = function() end,
 }
 
-local MessageBuilder = require("message_builder")
-local Templates = require("prompts/templates")
+local MessageBuilder = require("koassistant.request.message_builder")
+local Templates = require("koassistant.prompts.templates")
 
 local TestRunner = { passed = 0, failed = 0 }
 function TestRunner:test(name, fn)
@@ -220,6 +220,35 @@ TestRunner:test("dictionary context mode none strips context lines entirely", fu
 end)
 
 print("")
+TestRunner:test("raw data placeholders with nothing behind them are dropped, not sent as written (B464, B465)", function()
+    local out = MessageBuilder.build({
+        prompt = { prompt = "A {book_text} B {summary_cache} C {library} D {doi_clause} E {title} F {cached_result} G" },
+        context = "highlight",
+        data = { highlighted_text = "X" },
+    })
+    for _idx, raw in ipairs({ "{book_text}", "{summary_cache}", "{library}", "{doi_clause}", "{title}", "{cached_result}" }) do
+        TestRunner:hasnt(out, raw, "left in the prompt")
+    end
+    TestRunner:has(out, "A  B  C  D  E  F  G", "the prompt around them survives")
+end)
+
+TestRunner:test("a title that is only the file name is named as a file name, never as the title", function()
+    local book = build('Tell me about "{title}"{author_clause}.', "book", {
+        book_metadata = { title = "scan 001", author = "", author_clause = "", title_from_filename = true },
+    })
+    TestRunner:has(book, 'Book: no title in its metadata (file name "scan 001", not the title)', "the context line names the file")
+    TestRunner:has(book, "Tell me about this book.", "the action's words say this book")
+    TestRunner:hasnt(book, 'about "scan 001"', "the file name is never the title")
+    local titled = build('Tell me about "{title}".', "book", { book_metadata = { title = "Real Title" } })
+    TestRunner:has(titled, 'Book: "Real Title"', "a real title as before")
+    TestRunner:has(titled, 'Tell me about "Real Title".', "and in the action's words")
+    local hl = build("Explain: {highlighted_text}", "highlight", {
+        book_title = "scan 001", book_title_from_filename = true, highlighted_text = "a passage",
+    })
+    TestRunner:has(hl, 'From a book with no title in its metadata (file name "scan 001")', "the highlight context line too")
+    TestRunner:hasnt(hl, 'From "scan 001"', "never as the title")
+end)
+
 print(string.rep("-", 50))
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))
 print(string.rep("-", 50))

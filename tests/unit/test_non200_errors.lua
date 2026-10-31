@@ -14,7 +14,7 @@ local function setupPaths()
 
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -94,8 +94,8 @@ print("  Unit Tests: Non-200 / API error handling")
 print(string.rep("=", 50))
 
 -- Load modules under test
-local StreamHandler = require("stream_handler")
-local ModelConstraints = require("model_constraints")
+local StreamHandler = require("koassistant.request.stream_handler")
+local ModelConstraints = require("koassistant.request.model_constraints")
 
 --------------------------------------------------------------------------------
 -- Test: StreamHandler.extractApiError
@@ -146,7 +146,7 @@ TestRunner:test("the machine code is what tells OpenAI's insufficient_quota from
 end)
 
 TestRunner:test("BaseHandler.formatNon200 carries the code the same way (macOS streaming path)", function()
-    local BaseHandler = require("koassistant_api.base")
+    local BaseHandler = require("koassistant.api.base")
     local body = '{"error":{"message":"Insufficient Balance","type":"unknown_error","param":null,"code":"invalid_request_error"}}'
     local line = BaseHandler.formatNon200(402, body)
     TestRunner:assertEqual(line, "HTTP 402: Insufficient Balance (invalid_request_error)", "code appended")
@@ -202,7 +202,7 @@ TestRunner:test("a burst names the provider's wait from its wording", function()
 end)
 
 TestRunner:test("a burst names the wait from the retry-after header when the wording has none", function()
-    local RL = require("koassistant_rate_limits")
+    local RL = require("koassistant.request.rate_limits")
     RL._reset()
     local real_now = RL._now
     RL._now = function() return 100 end
@@ -594,6 +594,46 @@ TestRunner:test("decorateRequestError: size errors still get the context tip", f
         "Request too large for gpt-5.5", "openai", "gpt-5.5", { features = {} })
     TestRunner:assertContains(out, "openai/gpt-5.5:", "model named")
     TestRunner:assertContains(out, "too large for the selected model", "context-limit tip preserved")
+end)
+
+--------------------------------------------------------------------------------
+-- Test: the OpenAI Subscription's plan refusal (2026-10-11)
+--------------------------------------------------------------------------------
+
+TestRunner:suite("decorateRequestError: a model the ChatGPT plan does not include")
+
+TestRunner:test("the plan tip fires once, names the default, and only on the subscription", function()
+    local refusal = "HTTP 400: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+    local out = ModelConstraints.decorateRequestError(refusal, "openai_codex", "gpt-6.1-sol", nil)
+    TestRunner:assertContains(out, ModelConstraints.HINT_HEADS.plan, "the plan tip fired")
+    TestRunner:assertContains(out, "gpt-5.6-terra", "names the model every plan serves")
+    TestRunner:assertTrue(not out:find(ModelConstraints.HINT_HEADS.burst, 1, true), "no wait tip")
+    TestRunner:assertTrue(not out:find(ModelConstraints.HINT_HEADS.billing, 1, true), "no account-wall tip")
+    TestRunner:assertEqual(ModelConstraints.decorateRequestError(out, "openai_codex", "gpt-6.1-sol", nil), out,
+        "idempotent")
+    -- The direct OpenAI provider never answers with this sentence; the tip is the subscription's alone.
+    local api = ModelConstraints.decorateRequestError(refusal, "openai", "gpt-6.1-sol", nil)
+    TestRunner:assertTrue(not api:find(ModelConstraints.HINT_HEADS.plan, 1, true), "not on the API provider")
+end)
+
+TestRunner:suite("every error shape through one reader (BaseHandler.errorSentence)")
+
+TestRunner:test("the shapes providers use, on the marker writer and both consumers", function()
+    local BaseHandler = require("koassistant.api.base")
+    local json = require("json")
+    local function sentence(body) return (BaseHandler.errorSentence(json.decode(body))) end
+    TestRunner:assertEqual(sentence('{"error":{"message":"m"}}'), "m", "object")
+    TestRunner:assertEqual(sentence('[{"error":{"message":"m"}}]'), "m", "Gemini's array")
+    TestRunner:assertEqual(sentence('{"error":"model not found"}'), "model not found", "Ollama's string")
+    TestRunner:assertEqual(sentence('{"message":"m"}'), "m", "bare message")
+    TestRunner:assertEqual(sentence('{"detail":"Not authenticated"}'), "Not authenticated", "FastAPI string")
+    TestRunner:assertEqual(sentence('{"detail":[{"loc":["body"],"msg":"field required"}]}'), "field required", "FastAPI array")
+    TestRunner:assertEqual(sentence('{"error":{"code":429}}'), "API error 429", "code fallback")
+    TestRunner:assertNil(BaseHandler.errorSentence({ choices = {} }), "no error")
+    TestRunner:assertEqual(StreamHandler.extractApiError('{"error":"model not found"}'), "model not found", "stream: Ollama")
+    TestRunner:assertEqual(StreamHandler.extractApiError('{"detail":"Not authenticated"}'), "Not authenticated", "stream: FastAPI")
+    TestRunner:assertEqual(BaseHandler.formatNon200(404, '{"error":"model not found"}'), "HTTP 404: model not found", "marker: Ollama")
+    TestRunner:assertEqual(BaseHandler.formatNon200(401, '{"detail":"Not authenticated"}'), "HTTP 401: Not authenticated", "marker: FastAPI")
 end)
 
 --------------------------------------------------------------------------------

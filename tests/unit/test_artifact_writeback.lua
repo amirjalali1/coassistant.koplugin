@@ -1,5 +1,5 @@
 --[[
-Unit tests: shared artifact write-back primitive (koassistant_artifact_writeback.lua)
+Unit tests: shared artifact write-back primitive (koassistant/xray/artifact_writeback.lua)
 — xray_ecosystem_plan.md §6 slice 2.
 
 Pure halves (metadata reconciliation, coverage/gaps, parse+merge) plus real disk
@@ -33,9 +33,9 @@ setupPaths()
 local TMP_ROOT = "/tmp/koassistant_writeback_test_" .. tostring(os.time()) .. "_" .. tostring(math.random(10000))
 local SIDECAR_DIR = TMP_ROOT .. "/book.sdr"
 os.execute(string.format("mkdir -p %q", SIDECAR_DIR))
-package.loaded["koassistant_action_cache"] = nil
-package.loaded["koassistant_artifact_writeback"] = nil
-package.loaded["koassistant_gettext"] = nil
+package.loaded["koassistant.artifacts.action_cache"] = nil
+package.loaded["koassistant.xray.artifact_writeback"] = nil
+package.loaded["koassistant.core.gettext"] = nil
 package.loaded["docsettings"] = nil
 package.loaded["util"] = nil
 package.loaded["luasettings"] = nil
@@ -61,8 +61,8 @@ package.loaded["luasettings"] = {
     open = function() return { readSetting = function() return nil end, close = function() end } end,
 }
 
-local ActionCache = require("koassistant_action_cache")
-local WriteBack = require("koassistant_artifact_writeback")
+local ActionCache = require("koassistant.artifacts.action_cache")
+local WriteBack = require("koassistant.xray.artifact_writeback")
 local TestRunner = require("test_runner"):new()
 local DOC_PATH = TMP_ROOT .. "/book.epub"
 
@@ -528,7 +528,7 @@ local function rungJson(chars)
 end
 
 TestRunner:test("applyToRungs: a rename reaches the checkpoints that hold the old name, and only those", function()
-    local XrayParser = require("koassistant_xray_parser")
+    local XrayParser = require("koassistant.xray.xray_parser")
     local rungs = {
         { result = rungJson({ { name = "The Stranger", description = "a" } }), progress_decimal = 0.2, timestamp = 11 },
         { result = rungJson({ { name = "Someone Else", description = "b" } }), progress_decimal = 0.3, timestamp = 12 },
@@ -554,7 +554,7 @@ TestRunner:test("applyToRungs: a rename reaches the checkpoints that hold the ol
 end)
 
 TestRunner:test("applyToRungs: a link adds the other book's names once", function()
-    local XrayParser = require("koassistant_xray_parser")
+    local XrayParser = require("koassistant.xray.xray_parser")
     local rungs = {
         { result = rungJson({ { name = "Mara", aliases = { "the Keeper" }, description = "a" } }), progress_decimal = 0.2 },
         { result = rungJson({ { name = "Other", description = "b" } }), progress_decimal = 0.3 },

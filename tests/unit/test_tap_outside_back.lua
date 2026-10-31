@@ -113,43 +113,46 @@ local SITES = {
     { "main.lua", "-- A tap outside is Back (B360)\n    tap_close_callback = function()\n      if opts and opts.back", 1, "opts.back()" },
     { "main.lua", 'title = opts.title or _("Checkpoint spacing:")', 1, "opts.on_back()" },
     -- Cross-book merge
-    { "koassistant_xray_merge.lua", "title = confirm_text,", 1, "XrayMerge.startCrossBookFlow(opts)" },
+    { "koassistant/xray/xray_merge.lua", "title = confirm_text,", 1, "XrayMerge.startCrossBookFlow(opts)" },
     -- The fold and chain confirms are shared by the merge picker's rows and
     -- the direct entries (B394 slice 1): the tap outside runs the `back` they
     -- were handed (the picker's reopen; nothing for a direct entry, which
     -- closed no screen that Back returns to). The hand-off is checked below.
-    { "koassistant_xray_merge.lua", "title = confirm_title, buttons = btns,", 1, "back" },
-    { "koassistant_xray_merge.lua", "buttons = chain_buttons,", 1, "back" },
-    { "koassistant_xray_merge.lua", 'other books with an X-Ray"), opts.title or "?")', 1, "XrayMerge.startCrossBookFlow(opts)" },
+    { "koassistant/xray/xray_merge.lua", "title = confirm_title, buttons = btns,", 1, "back" },
+    { "koassistant/xray/xray_merge.lua", "buttons = chain_buttons,", 1, "back" },
+    { "koassistant/xray/xray_merge.lua", 'other books with an X-Ray"), opts.title or "?")', 1, "XrayMerge.startCrossBookFlow(opts)" },
     -- Duplicates
-    { "koassistant_xray_dedup.lua", "title = T(_(\"%1: %2\"), pair.cat_label, reasonLabel(pair.reason))", 1, "showList(false)" },
-    { "koassistant_xray_dedup.lua", 'title = _("Never-merge pairs: tap one to allow it again")', 1, "showList(false)" },
+    -- (back = the seeded pick for an entry's "Merge with another entry…", else the list)
+    { "koassistant/xray/xray_dedup.lua", "title = T(_(\"%1: %2\"), pair.cat_label, reasonLabel(pair.reason))", 1, "back" },
+    { "koassistant/xray/xray_dedup.lua", 'title = _("Never-merge pairs: tap one to allow it again")', 1, "showList(false)" },
     -- Groups
-    { "koassistant_book_groups_ui.lua", "tagged with the series \\\"%2\\\".\"),", 1, "done" },
-    { "koassistant_book_groups_ui.lua", 'title_text = T(_("Move \\"%1\\" to position"), title)', 1, "GroupsUI.showMoveDialog(group_id, path, opts)" },
-    { "koassistant_book_groups_ui.lua", 'title = T(_("Groups: %1"), BookGroups.displayTitle(path, opts.ui))', 1, "opts.on_close()" },
+    { "koassistant/books/book_groups_ui.lua", "tagged with the series \\\"%2\\\".\"),", 1, "done" },
+    { "koassistant/books/book_groups_ui.lua", 'title_text = T(_("Move \\"%1\\" to position"), title)', 1, "GroupsUI.showMoveDialog(group_id, path, opts)" },
+    { "koassistant/books/book_groups_ui.lua", 'title = T(_("Groups: %1"), BookGroups.displayTitle(path, opts.ui))', 1, "opts.on_close()" },
     -- Book Settings: the Quiz spinners
-    { "koassistant_book_settings.lua", "extra_callback = function() setField(field, nil) end,", 1, "reopen()" },
+    { "koassistant/books/book_settings.lua", "extra_callback = function() setField(field, nil) end,", 1, "reopen()" },
     -- Requests: the checkpoint size warning, the library books editor, the alias pages
-    { "koassistant_dialogs.lua", "characters (~%2K-%3K tokens) in this background request", 1, 'on_complete(nil, "size_warning_declined")' },
-    { "koassistant_dialogs.lua", 'items selected: tap to remove"), #books)', 1, "refreshInputDialog()" },
-    { "koassistant_dialogs.lua", '.. (total_pages > 1 and ("  (" .. page .. "/" .. total_pages .. ")") or ""),', 1, "show_category_pick()" },
-    { "koassistant_dialogs.lua", '.. (total_pages > 1 and ("  (" .. page .. "/" .. total_pages .. ")") or ""),', 2, "show_category_pick()" },
+    { "koassistant/ui/dialogs.lua", "characters (~%2K-%3K tokens) in this background request", 1, 'on_complete(nil, "size_warning_declined")' },
+    { "koassistant/ui/dialogs.lua", 'items selected: tap to remove"), #books)', 1, "refreshInputDialog()" },
+    { "koassistant/ui/dialogs.lua", '.. (total_pages > 1 and ("  (" .. page .. "/" .. total_pages .. ")") or ""),', 1, "show_category_pick()" },
+    { "koassistant/ui/dialogs.lua", '.. (total_pages > 1 and ("  (" .. page .. "/" .. total_pages .. ")") or ""),', 2, "show_category_pick()" },
+    -- OpenRouter's image catalog: the image settings panel comes back (S9)
+    { "main.lua", "-- a tap outside is Close (B360)", 1, "on_close()" },
     -- Action wizard and editors
-    { "koassistant_ui/prompts_manager.lua", 'title = _("Select Context"),', 1, "self:showStep1_NameAndContext(state)" },
-    { "koassistant_ui/prompts_manager.lua", "self.wizard_behavior_dialog = ButtonDialog:new{", 1, "self:showStep3_Settings(state)" },
-    { "koassistant_ui/prompts_manager.lua", "self.binary_dialog = ButtonDialog:new{", 1, "self:showPerProviderReasoningMenu(state)" },
-    { "koassistant_ui/prompts_manager.lua", "self.effort_dialog = ButtonDialog:new{", 1, "self:showPerProviderReasoningMenu(state)" },
-    { "koassistant_ui/prompts_manager.lua", "self.effort_dialog = ButtonDialog:new{", 2, "self:showPerProviderReasoningMenu(state)" },
-    { "koassistant_ui/prompts_manager.lua", "self.per_provider_dialog = ButtonDialog:new{", 1, "refreshParent()" },
-    { "koassistant_ui/prompts_manager.lua", "self.anthropic_dialog = ButtonDialog:new{", 1, "self:showPerProviderReasoningMenu(state)" },
-    { "koassistant_ui/prompts_manager.lua", "local new_config = { budget = spin.value }", 1, "self:showPerProviderReasoningMenu(state)" },
-    { "koassistant_ui/prompts_manager.lua", "self.anthropic_effort_dialog = ButtonDialog:new{", 1, "self:showPerProviderReasoningMenu(state)" },
-    { "koassistant_ui/prompts_manager.lua", "self.openai_dialog = ButtonDialog:new{", 1, "self:showPerProviderReasoningMenu(state)" },
-    { "koassistant_ui/prompts_manager.lua", "self.gemini_dialog = ButtonDialog:new{", 1, "self:showPerProviderReasoningMenu(state)" },
-    { "koassistant_ui/prompts_manager.lua", "self.builtin_behavior_dialog = ButtonDialog:new{", 1, "self:showBuiltinSettingsDialog(state)" },
-    { "koassistant_ui/prompts_manager.lua", "self.domain_selector_dialog = ButtonDialog:new{", 1, "return_callback()" },
-    { "koassistant_ui/prompts_manager.lua", "self.custom_behavior_dialog = ButtonDialog:new{", 1, "self:showCustomQuickSettingsDialog(state)" },
+    { "koassistant/ui/prompts_manager.lua", 'title = _("Select Context"),', 1, "self:showStep1_NameAndContext(state)" },
+    { "koassistant/ui/prompts_manager.lua", "self.wizard_behavior_dialog = ButtonDialog:new{", 1, "self:showStep3_Settings(state)" },
+    { "koassistant/ui/prompts_manager.lua", "self.binary_dialog = ButtonDialog:new{", 1, "self:showPerProviderReasoningMenu(state)" },
+    { "koassistant/ui/prompts_manager.lua", "self.effort_dialog = ButtonDialog:new{", 1, "self:showPerProviderReasoningMenu(state)" },
+    { "koassistant/ui/prompts_manager.lua", "self.effort_dialog = ButtonDialog:new{", 2, "self:showPerProviderReasoningMenu(state)" },
+    { "koassistant/ui/prompts_manager.lua", "self.per_provider_dialog = ButtonDialog:new{", 1, "refreshParent()" },
+    { "koassistant/ui/prompts_manager.lua", "self.anthropic_dialog = ButtonDialog:new{", 1, "self:showPerProviderReasoningMenu(state)" },
+    { "koassistant/ui/prompts_manager.lua", "local new_config = { budget = spin.value }", 1, "self:showPerProviderReasoningMenu(state)" },
+    { "koassistant/ui/prompts_manager.lua", "self.anthropic_effort_dialog = ButtonDialog:new{", 1, "self:showPerProviderReasoningMenu(state)" },
+    { "koassistant/ui/prompts_manager.lua", "self.openai_dialog = ButtonDialog:new{", 1, "self:showPerProviderReasoningMenu(state)" },
+    { "koassistant/ui/prompts_manager.lua", "self.gemini_dialog = ButtonDialog:new{", 1, "self:showPerProviderReasoningMenu(state)" },
+    { "koassistant/ui/prompts_manager.lua", "self.builtin_behavior_dialog = ButtonDialog:new{", 1, "self:showBuiltinSettingsDialog(state)" },
+    { "koassistant/ui/prompts_manager.lua", "self.domain_selector_dialog = ButtonDialog:new{", 1, "return_callback()" },
+    { "koassistant/ui/prompts_manager.lua", "self.custom_behavior_dialog = ButtonDialog:new{", 1, "self:showCustomQuickSettingsDialog(state)" },
 }
 
 TestRunner:suite("a tap outside a step does what its Back or Cancel does (B360)")
@@ -165,7 +168,7 @@ end
 TestRunner:suite("the merge picker hands its reopen to the shared confirms (B394 slice 1)")
 
 TestRunner:test("the picker's fold and chain rows come back to the picker", function()
-    local src = read("koassistant_xray_merge.lua")
+    local src = read("koassistant/xray/xray_merge.lua")
     TestRunner:assertTrue(src:find("confirmFanIn(opts, mates, main_entry, tgt_group,\n"
         .. "                            function() XrayMerge.startCrossBookFlow(opts) end)", 1, true),
         "the project fold's confirm reopens the picker on Back and on a tap outside")
@@ -180,7 +183,7 @@ end)
 TestRunner:suite("the action wizard refreshes the step 3 it shows")
 
 TestRunner:test("no refresh closes a dialog that no longer exists", function()
-    local pm = read("koassistant_ui/prompts_manager.lua")
+    local pm = read("koassistant/ui/prompts_manager.lua")
     TestRunner:assertTrue(not pm:find("self.advanced_dialog", 1, true),
         "self.advanced_dialog is never assigned: closing it left step 3 open under its new copy")
     local _s, n = pm:gsub("UIManager:close%(self%.step3_dialog%)\n%s*self:showStep3_Settings%(state%)", "")

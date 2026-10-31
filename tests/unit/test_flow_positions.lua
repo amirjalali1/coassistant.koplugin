@@ -17,7 +17,7 @@ local function setupPaths()
     local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -26,8 +26,8 @@ local function setupPaths()
 end
 local plugin_dir = setupPaths()
 require("mock_koreader")
-local ContextExtractor = require("koassistant_context_extractor")
-local XrayAuto = require("koassistant_xray_auto")
+local ContextExtractor = require("koassistant.request.context_extractor")
+local XrayAuto = require("koassistant.xray.xray_auto")
 
 local TestRunner = { passed = 0, failed = 0 }
 function TestRunner:suite(name) print(string.format("\n  [%s]", name)) end
@@ -225,15 +225,15 @@ TestRunner:test("no raw page fraction in the page-turn gates, snapping or the ma
     TestRunner:assertTrue(not body:find("pageno / total", 1, true), "gates on flowFraction")
     local snap = main:match("function AskGPT:_ladderChapterBoundaries%(%)(.-)\nend\n")
     TestRunner:assertTrue(snap and snap:find("flowFraction", 1, true), "snapping on flow ratios")
-    local marks = read("koassistant_xray_marks.lua")
+    local marks = read("koassistant/xray/xray_marks.lua")
     TestRunner:assertTrue(not marks:find("pageno / total", 1, true), "marks' ahead pick on flowFraction")
-    local dialogs = read("koassistant_dialogs.lua")
+    local dialogs = read("koassistant/ui/dialogs.lua")
     TestRunner:assertTrue(dialogs:find(".rawPageAt(ui.document, lt)", 1, true), "rung page through rawPageAt")
     TestRunner:assertTrue(dialogs:find('"background: no book text"', 1, true), "the no-text abort")
 end)
 
 TestRunner:test("a section target is a flow position (the form's coverage, the build limit)", function()
-    for _idx, rel in ipairs({ "main.lua", "koassistant_book_settings.lua" }) do
+    for _idx, rel in ipairs({ "main.lua", "koassistant/books/book_settings.lua" }) do
         local src = read(rel)
         TestRunner:assertTrue(not src:find("(entry.end_page or 0) /", 1, true), rel .. ": no raw ratio")
         TestRunner:assertTrue(src:find("flowFraction%(%s*[%w_.]+document, entry%.end_page or 0%)"),

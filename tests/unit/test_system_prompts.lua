@@ -1,4 +1,4 @@
--- Unit tests for prompts/system_prompts.lua
+-- Unit tests for koassistant/prompts/system_prompts.lua
 -- Tests behavior resolution, language parsing, and unified system building
 -- No API calls - pure logic testing
 
@@ -92,8 +92,8 @@ function TestRunner:summary()
 end
 
 -- Load the module under test
-local SystemPrompts = require("prompts.system_prompts")
-local BehaviorLoader = require("behavior_loader")
+local SystemPrompts = require("koassistant.prompts.system_prompts")
+local BehaviorLoader = require("koassistant.prompts.behavior_loader")
 
 -- Load actual behaviors dynamically (same as plugin does)
 local BUILTIN_BEHAVIORS = BehaviorLoader.loadBuiltin()
@@ -936,7 +936,7 @@ end)
 TestRunner:suite("buildUnifiedSystem() layer order")
 
 TestRunner:test("background < language < research < web < quick", function()
-    local Templates = require("prompts.templates")
+    local Templates = require("koassistant.prompts.templates")
     local result = SystemPrompts.buildUnifiedSystem({
         behavior_variant = "minimal",
         book_background = "READER-BACKGROUND-MARKER",
@@ -963,7 +963,7 @@ TestRunner:test("background < language < research < web < quick", function()
 end)
 
 TestRunner:test("quick_answer 'strict' swaps in the ultra-brief nudge", function()
-    local Templates = require("prompts.templates")
+    local Templates = require("koassistant.prompts.templates")
     local std = SystemPrompts.buildUnifiedSystem({
         behavior_variant = "minimal", quick_answer = true }).text
     local strict = SystemPrompts.buildUnifiedSystem({

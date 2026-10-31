@@ -1,0 +1,37 @@
+-- Wiki shots for the Book Settings and Book Hub page (docs/assets/wiki_shotlist.txt)
+local S = dofile(os.getenv("KOA_PLUGIN") .. "/tests/scenarios/boot.lua")
+local W = dofile(S.PLUGIN .. "/tests/scenarios/wiki_lib.lua")(S)
+S.features({ provider = "anthropic", api_keys = { anthropic = W.FAKE.anthropic } })
+local BookSettings = require("koassistant.books.book_settings")
+
+-- A book with two values of its own
+S.open(S.shotsBook("standalone") or "Mock Series 3")
+W.prose(12)
+local ds = W.bookDS()
+ds:saveSetting(BookSettings.KEY_BACKGROUND, "Reading this aloud with my niece: keep explanations light.")
+ds:saveSetting(BookSettings.KEY_QUIZ, false)
+BookSettings.show({ plugin = S.plugin, ui = S.ui })
+S.settle()
+S.note("book settings:", table.concat(S.texts(), " | "))
+S.wiki("book-settings-main.png")
+S.closeAll()
+
+-- A grouped book: one value follows the group, two are its own (three customized)
+if S.SHOTS then
+    local books = W.seriesBooks()
+    local g = W.group(S.SHOTS.series_name or "Series", "series", books)
+    require("koassistant.books.book_groups").setSetting(g.id, BookSettings.KEY_SPOILER_FREE, false)
+    require("koassistant.books.group_settings").apply(g.id, { BookSettings.KEY_SPOILER_FREE })
+    S.open(books[2])
+    W.prose(10)
+    local ds2 = W.bookDS()
+    ds2:saveSetting(BookSettings.KEY_BACKGROUND, "The second book; I read the first one last month.")
+    ds2:saveSetting(BookSettings.KEY_XRAY_CATEGORIES, "people,places")
+    BookSettings.show({ plugin = S.plugin, ui = S.ui })
+    S.settle()
+    S.note("grouped book settings:", table.concat(S.texts(), " | "))
+    S.wiki("book_settings.png")
+    S.closeAll()
+end
+
+S.finish()

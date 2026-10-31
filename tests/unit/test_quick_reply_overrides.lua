@@ -16,7 +16,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local Dialogs = require("koassistant_dialogs")
+local Dialogs = require("koassistant.ui.dialogs")
 
 local TestRunner = { passed = 0, failed = 0 }
 function TestRunner:test(name, fn)

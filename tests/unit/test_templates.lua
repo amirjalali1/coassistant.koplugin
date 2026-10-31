@@ -1,5 +1,5 @@
 --[[
-Unit Tests for prompts/templates.lua and nudge substitution
+Unit Tests for koassistant/prompts/templates.lua and nudge substitution
 
 Tests template resolution, nudge constants, variable building,
 and end-to-end nudge substitution through MessageBuilder.
@@ -29,9 +29,9 @@ setupPaths()
 
 require("mock_koreader")
 
-local Templates = require("prompts.templates")
-local MessageBuilder = require("message_builder")
-local Actions = require("prompts.actions")
+local Templates = require("koassistant.prompts.templates")
+local MessageBuilder = require("koassistant.request.message_builder")
+local Actions = require("koassistant.prompts.actions")
 
 -- Test suite
 local TestRunner = {

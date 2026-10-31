@@ -10,7 +10,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local OAuth = require("koassistant_openai_codex_oauth")
+local OAuth = require("koassistant.api.openai_codex_oauth")
 local TestRunner = require("test_runner"):new()
 
 print("")

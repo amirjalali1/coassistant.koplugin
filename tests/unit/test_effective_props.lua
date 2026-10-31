@@ -82,8 +82,8 @@ local function installMocks()
 end
 installMocks()
 
-package.loaded["koassistant_doc_settings"] = nil
-local SafeDocSettings = require("koassistant_doc_settings")
+package.loaded["koassistant.storage.doc_settings"] = nil
+local SafeDocSettings = require("koassistant.storage.doc_settings")
 
 print("\n  -- overlayCustomProps --")
 
@@ -222,9 +222,8 @@ print("\n  -- structural gate: no raw doc_props title reads --")
 
 local function listLuaFiles()
     local files = {}
-    for _idx, sub in ipairs({ "", "/koassistant_api", "/koassistant_ui", "/prompts" }) do
-        local dir = plugin_dir .. sub
-        local handle = io.popen('ls "' .. dir .. '"/*.lua 2>/dev/null')
+    for _idx, cmd in ipairs({ 'ls "' .. plugin_dir .. '"/*.lua', 'find "' .. plugin_dir .. '/koassistant" -name "*.lua" | sort' }) do
+        local handle = io.popen(cmd .. ' 2>/dev/null')
         if handle then
             for line in handle:lines() do files[#files + 1] = line end
             handle:close()
@@ -264,7 +263,7 @@ end)
 -- Cleanup
 package.loaded["docsettings"] = saved_docsettings
 package.loaded["apps/filemanager/filemanagerbookinfo"] = saved_bookinfo
-package.loaded["koassistant_doc_settings"] = nil
+package.loaded["koassistant.storage.doc_settings"] = nil
 
 print(string.format("\n  Effective props tests: %d passed, %d failed", TestRunner.passed, TestRunner.failed))
 return TestRunner.failed == 0

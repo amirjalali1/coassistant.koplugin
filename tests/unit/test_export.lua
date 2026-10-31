@@ -1,5 +1,5 @@
 --[[
-Unit Tests for koassistant_export.lua
+Unit Tests for koassistant/chat/export.lua
 
 Tests export formatting (pure data transforms, no filesystem tests):
 - Export.format() for all content modes x styles
@@ -30,7 +30,7 @@ setupPaths()
 
 require("mock_koreader")
 
-local Export = require("koassistant_export")
+local Export = require("koassistant.chat.export")
 
 -- Test suite
 local TestRunner = {

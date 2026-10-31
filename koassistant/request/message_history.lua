@@ -1,0 +1,806 @@
+local ModelConstraints = require("koassistant.request.model_constraints")
+local ReasoningPrefs = require("koassistant.request.reasoning_prefs")
+local DebugUtils = require("koassistant.core.debug_utils")
+local Constants = require("koassistant.core.constants")
+local _ = require("koassistant.core.gettext")
+local T = require("ffi/util").template
+
+local MessageHistory = {}
+
+-- Message roles
+MessageHistory.ROLES = {
+    SYSTEM = "system",
+    USER = "user",
+    ASSISTANT = "assistant"
+}
+
+-- Debug truncation settings for chat view (smaller than terminal for readability)
+local DEBUG_MAX_CONTENT = 5000  -- Total chars to show in debug
+local DEBUG_EDGE_SIZE = 2000   -- Chars to show from each end
+
+--- Truncate long text for debug display
+--- Uses shared DebugUtils for consistent truncation format across all contexts
+--- @param text string The text to truncate
+--- @return string Truncated text with notice, or original if short enough
+local function truncateForDebug(text)
+    return DebugUtils.truncate(text, DEBUG_MAX_CONTENT, DEBUG_EDGE_SIZE)
+end
+
+function MessageHistory:new(system_prompt, prompt_action)
+    local history = {
+        messages = {},
+        model = nil,  -- Will be set after first response
+        chat_id = nil, -- Chat ID for existing chats (present = saved on disk)
+        -- One id per conversation from the FIRST message (B285 / #107): the
+        -- save sites adopt it as the chat id, and providers that route a
+        -- conversation to one server get it (OpenCode's required
+        -- x-opencode-session, OpenRouter session_id, OpenAI prompt_cache_key).
+        -- Same shape as ChatHistoryManager:generateChatId on purpose.
+        conversation_id = os.time() .. "_" .. math.random(100000, 999999),
+        prompt_action = prompt_action, -- Store the action/prompt type for naming
+        launch_context = nil, -- For general chats launched from within a book
+        created_at = os.time(), -- When this chat session began
+    }
+    
+    if system_prompt then
+        table.insert(history.messages, {
+            role = self.ROLES.SYSTEM,
+            content = system_prompt
+        })
+    end
+    
+    setmetatable(history, self)
+    self.__index = self
+    return history
+end
+
+function MessageHistory:addUserMessage(content, is_context)
+    table.insert(self.messages, {
+        role = self.ROLES.USER,
+        content = content,
+        is_context = is_context or false
+    })
+    return #self.messages
+end
+
+function MessageHistory:addAssistantMessage(content, model, reasoning, debug_info, web_search_used)
+    local message = {
+        role = self.ROLES.ASSISTANT,
+        content = content
+    }
+    -- Store reasoning if provided (for models with visible thinking)
+    if reasoning then
+        message.reasoning = reasoning
+    end
+    -- Store response provenance. The 5th arg is either the legacy boolean (web search
+    -- used, no details) or a provenance table:
+    --   { web_search = true|nil, sources = {{url,title},...}, queries = {...},
+    --     book_tools = { lookups = N, trace = {...} } }
+    -- Detail fields persist with the chat and feed the "Show Sources" viewer.
+    if type(web_search_used) == "table" then
+        local prov = web_search_used
+        if prov.web_search then
+            message.web_search_used = true
+            if type(prov.sources) == "table" and #prov.sources > 0 then
+                message.web_search_sources = prov.sources
+            end
+            if type(prov.queries) == "table" and #prov.queries > 0 then
+                message.web_search_queries = prov.queries
+            end
+        end
+        if type(prov.book_tools) == "table" then
+            message.book_tools_used = true
+            message.book_lookups = prov.book_tools.lookups
+            if type(prov.book_tools.trace) == "table" and #prov.book_tools.trace > 0 then
+                message.book_tools_trace = prov.book_tools.trace
+            end
+        end
+    elseif web_search_used then
+        message.web_search_used = true
+    end
+    -- Store debug info for accurate historical display (NOT exported with chat)
+    if debug_info then
+        message._debug_info = debug_info
+    end
+    table.insert(self.messages, message)
+    if model then
+        self.model = model
+    end
+    return #self.messages
+end
+
+--- Remove the most recent message if it is a user turn. Reply seams call this to roll a
+-- just-sent question back OUT of the history when the request fails or is cancelled —
+-- otherwise the unanswered question silently rides into the NEXT request (bug: reply,
+-- cancel mid-stream, reply again → the model answers both questions at once).
+-- @return boolean true if a user message was removed
+function MessageHistory:removeLastUserMessage()
+    local last = self.messages[#self.messages]
+    if last and last.role == self.ROLES.USER then
+        table.remove(self.messages)
+        return true
+    end
+    return false
+end
+
+function MessageHistory:getMessages()
+    return self.messages
+end
+
+function MessageHistory:getLastMessage()
+    if #self.messages > 0 then
+        return self.messages[#self.messages]
+    end
+    return nil
+end
+
+function MessageHistory:getModel()
+    return self.model
+end
+
+-- Count user messages (for determining if this is a multi-turn conversation)
+-- Returns the number of user messages, excluding system messages
+function MessageHistory:getUserTurnCount()
+    local count = 0
+    for _idx, msg in ipairs(self.messages) do
+        if msg.role == self.ROLES.USER then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+-- Count assistant messages (responses) for scroll behavior
+-- Returns the number of AI responses, used to determine if this is a follow-up
+function MessageHistory:getAssistantTurnCount()
+    local count = 0
+    for _idx, msg in ipairs(self.messages) do
+        if msg.role == self.ROLES.ASSISTANT then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+-- Estimate total tokens in conversation (messages + system prompt)
+-- Uses rough heuristic: 1 token ≈ 4 characters
+-- @param system_text string Optional system prompt text to include
+-- @return number Estimated token count
+function MessageHistory:estimateTokens(system_text)
+    local total_chars = 0
+    for _idx, msg in ipairs(self.messages) do
+        if msg.content then
+            total_chars = total_chars + #msg.content
+        end
+    end
+    if system_text then
+        total_chars = total_chars + #system_text
+    end
+    return math.floor(total_chars / 4)
+end
+
+-- Get all reasoning content from assistant messages (for "View Reasoning" feature)
+-- Returns array of { index, reasoning, has_content } for messages with reasoning
+function MessageHistory:getReasoningEntries()
+    local entries = {}
+    local msg_num = 0
+
+    for i, msg in ipairs(self.messages) do
+        if msg.role == self.ROLES.ASSISTANT and not msg.is_context then
+            msg_num = msg_num + 1
+            if msg.reasoning then
+                local entry = {
+                    index = i,
+                    msg_num = msg_num,
+                    has_content = type(msg.reasoning) == "string",
+                    reasoning = msg.reasoning,
+                }
+                -- For OpenAI requested reasoning
+                if type(msg.reasoning) == "table" and msg.reasoning._requested then
+                    entry.requested_only = true
+                    entry.effort = msg.reasoning.effort
+                end
+                table.insert(entries, entry)
+            end
+        end
+    end
+
+    return entries
+end
+
+-- Get response provenance from assistant messages (for the "Show Sources" viewer).
+-- Returns array of { index, msg_num, web_search_used, sources, queries,
+-- book_tools_used, lookups, trace } for messages with any provenance.
+function MessageHistory:getProvenanceEntries()
+    local entries = {}
+    local msg_num = 0
+
+    for i, msg in ipairs(self.messages) do
+        if msg.role == self.ROLES.ASSISTANT and not msg.is_context then
+            msg_num = msg_num + 1
+            if msg.web_search_used or msg.book_tools_used then
+                table.insert(entries, {
+                    index = i,
+                    msg_num = msg_num,
+                    web_search_used = msg.web_search_used,
+                    sources = msg.web_search_sources,
+                    queries = msg.web_search_queries,
+                    book_tools_used = msg.book_tools_used,
+                    lookups = msg.book_lookups,
+                    trace = msg.book_tools_trace,
+                })
+            end
+        end
+    end
+
+    return entries
+end
+
+function MessageHistory:clear()
+    -- Keep system message if it exists
+    if self.messages[1] and self.messages[1].role == self.ROLES.SYSTEM then
+        self.messages = {self.messages[1]}
+    else
+        self.messages = {}
+    end
+    return self
+end
+
+-- Create a new instance from saved messages
+-- @param messages array The saved messages
+-- @param model string The model name
+-- @param chat_id string The chat ID
+-- @param prompt_action string The action that created this chat
+-- @param launch_context table Launch context for general chats from a book
+-- @param chat_metadata table Additional chat-level metadata (cache info, truncation info)
+function MessageHistory:fromSavedMessages(messages, model, chat_id, prompt_action, launch_context, chat_metadata)
+    local history = self:new()
+
+    -- Clear any default messages
+    history.messages = {}
+
+    -- Add all saved messages
+    if messages and #messages > 0 then
+        for _idx, msg in ipairs(messages) do
+            table.insert(history.messages, msg)
+        end
+    end
+
+    -- Set the model if provided
+    if model then
+        history.model = model
+    end
+
+    -- Set the chat ID if provided (a resumed chat keeps ONE id for life:
+    -- the saved id is also its conversation id on the wire)
+    if chat_id then
+        history.chat_id = chat_id
+        history.conversation_id = chat_id
+    end
+
+    -- Set the prompt action if provided
+    if prompt_action then
+        history.prompt_action = prompt_action
+    end
+
+    -- Set the launch context if provided (for general chats launched from a book)
+    if launch_context then
+        history.launch_context = launch_context
+    end
+
+    -- Restore chat-level metadata (cache info, truncation info)
+    if chat_metadata then
+        -- Cache continuation info (for "Updated from X% cache" notice)
+        if chat_metadata.used_cache then
+            history.used_cache = chat_metadata.used_cache
+            history.cached_progress = chat_metadata.cached_progress
+            history.cache_action_id = chat_metadata.cache_action_id
+        end
+        -- Book text truncation info
+        if chat_metadata.book_text_truncated then
+            history.book_text_truncated = chat_metadata.book_text_truncated
+            history.book_text_coverage_start = chat_metadata.book_text_coverage_start
+            history.book_text_coverage_end = chat_metadata.book_text_coverage_end
+        end
+        -- Unavailable data info
+        if chat_metadata.unavailable_data then
+            history.unavailable_data = chat_metadata.unavailable_data
+        end
+        -- Launch tag ("xray_chat" / "artifact") — kept across resume/re-save
+        if chat_metadata.launched_from then
+            history.launched_from = chat_metadata.launched_from
+        end
+    end
+
+    return history
+end
+
+-- Get a title suggestion based on the first user message
+function MessageHistory:getSuggestedTitle()
+    -- Truncate and clean text for title use
+    local function truncate(text, max)
+        max = max or 40
+        local clean = text:sub(1, max):gsub("\n", " "):gsub("^%s*(.-)%s*$", "%1")
+        return #text > max and (clean .. "...") or clean
+    end
+
+    -- Build action prefix (e.g. "Explain - ")
+    local action_prefix = ""
+    if self.prompt_action then
+        action_prefix = self.prompt_action .. " - "
+    end
+
+    -- Priority 1: Use stored source data (set at chat creation time)
+    -- This avoids fragile regex extraction from message content, which breaks
+    -- when templates embed {highlighted_text} directly (no "Selected text:" label)
+    if self.prompt_action then
+        -- Action chats: highlight is most identifying, then user's additional input
+        if self.source_highlight and self.source_highlight ~= "" then
+            return action_prefix .. truncate(self.source_highlight)
+        end
+        if self.source_input and self.source_input ~= "" then
+            return action_prefix .. truncate(self.source_input)
+        end
+    else
+        -- Send chats (no action): user question is most identifying, then highlight
+        if self.source_input and self.source_input ~= "" then
+            return truncate(self.source_input)
+        end
+        if self.source_highlight and self.source_highlight ~= "" then
+            return truncate(self.source_highlight)
+        end
+    end
+
+    -- Priority 2: Regex extraction from message content (legacy/continued chats)
+    local highlighted_text = nil
+
+    for _idx, msg in ipairs(self.messages) do
+        if msg.role == self.ROLES.USER then
+            -- Check if this is a consolidated message with sections
+            if msg.content:match("%[Context%]") or msg.content:match("Highlighted text:") then
+                local highlight_match = msg.content:match("Highlighted text:%s*\n?\"([^\"]+)\"")
+                if not highlight_match then
+                    highlight_match = msg.content:match("Selected text:%s*\n?\"([^\"]+)\"")
+                end
+                if highlight_match then
+                    highlighted_text = highlight_match
+                end
+            end
+
+            -- If we still don't have highlighted text, check for [Request] section
+            if not highlighted_text and not msg.is_context then
+                local request_match = msg.content:match("%[Request%]%s*\n([^\n]+)")
+                if request_match then
+                    return action_prefix .. truncate(request_match)
+                end
+            end
+        end
+    end
+
+    if highlighted_text then
+        return action_prefix .. truncate(highlighted_text)
+    end
+
+    -- Priority 3: First actual user message/question
+    for _idx, msg in ipairs(self.messages) do
+        if msg.role == self.ROLES.USER and not msg.is_context then
+            local content = msg.content
+            local user_part = content:match("%[User Question%]%s*\n([^\n]+)") or
+                            content:match("%[Additional user input%]%s*\n([^\n]+)") or
+                            content
+
+            local first_words = truncate(user_part)
+
+            -- Don't return generic phrases
+            if first_words ~= "I have a question for you." and first_words ~= "" then
+                return action_prefix .. first_words
+            end
+        end
+    end
+
+    -- Ultimate fallback: just the action name (e.g. "Discussion Questions"), or "Chat"
+    return self.prompt_action or "Chat"
+end
+
+--- Suggest a name for pinning the last AI response as an artifact.
+--- Tries the first meaningful line of the response (better for pin naming),
+--- then falls back to getSuggestedTitle().
+function MessageHistory:getPinTitle()
+    -- Try first meaningful line from last AI response
+    for i = #self.messages, 1, -1 do
+        if self.messages[i].role == self.ROLES.ASSISTANT then
+            local content = self.messages[i].content or ""
+            -- Find first non-empty line, strip markdown heading markers
+            for line in content:gmatch("[^\n]+") do
+                local clean = line:gsub("^#+%s*", ""):gsub("^%s+", ""):gsub("%s+$", "")
+                -- Skip empty, very short, or markdown-only lines (e.g., "---", "***")
+                if #clean > 3 and not clean:match("^[-*_=]+$") then
+                    local max = 50
+                    local action_prefix = self.prompt_action and (self.prompt_action .. " - ") or ""
+                    if #clean > max then
+                        clean = clean:sub(1, max) .. "..."
+                    end
+                    return action_prefix .. clean
+                end
+            end
+            break
+        end
+    end
+    return self:getSuggestedTitle()
+end
+
+function MessageHistory:createResultText(highlightedText, config)
+    local result = {}
+
+    -- Show cache notice if this response was generated from cached data
+    -- This must be first so it appears at the top and persists through debug toggle
+    if self.used_cache and self.cached_progress then
+        table.insert(result, string.format("*Updated from %s cache*\n\n---\n\n", self.cached_progress))
+    end
+
+    -- Show book text truncation notice if extraction was limited
+    -- Helps user understand why AI might not know about earlier content
+    if self.book_text_truncated then
+        local start_pct = self.book_text_coverage_start or 0
+        local end_pct = self.book_text_coverage_end or 0
+        table.insert(result, string.format(
+            "*Book text truncated (~%d%%–%d%% coverage). Increase it in Settings → Privacy & Data → Text Extraction → Max Text Characters. You can also use Hidden Flows to exclude irrelevant content, or focus on a specific section.*\n\n---\n\n",
+            start_pct, end_pct))
+    end
+
+    -- Show unavailable data notice if action requested data but didn't receive it
+    if self.unavailable_data and #self.unavailable_data > 0 then
+        local items = table.concat(self.unavailable_data, ", ")
+        table.insert(result, "*" .. T(_("Response generated without: %1"), items) .. "*\n\n---\n\n")
+    end
+
+    -- Show launch context header if this is a general chat launched from a book
+    if self.launch_context and self.launch_context.title then
+        local launch_note = "[Launched from: " .. self.launch_context.title
+        if self.launch_context.author then
+            launch_note = launch_note .. " by " .. self.launch_context.author
+        end
+        launch_note = launch_note .. "]\n\n"
+        table.insert(result, launch_note)
+    end
+
+    -- Check if we should show the highlighted text
+    local should_hide = config and config.features and (
+        config.features.hide_highlighted_text or
+        (config.features.hide_long_highlights ~= false and highlightedText and
+         require("koassistant.request.scope_resolver").utf8Len(highlightedText) > (config.features.long_highlight_threshold or 280))
+    )
+
+    if not should_hide and highlightedText and highlightedText ~= "" then
+        -- Check context type and use appropriate label
+        local is_book = config and config.features and config.features.is_book_context
+        local is_multi = config and config.features and config.features.is_library_context
+        -- Detect book context from content when flag isn't set (e.g., continued from history)
+        if not is_book and not is_multi and (highlightedText:match("^Title:") or highlightedText:match("^Book:")) then
+            is_book = true
+        end
+        if is_book then
+            -- Book context: self-describing string (Title: ... Author: ...)
+            table.insert(result, highlightedText .. "\n\n")
+        elseif is_multi then
+            -- Multiple books selected
+            table.insert(result, "Selected books:\n" .. highlightedText .. "\n\n")
+        elseif self.source_excerpt then
+            -- Dictionary lookup: the word in its sentence (set by the dictionary
+            -- views; display only)
+            table.insert(result, self.source_excerpt .. "\n\n")
+        else
+            -- Default: highlighted text from reader
+            table.insert(result, "Highlighted text: \"" .. highlightedText .. "\"\n\n")
+        end
+    end
+
+    -- Debug display: show messages sent to AI (controlled by show_debug_in_chat, independent of console debug)
+    if config and config.features and config.features.show_debug_in_chat then
+        local display_level = config.features.debug_display_level or "names"
+
+        table.insert(result, "--- Debug Info ---\n\n")
+
+        -- Show system config info based on display level
+        if display_level == "names" or display_level == "full" then
+            -- Find stored debug info from the last assistant message (what was USED)
+            local stored_debug = nil
+            for i = #self.messages, 1, -1 do
+                if self.messages[i].role == self.ROLES.ASSISTANT and self.messages[i]._debug_info then
+                    stored_debug = self.messages[i]._debug_info
+                    break
+                end
+            end
+
+            -- Use stored debug info if available, otherwise fall back to current config
+            local provider, model, temp, behavior, domain, reasoning_info
+
+            if stored_debug then
+                -- Use what was ACTUALLY used for this chat
+                provider = stored_debug.provider or "unknown"
+                model = stored_debug.model or "default"
+                temp = stored_debug.temperature or 0.7
+                behavior = stored_debug.behavior or "standard"
+                domain = stored_debug.domain or "none"
+
+                -- Build reasoning info from stored data
+                reasoning_info = ""
+                if stored_debug.reasoning then
+                    local r = stored_debug.reasoning
+                    if r.type == "anthropic" and r.budget then
+                        reasoning_info = string.format(", thinking=%d", r.budget)
+                    elseif r.type == "openai" and r.effort then
+                        reasoning_info = string.format(", reasoning=%s", r.effort)
+                    elseif r.type == "gemini" and r.level then
+                        reasoning_info = string.format(", thinking=%s", r.level:lower())
+                    elseif r.type == "deepseek" then
+                        reasoning_info = ", reasoning=auto"
+                    end
+                end
+            else
+                -- Fall back to current config (for chats created before debug storage)
+                provider = config.provider or config.default_provider or "unknown"
+                behavior = config.features.selected_behavior or "standard"
+                domain = config.features.selected_domain or "none"
+
+                -- Get actual model from provider settings if available
+                model = config.model
+                if (not model or model == "default") and config.provider_settings and config.provider_settings[provider] then
+                    model = config.provider_settings[provider].model
+                end
+                model = model or "default"
+
+                temp = config.additional_parameters and config.additional_parameters.temperature or 0.7
+                if config.api_params and config.api_params.temperature then
+                    temp = config.api_params.temperature
+                end
+
+                -- Build reasoning info from current settings
+                reasoning_info = ""
+                local features = config.features or {}
+                local full_model = config.model or model
+
+                -- Reasoning info from the per-model resolver (stored prefs + stance).
+                local rdecision = ModelConstraints.resolveReasoning(provider, full_model, {
+                    global_stance = ReasoningPrefs.getStance(features),
+                    model_pref = ReasoningPrefs.getModelPref(features, provider, full_model),
+                })
+                if rdecision.axis == "none" then
+                    if rdecision.mode == "on" then reasoning_info = ", reasoning=always" end
+                elseif rdecision.send_nothing then
+                    reasoning_info = ", reasoning=default"
+                elseif rdecision.mode == "off" then
+                    reasoning_info = ", reasoning=off"
+                elseif rdecision.effort then
+                    reasoning_info = string.format(", reasoning=%s", rdecision.effort)
+                elseif rdecision.budget ~= nil then
+                    reasoning_info = string.format(", reasoning=budget:%d", rdecision.budget)
+                else
+                    reasoning_info = ", reasoning=on"
+                end
+            end
+
+            -- Truncate long model names (e.g., "claude-sonnet-4-5-20250929" -> "claude-sonnet-4-5")
+            if #model > 25 then
+                model = model:sub(1, 22) .. "..."
+            end
+
+            -- Format temperature display (simple for stored, with constraints check for fallback)
+            local temp_display = string.format("%.1f", temp)
+
+            table.insert(result, string.format("● Config: provider=%s, behavior=%s, domain=%s\n", provider, behavior, domain))
+            table.insert(result, string.format("  model=%s, temp=%s%s\n\n", model, temp_display, reasoning_info))
+        end
+
+        if display_level == "full" and config.system then
+            -- Determine header based on provider (Anthropic uses array format)
+            local provider = config.provider or config.default_provider or "unknown"
+            local header = (provider == "anthropic") and "● System Array:\n" or "● System Prompt:\n"
+            table.insert(result, header)
+
+            -- Handle unified format (v0.5.2+): { text, enable_caching, components }
+            if config.system.text ~= nil then
+                local cached = config.system.enable_caching and " [CACHED]" or ""
+
+                -- Build component names list for the header
+                local comp_names = {}
+                local comps = config.system.components or {}
+                if comps.behavior then table.insert(comp_names, "behavior") end
+                if comps.domain then table.insert(comp_names, "domain") end
+                if comps.language then table.insert(comp_names, "language") end
+
+                if #comp_names > 0 then
+                    -- Show combined header like "behavior+domain+language [CACHED]:"
+                    local combined = table.concat(comp_names, "+")
+                    table.insert(result, string.format("  %s%s:\n", combined, cached))
+
+                    -- Show each component as sub-item
+                    if comps.behavior then
+                        local preview = comps.behavior:sub(1, 80):gsub("\n", " ")
+                        if #comps.behavior > 80 then preview = preview .. "..." end
+                        table.insert(result, string.format("    - behavior: %s\n", preview))
+                    end
+                    if comps.domain then
+                        local preview = comps.domain:sub(1, 80):gsub("\n", " ")
+                        if #comps.domain > 80 then preview = preview .. "..." end
+                        table.insert(result, string.format("    - domain: %s\n", preview))
+                    end
+                    if comps.language then
+                        local preview = comps.language:sub(1, 80):gsub("\n", " ")
+                        if #comps.language > 80 then preview = preview .. "..." end
+                        table.insert(result, string.format("    - language: %s\n", preview))
+                    end
+                else
+                    -- Fallback: show combined text
+                    local preview = config.system.text or ""
+                    if #preview > 100 then
+                        preview = preview:sub(1, 100):gsub("\n", " ") .. "..."
+                    else
+                        preview = preview:gsub("\n", " ")
+                    end
+                    table.insert(result, string.format("  text%s: %s\n", cached, preview))
+                end
+            -- Legacy array format (for backwards compatibility)
+            elseif #config.system > 0 then
+                for _idx, block in ipairs(config.system) do
+                    local label = block.label or "unknown"
+                    local cached_flag = block.cache_control and " [CACHED]" or ""
+                    local preview = block.text or ""
+                    if #preview > 100 then
+                        preview = preview:sub(1, 100):gsub("\n", " ") .. "..."
+                    else
+                        preview = preview:gsub("\n", " ")
+                    end
+                    table.insert(result, string.format("  %s%s: %s\n", label, cached_flag, preview))
+                end
+            else
+                table.insert(result, "  (empty)\n")
+            end
+            table.insert(result, "\n")
+        end
+
+        -- Show messages (always, but label based on level)
+        if display_level ~= "minimal" then
+            table.insert(result, "● Messages:\n")
+        end
+
+        -- Find the last user message (current query)
+        local last_user_index = #self.messages
+        for i = #self.messages, 1, -1 do
+            if self.messages[i].role == self.ROLES.USER then
+                last_user_index = i
+                break
+            end
+        end
+
+        -- Show all messages up to and including the last user message
+        for i = 1, last_user_index do
+            local msg = self.messages[i]
+            -- Brand the assistant role like the main renderer below and the
+            -- export path do — the generic capitalization showed prior replies
+            -- as "Assistant" in the debug panel (2026-08-15)
+            local role_text = msg.role == self.ROLES.ASSISTANT and "KOAssistant"
+                or msg.role:gsub("^%l", string.upper)
+            local context_tag = msg.is_context and " [Initial]" or ""
+            local prefix = ""
+            if msg.role == self.ROLES.USER then
+                prefix = "▶ "
+            elseif msg.role == self.ROLES.ASSISTANT then
+                prefix = "◉ "
+            else
+                prefix = "● "  -- For system messages
+            end
+            table.insert(result, prefix .. role_text .. context_tag .. ": " .. truncateForDebug(msg.content) .. "\n\n")
+        end
+        table.insert(result, "------------------\n\n")
+    end
+
+    -- Check if reasoning indicator should be shown in chat
+    -- Controlled by show_reasoning_indicator setting (default: true)
+    local show_reasoning_indicator = config and config.features and config.features.show_reasoning_indicator
+    if show_reasoning_indicator == nil then show_reasoning_indicator = true end  -- Default to showing indicator
+    -- Dictionary windows skip it: a model that always thinks (Gemini 3.x
+    -- Flash cannot turn it off) opened every lookup with the line. Show
+    -- Reasoning on the gear still has the content; expanded chats keep it.
+    if config and config.features and (config.features.compact_view or config.features.dictionary_view) then
+        show_reasoning_indicator = false
+    end
+
+    -- Check if web search indicator should be shown in chat
+    -- Controlled by show_web_search_indicator setting (default: true)
+    local show_web_search_indicator = config and config.features and config.features.show_web_search_indicator
+    if show_web_search_indicator == nil then show_web_search_indicator = true end  -- Default to showing indicator
+
+    -- Check if book tools indicator should be shown in chat
+    -- Controlled by show_book_tools_indicator setting (default: true)
+    local show_book_tools_indicator = config and config.features and config.features.show_book_tools_indicator
+    if show_book_tools_indicator == nil then show_book_tools_indicator = true end  -- Default to showing indicator
+
+    -- One-time "tap the gear to review" hint (controls parity slice (e) item 7):
+    -- added once, on the first response that shows a reasoning/web/tools indicator,
+    -- so users learn the full reasoning/sources live behind the gear. Tied to the
+    -- indicator toggles above (all off -> no hint); display-only, like the indicators.
+    local gear_hint_added = false
+
+    -- Show conversation (non-context messages)
+    -- In compact mode (dictionary lookups), hide prefixes for cleaner display
+    local hide_prefixes = config and config.features and (config.features.compact_view or config.features.dictionary_view)
+    local added_first_message = false
+    for i = 2, #self.messages do
+        if not self.messages[i].is_context then
+            local msg = self.messages[i]
+
+            -- Add separator between messages (renders as <hr> in markdown, --- in plain text)
+            if added_first_message then
+                table.insert(result, "---\n\n")
+            end
+            added_first_message = true
+
+            local prefix = ""
+            if not hide_prefixes then
+                -- Paragraph break after label (works in both markdown and plain text)
+                prefix = msg.role == self.ROLES.USER and "▶ User:\n\n" or "◉ KOAssistant:\n\n"
+            end
+
+            -- Combined usage indicator: everything that applies to this response on
+            -- ONE line (reasoning + web search + book tools), instead of stacked
+            -- per-feature lines. msg.reasoning can be:
+            --   string: actual reasoning content (Anthropic, DeepSeek, Gemini - non-streaming)
+            --   true: reasoning detected but not captured (streaming mode)
+            --   { _requested = true, effort = "..." }: requested but API doesn't expose (OpenAI)
+            -- Note: Full reasoning content is viewable via "Show Reasoning" behind the gear.
+            -- The gear hint (item 7) rides the first indicator-bearing response only.
+            if msg.role == self.ROLES.ASSISTANT then
+                local reasoning_opt
+                if show_reasoning_indicator and msg.reasoning then
+                    if type(msg.reasoning) == "table" and msg.reasoning._requested then
+                        reasoning_opt = { requested = true, effort = msg.reasoning.effort }
+                    else
+                        reasoning_opt = true
+                    end
+                end
+                local indicator = Constants.buildUsageIndicator({
+                    reasoning = reasoning_opt,
+                    web_search = (show_web_search_indicator and msg.web_search_used) or nil,
+                    book_lookups = (show_book_tools_indicator and msg.book_tools_used)
+                        and (tonumber(msg.book_lookups) or 0) or nil,
+                    gear_hint = not gear_hint_added,
+                })
+                if indicator then
+                    table.insert(result, indicator .. "\n\n")
+                    gear_hint_added = true
+                end
+            end
+
+            table.insert(result, prefix .. msg.content .. "\n\n")
+        end
+    end
+
+    return table.concat(result)
+end
+
+--- Create formatted text for translate view
+-- Shows original text and translation with minimal markers (▶ and ◉)
+-- @param highlighted_text string The original highlighted text
+-- @param hide_quote boolean Whether to hide the original text
+-- @return string Formatted text for display
+function MessageHistory:createTranslateViewText(highlighted_text, hide_quote)
+    local result = {}
+
+    -- Show original with User marker (unless hidden)
+    if not hide_quote and highlighted_text and highlighted_text ~= "" then
+        table.insert(result, "▶ " .. highlighted_text .. "\n\n")
+        table.insert(result, "---\n\n")
+    end
+
+    -- Show translation with KOAssistant marker
+    for _idx, msg in ipairs(self.messages) do
+        if msg.role == self.ROLES.ASSISTANT then
+            table.insert(result, "◉ " .. msg.content .. "\n\n")
+        end
+    end
+
+    return table.concat(result)
+end
+
+return MessageHistory 

@@ -1,5 +1,5 @@
 --[[
-Unit Tests for koassistant_doc_settings.lua (SafeDocSettings)
+Unit Tests for koassistant/storage/doc_settings.lua (SafeDocSettings)
 
 The issue #72 stopgap: every plugin read/write of a book's DocSettings must
 resolve to the LIVE ReaderUI doc_settings whenever the target book is currently
@@ -40,7 +40,7 @@ package.loaded["docsettings"] = {
 local ReaderUIStub = { instance = nil }
 package.loaded["apps/reader/readerui"] = ReaderUIStub
 
-local SafeDocSettings = require("koassistant_doc_settings")
+local SafeDocSettings = require("koassistant.storage.doc_settings")
 
 local function makeUI(file)
     return {

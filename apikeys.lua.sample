@@ -22,7 +22,7 @@
 --
 -- The plugin uses the first key in the list unless you pick another one.
 -- To see all your keys and pick which one is used, open:
---     Settings > API Keys > (tap the provider)
+--     Settings > API Keys & Auth > (tap the provider)
 -- Keys entered inside the app take priority over keys from this file.
 --
 -- If you only have one key per provider, ignore all of this: keep writing

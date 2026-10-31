@@ -13,8 +13,8 @@ Usage:
     local defaults = ConstraintUtils.getReasoningDefaults("anthropic")  -- Returns {budget=32000, ...}
 ]]
 
-local ModelConstraints = require("model_constraints")
-local Defaults = require("koassistant_api.defaults")
+local ModelConstraints = require("koassistant.request.model_constraints")
+local Defaults = require("koassistant.api.defaults")
 
 local ConstraintUtils = {}
 

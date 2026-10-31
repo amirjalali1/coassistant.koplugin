@@ -211,7 +211,7 @@ local function testProvider(provider, api_key, verbose)
     end
 
     -- Load the handler
-    local handler_ok, handler = pcall(require, "koassistant_api." .. provider)
+    local handler_ok, handler = pcall(require, "koassistant.api." .. provider)
     if not handler_ok then
         return false, "Failed to load handler: " .. tostring(handler)
     end

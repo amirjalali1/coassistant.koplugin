@@ -1,5 +1,5 @@
 -- Unit tests for SSE/NDJSON content extraction
--- Tests the extractContentFromSSE logic from stream_handler.lua
+-- Tests the extractContentFromSSE logic from koassistant/request/stream_handler.lua
 -- No API calls - pure logic testing with mock events
 
 -- Setup paths (detect script location)
@@ -26,7 +26,7 @@ setupPaths()
 require("mock_koreader")
 
 -- Import StreamHandler from plugin code (not hardcoded reimplementation)
-local StreamHandler = require("stream_handler")
+local StreamHandler = require("koassistant.request.stream_handler")
 
 -- Wrapper function to call the method from StreamHandler
 -- This ensures tests use actual plugin code, not duplicated logic

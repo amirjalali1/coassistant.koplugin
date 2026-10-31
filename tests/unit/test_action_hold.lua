@@ -1,4 +1,4 @@
--- The shared action hold menu (koassistant_action_hold.lua, 2026-09-07, B122):
+-- The shared action hold menu (koassistant/ui/action_hold.lua, 2026-09-07, B122):
 -- the row plan per source and surface, and the membership pair per surface.
 --
 -- Run: lua tests/unit/test_action_hold.lua  (or lua tests/run_tests.lua --unit)
@@ -11,7 +11,7 @@ local function setupPaths()
     local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -19,7 +19,7 @@ local function setupPaths()
 end
 setupPaths()
 require("mock_koreader")
-local ActionHold = require("koassistant_action_hold")
+local ActionHold = require("koassistant.ui.action_hold")
 local TestRunner = require("test_runner"):new()
 
 local function ids(rows)
@@ -45,6 +45,11 @@ TestRunner:test("plan: custom (UI) and custom_actions.lua sources route to their
         "membership,placements,edit:ui,duplicate", "ui")
     TestRunner:assertEqual(ids(ActionHold.plan({ id = "x", source = "config" }, "highlight", true)),
         "membership,placements,edit:config,duplicate", "config")
+end)
+
+TestRunner:test("plan: an action whose details screen hides Duplicate gets no duplicate row (B424)", function()
+    TestRunner:assertEqual(ids(ActionHold.plan({ id = "xray", source = "builtin", no_duplicate = true }, "highlight", true)),
+        "membership,placements,edit:builtin", "no duplicate for X-Ray")
 end)
 
 TestRunner:test("plan: local-handler pseudo actions have no editor or duplicate; no surface = no membership row", function()
@@ -119,7 +124,7 @@ TestRunner:test("membership: every surface toggles through its own pair", functi
 end)
 
 TestRunner:test("the real action_service has every method the surface table names", function()
-    local ActionService = require("action_service")
+    local ActionService = require("koassistant.prompts.action_service")
     for surface, spec in pairs(ActionHold.SURFACES) do
         if spec.is_in then
             TestRunner:assertEqual(type(ActionService[spec.is_in]), "function", surface .. " is_in")

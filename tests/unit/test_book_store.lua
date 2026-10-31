@@ -1,5 +1,5 @@
 --[[
-Unit tests: koassistant_book_store.lua (Track 37 — plugin data out of metadata.lua)
+Unit tests: koassistant/storage/book_store.lua (Track 37 — plugin data out of metadata.lua)
 
 - Facade: plugin keys route to koassistant_book_settings.lua, KOReader keys
   pass through to the DocSettings, saveSetting(nil) deletes, flush never
@@ -56,10 +56,10 @@ local saved = {
     lfs = package.loaded["libs/libkoreader-lfs"],
     util = package.loaded["util"],
     readhistory = package.loaded["readhistory"],
-    rebuilder = package.loaded["koassistant_index_rebuilder"],
-    chm = package.loaded["koassistant_chat_history_manager"],
-    store = package.loaded["koassistant_book_store"],
-    sds = package.loaded["koassistant_doc_settings"],
+    rebuilder = package.loaded["koassistant.artifacts.index_rebuilder"],
+    chm = package.loaded["koassistant.chat.chat_history_manager"],
+    store = package.loaded["koassistant.storage.book_store"],
+    sds = package.loaded["koassistant.storage.doc_settings"],
 }
 
 -- Persistent LuaSettings by path (colon or dot call)
@@ -157,14 +157,14 @@ package.loaded["libs/libkoreader-lfs"] = {
     mkdir = function() return true end,
 }
 
-package.loaded["koassistant_book_store"] = nil
-package.loaded["koassistant_doc_settings"] = nil
-package.loaded["koassistant_chat_history_manager"] = nil
-package.loaded["koassistant_index_rebuilder"] = nil
+package.loaded["koassistant.storage.book_store"] = nil
+package.loaded["koassistant.storage.doc_settings"] = nil
+package.loaded["koassistant.chat.chat_history_manager"] = nil
+package.loaded["koassistant.artifacts.index_rebuilder"] = nil
 
 -- Chat manager stub: record index refreshes (the real one is exercised elsewhere)
 local index_calls = {}
-package.loaded["koassistant_chat_history_manager"] = {
+package.loaded["koassistant.chat.chat_history_manager"] = {
     updateChatIndex = function(_self, path, op, _id, chats, opts)
         local n = 0
         for _ in pairs(chats) do n = n + 1 end
@@ -174,13 +174,13 @@ package.loaded["koassistant_chat_history_manager"] = {
 
 -- Index rebuilder stub for migrateAll
 local candidates = {}
-package.loaded["koassistant_index_rebuilder"] = {
+package.loaded["koassistant.artifacts.index_rebuilder"] = {
     collectCandidates = function() return candidates end,
     hasAnySidecarDir = function(path) return existing[(path:match("(.*)%.") or path) .. ".sdr"] == true end,
 }
 
-local BookStore = require("koassistant_book_store")
-local SafeDocSettings = require("koassistant_doc_settings")
+local BookStore = require("koassistant.storage.book_store")
+local SafeDocSettings = require("koassistant.storage.doc_settings")
 
 -- ============================================================
 -- Runner
@@ -308,6 +308,17 @@ TestRunner:test("one store per book: two facades see the same value; invalidate 
     files[SFILE].data.settings.koassistant_book_spoiler_free = true  -- external write
     BookStore.invalidate(BOOK)
     eq(f2:readSetting("koassistant_book_spoiler_free"), true, "re-read after invalidate")
+end)
+
+TestRunner:test("invalidateUnder drops the stores inside a moved folder only (B507)", function()
+    bookFile(BOOK)
+    local f = BookStore.wrap(MockDS:open(BOOK), BOOK)
+    f:saveSetting("koassistant_book_spoiler_free", false)
+    files[SFILE].data.settings.koassistant_book_spoiler_free = true  -- external write
+    BookStore.invalidateUnder("/book")  -- "/books/a.epub" is not inside "/book"
+    eq(f:readSetting("koassistant_book_spoiler_free"), false, "a folder named alike keeps the store")
+    BookStore.invalidateUnder("/books")
+    eq(f:readSetting("koassistant_book_spoiler_free"), true, "re-read after the folder's move")
 end)
 
 -- ============================================================
@@ -547,8 +558,8 @@ print("\n  -- structural gates --")
 
 local function listLuaFiles()
     local out = {}
-    for _idx, sub in ipairs({ "", "/koassistant_api", "/koassistant_ui", "/prompts" }) do
-        local h = io.popen('ls "' .. plugin_dir .. sub .. '"/*.lua 2>/dev/null')
+    for _idx, cmd in ipairs({ 'ls "' .. plugin_dir .. '"/*.lua', 'find "' .. plugin_dir .. '/koassistant" -name "*.lua" | sort' }) do
+        local h = io.popen(cmd .. ' 2>/dev/null')
         if h then
             for line in h:lines() do out[#out + 1] = line end
             h:close()
@@ -570,7 +581,7 @@ TestRunner:test("no code reads or writes the legacy koassistant_chats DocSetting
     local offenders = {}
     for _idx, path in ipairs(listLuaFiles()) do
         local name = path:match("([^/]+)$")
-        if name ~= "koassistant_book_store.lua" then
+        if not path:find("koassistant/storage/book_store%.lua$") then
             for n, line in ipairs(readLines(path)) do
                 if line:find('Setting("koassistant_chats"', 1, true) then
                     offenders[#offenders + 1] = name .. ":" .. n
@@ -633,7 +644,7 @@ TestRunner:test("the alias gate catches the shapes it guards against", function(
         "    local ds = self_ref.ui and self_ref.ui.doc_settings",
         "    local protected = ds and resolve(ds)",
         "      local c_auto_on = c_flowing and self.ui.doc_settings",
-        "        and require(\"koassistant_book_settings\").resolveXrayAuto(self.ui.doc_settings, f)",
+        "        and require(\"koassistant.books.book_settings\").resolveXrayAuto(self.ui.doc_settings, f)",
         "  if x == self.ui.doc_settings then",
         "function AskGPT:_openBookDS()",
         "  local ds = self.ui and self.ui.doc_settings",
@@ -662,17 +673,17 @@ for k, v in pairs({
     ["luasettings"] = saved.luasettings, ["docsettings"] = saved.docsettings,
     ["libs/libkoreader-lfs"] = saved.lfs, ["util"] = saved.util,
     ["readhistory"] = saved.readhistory,
-    ["koassistant_index_rebuilder"] = saved.rebuilder,
-    ["koassistant_chat_history_manager"] = saved.chm,
-    ["koassistant_book_store"] = saved.store,
-    ["koassistant_doc_settings"] = saved.sds,
+    ["koassistant.artifacts.index_rebuilder"] = saved.rebuilder,
+    ["koassistant.chat.chat_history_manager"] = saved.chm,
+    ["koassistant.storage.book_store"] = saved.store,
+    ["koassistant.storage.doc_settings"] = saved.sds,
 }) do
     package.loaded[k] = v
 end
-package.loaded["koassistant_book_store"] = nil
-package.loaded["koassistant_doc_settings"] = nil
-package.loaded["koassistant_chat_history_manager"] = nil
-package.loaded["koassistant_index_rebuilder"] = nil
+package.loaded["koassistant.storage.book_store"] = nil
+package.loaded["koassistant.storage.doc_settings"] = nil
+package.loaded["koassistant.chat.chat_history_manager"] = nil
+package.loaded["koassistant.artifacts.index_rebuilder"] = nil
 
 os.remove = saved_os_remove  -- luacheck: ignore 122
 os.rename = saved_os_rename  -- luacheck: ignore 122

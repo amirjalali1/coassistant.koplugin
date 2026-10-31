@@ -16,7 +16,7 @@ end
 setupPaths()
 require("mock_koreader")
 
-local CustomOpenAIHandler = require("koassistant_api/custom_openai")
+local CustomOpenAIHandler = require("koassistant.api.custom_openai")
 
 local TestRunner = { passed = 0, failed = 0 }
 function TestRunner:test(name, fn)

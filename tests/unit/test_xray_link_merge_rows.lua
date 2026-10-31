@@ -1,5 +1,5 @@
 -- B401: the "Link and merge…" group of the X-Ray popup and of the X-Ray
--- browser's menu comes from ONE builder (koassistant_xray_rows.lua
+-- browser's menu comes from ONE builder (koassistant/xray/xray_rows.lua
 -- linkMergeRows), so the two surfaces show the same rows in the same order.
 -- Until 2026-10-03 the popup had the group and the browser's menu listed the
 -- same rows flat, in another order, with the duplicate review further down.
@@ -31,9 +31,9 @@ local TestRunner = require("test_runner"):new()
 
 -- The builder asks the browser module for the carried list's title. One Lua
 -- process runs every test file: the stand-in is taken out again at the end.
-local saved_browser = package.loaded["koassistant_xray_browser"]
+local saved_browser = package.loaded["koassistant.xray.xray_browser"]
 local disk_reads = {}
-package.loaded["koassistant_xray_browser"] = {
+package.loaded["koassistant.xray.xray_browser"] = {
     carriedListTitle = function(_file, n) return "Carried from earlier books (" .. n .. ")" end,
     carriedListLabel = function(file, raw)
         disk_reads[#disk_reads + 1] = { file = file, raw = raw }
@@ -41,7 +41,7 @@ package.loaded["koassistant_xray_browser"] = {
         return "Carried from earlier books (7)"
     end,
 }
-local XrayRows = require("koassistant_xray_rows")
+local XrayRows = require("koassistant.xray.xray_rows")
 
 local function plugin(kind)
     return { _groupXrayMergeKind = function() return kind end }
@@ -162,7 +162,7 @@ local function count(text, needle)
 end
 
 TestRunner:test("the X-Ray popup and the browser's menu each call it once and spell none of its rows", function()
-    for _idx, name in ipairs({ "main.lua", "koassistant_xray_browser.lua" }) do
+    for _idx, name in ipairs({ "main.lua", "koassistant/xray/xray_browser.lua" }) do
         local text = source(name)
         TestRunner:assertEqual(count(text, "linkMergeRows("), 1, name .. " builds the group once")
         TestRunner:assertTrue(count(text, "linkMergeLabel()") >= 1, name .. " takes the group's label from the builder")
@@ -179,6 +179,6 @@ TestRunner:test("the X-Ray popup and the browser's menu each call it once and sp
 end)
 
 -- ------------------------------------------------------------------ cleanup
-package.loaded["koassistant_xray_browser"] = saved_browser
+package.loaded["koassistant.xray.xray_browser"] = saved_browser
 
 return TestRunner:summary()

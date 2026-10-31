@@ -165,13 +165,13 @@ else
     package.loaded["libs/libkoreader-lfs"] = mock_lfs
 end
 
--- Mock UI widgets (for stream_handler.lua)
+-- Mock UI widgets (for koassistant/request/stream_handler.lua)
 -- These are not used in unit tests, but need to exist so the module loads
 package.loaded["ui/widget/inputtext"] = {
     extend = function() return {} end,
 }
 package.loaded["ui/widget/inputdialog"] = {}
--- koassistant_book_settings.lua requires ButtonDialog at module top level; the
+-- koassistant/books/book_settings.lua requires ButtonDialog at module top level; the
 -- missing stub silently broke every require-chain through it under plain lua
 -- (test_book_tool_runner crashed on load — masked by the returns-nil-counts-
 -- as-passing harness loophole — and the model audit's real-spec tool legs fell
@@ -205,7 +205,7 @@ package.loaded["ui/constants"] = {
     DIALOG_WIDTH = 600,
 }
 
--- Mock datastorage (used by koassistant_export.lua)
+-- Mock datastorage (used by koassistant/chat/export.lua)
 package.loaded["datastorage"] = {
     getDataDir = function() return "/tmp/koreader" end,
     getSettingsDir = function() return "/tmp/koreader/settings" end,
@@ -215,7 +215,7 @@ package.loaded["datastorage"] = {
 -- developer's real custom_models.lua / derived caps cache (false = "loaded, empty";
 -- tests inject their own layers via the _set*ForTests seams).
 do
-    local mo_ok, ModelOverrides = pcall(require, "koassistant_model_overrides")
+    local mo_ok, ModelOverrides = pcall(require, "koassistant.request.model_overrides")
     if mo_ok and type(ModelOverrides) == "table" and ModelOverrides._setUserForTests then
         ModelOverrides._setUserForTests(false)
         ModelOverrides._setDerivedForTests(false)
@@ -224,7 +224,7 @@ end
 
 -- ============================================================================
 -- Widget-zoo stubs (test-suite audit 2026-08-17): the 22 modules that block
--- requiring koassistant_dialogs.lua under these mocks. Load-time only — the
+-- requiring koassistant/ui/dialogs.lua under these mocks. Load-time only — the
 -- dialogs file stores the classes and instantiates lazily, so trivial
 -- class-shaped tables suffice; tests never render widgets.
 -- ============================================================================

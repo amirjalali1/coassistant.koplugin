@@ -22,10 +22,10 @@ end
 setupPaths()
 require("mock_koreader")
 
-local DeepSeekHandler = require("koassistant_api.deepseek")
-local MistralHandler = require("koassistant_api.mistral")
-local GroqHandler = require("koassistant_api.groq")
-local XAIHandler = require("koassistant_api.xai")
+local DeepSeekHandler = require("koassistant.api.deepseek")
+local MistralHandler = require("koassistant.api.mistral")
+local GroqHandler = require("koassistant.api.groq")
+local XAIHandler = require("koassistant.api.xai")
 local TestRunner = require("test_runner"):new()
 
 print("")

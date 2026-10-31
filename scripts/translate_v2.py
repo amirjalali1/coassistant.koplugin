@@ -89,6 +89,13 @@ LANGUAGE_NAMES = {
     "fa": "Persian (Farsi)",
 }
 
+# Per-language style rules the prompt carries (register, terms). German: the
+# existing translation addresses the reader as Sie; the 2026-10-20 fill came
+# back as du in 77 of 727 strings and had to be redone.
+LANGUAGE_STYLE = {
+    "de": "Address the reader formally (Sie, Ihr, Ihnen), as the existing German translation does; never du.",
+}
+
 # ============================================================================
 # Newline Handler
 # ============================================================================
@@ -801,8 +808,16 @@ class Spinner:
 class APITranslator:
     """Direct API translation for Anthropic and OpenAI."""
 
-    # Batch size to avoid token limits
+    # Batch limits: at most BATCH_SIZE strings and about MAX_BATCH_CHARS of
+    # source text per request. The reply must carry every string back inside
+    # max_tokens: on 2026-10-20 one batch of 50 long help texts (13,876
+    # characters of English, up to 771 each) overflowed it in all eleven
+    # languages that got it, the reply stopping at 28 to 44 of 50 (earliest
+    # for the scripts that cost more tokens per character), and a reply that
+    # stops short is dropped whole, so the same 50 stayed empty through three
+    # runs. A character budget keeps long strings in small batches.
     BATCH_SIZE = 50
+    MAX_BATCH_CHARS = 6000
 
     # Retry settings
     MAX_RETRIES = 3
@@ -812,6 +827,24 @@ class APITranslator:
         self.provider = provider
         self.model = model
         self.api_key = api_key
+
+    @classmethod
+    def pack_batches(cls, items: List[Tuple[int, str]]) -> List[List[Tuple[int, str]]]:
+        """Split (num, text) pairs, in order, into batches of at most
+        BATCH_SIZE strings and about MAX_BATCH_CHARS of source text (one
+        oversized string still travels alone)."""
+        batches: List[List[Tuple[int, str]]] = []
+        cur: List[Tuple[int, str]] = []
+        chars = 0
+        for num, text in items:
+            if cur and (len(cur) >= cls.BATCH_SIZE or chars + len(text) > cls.MAX_BATCH_CHARS):
+                batches.append(cur)
+                cur, chars = [], 0
+            cur.append((num, text))
+            chars += len(text)
+        if cur:
+            batches.append(cur)
+        return batches
 
     def translate_strings(self, strings: Dict[int, str], target_lang: str,
                           progress_callback=None, log=print,
@@ -824,18 +857,13 @@ class APITranslator:
         """
         results = {}
         sorted_nums = sorted(strings.keys())
-        total_batches = (len(sorted_nums) + self.BATCH_SIZE - 1) // self.BATCH_SIZE
+        batches = self.pack_batches([(num, strings[num]) for num in sorted_nums])
+        total_batches = len(batches)
         total_strings = len(sorted_nums)
 
         log(f"  {total_strings} strings in {total_batches} batch(es)")
 
-        for batch_idx in range(total_batches):
-            start_idx = batch_idx * self.BATCH_SIZE
-            end_idx = min(start_idx + self.BATCH_SIZE, len(sorted_nums))
-            batch_nums = sorted_nums[start_idx:end_idx]
-
-            batch_strings = [(num, strings[num]) for num in batch_nums]
-
+        for batch_idx, batch_strings in enumerate(batches):
             label = f"[{batch_idx + 1}/{total_batches}] {len(batch_strings)} strings"
             if use_spinner:
                 # Show batch number (spinner line follows)
@@ -950,6 +978,8 @@ class APITranslator:
         terms_str = ", ".join(TECH_TERMS)
 
         numbered = "\n".join(f"{num}. {text}" for num, text in batch)
+        style = LANGUAGE_STYLE.get(lang)
+        style_rule = f"\n5. {style}" if style else ""
 
         return f"""Translate these UI strings to {lang_name}.
 
@@ -957,7 +987,7 @@ CRITICAL RULES:
 1. Keep EXACTLY as-is: {brands_str}, {terms_str}
 2. Keep placeholders EXACTLY: %1, %2, %3
 3. Keep newline markers EXACTLY: {NEWLINE_MARKER}
-4. Output ONLY numbered translations, no explanations
+4. Output ONLY numbered translations, no explanations{style_rule}
 
 {numbered}"""
 
@@ -980,7 +1010,9 @@ CRITICAL RULES:
         thinking_off = "between_tools" if self.model.startswith("claude-sonnet-5-5") else "disabled"
         data = {
             "model": self.model,
-            "max_tokens": 8192,
+            # 16384: a batch of long strings in a script that costs more tokens
+            # per character (Bengali, Thai, Urdu) overflowed 8192 (2026-10-20)
+            "max_tokens": 16384,
             "thinking": {"type": thinking_off},
             "messages": [
                 {"role": "user", "content": prompt}

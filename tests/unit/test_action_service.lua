@@ -1,5 +1,5 @@
 --[[
-Unit Tests for action_service.lua
+Unit Tests for koassistant/prompts/action_service.lua
 
 Tests pure functions: copyAction, getApiParams, migrateCustomActionsOpenBookFlags,
 generateUniqueDuplicateName, createDuplicateAction.
@@ -27,8 +27,8 @@ setupPaths()
 
 require("mock_koreader")
 
-local ActionService = require("action_service")
-local Actions = require("prompts.actions")
+local ActionService = require("koassistant.prompts.action_service")
+local Actions = require("koassistant.prompts.actions")
 
 -- Test suite
 local TestRunner = {
@@ -99,7 +99,7 @@ local function createService(settings_data)
     local service = ActionService:new(settings)
     service.Actions = Actions
     -- Load Templates module
-    local ok, Templates = pcall(require, "prompts.templates")
+    local ok, Templates = pcall(require, "koassistant.prompts.templates")
     if ok then service.Templates = Templates end
     return service
 end

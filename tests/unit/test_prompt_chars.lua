@@ -2,9 +2,9 @@
 -- (request-sizing audit, build item B14).
 --
 -- The number that decides whether a request fits the plan's per-minute allowance
--- is computed in koassistant_gpt_query.lua's dispatch path. A pre-send check has
+-- is computed in koassistant/request/gpt_query.lua's dispatch path. A pre-send check has
 -- to ask the same question BEFORE that point, so the arithmetic moved into
--- koassistant_rate_limits.lua as a pure helper. This file is the guard that
+-- koassistant/request/rate_limits.lua as a pure helper. This file is the guard that
 -- keeps the two from drifting: it restates the router's original closure
 -- verbatim and asserts the helper agrees with it, byte for byte.
 --
@@ -18,7 +18,7 @@ local function setupPaths()
     local plugin_dir = tests_dir:match("(.+)/[^/]+$") or "."
     package.path = table.concat({
         plugin_dir .. "/?.lua",
-        plugin_dir .. "/koassistant_api/?.lua",
+        plugin_dir .. "/koassistant/api/?.lua",
         tests_dir .. "/?.lua",
         tests_dir .. "/lib/?.lua",
         package.path,
@@ -40,9 +40,9 @@ function TestRunner:assertEqual(actual, expected, msg)
     end
 end
 
-local RL = require("koassistant_rate_limits")
+local RL = require("koassistant.request.rate_limits")
 
--- The router's arithmetic, restated exactly as koassistant_gpt_query.lua's
+-- The router's arithmetic, restated exactly as koassistant/request/gpt_query.lua's
 -- dispatch closure had it. If this ever has to change, the helper changes with
 -- it and this file is where the two are compared.
 local function routerPromptChars(config, message_history)

@@ -1,4 +1,4 @@
--- Unit tests for what behavior_loader.lua and domain_loader.lua refuse to load.
+-- Unit tests for what koassistant/prompts/behavior_loader.lua and koassistant/prompts/domain_loader.lua refuse to load.
 --
 -- Copying a plugin folder from a Mac to a Kobo writes a macOS AppleDouble
 -- sidecar ("._name") next to every file that carries an extended attribute, and
@@ -28,8 +28,8 @@ end
 setupPaths()
 require("mock_koreader")
 
-local BehaviorLoader = require("behavior_loader")
-local DomainLoader = require("domain_loader")
+local BehaviorLoader = require("koassistant.prompts.behavior_loader")
+local DomainLoader = require("koassistant.prompts.domain_loader")
 local TestRunner = require("test_runner"):new()
 
 -- A real AppleDouble header, as macOS writes it onto a FAT volume: the magic,

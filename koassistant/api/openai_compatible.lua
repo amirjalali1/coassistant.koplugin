@@ -1,0 +1,329 @@
+--[[--
+OpenAI-Compatible Handler Base Class
+
+Shared implementation for providers that follow the OpenAI API format:
+groq, mistral, xai, together, fireworks, sambanova, openrouter, requesty, qwen, kimi, doubao, zai, custom_openai
+
+Child classes override:
+- getProviderName() [REQUIRED] - Display name for errors ("Mistral")
+- getProviderKey() [REQUIRED] - Defaults lookup key ("mistral")
+- customizeHeaders(headers, config) - Add provider-specific headers
+- customizeRequestBody(body, config) - Modify request body
+- customizeUrl(url, config) - Override URL (e.g., regional endpoints)
+- validateConfig(config) - Custom validation (returns bool, error_string)
+- enhanceErrorMessage(error, config) - Add hints to errors
+- supportsReasoningExtraction() - Return true if <think> tags should be parsed
+- getResponseParserKey() - Override parser key (default: getProviderKey())
+
+@module openai_compatible
+]]
+
+local BaseHandler = require("koassistant.api.base")
+local https = require("ssl.https")
+local ltn12 = require("ltn12")
+local json = require("json")
+local Defaults = require("koassistant.api.defaults")
+local ResponseParser = require("koassistant.api.response_parser")
+local DebugUtils = require("koassistant.core.debug_utils")
+local ModelConstraints = require("koassistant.request.model_constraints")
+
+local OpenAICompatibleHandler = BaseHandler:new()
+
+--- Helper: Check if message has non-empty content
+--- @param msg table Message object
+--- @return boolean has_content
+local function hasContent(msg)
+    if not msg or not msg.content then return false end
+    if type(msg.content) == "string" then
+        return msg.content:match("%S") ~= nil
+    end
+    return true
+end
+
+---------------------------------------------------------------------------
+-- Abstract methods (MUST override)
+---------------------------------------------------------------------------
+
+--- Get display name for error messages (e.g., "Mistral", "Groq")
+--- @return string name
+function OpenAICompatibleHandler:getProviderName()
+    error("getProviderName() must be implemented by child class")
+end
+
+--- Get key for Defaults.ProviderDefaults lookup (e.g., "mistral", "groq")
+--- @return string key
+function OpenAICompatibleHandler:getProviderKey()
+    error("getProviderKey() must be implemented by child class")
+end
+
+---------------------------------------------------------------------------
+-- Optional hooks (override as needed)
+---------------------------------------------------------------------------
+
+--- Add or modify headers before request
+--- @param headers table Headers table
+--- @param config table Unified config
+--- @return table headers Modified headers
+function OpenAICompatibleHandler:customizeHeaders(headers, config)
+    return headers
+end
+
+--- Modify request body before encoding
+--- @param body table Request body
+--- @param config table Unified config
+--- @return table body Modified body
+function OpenAICompatibleHandler:customizeRequestBody(body, config)
+    return body
+end
+
+--- Override URL (e.g., for regional endpoints)
+--- @param url string Default URL
+--- @param config table Unified config
+--- @return string url Final URL
+function OpenAICompatibleHandler:customizeUrl(url, config)
+    return url
+end
+
+--- Validate config before making request
+--- @param config table Unified config
+--- @return boolean valid, string|nil error_message
+function OpenAICompatibleHandler:validateConfig(config)
+    if not config or not config.api_key then
+        return false, "Error: Missing API key in configuration"
+    end
+    return true
+end
+
+--- Add hints to error messages (e.g., region-specific hints)
+--- @param error_msg string Original error message
+--- @param config table Unified config
+--- @return string error_msg Enhanced error message
+function OpenAICompatibleHandler:enhanceErrorMessage(error_msg, config)
+    return error_msg
+end
+
+--- Whether this provider extracts reasoning from <think> tags
+--- @return boolean supports
+function OpenAICompatibleHandler:supportsReasoningExtraction()
+    return false
+end
+
+--- Get the key for ResponseParser (default: getProviderKey())
+--- @return string key
+function OpenAICompatibleHandler:getResponseParserKey()
+    return self:getProviderKey()
+end
+
+--- Provider id used for ModelConstraints lookups (ceilings, capabilities).
+--- Separate from getProviderKey() because custom providers share ONE handler
+--- whose static key ("custom") is not their runtime id — and the ceiling table
+--- plus the custom_models.lua user layer are keyed by the runtime `custom_<slug>`.
+--- @param config table|nil Unified request config
+--- @return string key
+function OpenAICompatibleHandler:getConstraintsKey(config)
+    return self:getProviderKey()
+end
+
+---------------------------------------------------------------------------
+-- Shared implementation
+---------------------------------------------------------------------------
+
+--- Build the request body, headers, and URL without making the API call.
+--- Used by test inspector to see exactly what would be sent.
+--- @param message_history table Array of message objects
+--- @param config table Unified config from buildUnifiedRequestConfig
+--- @return table { body = table, headers = table, url = string, model = string, provider = string }
+function OpenAICompatibleHandler:buildRequestBody(message_history, config)
+    local defaults = Defaults.ProviderDefaults[self:getProviderKey()] or {}
+    local model = config.model or defaults.model or "default"
+
+    local request_body = {
+        model = model,
+        messages = {},
+    }
+
+    -- Add system message from unified config
+    if config.system and config.system.text and config.system.text ~= "" then
+        table.insert(request_body.messages, {
+            role = "system",
+            content = config.system.text,
+        })
+    end
+
+    -- Add conversation messages (filter out system role and empty content).
+    -- Tool turns must survive intact: an assistant tool-call turn keeps tool_calls (its content
+    -- may legitimately be nil), and a tool-result turn keeps role="tool" + tool_call_id.
+    for _, msg in ipairs(message_history) do
+        if msg.role == "tool" and msg.tool_call_id then
+            table.insert(request_body.messages, {
+                role = "tool",
+                tool_call_id = msg.tool_call_id,
+                content = msg.content,
+            })
+        elseif msg.role == "assistant" and msg.tool_calls then
+            table.insert(request_body.messages, {
+                role = "assistant",
+                content = msg.content,
+                tool_calls = msg.tool_calls,
+                -- OpenRouter reasoning backends need this back verbatim on replay
+                reasoning_details = msg.reasoning_details,
+            })
+        elseif msg.role ~= "system" and hasContent(msg) then
+            table.insert(request_body.messages, {
+                role = msg.role == "assistant" and "assistant" or "user",
+                content = msg.content,
+            })
+        end
+    end
+
+    -- Apply API parameters from unified config
+    local api_params = config.api_params or {}
+    local default_params = defaults.additional_parameters or {}
+
+    request_body.temperature = api_params.temperature or default_params.temperature or 0.7
+    local constraints_key = self:getConstraintsKey(config)
+    request_body.max_tokens = api_params.max_tokens
+        or ModelConstraints.resolveMaxTokens(constraints_key, model, default_params.max_tokens or 16384)
+    request_body.max_tokens = ModelConstraints.clampMaxTokens(constraints_key, model, request_body.max_tokens)
+
+    -- Model parameter constraints (curated + custom_models.lua), before the child
+    -- hook so a mode-dependent rule there still wins (kimi drops the forced
+    -- temperature when thinking is disabled)
+    request_body = ModelConstraints.apply(constraints_key, model, request_body)
+
+    -- Book-tool declarations from the neutral config.tools (set by the tool runner).
+    -- Only reachable for providers with a `tools` capability in koassistant/request/model_constraints.lua —
+    -- some OpenAI-compatible backends silently ignore the tools param, so the capability
+    -- list expands per provider only after live verification.
+    if config.tools and config.tools.specs then
+        request_body.tools = {}
+        for _, spec in ipairs(config.tools.specs) do
+            table.insert(request_body.tools, {
+                type = "function",
+                ["function"] = {
+                    name = spec.name,
+                    description = spec.description,
+                    parameters = spec.parameters,
+                },
+            })
+        end
+        -- mode NONE = the runner's final pass: declarations stay, no further calls
+        if config.tools.mode == "NONE" then
+            request_body.tool_choice = "none"
+        elseif config.tools.mode == "ANY" then
+            -- Gather rounds force a tool call (search or done) so the model can never
+            -- answer in prose on the non-streamed gather path. A model that refuses a
+            -- forced call gets auto (no_forced_tool_choice; the runner accepts a round
+            -- that answers in prose).
+            if ModelConstraints.supportsCapability(constraints_key, model, "no_forced_tool_choice") then
+                request_body.tool_choice = "auto"
+            else
+                request_body.tool_choice = "required"
+            end
+        else
+            request_body.tool_choice = "auto"
+        end
+    end
+
+    -- Hook: Allow child classes to customize request body
+    request_body = self:customizeRequestBody(request_body, config)
+
+    -- Build headers
+    local headers = {
+        ["Content-Type"] = "application/json",
+        ["Authorization"] = "Bearer " .. (config.api_key or ""),
+    }
+
+    -- Hook: Allow child classes to customize headers
+    headers = self:customizeHeaders(headers, config)
+
+    -- Determine URL
+    local url = config.base_url or defaults.base_url or ""
+
+    -- Hook: Allow child classes to customize URL
+    url = self:customizeUrl(url, config)
+
+    return {
+        body = request_body,
+        headers = headers,
+        url = url,
+        model = model,
+        provider = self:getProviderKey(),
+    }
+end
+
+--- Execute a query to the API
+--- @param message_history table Array of message objects
+--- @param config table Unified config from buildUnifiedRequestConfig
+--- @return string|table|function Result, error, or streaming function
+function OpenAICompatibleHandler:query(message_history, config)
+    -- Validate config
+    local valid, err = self:validateConfig(config)
+    if not valid then
+        return err
+    end
+
+    -- Build request using shared method (single source of truth)
+    local built = self:buildRequestBody(message_history, config)
+    local request_body = built.body
+    local base_url = built.url
+
+    -- Check if streaming is enabled
+    local use_streaming = config.features and config.features.enable_streaming ~= false
+
+    -- Debug: Print constraint adjustments (e.g. xAI's Responses routing marker)
+    -- and request body
+    local provider_name = self:getProviderName()
+    if config and config.features and config.features.debug then
+        if built.adjustments then
+            ModelConstraints.logAdjustments(provider_name, built.adjustments)
+        end
+        DebugUtils.print(provider_name .. " Request Body:", request_body, config)
+        print("Streaming enabled:", use_streaming and "yes" or "no")
+    end
+
+    local requestBody = BaseHandler.encodeBody(request_body)
+    local headers = built.headers
+    headers["Content-Length"] = tostring(#requestBody)
+
+    -- If streaming is enabled, return the background request function
+    if use_streaming then
+        local stream_request_body = json.decode(requestBody)
+        stream_request_body.stream = true
+        local stream_body = json.encode(stream_request_body)
+        headers["Content-Length"] = tostring(#stream_body)
+        headers["Accept"] = "text/event-stream"
+
+        return self:backgroundRequest(base_url, headers, stream_body)
+    end
+
+    -- Non-streaming mode: use background request for non-blocking UI.
+    -- A per-request parser override (e.g. xAI's Responses routing sets
+    -- "openai_responses") wins over the provider's static parser key.
+    local parser_key = built.parser or self:getResponseParserKey()
+    local debug_enabled = config and config.features and config.features.debug
+    local self_ref = self  -- Capture for closure
+
+    local response_parser = function(response)
+        -- Debug: Print parsed response
+        if debug_enabled then
+            DebugUtils.print(provider_name .. " Parsed Response:", response, config)
+        end
+
+        local parse_success, result, reasoning, web_search_used = ResponseParser:parseResponse(response, parser_key)
+        if not parse_success then
+            -- Hook: Allow child classes to enhance error messages
+            return false, self_ref:enhanceErrorMessage("Error: " .. result, config)
+        end
+
+        return true, result, reasoning, web_search_used
+    end
+
+    return {
+        _background_fn = self:backgroundRequest(base_url, headers, requestBody),
+        _non_streaming = true,
+        _response_parser = response_parser,
+    }
+end
+
+return OpenAICompatibleHandler

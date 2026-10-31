@@ -193,7 +193,7 @@ function ReasoningTests:runTest(test_def, api_key, verbose)
     local provider = test_def.provider
 
     -- Load handler
-    local handler_ok, handler = pcall(require, "koassistant_api." .. provider)
+    local handler_ok, handler = pcall(require, "koassistant.api." .. provider)
     if not handler_ok then
         self:log(provider, test_def.name, "fail", "Failed to load handler: " .. tostring(handler), 0)
         return false
