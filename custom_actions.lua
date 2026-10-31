@@ -15,30 +15,34 @@
 --   prompt          - The instruction sent to AI [REQUIRED]
 --
 -- NOT usable here: in_dictionary_popup / in_highlight_menu. Those only
--- auto-place BUILT-IN actions (action_service.lua's buildDefaultFromFlags
--- scans self.Actions == require("prompts.actions") only, never the
+-- auto-place BUILT-IN actions (buildDefaultFromFlags in
+-- koassistant/prompts/action_service.lua scans self.Actions ==
+-- require("koassistant.prompts.actions") only, never the
 -- custom-actions cache) -- setting them on a custom action is silently a
 -- no-op. To show a custom action in a menu, enable it manually on-device:
 -- Settings -> Actions & Prompts -> Manage Actions -> tap the action ->
 -- check "+ Highlight Menu" / "+ Dict. Popup" (one-time, per menu).
 --
 -- RTL/Persian rendering: two layered fixes, both required.
--- (1) koassistant_dialogs.lua's handlePredefinedPrompt now honors an
+-- (1) koassistant/ui/dialogs.lua's handlePredefinedPrompt now honors an
 --     explicit render_markdown field on the action (a small addition to a
 --     shared/upstream file -- see its "Per-action Markdown/Plain-Text
 --     override" comment). Every action below sets render_markdown = false,
 --     forcing Plain Text mode (KOReader's native text renderer), which
 --     -- confirmed empirically on-device -- shapes/joins Farsi letterforms
 --     correctly. The Markdown/HTML path (MuPDF) does not: neither its
---     hardcoded font-family: 'Noto Sans' (koassistant_chatgptviewer.lua:1105,
---     no Arabic-script fallback) nor its automatic RTL detection (keyed on
+--     hardcoded font-family: 'Noto Sans' (getViewerCSS in
+--     koassistant/ui/chatgptviewer.lua, no Arabic-script fallback) nor its
+--     automatic RTL detection (keyed on
 --     the global dictionary_language setting for compact/dictionary views,
 --     or on RTL being the DOMINANT script for standard views -- neither
 --     condition holds for a response that deliberately mixes two
 --     similar-length scripts) reliably renders this content.
 -- (2) Even in Plain Text mode, a Farsi block that mixes in Latin (IPA,
---     headword, English synonyms) can still order badly -- so every Farsi
---     section below is written to be 100% Persian script, no exceptions.
+--     headword, English synonyms) can still order badly -- so FA
+--     Dictionary's Farsi section is written to be 100% Persian script.
+--     (FA Explain's reading-coach template mixes English and Persian by
+--     design, so it does not follow that rule.)
 
 return {
     -----------------------------------------------------------------------
@@ -81,7 +85,7 @@ Inline bold labels, no headers. Concise. Keep the two entries clearly separated.
 
     -----------------------------------------------------------------------
     -- FA Explain: same as the built-in "Explain" action (highlight menu
-    -- only, template "explain" in prompts/templates.lua:132-137, inlined
+    -- only, template "explain" in koassistant/prompts/templates.lua, inlined
     -- here per the custom-action convention -- see research note above),
     -- but always appends a second explanation in Persian (Farsi).
     -----------------------------------------------------------------------
