@@ -108,6 +108,11 @@ Inline bold labels, no headers. Concise. Keep the two entries clearly separated.
         enable_web_search = false,
         accept_quick_answer = true,
         include_book_context = true,  -- matches built-in Explain
+        -- Without this the system prompt says "Always respond in <your language>.
+        -- Only switch if the user writes their own question in another language"
+        -- (system_prompts.lua buildLanguageInstruction), which outranks this
+        -- prompt's request for Persian sections. FA Dictionary already sets it.
+        skip_language_instruction = true,
         render_markdown = false,  -- Forces Plain Text mode: hasDominantRTL's auto-detect only fires when RTL is the MAJORITY script, which a half-English/half-Farsi response never is; confirmed fixed on-device via the MD/TXT toggle
         provider = "openai_codex",  -- Pinned (see header note on model pinning); needs a ChatGPT plan that serves it
         model = "gpt-6.1-terra",
