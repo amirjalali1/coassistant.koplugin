@@ -1007,7 +1007,7 @@ local function getViewerCSS(text_align, rtl_css)
     return string.format([[
 @page {
     margin: 0;
-    font-family: 'Noto Sans', 'Noto Naskh Arabic', 'Noto Sans Arabic', sans-serif;
+    font-family: 'Noto Sans';
 }
 
 body {

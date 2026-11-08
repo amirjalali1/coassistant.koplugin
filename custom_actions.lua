@@ -28,11 +28,12 @@
 -- is applied only when provider is also set). Both actions below pin
 -- openai_codex / gpt-6.1-terra (the ChatGPT-subscription login). The Codex
 -- handler sends the id as written; a plan that doesn't serve it is refused
--- with a plan hint, not silently downgraded. The plugin's model list has no
--- gpt-6.1-terra entry (as of v0.24.1), so it is not in the model picker, and
--- the "gpt-6.1-" reasoning rule treats it as unable to turn reasoning off and
--- the "gpt-6" rule forces temperature 1.0 -- assumptions made for 6.1 Sol,
--- unverified for Terra. Remove the two lines to follow the global model again.
+-- with a plan hint, not silently downgraded. Upstream's model list has listed
+-- gpt-6.1-terra for the direct OpenAI API since 2026-11-06 (its battery found:
+-- reasons by default, "none" accepted so it CAN be turned off, temperature 1.0
+-- only, web search on). Its ChatGPT-login (openai_codex) list had no 6.1 Terra
+-- entry then and was not probed, so the pin there is unverified. Remove the
+-- provider and model lines to follow the global model again.
 --
 -- RTL/Persian rendering: two layered fixes, both required.
 -- (1) koassistant/ui/dialogs.lua's handlePredefinedPrompt now honors an
@@ -41,14 +42,16 @@
 --     override" comment). Every action below sets render_markdown = false,
 --     forcing Plain Text mode (KOReader's native text renderer), which
 --     -- confirmed empirically on-device -- shapes/joins Farsi letterforms
---     correctly. The Markdown/HTML path (MuPDF) does not: neither its
---     hardcoded font-family: 'Noto Sans' (getViewerCSS in
---     koassistant/ui/chatgptviewer.lua, no Arabic-script fallback) nor its
---     automatic RTL detection (keyed on
---     the global dictionary_language setting for compact/dictionary views,
---     or on RTL being the DOMINANT script for standard views -- neither
---     condition holds for a response that deliberately mixes two
---     similar-length scripts) reliably renders this content.
+--     correctly. The Markdown/HTML path (MuPDF) did not: its CSS named only
+--     'Noto Sans' (no Arabic letters), and its automatic RTL detection (keyed
+--     on the global dictionary_language setting for compact/dictionary views,
+--     or on RTL being the DOMINANT script for standard views) never fires for
+--     a response that deliberately mixes two similar-length scripts.
+--     Upstream has since added a per-paragraph RTL pass with a Noto Naskh
+--     Arabic font (koassistant/ui/rtl_font.lua, 2026-11) and made Markdown the
+--     default for RTL text. That path is NOT verified on this reader, so the
+--     actions keep render_markdown = false; to try it, delete that line from
+--     an action and compare.
 -- (2) Even in Plain Text mode, a Farsi block that mixes in Latin (IPA,
 --     headword, English synonyms) can still order badly -- so FA
 --     Dictionary's Farsi section is written to be 100% Persian script.
