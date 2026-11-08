@@ -185,7 +185,7 @@ Good to know:
 
 - In the app these actions show as ★ … (file). They can't be edited there (**Edit file** says so); **Duplicate** turns one into an action of your own that you can edit.
 - Each entry is known by its position in the file. Add new entries at the end: inserting or removing one shifts the on/off state and the menu placements of the entries after it.
-- If the file has an error, none of its actions load, and nothing on screen says so (crash.log has one line saying the file was not loaded).
+- If the file has an error, none of its actions load. The first time you use KOAssistant after a start, a notice names the error with its line; the file's actions stay out of the menus until it is fixed, and their places in the menus are kept.
 - `enabled` is **ignored in file-based actions**. The loader overwrites it from the Action Manager's own enable/disable state on every load, so a value written here has no effect. Disable the action in Manage Actions instead.
 
 **Optional fields.** Model and behavior:
@@ -312,7 +312,7 @@ In the highlight menu, actions read "Explain (KOA)", "Translate (KOA)" and so on
 
 **Managing the menu:**
 
-- Settings → Menus & Buttons → Highlight Menu Actions lists every highlight action; ✓ and a number mark the ones in the menu, in order (up to 15 shown).
+- Settings → Menus & Buttons → Highlight Menu Actions lists every highlight action; ✓ and a number mark the ones in the menu, in order (up to 30 shown).
 - Tap an action to add it to the menu or remove it; hold one that is in the menu to move it up or down.
 - Default actions can be removed (they won't come back on their own).
 - Freeform chat is always available through the **Send** button of the input dialog.
@@ -333,7 +333,7 @@ The first KOAssistant button of the highlight menu shows your model: 🤖 and it
 
 ## Menus & Buttons
 
-**Settings → Menus & Buttons** controls where KOAssistant appears in KOReader's menus, panels and buttons. It gathers the placement toggles that used to sit under "KOReader Integration", "Highlight Settings", "Dictionary Settings", "Quick Settings" and "Quick Actions". Which *actions* appear on each surface is set in its action list here, or in the Action Manager (hold an action).
+**Settings → Menus & Buttons** controls where KOAssistant appears in KOReader's menus, panels and buttons. Which *actions* appear on each surface is set in its action list here, or in the Action Manager (hold an action).
 
 ### Highlight menu
 
@@ -341,7 +341,7 @@ The first KOAssistant button of the highlight menu shows your model: 🤖 and it
 - **Show quick actions** (on): the action buttons (Explain, Translate and the rest of Highlight Menu Actions, the model button included).
 - **Show Add to Notebook button** (off): an **Add to notebook** button that saves the selected text straight to this book's notebook.
 - **Show (KOA) on KOAssistant's buttons** (on): marks KOAssistant's buttons with "(KOA)", to tell them apart from KOReader's own.
-- **Highlight Menu Actions**: which actions appear, and their order (up to 15 shown). Defaults, in order: Switch model, Translate, Explain, Quick Explain, Summarize, Quick Define, Dictionary, Look up in X-Ray, Generate Image; the last two appear only when the book has an X-Ray, and when an image provider is configured. See [Highlight menu actions](#highlight-menu-actions).
+- **Highlight Menu Actions**: which actions appear, and their order (up to 30 shown). Defaults, in order: Switch model, Translate, Explain, Quick Explain, Summarize, Quick Define, Dictionary, Look up in X-Ray, Generate Image; the last two appear only when the book has an X-Ray, and when an image provider is configured. See [Highlight menu actions](#highlight-menu-actions).
 
 ### Dictionary popup
 

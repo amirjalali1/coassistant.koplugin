@@ -22,8 +22,9 @@ local function setupPaths()
         tests_dir .. "/lib/?.lua",
         package.path,
     }, ";")
+    return plugin_dir
 end
-setupPaths()
+local PLUGIN_DIR_FOR_SCHEMA = setupPaths()
 
 require("mock_koreader")
 
@@ -73,6 +74,12 @@ end
 function TestRunner:assertNil(value, message)
     if value ~= nil then
         error(string.format("%s: expected nil, got '%s'", message or "Assertion failed", tostring(value)), 2)
+    end
+end
+
+function TestRunner:assertTrue(value, message)
+    if not value then
+        error(string.format("%s: expected true", message or "Assertion failed"), 2)
     end
 end
 
@@ -870,6 +877,199 @@ local function runModelButtonTests()
     end)
 end
 
+-- =============================================================================
+-- custom_actions.lua that fails to load (B607)
+-- =============================================================================
+
+local function runCustomActionsFileTests()
+    print("\n--- custom_actions.lua that fails to load (B607) ---")
+    -- a scratch folder of this test's own, never the plugin's
+    local dir = os.tmpname()
+    os.remove(dir)
+    os.execute(string.format("mkdir -p %q", dir))
+    local path = dir .. "/custom_actions.lua"
+    local function writeFile(text)
+        local f = assert(io.open(path, "w"))
+        f:write(text)
+        f:close()
+    end
+    local function serviceOn(data)
+        local service = createService(data)
+        service.getCustomActionsPath = function() return path end
+        return service
+    end
+    local GOOD = 'return {\n'
+        .. '  { text = "Grammar Check", context = "both+general", prompt = "Check: {highlighted_text}" },\n'
+        .. '  { text = "Second", context = "general", prompt = "Say hello" },\n'
+        .. '}\n'
+    local BROKEN = 'return {\n  { text = "Grammar Check", context = "both+general" prompt = "x" },\n}\n'
+    local function has(list, id)
+        for _idx, v in ipairs(list) do
+            if v == id or (type(v) == "table" and v.id == id) then return true end
+        end
+        return false
+    end
+
+    TestRunner:test("a file that loads: its actions load, no error recorded", function()
+        writeFile(GOOD)
+        local service = serviceOn({})
+        TestRunner:assertNotNil(service:getAction("highlight", "config_1"), "config_1 loaded")
+        TestRunner:assertNotNil(service:getAction("general", "config_2"), "config_2 loaded")
+        TestRunner:assertNil(service:customActionsError(), "no error")
+    end)
+
+    TestRunner:test("a broken file: the error is recorded, named by the file and line alone", function()
+        writeFile(BROKEN)
+        local service = serviceOn({})
+        local err = service:customActionsError()
+        TestRunner:assertNotNil(err, "recorded")
+        TestRunner:assertEqual(err.kind, "load")
+        TestRunner:assertTrue(err.detail:find("^custom_actions%.lua:2:") ~= nil,
+            "the file name and the line, not the folder: " .. tostring(err.detail))
+        TestRunner:assertNil(service:getAction("highlight", "config_1"), "nothing of it loaded")
+    end)
+
+    TestRunner:test("a file that returns no list: recorded as such", function()
+        writeFile('local actions = {}\n')
+        TestRunner:assertEqual(serviceOn({}).customActionsError(serviceOn({})).kind, "nolist")
+    end)
+
+    TestRunner:test("while the file is broken every list keeps its placements; fixed, they are back", function()
+        local data = {
+            highlight_menu_actions = { "config_1", "no_such_action" },
+            dictionary_popup_actions = { "config_1" },
+            general_menu_actions = { "config_2" },
+            quick_actions_list = { "config_1" },
+            file_browser_actions = { { id = "config_1", text = "Grammar Check" } },
+            input_highlight_actions = { "config_1" },
+        }
+        writeFile(BROKEN)
+        local service = serviceOn(data)
+        TestRunner:assertTrue(has(service:getHighlightMenuActions(), "config_1"), "highlight menu kept")
+        TestRunner:assertTrue(not has(service:getHighlightMenuActions(), "no_such_action"), "a stale id still goes")
+        TestRunner:assertTrue(has(service:getDictionaryPopupActions(), "config_1"), "dictionary popup kept")
+        TestRunner:assertTrue(has(service:getGeneralMenuActions(), "config_2"), "general menu kept")
+        TestRunner:assertTrue(has(service:getQuickActions(), "config_1"), "quick actions kept")
+        TestRunner:assertTrue(has(service:getFileBrowserActions(), "config_1"), "file browser kept")
+        TestRunner:assertTrue(has(service:getInputActions("highlight"), "config_1"), "input list kept")
+        TestRunner:assertTrue(has(data.highlight_menu_actions, "config_1"), "the stored list too (the readers save what they return)")
+        -- the file fixed: its actions resolve and the placements hold
+        writeFile(GOOD)
+        service = serviceOn(data)
+        TestRunner:assertNil(service:customActionsError())
+        TestRunner:assertTrue(has(service:getHighlightMenuActions(), "config_1"), "highlight menu back")
+        TestRunner:assertTrue(has(service:getGeneralMenuActions(), "config_2"), "general menu back")
+        TestRunner:assertTrue(has(service:getFileBrowserActions(), "config_1"), "file browser back")
+        TestRunner:assertNotNil(service:getAction("highlight", "config_1"), "and the action is real again")
+    end)
+
+    TestRunner:test("a file that loads with fewer entries still prunes the id that is gone (the file is the truth)", function()
+        local data = { highlight_menu_actions = { "config_1", "config_2" } }
+        writeFile('return { { text = "Only one", context = "highlight", prompt = "x" } }\n')
+        local service = serviceOn(data)
+        local list = service:getHighlightMenuActions()
+        TestRunner:assertTrue(has(list, "config_1") and not has(list, "config_2"), table.concat(list, ","))
+    end)
+
+    os.remove(path)
+    os.remove(dir)
+end
+
+-- =============================================================================
+-- Delete takes the action's gesture entries with it (B609)
+-- =============================================================================
+
+local function runDeleteGesturesTests()
+    print("\n--- Delete takes the action's gesture entries with it (B609) ---")
+
+    TestRunner:test("deleteUserAction drops the gesture-menu keys of that id and returns them", function()
+        local data = {
+            custom_actions = {
+                { text = "First", context = "book", prompt = "a" },
+                { text = "Second", context = "general", prompt = "b" },
+            },
+            features = { gesture_actions = { ["book:ui_1"] = true, ["general:ui_2"] = true, ["book:summarize"] = true } },
+        }
+        local service = createService(data)
+        local removed, dropped = service:deleteUserAction(1)
+        TestRunner:assertEqual(removed.text, "First")
+        TestRunner:assertEqual(#dropped, 1)
+        TestRunner:assertEqual(dropped[1], "book:ui_1")
+        TestRunner:assertNil(data.features.gesture_actions["book:ui_1"], "its key is gone")
+        TestRunner:assertEqual(data.features.gesture_actions["general:ui_2"], true, "the other entries stay (the id shift is B576's)")
+        TestRunner:assertEqual(data.features.gesture_actions["book:summarize"], true)
+        TestRunner:assertEqual(#data.custom_actions, 1)
+        TestRunner:assertEqual(data.custom_actions[1].text, "Second")
+    end)
+
+    TestRunner:test("an action with no gesture entries: nothing dropped; an index with nothing: nothing happens", function()
+        local data = {
+            custom_actions = { { text = "First", context = "book", prompt = "a" } },
+            features = { gesture_actions = { ["book:summarize"] = true } },
+        }
+        local service = createService(data)
+        local removed, dropped = service:deleteUserAction(1)
+        TestRunner:assertEqual(removed.text, "First")
+        TestRunner:assertEqual(#dropped, 0)
+        TestRunner:assertNil((service:deleteUserAction(3)))
+    end)
+end
+
+local function runGestureDismissTests()
+    print("\n--- A removed gesture default stays removed (B581) ---")
+
+    TestRunner:test("a default removed from the gesture menu is not injected again; put back, it is", function()
+        local data = { features = { gesture_actions = {} } }
+        local service = createService(data)
+        local map = service:getGestureActions()
+        TestRunner:assertEqual(map["general:news_update"], true, "News Update is a default of the gesture menu")
+        -- the Action Details toggle: off
+        data.features.gesture_actions["general:news_update"] = nil
+        service:setGestureDismissed("general:news_update", true)
+        TestRunner:assertEqual(data["_dismissed_gesture_actions"][1], "general:news_update", "recorded")
+        map = service:getGestureActions()
+        TestRunner:assertNil(map["general:news_update"], "not injected again on the next read")
+        -- a fresh table (no saved gestures at all) honours it too
+        data.features.gesture_actions = nil
+        map = service:getGestureActions()
+        TestRunner:assertNil(map["general:news_update"], "nor when the defaults are seeded")
+        -- on again
+        service:setGestureDismissed("general:news_update", false)
+        TestRunner:assertEqual(#data["_dismissed_gesture_actions"], 0, "the record is cleared")
+        data.features.gesture_actions = {}
+        map = service:getGestureActions()
+        TestRunner:assertEqual(map["general:news_update"], true, "back as a default")
+    end)
+
+    TestRunner:test("the record holds one entry per key", function()
+        local data = { features = { gesture_actions = {} } }
+        local service = createService(data)
+        service:setGestureDismissed("general:news_update", true)
+        service:setGestureDismissed("general:news_update", true)
+        TestRunner:assertEqual(#data["_dismissed_gesture_actions"], 1)
+        service:setGestureDismissed(nil, true)
+        TestRunner:assertEqual(#data["_dismissed_gesture_actions"], 1, "nothing for a missing key")
+    end)
+end
+
+local function runBypassLabelTests()
+    print("\n--- The bypass rows name the reader's own actions (B610) ---")
+
+    TestRunner:test("bypassActionName: a built-in, one of the reader's own, a deleted one", function()
+        local data = { custom_actions = { { text = "My lookup", context = "highlight", prompt = "a" } } }
+        local service = createService(data)
+        local plugin = { action_service = service }
+        TestRunner:assertEqual(ActionService.bypassActionName(plugin, "highlight", "ui_1"), "My lookup")
+        local builtin = service:getAction("highlight", "quick_define")
+        TestRunner:assertEqual(ActionService.bypassActionName(plugin, "highlight", "quick_define"), builtin.text)
+        TestRunner:assertNil(ActionService.bypassActionName(plugin, "highlight", "ui_7"), "a deleted one: nil, the row says so")
+        TestRunner:assertNil(ActionService.bypassActionName(nil, "highlight", "ui_7"), "no plugin")
+        local schema = assert(io.open(PLUGIN_DIR_FOR_SCHEMA .. "/koassistant/ui/settings_schema.lua", "r")):read("*a")
+        local _, n = schema:gsub("bypassActionName%(plugin, \"highlight\", action_id%)", "")
+        TestRunner:assertEqual(n, 2, "both Bypass Action rows read it")
+    end)
+end
+
 local function runAll()
     print("\n=== Testing ActionService ===")
 
@@ -882,6 +1082,10 @@ local function runAll()
     runInputInjectionTests()
     runOrderingAndContextTests()
     runModelButtonTests()
+    runCustomActionsFileTests()
+    runDeleteGesturesTests()
+    runGestureDismissTests()
+    runBypassLabelTests()
 
     print(string.format("\n=== Results: %d passed, %d failed ===\n", TestRunner.passed, TestRunner.failed))
     return TestRunner.failed == 0

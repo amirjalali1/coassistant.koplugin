@@ -1773,7 +1773,7 @@ function XrayParser.searchCharacters(data, query)
     local characters = XrayParser.getCharacters(data)
     if not characters or #characters == 0 then return {} end
 
-    local query_lower = XrayParser.normalizeArabic(repairSeparators(query):lower())
+    local query_lower = XrayParser.normalizeArabic(XrayParser.foldCase(repairSeparators(query)))
     local results = {}
 
     local normalize = XrayParser.normalizeArabic
@@ -1781,7 +1781,7 @@ function XrayParser.searchCharacters(data, query)
         local match_field = nil
 
         -- Check name (highest priority)
-        if char.name and normalize(char.name:lower()):find(query_lower, 1, true) then
+        if char.name and normalize(XrayParser.foldCase(char.name)):find(query_lower, 1, true) then
             match_field = "name"
         end
 
@@ -1789,7 +1789,7 @@ function XrayParser.searchCharacters(data, query)
         local s_aliases = ensure_array(char.aliases)
         if not match_field and s_aliases then
             for _idx2, alias in ipairs(s_aliases) do
-                if normalize(alias:lower()):find(query_lower, 1, true) then
+                if normalize(XrayParser.foldCase(alias)):find(query_lower, 1, true) then
                     match_field = "alias"
                     break
                 end
@@ -1798,7 +1798,7 @@ function XrayParser.searchCharacters(data, query)
 
         -- Check description (lowest priority)
         if not match_field and char.description then
-            if normalize(char.description:lower()):find(query_lower, 1, true) then
+            if normalize(XrayParser.foldCase(char.description)):find(query_lower, 1, true) then
                 match_field = "description"
             end
         end
@@ -1842,7 +1842,7 @@ function XrayParser.searchAll(data, query, opts)
 
     local categories = XrayParser.getCategories(data)
     -- A pasted "_" spelling finds the dotted entry (#90)
-    local query_lower = XrayParser.normalizeArabic(repairSeparators(query):lower())
+    local query_lower = XrayParser.normalizeArabic(XrayParser.foldCase(repairSeparators(query)))
     local normalize = XrayParser.normalizeArabic
     -- Arabic: also try ال-stripped query so "النار" finds "نار" and vice versa
     local query_stripped = nil
@@ -1870,7 +1870,7 @@ function XrayParser.searchAll(data, query, opts)
                             match_field = "name"
                         end
                     else
-                        local n = normalize(name:lower())
+                        local n = normalize(XrayParser.foldCase(name))
                         if n:find(query_lower, 1, true)
                             or (query_stripped and n:find(query_stripped, 1, true)) then
                             match_field = "name"
@@ -1887,7 +1887,7 @@ function XrayParser.searchAll(data, query, opts)
                                 break
                             end
                         else
-                            local a = normalize(alias:lower())
+                            local a = normalize(XrayParser.foldCase(alias))
                             if a:find(query_lower, 1, true)
                                 or (query_stripped and a:find(query_stripped, 1, true)) then
                                 match_field = "alias"
@@ -1900,7 +1900,7 @@ function XrayParser.searchAll(data, query, opts)
                 if not match_field and not skip_description then
                     local desc = item.description or item.definition or item.significance or ""
                     if desc ~= "" then
-                        local d = normalize(desc:lower())
+                        local d = normalize(XrayParser.foldCase(desc))
                         if d:find(query_lower, 1, true)
                             or (query_stripped and d:find(query_stripped, 1, true)) then
                             match_field = "description"
@@ -1946,7 +1946,7 @@ function XrayParser.searchLedger(data, query, opts)
     local exact = opts and opts.exact
     if exact then skip_description = true end
     local normalize = XrayParser.normalizeArabic
-    local query_lower = normalize(repairSeparators(query):lower())
+    local query_lower = normalize(XrayParser.foldCase(repairSeparators(query)))
     local query_stripped = nil
     if XrayParser.containsArabic(query_lower) then
         local s = stripArabicArticle(query_lower)
@@ -1962,7 +1962,7 @@ function XrayParser.searchLedger(data, query, opts)
             local req, words = XrayParser.handleCaps(text, stub._caps)
             return not req or XrayParser.textCapsOk(query, req, words)
         end
-        local t = normalize(text:lower())
+        local t = normalize(XrayParser.foldCase(text))
         if t:find(query_lower, 1, true) then return true end
         return (query_stripped and t:find(query_stripped, 1, true)) and true or false
     end
@@ -2008,11 +2008,26 @@ function XrayParser.searchLedger(data, query, opts)
     return results
 end
 
+-- Typeset punctuation folded to the typed kind (B596): a book's curly
+-- apostrophe (U+2019, U+2018; U+02BC in some texts) is the model's straight
+-- one, its hyphen or non-breaking hyphen (U+2010, U+2011) the keyboard's.
+-- The same substitution runs in every normalization the matching reads
+-- (both match copies, the exact keys, the handles), so a span keeps its
+-- bytes on each side; KOReader's own search folds the same way
+-- (FOLD_APOSTROPHES, FOLD_HYPHENS).
+local function foldPunctuation(s)
+    return (s:gsub("\226\128[\152\153]", "'"):gsub("\202\188", "'"):gsub("\226\128[\144\145]", "-"))
+end
+XrayParser.foldPunctuation = foldPunctuation
+
 -- One normalization for handle-vs-selection equality: lower + Arabic
 -- normalize + whitespace collapse + trim (selections and JSON handles both
--- carry stray spacing).
+-- carry stray spacing), typeset apostrophes and hyphens as typed (B596).
 local function exactKey(s)
-    s = XrayParser.normalizeArabic(repairSeparators(s):lower()):gsub("\194\160", " "):gsub("%s+", " ")
+    -- (the case fold is XrayParser.foldCase, looked up late: it is set at
+    -- module load, below; "АННА" and "анна" route to "Анна", the sweep of
+    -- 2026-11-06)
+    s = XrayParser.normalizeArabic(XrayParser.foldCase(foldPunctuation(repairSeparators(s)))):gsub("\194\160", " "):gsub("%s+", " ")
     return s:match("^%s*(.-)%s*$") or s
 end
 
@@ -2321,14 +2336,22 @@ function XrayParser.findItemsInChapter(data, chapter_text)
     if not categories or #categories == 0 then return {} end
 
     local text_lower = XrayParser.matchNormalize(chapter_text)
-    local keep = XrayParser.matchNormalizeKeepCase(chapter_text)
+    local keep = XrayParser.alignedKeepCase(chapter_text, text_lower)
     local results = {}
 
     for _idx, cat in ipairs(categories) do
         if not TEXT_MATCH_EXCLUDED[cat.key] then
             for _idx2, item in ipairs(cat.items) do
-                local count = XrayParser.countItemOccurrences(item, text_lower,
-                    XrayParser.containingMatchHandles(data, item), keep)
+                -- the containing handles (the costly part) only for a name
+                -- the text holds at all: they only remove spans (the sweep
+                -- of 2026-11-06)
+                local count = XrayParser.countItemOccurrences(item, text_lower, nil, keep)
+                if count > 0 then
+                    local handles = XrayParser.containingMatchHandles(data, item)
+                    if handles then
+                        count = XrayParser.countItemOccurrences(item, text_lower, handles, keep)
+                    end
+                end
                 if count > 0 then
                     table.insert(results, {
                         item = item,
@@ -2360,12 +2383,17 @@ function XrayParser.findCharactersInChapter(data, chapter_text)
     if not characters or #characters == 0 then return {} end
 
     local text_lower = XrayParser.matchNormalize(chapter_text)
-    local keep = XrayParser.matchNormalizeKeepCase(chapter_text)
+    local keep = XrayParser.alignedKeepCase(chapter_text, text_lower)
     local results = {}
 
     for _idx, char in ipairs(characters) do
-        local best_count = XrayParser.countItemOccurrences(char, text_lower,
-            XrayParser.containingMatchHandles(data, char), keep)
+        local best_count = XrayParser.countItemOccurrences(char, text_lower, nil, keep)
+        if best_count > 0 then
+            local handles = XrayParser.containingMatchHandles(data, char)
+            if handles then
+                best_count = XrayParser.countItemOccurrences(char, text_lower, handles, keep)
+            end
+        end
         if best_count > 0 then
             table.insert(results, { item = char, count = best_count })
         end
@@ -2442,24 +2470,61 @@ local function isWordCharAt(text, pos, scan_back)
     if cp >= 0x00A0 and cp <= 0x00BF then return false end  -- Latin-1 symbols (guillemets, ©, etc.)
     if cp >= 0x2E00 and cp <= 0x2E7F then return false end  -- Supplemental Punctuation
     if cp >= 0x3000 and cp <= 0x303F then return false end  -- CJK Symbols and Punctuation
+    -- the dandas (Devanagari and the other Indic scripts) and the Hebrew
+    -- maqaf, paseq, sof pasuq, geresh and gershayim (the sweep of 2026-11-06)
+    if cp == 0x0964 or cp == 0x0965 then return false end
+    if cp == 0x05BE or cp == 0x05C0 or cp == 0x05C3 or cp == 0x05F3 or cp == 0x05F4 then return false end
 
     -- Everything else (accented letters, Cyrillic, Greek, etc.): word character
     return true
 end
 
---- Check if needle should skip word-boundary checking.
---- Returns true for scripts where byte-level boundary detection is unreliable:
---- - CJK/Thai (3+ byte UTF-8, leading byte >= 0xE0): no word-boundary spaces
---- - Arabic/Syriac (2-byte UTF-8, leading bytes 0xD6-0xDB): have spaces but
----   multi-byte punctuation (،؛؟) makes byte-level boundary check unreliable
---- Latin/Cyrillic/Greek (leading bytes 0xC0-0xD5) still use boundary checking.
+--- Check if needle should skip word-boundary checking: the scripts where a
+--- byte boundary is no word boundary, judged by code point (the sweep of
+--- 2026-11-06: every 3-byte script skipped it, so a Vietnamese, Devanagari
+--- or Hebrew name counted inside a longer word).
+--- - Arabic and Syriac: the Arabic branch's own prefix rule takes over
+--- - the scripts written without spaces between words: Thai, Lao, Tibetan,
+---   Myanmar, Khmer, Hangul, kana and CJK with their compatibility and
+---   fullwidth forms, and every 4-byte character (CJK extension B and on)
+--- Latin (Vietnamese included), Cyrillic, Greek, Armenian, Hebrew, Georgian
+--- and the Indic scripts keep the boundary check.
 --- @param str string Text to check
 --- @return boolean
 local function skipBoundaryCheck(str)
-    for i = 1, #str do
+    local i, n = 1, #str
+    while i <= n do
         local b = str:byte(i)
-        if b >= 0xE0 then return true end           -- CJK, Thai, etc.
-        if b >= 0xD6 and b <= 0xDB then return true end  -- Arabic, Syriac
+        if b < 0x80 then
+            i = i + 1
+        elseif b >= 0xF0 then
+            return true
+        elseif b >= 0xE0 then
+            local b2, b3 = str:byte(i + 1), str:byte(i + 2)
+            if not (b2 and b3) then return true end
+            local cp = (b - 0xE0) * 4096 + (b2 - 0x80) * 64 + (b3 - 0x80)
+            if (cp >= 0x0E00 and cp <= 0x0EFF)      -- Thai, Lao
+                or (cp >= 0x0F00 and cp <= 0x0FFF)  -- Tibetan
+                or (cp >= 0x1000 and cp <= 0x109F)  -- Myanmar
+                or (cp >= 0x1100 and cp <= 0x11FF)  -- Hangul jamo
+                or (cp >= 0x1780 and cp <= 0x17FF)  -- Khmer
+                or (cp >= 0x2E80 and cp <= 0x9FFF)  -- CJK radicals, kana, Hangul compatibility, CJK unified
+                or (cp >= 0xA960 and cp <= 0xA97F)  -- Hangul jamo extended A
+                or (cp >= 0xAC00 and cp <= 0xD7FF)  -- Hangul syllables, jamo extended B
+                or (cp >= 0xF900 and cp <= 0xFAFF)  -- CJK compatibility ideographs
+                or (cp >= 0xFF00 and cp <= 0xFFEF) then  -- halfwidth and fullwidth forms
+                return true
+            end
+            i = i + 3
+        elseif b >= 0xC0 then
+            local b2 = str:byte(i + 1)
+            if not b2 then return true end
+            local cp = (b - 0xC0) * 64 + (b2 - 0x80)
+            if cp >= 0x0600 and cp <= 0x074F then return true end  -- Arabic, Syriac
+            i = i + 2
+        else
+            i = i + 1  -- a stray continuation byte
+        end
     end
     return false
 end
@@ -2624,7 +2689,8 @@ end
 --- Normalize text for matching: page text, chapter text and names alike.
 --- Case folded, invisible format characters dropped (soft hyphen, zero-width
 --- space/joiners, direction marks, word joiner, BOM), Arabic skeleton, every
---- whitespace run (no-break space included) one space.
+--- whitespace run (no-break space included) one space, a typeset apostrophe
+--- or hyphen as the typed one (B596).
 --- @param s string
 --- @return string
 function XrayParser.matchNormalize(s)
@@ -2632,6 +2698,7 @@ function XrayParser.matchNormalize(s)
     s = foldCase(s)
     s = s:gsub("\194\173", ""):gsub("\226\128[\139-\143]", "")
         :gsub("\226\129\160", ""):gsub("\239\187\191", "")
+    s = foldPunctuation(s)
     s = arabicMatchSkeleton(s)
     return (s:gsub("\194\160", " "):gsub("%s+", " "))
 end
@@ -2642,9 +2709,10 @@ end
 -- of two words or more is free ("the Drowned" mid-sentence), all-caps text
 -- passes, and a word in a script without case counts as capitalized. The
 -- matcher finds a span in folded text; the capitals are read at the same
--- bytes of the text normalized WITHOUT the fold, and a span whose bytes do
--- not fold back to the match (a character the fold changed in length)
--- counts as capitalized: as before, never a mention lost.
+-- bytes of the text normalized WITHOUT the fold (alignedKeepCase: a
+-- character the fold changes in length takes its folded bytes, so the
+-- bytes after it still line up, B598), and a span whose bytes do not fold
+-- back to the match counts as capitalized: as before, never a mention lost.
 
 -- Composition only (the fold also composes, so decomposed accents keep
 -- their length on both sides); identity in unit tests
@@ -2684,11 +2752,70 @@ function XrayParser.matchNormalizeKeepCase(s)
     s = composeNFC(s)
     s = s:gsub("\194\173", ""):gsub("\226\128[\139-\143]", "")
         :gsub("\226\129\160", ""):gsub("\239\187\191", "")
+    s = foldPunctuation(s)
     s = arabicMatchSkeleton(s)
     return (s:gsub("\194\160", " "):gsub("%s+", " "))
 end
 
 XrayParser.foldCase = foldCase
+-- Seams for the marks' containment pass (koassistant/xray/xray_marks.lua)
+-- and its test: the word test and the scripts without word boundaries
+XrayParser._isWordCharAt = isWordCharAt
+XrayParser._skipBoundaryCheck = skipBoundaryCheck
+
+-- The start of the character at or after byte i (a continuation byte is
+-- skipped)
+local function charStart(s, i)
+    while i <= #s do
+        local b = s:byte(i)
+        if b < 0x80 or b >= 0xC0 then return i end
+        i = i + 1
+    end
+    return #s + 1
+end
+
+-- A run of non-ASCII text aligned to its fold: a piece whose fold keeps
+-- its length is copied; one that changes is split at the character nearest
+-- its middle, down to the one character, which takes its folded bytes
+-- (O(k log n) folds for k such characters in a run of n)
+local function alignRun(piece, out)
+    local folded = XrayParser.foldCase(piece)
+    if #folded == #piece then
+        out[#out + 1] = piece
+        return
+    end
+    local mid = charStart(piece, math.floor(#piece / 2) + 1)
+    if mid <= 1 or mid > #piece then
+        out[#out + 1] = folded
+        return
+    end
+    alignRun(piece:sub(1, mid - 1), out)
+    alignRun(piece:sub(mid), out)
+end
+
+--- matchNormalizeKeepCase aligned byte for byte to `norm`, the same text
+--- through matchNormalize: a character the fold changes in length (a
+--- ligature, a superscript, a full-width mark, a dotted capital I, a
+--- fraction) takes its folded bytes, so a span found in `norm` after it
+--- still reads its capitals at the right bytes (B598: one such character
+--- used to shift the copy for the rest of the page, and every later
+--- occurrence passed the capitals test as unreadable). The copy as it is
+--- when the lengths agree already, or when the rebuilt copy still differs
+--- (a fold that merges or splits characters).
+function XrayParser.alignedKeepCase(text, norm)
+    local keep = XrayParser.matchNormalizeKeepCase(text)
+    if type(norm) ~= "string" or #keep == #norm or not keep:find("[\128-\255]") then return keep end
+    local out, last = {}, 1
+    for s, e in keep:gmatch("()[\128-\255]+()") do
+        if s > last then out[#out + 1] = keep:sub(last, s - 1) end
+        alignRun(keep:sub(s, e - 1), out)
+        last = e
+    end
+    if last <= #keep then out[#out + 1] = keep:sub(last) end
+    local aligned = table.concat(out)
+    if #aligned == #norm then return aligned end
+    return keep
+end
 
 local function firstChar(word)
     local c = word:byte(1)
@@ -2808,10 +2935,14 @@ XrayParser.ABBREVIATIONS = {
     ie = true, eg = true, al = true, ph = true,
 }
 
--- The marks around a sentence start: what may open it (quotes, a bracket, a
--- dash, spaces) and what may close the sentence before it
-local OPENERS = { " ", "\"", "'", "(", "[", "\226\128\156", "\226\128\152", "\226\128\148", "\226\128\147" }
-local CLOSERS = { "\"", "'", ")", "]", "\226\128\157", "\226\128\153" }
+-- The marks around a sentence start: what may open it (quotes of every
+-- tradition, the guillemets both ways, the low German quotes, a bracket,
+-- the inverted Spanish marks, a dash, spaces) and what may close the
+-- sentence before it (B599)
+local OPENERS = { " ", "\"", "'", "(", "[", "\226\128\156", "\226\128\152", "\226\128\148", "\226\128\147",
+    "\194\171", "\194\187", "\226\128\185", "\226\128\186", "\226\128\158", "\226\128\154", "\194\191", "\194\161" }
+local CLOSERS = { "\"", "'", ")", "]", "\226\128\157", "\226\128\153",
+    "\194\187", "\194\171", "\226\128\186", "\226\128\185", "\226\128\156" }
 local function stripTail(s, marks)
     local changed = true
     while changed and s ~= "" do
@@ -2828,8 +2959,11 @@ end
 
 --- Whether a word starts a sentence, from the text before it in its
 --- paragraph: nothing but opening marks, or a sentence end before them
---- (. ! ? … : and their closing marks; a period after a listed
---- abbreviation or a single letter ends none).
+--- (. ! ? … : and their closing marks). A period after a listed
+--- abbreviation or a single letter may or may not end one ("No. 5", "the
+--- summer of No. 5. Summer came"): it counts as a start, which proves
+--- nothing about the capital after it (B599: read as mid-sentence, three
+--- "No. Summer" switched a name on).
 --- @param before string the paragraph's text before the word (matchNormalizeKeepCase)
 function XrayParser.startsSentence(before)
     if type(before) ~= "string" then return true end
@@ -2839,9 +2973,7 @@ function XrayParser.startsSentence(before)
     local last = before:sub(-1)
     if before:sub(-3) == "\226\128\166" or last == "!" or last == "?" or last == ":" then return true end
     if last ~= "." then return false end
-    local token = before:sub(1, -2):match("([%a]+)$")
-    if not token then return true end
-    return not (#token == 1 or XrayParser.ABBREVIATIONS[token:lower()])
+    return true
 end
 
 --- Whether a span is written in capitals: no lowercase letter and at least
@@ -2916,7 +3048,13 @@ function XrayParser.caseSearchRegex(text, required)
             if at_word_start then word = word + 1 end
             local exact = at_word_start and math.floor(req / 2 ^ (word - 1)) % 2 == 1
             local up, low = upperChar(ch), lowerChar(ch)
-            if exact or up == low then
+            if ch == "'" or ch == "-" then
+                -- the typed apostrophe or hyphen, or the book's typeset one
+                -- (B596: the plain search folds them itself, a regex does not)
+                out[#out + 1] = ch == "'"
+                    and ("['" .. regexAtom("\226\128\153") .. regexAtom("\226\128\152") .. regexAtom("\202\188") .. "]")
+                    or ("[-" .. regexAtom("\226\128\144") .. regexAtom("\226\128\145") .. "]")
+            elseif exact or up == low then
                 out[#out + 1] = regexAtom(ch)
             else
                 out[#out + 1] = "[" .. regexAtom(low) .. regexAtom(up) .. "]"
@@ -3071,6 +3209,36 @@ end
 --- variant for Arabic (query side only: a handle is never article-stripped).
 --- @param query string
 --- @return table keys (empty for an empty query)
+--- The results of a substring search (searchAll) whose entry IS the query by
+--- one of its names: the one exact rule (exactHandleHit, so a bracketed
+--- name answers to its name alone), a main name set to not matched giving
+--- no hit, a capitals-only name hit only with its capitals, as searchAll's
+--- own exact mode reads them (B601: the lookup's fast path compared the raw
+--- names and opened an entry from either).
+function XrayParser.exactLookupHits(results, query)
+    local out = {}
+    local qkeys = XrayParser.exactQueryKeys(query)
+    if #qkeys == 0 then return out end
+    for _idx, r in ipairs(results or {}) do
+        local item = type(r) == "table" and r.item
+        if type(item) == "table" then
+            local handles = { { XrayParser.getItemName(item, r.category_key), item._name_off } }
+            for _idx2, a in ipairs(ensure_array(item.aliases) or {}) do handles[#handles + 1] = { a } end
+            for _idx2, h in ipairs(handles) do
+                local name, off = h[1], h[2]
+                if type(name) == "string" and not off and XrayParser.exactHandleHit(name, qkeys) then
+                    local req, words = XrayParser.handleCaps(name, item._caps)
+                    if not req or XrayParser.textCapsOk(query, req, words) then
+                        out[#out + 1] = r
+                        break
+                    end
+                end
+            end
+        end
+    end
+    return out
+end
+
 function XrayParser.exactQueryKeys(query)
     if type(query) ~= "string" or query == "" then return {} end
     local q = exactKey(query)
@@ -3399,7 +3567,7 @@ function XrayParser.newPieceNormalizer(keep_case)
         else
             local folded = XrayParser.matchNormalize(text)
             if keep_case then
-                local kept = XrayParser.matchNormalizeKeepCase(text)
+                local kept = XrayParser.alignedKeepCase(text, folded)
                 if #kept == #folded and foldCase(kept) == folded then
                     folded = kept
                 else
@@ -3515,10 +3683,11 @@ function XrayParser.piecesForSpan(ranges, s, e)
 end
 
 --- Handle normalization shared by the cross-entity containment layer (B266):
---- lowercase, Arabic-folded, NBSP and whitespace runs collapsed, trimmed.
+--- lowercase, Arabic-folded, NBSP and whitespace runs collapsed, trimmed,
+--- typeset apostrophes and hyphens as typed (B596).
 function XrayParser.normalizeHandle(s)
     if type(s) ~= "string" then return "" end
-    local h = XrayParser.normalizeArabic(s:lower())
+    local h = XrayParser.normalizeArabic(foldPunctuation(XrayParser.foldCase(s)))
     h = h:gsub("\194\160", " "):gsub("%s+", " ")
     return h:match("^%s*(.-)%s*$") or ""
 end

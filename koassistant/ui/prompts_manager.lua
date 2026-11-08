@@ -212,6 +212,10 @@ function PromptsManager:setGestureEnabled(prompt, enabled)
     end
     features.gesture_actions = gesture_actions
     self.plugin.settings:saveSetting("features", features)
+    -- a removed default stays removed (B581)
+    if self.plugin.action_service and self.plugin.action_service.setGestureDismissed then
+        self.plugin.action_service:setGestureDismissed(key, not enabled)
+    end
     self.plugin.settings:flush()
 end
 
@@ -5739,10 +5743,40 @@ function PromptsManager:deletePrompt(prompt)
 
         for i = #custom_actions, 1, -1 do
             if custom_actions[i].text == prompt.text then
-                self.plugin.action_service:deleteUserAction(i)
-
+                local removed, dropped = self.plugin.action_service:deleteUserAction(i)
+                -- a bypass that pointed at it is cleared (B610): the fallback
+                -- would run KOReader's dictionary or menu with a one-line notice
+                if removed then
+                    local f = self.plugin.settings:readSetting("features") or {}
+                    local gone, cleared = "ui_" .. tostring(i), false
+                    for _idx, key in ipairs({ "dictionary_bypass_action", "highlight_bypass_action" }) do
+                        if f[key] == gone then
+                            f[key] = nil
+                            cleared = true
+                        end
+                    end
+                    if cleared then
+                        self.plugin.settings:saveSetting("features", f)
+                        self.plugin.settings:flush()
+                    end
+                end
+                -- Its gestures go with it (B609): the gesture-menu entries
+                -- (dropped above) and KOReader's own bindings to its dispatcher
+                -- ids, which would otherwise read "Unknown item"
+                local gestures = 0
+                if removed then
+                    local GesturePicker = require("koassistant.ui.gesture_picker")
+                    for _idx, key in ipairs(dropped or {}) do
+                        local context = key:match("^([^:]+):")
+                        if context then
+                            gestures = gestures + GesturePicker.forget(self.plugin,
+                                "koassistant_action_" .. context .. "_ui_" .. tostring(i))
+                        end
+                    end
+                end
                 UIManager:show(InfoMessage:new{
-                    text = _("Action deleted successfully"),
+                    text = gestures > 0 and _("Action deleted, with its gestures.")
+                        or _("Action deleted successfully"),
                 })
                 break
             end

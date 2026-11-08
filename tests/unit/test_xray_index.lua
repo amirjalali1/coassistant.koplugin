@@ -12,8 +12,9 @@ local function setupPaths()
     package.path = table.concat({
         plugin_dir .. "/?.lua", tests_dir .. "/?.lua", tests_dir .. "/lib/?.lua", package.path,
     }, ";")
+    return plugin_dir
 end
-setupPaths()
+local PLUGIN_DIR = setupPaths()
 require("mock_koreader")
 
 -- A private sidecar folder for the index file
@@ -733,12 +734,18 @@ TestRunner:test("the PDF hits and KOReader's search: the same capitals", functio
 end)
 
 print("  [Automatic capitals (B533 S3)]")
-TestRunner:test("startsSentence: a paragraph's start or after a sentence end; abbreviations end none", function()
+TestRunner:test("startsSentence: a paragraph's start or after a sentence end; an abbreviation's period may end one (B599)", function()
     for _idx, before in ipairs({ "", "  \226\128\156", "It rained. ", "Who came? ", "He said: ",
-            "Wait\226\128\166 ", "\"Go home.\" ", "(It rained.) " }) do
+            "Wait\226\128\166 ", "\"Go home.\" ", "(It rained.) ",
+            -- a period after an abbreviation or a single letter: counted as a
+            -- start, which proves nothing ("No. Summer" is no evidence either way)
+            "Mr. ", "J. ", "No. ", "i. ", "Jan. ", "Ed. ",
+            -- the guillemets both ways, the low German quotes, the inverted Spanish marks
+            "\194\171", "He said: \194\171", "\194\171Go home.\194\187 ", "\226\128\158", "\226\128\158Go home.\226\128\156 ",
+            "\194\191", "\194\161", "\226\128\185", "\226\128\185Go.\226\128\186 " }) do
         TestRunner:ok(XrayParser.startsSentence(before), "starts after: " .. before)
     end
-    for _idx, before in ipairs({ "past the ", "Mr. ", "J. ", "He met her, ", "a\226\128\148" }) do
+    for _idx, before in ipairs({ "past the ", "He met her, ", "a\226\128\148", "the No ", "no. 5 and the " }) do
         TestRunner:ok(not XrayParser.startsSentence(before), "mid-sentence after: " .. before)
     end
 end)
@@ -794,6 +801,34 @@ for _idx, item in ipairs(AUTO_DATA.characters) do
     for _f, f in ipairs(XrayParser.matchTermSet(item).all) do auto_forms[#auto_forms + 1] = f end
 end
 local AUTO_LAYOUT = { stamp = "A1", forms = XrayIndex.scan(auto_doc, auto_forms, 1, 4) }
+TestRunner:test("a name is judged on the layout that holds its forms, the newest first (B597)", function()
+    -- after a font change the new forms go into the layout in use only: the
+    -- newer layout holds The Drowned's forms, the older one everything else
+    local drowned, others = {}, {}
+    local drowned_forms = XrayParser.matchTermSet({ name = "The Drowned" }).all
+    local is_drowned = {}
+    for _idx, f in ipairs(drowned_forms) do is_drowned[f] = true end
+    for f, enc in pairs(AUTO_LAYOUT.forms) do
+        if is_drowned[f] then drowned[f] = enc else others[f] = enc end
+    end
+    local newer, older = { stamp = "A2", forms = drowned }, { stamp = "A1", forms = others }
+    local n_new, n_old = 0, 0
+    for _f in pairs(drowned) do n_new = n_new + 1 end
+    for _f in pairs(others) do n_old = n_old + 1 end
+    TestRunner:ok(n_old > n_new, "the older layout holds more forms")
+    TestRunner:eq(XrayIndex.layoutHolding({ newer, older }, drowned_forms), newer, "The Drowned: the newer layout")
+    TestRunner:eq(XrayIndex.layoutHolding({ newer, older }, XrayParser.matchTermSet({ name = "Summer" }).all), older, "Summer: the older")
+    TestRunner:eq(XrayIndex.layoutHolding(older, drowned_forms), nil, "one layout without the forms: nothing")
+    TestRunner:eq(XrayIndex.layoutHolding({ older }, { "nowhere" }), nil)
+    TestRunner:eq(XrayIndex.layoutHolding(AUTO_LAYOUT, drowned_forms), AUTO_LAYOUT, "a single layout as before")
+    local auto = XrayIndex.autoCaps({ newer, older }, AUTO_DATA)
+    TestRunner:ok(auto["the drowned"], "judged on the newer layout, switched")
+    TestRunner:eq(next(XrayIndex.autoCaps(older, AUTO_DATA)), nil, "the layout with the most forms alone would not judge it")
+    local src = assert(io.open(PLUGIN_DIR .. "/koassistant/artifacts/action_cache.lua", "r")):read("*a")
+    TestRunner:ok(src:find("XrayIndex.layoutHolding(judgedLayouts(document_path), set.all)", 1, true) ~= nil, "capsCounts reads the layout holding the name")
+    TestRunner:ok(src:find("XrayIndex.autoCaps(layouts, data, judged)", 1, true) ~= nil, "autoCaps passes every current layout")
+    TestRunner:ok(src:find("local function bestLayout", 1, true) == nil, "the most-forms pick is gone")
+end)
 TestRunner:test("capsEvidence: how the book writes a name, read from the index", function()
     local set = XrayParser.matchTermSet({ name = "The Drowned", _caps = { ["the drowned"] = true } })
     local p, l = XrayIndex.capsEvidence(AUTO_LAYOUT, set, nil)
@@ -919,6 +954,127 @@ TestRunner:test("autoCaps: the names this book writes both ways switch to capita
     marks_state = { entities = XrayParser.buildMarkEntities(data), spacing = 0, file = auto_doc.file }
     local after = markNames(XrayMarks._computeMarks(marks_state, { document = auto_doc }, 2, 2, "none"))["The Drowned"]
     TestRunner:eq(before .. " -> " .. after, "2 -> 1", "the underline leaves \"the drowned trees\"")
+end)
+
+TestRunner:suite("the sweep of 2026-11-06: the word boundary per script, the kept index pass, the hashed containment")
+
+TestRunner:test("a name of a script with word boundaries counts whole words only; CJK and Arabic as before", function()
+    local function count(name, text)
+        return #XrayParser._collectMatchSpans(XrayParser.matchNormalize(text), XrayParser.matchNormalize(name))
+    end
+    TestRunner:eq(count("Lệ", "Anh ra lệnh."), 0, "Vietnamese inside a word")
+    TestRunner:eq(count("Lệ", "Cô Lệ đến."), 1, "Vietnamese whole word")
+    TestRunner:eq(count("Hà", "Hàng"), 0, "a 2-byte-only Vietnamese name inside a word")
+    TestRunner:eq(count("राम", "वह आराम से"), 0, "Devanagari inside a word")
+    TestRunner:eq(count("राम", "राम आया"), 1, "Devanagari whole word")
+    TestRunner:eq(count("राम", "राम। आया"), 1, "the danda is no word character")
+    TestRunner:eq(count("דן", "גן עדן"), 0, "Hebrew inside a word")
+    TestRunner:eq(count("דן", "דן בא"), 1, "Hebrew whole word")
+    TestRunner:eq(count("דן", "בית־דן"), 1, "the maqaf is no word character")
+    TestRunner:eq(count("Ἀχιλλεύς", "XἈχιλλεύςY"), 0, "polytonic Greek inside a word")
+    TestRunner:eq(count("ნინო", "ნინოს"), 0, "Georgian inside a word")
+    TestRunner:eq(count("Ян", "Янтарь"), 0, "Cyrillic inside a word (as before)")
+    TestRunner:eq(count("Lea", "Leap"), 0, "Latin inside a word (as before)")
+    TestRunner:eq(count("東京", "私は東京に住む"), 1, "CJK: no boundary needed (as before)")
+    TestRunner:eq(count("สมชาย", "คุณสมชายมา"), 1, "Thai: no boundary needed")
+    TestRunner:eq(count("한국", "대한국민"), 1, "Hangul: no boundary needed")
+    TestRunner:eq(count("نار", "النار"), 1, "Arabic: the article prefix rule (as before)")
+    TestRunner:ok(XrayParser._skipBoundaryCheck("東京") and XrayParser._skipBoundaryCheck("نار"), "the seam")
+    TestRunner:ok(not XrayParser._skipBoundaryCheck("Lệ") and not XrayParser._skipBoundaryCheck("דן"), "the seam")
+end)
+
+TestRunner:test("the marks standing down keep the name index's pass; a close drops it", function()
+    local saved_in, saved_un = UIManager.scheduleIn, UIManager.unschedule
+    local scheduled = {}
+    UIManager.scheduleIn = function(_s, _d, fn) scheduled[fn] = true end
+    UIManager.unschedule = function(_s, fn) scheduled[fn] = nil end
+    local function n() local c = 0 for _ in pairs(scheduled) do c = c + 1 end return c end
+    local doc = { file = SIDECAR .. "/kept.epub", getPageXPointer = function() return "" end,
+        info = { number_of_pages = 300 }, getDocumentRenderingHash = function() return 1234 end,
+        getCurrentPage = function() return 1 end }
+    local ui = { document = doc, rolling = {}, view = { view_modules = {} } }
+    XrayIndex.stop(true)
+    local layout = XrayIndex.ready(ui, { "anna", "boris" })
+    TestRunner:eq(layout, nil, "nothing stored yet")
+    TestRunner:eq(n(), 1, "the pass is queued")
+    local plugin = { ui = ui, settings = { readSetting = function() return { xray_marking = false } end } }
+    XrayMarks.sync(plugin)
+    TestRunner:eq(n(), 1, "the marks off: the pass stays queued (Mentions reads it)")
+    XrayMarks.teardown(plugin)
+    TestRunner:eq(n(), 0, "a plain teardown (the book closes) drops it")
+    UIManager.scheduleIn, UIManager.unschedule = saved_in, saved_un
+end)
+
+TestRunner:test("the hashed containment pass gives the pairwise pass's answer", function()
+    local data = XrayParser.parse(require("json").encode({ type = "fiction", characters = {
+        { name = "Vivian Kubrick", aliases = { "Viv" }, description = "d" },
+        { name = "Kubrick", description = "d" },
+        { name = "Jean-Luc Picard", description = "d" },
+        { name = "Luc", description = "d" },
+        { name = "Jean-Luc", description = "d" },
+        { name = "O'Brien", description = "d" },
+        { name = "Miles O'Brien", description = "d" },
+        { name = "Brien", description = "d" },
+        { name = "Anna", description = "d" },
+        { name = "Anna Karenina", aliases = { "Karenina" }, description = "d" },
+        { name = "東京", description = "d" },
+        { name = "東京タワー", description = "d" },
+        { name = "نار", description = "d" },
+        { name = "النار الكبيرة", description = "d" },
+        { name = "Mr Kubrick", description = "d" },
+    } }))
+    local function build()
+        local ents = XrayParser.buildMarkEntities(data)
+        for _i, e in ipairs(ents) do e.longer, e.handles = nil, nil end
+        return ents
+    end
+    -- the pairwise pass as it was (the reference)
+    local function pairwise(ents)
+        for i, a in ipairs(ents) do
+            local longer, handles, seen_h
+            if a.set then
+                for j, b in ipairs(ents) do
+                    if i ~= j and b.set then
+                        local hit = false
+                        for _tb, tb in ipairs(b.set.all) do
+                            for _ta, ta in ipairs(a.set.minimal) do
+                                if #tb > #ta and tb:find(ta, 1, true)
+                                        and XrayParser.handleContainsWord(tb, ta) then
+                                    hit = true
+                                    seen_h = seen_h or {}
+                                    if not seen_h[tb] then
+                                        seen_h[tb] = true
+                                        handles = handles or {}
+                                        handles[#handles + 1] = tb
+                                    end
+                                    break
+                                end
+                            end
+                        end
+                        if hit then
+                            longer = longer or {}
+                            longer[#longer + 1] = j
+                        end
+                    end
+                end
+            end
+            if longer then table.sort(longer) end
+            if handles then table.sort(handles) end
+            a.longer, a.handles = longer, handles
+        end
+        return ents
+    end
+    local ref = pairwise(build())
+    local got = build()
+    XrayMarks._containment(got, XrayParser)
+    local function list(t) return t and table.concat(t, ",") or "-" end
+    local hits = 0
+    for i = 1, #ref do
+        TestRunner:eq(list(got[i].longer), list(ref[i].longer), "longer of " .. tostring(ref[i].name))
+        TestRunner:eq(list(got[i].handles), list(ref[i].handles), "handles of " .. tostring(ref[i].name))
+        if ref[i].longer then hits = hits + 1 end
+    end
+    TestRunner:ok(hits >= 6, "the fixture holds contained names (" .. hits .. ")")
 end)
 
 os.execute('rm -rf "' .. SIDECAR .. '"')

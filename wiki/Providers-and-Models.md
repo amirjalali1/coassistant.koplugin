@@ -1,10 +1,10 @@
 # Providers and Models
 
-KOAssistant works with 32 built-in AI providers and with any OpenAI-compatible service you add yourself. This page lists the providers and what each can do, what is free, how to use a subscription instead of API credits, how API keys work, and how to choose, add and rank models.
+KOAssistant works with 33 built-in AI providers and with any OpenAI-compatible service you add yourself. This page lists the providers and what each can do, what is free, how to use a subscription instead of API credits, how API keys work, and how to choose, add and rank models.
 
 ## Supported providers
 
-KOAssistant has **32 built-in providers**: a **curated set** the maintainer tests with real keys and automated probes, and a **community set** (marked `*` in the plugin and *Docs-based* below) implemented from provider documentation. You can add any number of custom OpenAI-compatible providers yourself ([Custom providers](#custom-providers)). OpenAI is listed twice: once for API keys, once for the ChatGPT-subscription login. The name in brackets is the provider's id, which `apikeys.lua` (for its key) and `custom_models.lua` use. Please test and give feedback: fixes are quickly implemented.
+KOAssistant has **33 built-in providers**: a **curated set** the maintainer tests with real keys and automated probes, and a **community set** (marked `*` in the plugin and *Docs-based* below) implemented from provider documentation. You can add any number of custom OpenAI-compatible providers yourself ([Custom providers](#custom-providers)). OpenAI is listed twice: once for API keys, once for the ChatGPT-subscription login. The name in brackets is the provider's id, which `apikeys.lua` (for its key) and `custom_models.lua` use. Please test and give feedback: fixes are quickly implemented.
 
 | Provider | Description | Status | Get API key |
 |----------|-------------|--------|-------------|
@@ -22,6 +22,7 @@ KOAssistant has **32 built-in providers**: a **curated set** the maintainer test
 | **xAI** (`xai`) | Grok models, up to 1M context | Tested | [console.x.ai](https://console.x.ai/) |
 | **OpenRouter** (`openrouter`) | Meta-provider, 500+ models ([Meta-providers](#meta-providers)) | Tested | [openrouter.ai](https://openrouter.ai/) |
 | **Requesty** (`requesty`) | OpenAI-compatible model router | Docs-based* | [requesty.ai](https://requesty.ai/) |
+| **Amazon Bedrock** (`bedrock`) | AWS-hosted models (Claude, Nova, Llama, Mistral, DeepSeek, Qwen and more) through the Converse API; a Bedrock API key, not an AWS access key, and a region setting under Provider Settings; answers arrive whole (no streaming yet); contributed in PR #113 | Docs-based* | [console.aws.amazon.com/bedrock](https://console.aws.amazon.com/bedrock/) |
 | **Cohere** (`cohere`) | Command models | Tested | [dashboard.cohere.com](https://dashboard.cohere.com/) |
 | **Qwen** (`qwen`) | Alibaba's Qwen models | Tested | [modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/) (international; the China console differs) |
 | **Kimi** (`kimi`) | Moonshot models | Tested | [platform.kimi.ai](https://platform.kimi.ai/) (international; platform.moonshot.cn for the China region setting) |
@@ -56,7 +57,7 @@ You can help promote a docs-based provider to tested:
 ## What each provider can do
 
 - **Web search:** Anthropic, Gemini, OpenAI, OpenAI Subscription, xAI, Perplexity, OpenRouter, Z.AI and Qwen. Other providers ignore the setting and answer without searching. How each one searches, and the effort dial: [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools).
-- **AI Book Tools** (experimental: the AI searches and reads the open book for grounded, page-referenced answers): Gemini, Anthropic, OpenAI (API or Subscription), OpenRouter, DeepSeek, Mistral, Groq, xAI, Fireworks, Qwen, Kimi, OpenCode Zen, OpenCode Go, A2Agent and Ollama (models whose server reports tool support). The community hosts Cerebras, MiniMax, DeepInfra, Novita AI, Hyperbolic, Nebius AI Studio, Chutes, Featherless and Vercel AI Gateway, and custom providers, can use them for a model once **Test provider...** has recorded that it calls tools, or `custom_models.lua` grants it. A per-chat **Tools** chip turns them on; the setting behind it (off by default) decides whether the chip starts on, globally or per book. See [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools).
+- **AI Book Tools** (experimental: the AI searches and reads the open book for grounded, page-referenced answers): Gemini, Anthropic, Amazon Bedrock (the probed ids: DeepSeek V3.2, the Nova family, Claude Sonnet 4.6, Mistral Large 3, gpt-oss-20b, Gemma 3 4B, MiniMax M2.1, Nemotron Nano 3), OpenAI (API or Subscription), OpenRouter, DeepSeek, Mistral, Groq, xAI, Fireworks, Qwen, Kimi, OpenCode Zen, OpenCode Go, A2Agent and Ollama (models whose server reports tool support). The community hosts Cerebras, MiniMax, DeepInfra, Novita AI, Hyperbolic, Nebius AI Studio, Chutes, Featherless and Vercel AI Gateway, and custom providers, can use them for a model once **Test provider...** has recorded that it calls tools, or `custom_models.lua` grants it. A per-chat **Tools** chip turns them on; the setting behind it (off by default) decides whether the chip starts on, globally or per book. See [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools).
 - **Image generation:** OpenAI, xAI, Gemini and OpenRouter. See [Image Generation](Image-Generation).
 - **Reasoning** depends on the model rather than the provider. The stance and the per-model settings are on [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools); the models that cannot turn it off are listed under [Provider quirks](#provider-quirks).
 
@@ -92,7 +93,7 @@ If you already pay for an AI subscription, you may be able to use it in KOAssist
 
 This is an unofficial integration: KOAssistant identifies itself honestly, and it may stop working if OpenAI changes the Codex service. Free-account limits are not documented, so expect them to be modest.
 
-- **Models.** The list holds `gpt-5.6-terra` (the default), `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-luna`, `gpt-6-sol` and `gpt-5.6-luna` (the GPT-6 models since v0.24.0). Which of them answer depends on your ChatGPT plan. Every plan, free accounts included, serves `gpt-5.6-terra` and the Luna models (checked October 2026). The Sol and Astra models need a paid plan (OpenAI lists `gpt-6-sol` and `gpt-6.1-sol` for Plus and up). On a free account a Sol or Astra request is refused, and the error says that your plan does not include the model and which models every plan serves.
+- **Models.** The list holds `gpt-5.6-terra` (the default), `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-luna`, `gpt-6-sol` and `gpt-5.6-luna`. Which of them answer depends on your ChatGPT plan. Every plan, free accounts included, serves `gpt-5.6-terra` and the Luna models (checked October 2026). The Sol and Astra models need a paid plan (OpenAI lists `gpt-6-sol` and `gpt-6.1-sol` for Plus and up). On a free account a Sol or Astra request is refused, and the error says that your plan does not include the model and which models every plan serves.
 - **Speed tiers.** Fast and fastest: `gpt-6-luna`, which every plan serves (the previous fastest pick, `gpt-5.4-mini`, was retired from the Codex backend on August 31, so that tier had been refused since). Standard: `gpt-5.6-terra`. Flagship: `gpt-6.1-sol`, which needs a paid plan. Frontier: `gpt-6-astra`, opt-in as everywhere, also paid.
 - **Retired models.** The GPT-5.4 models (gone from Codex on 2026-08-31) and `gpt-5.5` (OpenAI's retirement date for it on Codex was October 14) left the list. A saved pick of one of them moves to a served model with a notice: `gpt-5.4` and `gpt-5.5` to `gpt-5.6-terra`, `gpt-5.4-mini` and `gpt-5.4-nano` to `gpt-6-luna`.
 - The subscription has no model list to fetch and no **Test provider...**; check it with **Settings → Advanced → Test Connection**.
@@ -117,7 +118,7 @@ The credits arrive each billing month, are spent before any credits you bought, 
 
 ## Choosing a provider and model
 
-**Settings → Model** is one row for both: it reads "Model: claude-sonnet-5-5 (Anthropic)", or whatever you use. Tap it for the provider and model menu (32 built-in providers plus your custom ones). The Provider and Model buttons of the Quick Settings panel open shorter versions of the same lists ([Setup, Gestures and Panels](Setup-Gestures-and-Panels)).
+**Settings → Model** is one row for both: it reads "Model: claude-sonnet-5-5 (Anthropic)", or whatever you use. Tap it for the provider and model menu (33 built-in providers plus your custom ones). The Provider and Model buttons of the Quick Settings panel open shorter versions of the same lists ([Setup, Gestures and Panels](Setup-Gestures-and-Panels)).
 
 ### The provider list
 
@@ -231,11 +232,11 @@ Some providers can't ship as presets because signup or auth is restricted. **Sil
 
 ## Fetching and testing models
 
-Most built-in providers ship a full model list. The community hosts (Cerebras, MiniMax, DeepInfra, Novita AI, Hyperbolic, Nebius AI Studio, Chutes, Featherless and Vercel AI Gateway) ship only a tiny *seed* list ([Current default models](#current-default-models)). Two rows of a provider's model menu fill the gap; pick the provider in **Settings → Model** and add its key in **Settings → API Keys & Auth** first.
+Most built-in providers ship a full model list. The community hosts (Cerebras, MiniMax, DeepInfra, Novita AI, Hyperbolic, Nebius AI Studio, Chutes, Featherless, Vercel AI Gateway and Amazon Bedrock) ship only a *seed* list ([Current default models](#current-default-models)). Two rows of a provider's model menu fill the gap; pick the provider in **Settings → Model** and add its key in **Settings → API Keys & Auth** first.
 
 - **Fetch models from provider...** pulls the provider's live model list into a picker. Tap a model to add it to your custom models (✓ marks the ones you already have). **Filter models...** narrows a long list (the picker shows the first 30), and **Add all (N)** appears when 20 or fewer are listed. Every provider has it except the OpenAI Subscription, which has no model list, and Ollama, whose menu already lists the installed models (**Refresh installed models**). Gemini needs a key to list its models.
 - **Test provider...** runs a quick capability check on the provider's current model: five small requests for Reachability, Streaming (SSE), Tool calling, Forced tool use (the search phase of AI Book Tools) and the Reasoning effort parameter. Each request is built the way a real one is (route, region, thinking off for the tool steps), and a failed step shows the provider's own explanation. Reachability also checks that KOAssistant can read the answer: a host that answers in another shape fails the step with the reason (a real request would fail too), the reply is shown when there is one, and a model that reasons first may answer the 16-token probe without text, which passes. When tool calling or the reasoning parameter passes, **Record capabilities for this model** saves the result, which makes features like AI Book Tools work where the model supports them.
-- **Test provider...** needs the OpenAI-style chat format, so Anthropic, Gemini, Cohere, Ollama, Perplexity and the OpenAI Subscription don't have it. For those, select the provider and use **Settings → Advanced → Test Connection**, which sends one short message to your current provider and model, on the endpoint you use (a custom endpoint from `configuration.lua`, the Ollama server picked in the menu, your Z.AI, Qwen or Kimi region), and keeps its result on screen until you tap it. Every custom provider has the test (hold it: **Test this provider...**).
+- **Test provider...** needs the OpenAI-style chat format, so Anthropic, Gemini, Cohere, Ollama, Perplexity, Amazon Bedrock and the OpenAI Subscription don't have it. For those, select the provider and use **Settings → Advanced → Test Connection**, which sends one short message to your current provider and model, on the endpoint you use (a custom endpoint from `configuration.lua`, the Ollama server picked in the menu, your Z.AI, Qwen or Kimi region, your Bedrock region), and keeps its result on screen until you tap it. Every custom provider has the test (hold it: **Test this provider...**).
 
 Two catalogs list more than they serve: prefer NVIDIA's listed models over ids fetched from it, and on OpenCode the GPT, Claude and Gemini ids fail (they use other endpoints).
 
@@ -279,25 +280,25 @@ The first model in each provider's list is its default. These tables are generat
 | Provider | Default | Also listed |
 |----------|---------|-------------|
 | **Anthropic** | `claude-sonnet-5-5` | `claude-opus-5-5`, `claude-fable-5-1`, `claude-haiku-5-5`, `claude-sonnet-5`, `claude-opus-5`, `claude-fable-5` |
-| **OpenAI** | `gpt-5.6-terra` | `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-luna`, `gpt-6-sol`, `gpt-5.6-luna` |
+| **OpenAI** | `gpt-6.1-terra` | `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-luna`, `gpt-5.6-terra`, `gpt-6-sol`, `gpt-5.6-luna` |
 | **OpenAI Subscription** | `gpt-5.6-terra` | `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-luna`, `gpt-6-sol`, `gpt-5.6-luna` |
 | **DeepSeek** | `deepseek-flash` | `deepseek-v4-pro` |
 | **Gemini** | `gemini-3.8-flash` | `gemini-4-argon`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite` |
 | **Groq** | `openai/gpt-oss-120b` | `openai/gpt-oss-20b`, `qwen/qwen3.8-27b` |
-| **Mistral** | `mistral-large-latest` | `mistral-medium-latest`, `mistral-small-latest`, `magistral-medium-latest`, `magistral-small-latest`, `ministral-14b-latest`, `ministral-8b-latest`, `ministral-3b-latest`, `codestral-latest` |
+| **Mistral** | `mistral-large-4` | `mistral-large-latest`, `mistral-medium-latest`, `mistral-small-latest`, `magistral-medium-latest`, `magistral-small-latest`, `ministral-14b-latest`, `ministral-8b-latest`, `ministral-3b-latest` and 1 more |
 | **xAI** | `grok-4.7` | `grok-4.6`, `grok-4.5`, `grok-4.3`, `grok-4.20-0309-non-reasoning`, `grok-4.20-0309-reasoning`, `grok-build-0.1` |
-| **OpenRouter** | `anthropic/claude-sonnet-5.5` | `anthropic/claude-opus-5.5`, `anthropic/claude-fable-5.1`, `anthropic/claude-haiku-5.5`, `anthropic/claude-sonnet-5`, `anthropic/claude-opus-5`, `anthropic/claude-fable-5`, `openai/gpt-5.6-terra`, `openai/gpt-6.1-sol` and 27 more |
-| **Perplexity** | `perplexity/sonar` | `openai/gpt-6-luna`, `openai/gpt-6-sol`, `openai/gpt-6.1-sol`, `anthropic/claude-sonnet-5-5`, `google/gemini-3.8-flash`, `xai/grok-4.7` |
+| **OpenRouter** | `anthropic/claude-sonnet-5.5` | `anthropic/claude-opus-5.5`, `anthropic/claude-fable-5.1`, `anthropic/claude-haiku-5.5`, `anthropic/claude-sonnet-5`, `anthropic/claude-opus-5`, `anthropic/claude-fable-5`, `openai/gpt-6.1-terra`, `openai/gpt-5.6-terra` and 31 more |
+| **Perplexity** | `perplexity/sonar` | `openai/gpt-6-luna`, `openai/gpt-6-sol`, `openai/gpt-6.1-sol`, `openai/gpt-6.1-terra`, `anthropic/claude-sonnet-5-5`, `anthropic/claude-haiku-5-5`, `google/gemini-3.8-flash`, `google/gemini-4-argon` and 1 more |
 | **Z.AI** | `glm-5.2` | `glm-5.3`, `glm-5.3-flash`, `glm-5.3-flashx`, `glm-5.1`, `glm-5`, `glm-5-turbo`, `glm-4.7`, `glm-4.7-flash` |
 | **Cohere** | `command-a-plus-05-2026` | `command-a-reasoning-08-2025`, `command-r7b-12-2024` |
-| **Kimi** | `kimi-k2.6` | `kimi-k3`, `kimi-k2.6-thinking`, `kimi-k2-turbo-preview` |
-| **Qwen** | `qwen3.8-max` | `qwen3.8-flash`, `qwen3.5-plus`, `qwen3.5-flash` |
+| **Kimi** | `kimi-k3` | `kimi-k3.1-pro`, `kimi-k3.1-pro-highspeed`, `kimi-k2.6` |
+| **Qwen** | `qwen3.8-max` | `qwen3.8-flash`, `qwen3.5-plus`, `qwen3.5-flash`, `deepseek-v4.1-flash-1017` |
 | **Ollama** | `llama4` | `llama3.3`, `llama3.3:70b`, `llama3.2`, `llama3.2:3b`, `qwen3.5`, `qwen3`, `qwen3:8b`, `qwen3:32b` and 12 more |
-| **Fireworks** | `accounts/fireworks/models/gpt-oss-120b` | `accounts/fireworks/models/glm-5p3`, `accounts/fireworks/models/glm-5p3-flash`, `accounts/fireworks/models/kimi-k3`, `accounts/fireworks/models/deepseek-v4p1-flash`, `accounts/fireworks/models/minimax-m3`, `accounts/fireworks/models/qwen3p8-max` |
-| **NVIDIA** | `nvidia/nemotron-3.5-super-vl-120b-a12b` | `nvidia/nemotron-3-ultra-550b-a55b`, `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`, `openai/gpt-oss-20b` |
-| **OpenCode Zen** | `deepseek-v4.1-flash` | `deepseek-v4-pro`, `glm-5.3-flash`, `glm-5.3`, `kimi-k3`, `qwen3.8-flash`, `minimax-m3`, `qwen3.6-plus` |
-| **OpenCode Go** | `kimi-k3` | `hy4-preview`, `longcat-2.0`, `minimax-m3`, `glm-5.3-flash`, `glm-5.3`, `glm-5.2`, `mimo-v2.5-pro`, `mimo-v2.5` and 8 more |
-| **A2Agent** | `deepseek-v4-flash` | `deepseek-v4-pro`, `deepseek-v4.1-flash`, `glm-5.3`, `glm-5.3-flash`, `kimi-k3`, `qwen3.8-max`, `qwen3.8-flash`, `MiniMax-M3` |
+| **Fireworks** | `accounts/fireworks/models/deepseek-v4p1-flash` | `accounts/fireworks/models/glm-5p3`, `accounts/fireworks/models/glm-5p3-flash`, `accounts/fireworks/models/kimi-k3p1-pro`, `accounts/fireworks/models/kimi-k3`, `accounts/fireworks/models/minimax-m3p1-flash`, `accounts/fireworks/models/minimax-m3`, `accounts/fireworks/models/qwen3p8-max` |
+| **NVIDIA** | `nvidia/nemotron-3.5-super-vl-120b-a12b` | `nvidia/nemotron-3-ultra-550b-a55b`, `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`, `openai/gpt-oss-20b`, `stepfun-ai/step-5-preview`, `nvidia/nemotron-3.5-bolt-e4b` |
+| **OpenCode Zen** | `deepseek-v4.1-flash` | `deepseek-v4-pro`, `glm-5.3-flash`, `glm-5.3`, `kimi-k3`, `qwen3.8-flash`, `minimax-m3`, `qwen3.6-plus`, `mistral-large-4` |
+| **OpenCode Go** | `kimi-k3` | `hy4-preview`, `longcat-2.0`, `minimax-m3`, `glm-5.3-flash`, `glm-5.3`, `glm-5.2`, `mimo-v2.6-pro`, `mimo-v2.6-flash` and 8 more |
+| **A2Agent** | `DeepSeek-V4.1-Flash-1017` | `deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-v4.1-flash`, `glm-5.3`, `glm-5.3-flash`, `kimi-k3`, `qwen3.8-max`, `qwen3.8-flash` and 2 more |
 <!-- /generated: defaults -->
 
 A few of these ids come with conditions:
@@ -313,8 +314,8 @@ The community hosts ship short built-in lists (the first id is the default). Som
 <!-- generated: community -->
 | Provider | Built-in list |
 |----------|---------------|
-| **Together** | `deepseek-ai/DeepSeek-V4-Pro-0813`, `deepseek-ai/DeepSeek-V4-Flash-0731`, `meta-llama/Llama-3.3-70B-Instruct-Turbo`, `moonshotai/Kimi-K2.6`, `zai-org/GLM-5.2` |
-| **SambaNova** | `gpt-oss-120b`, `DeepSeek-V3.1`, `DeepSeek-V3.2`, `Meta-Llama-3.3-70B-Instruct`, `MiniMax-M3`, `gemma-4-31B-it` |
+| **Together** | `deepseek-ai/DeepSeek-V4-Pro-0813`, `deepseek-ai/DeepSeek-V4.1-Flash`, `meta-llama/Llama-3.3-70B-Instruct-Turbo`, `moonshotai/Kimi-K2.6`, `zai-org/GLM-5.2` |
+| **SambaNova** | `gpt-oss-120b`, `Meta-Llama-3.3-70B-Instruct`, `MiniMax-M3.1-Flash`, `gemma-4-31B-it` |
 | **Requesty** | `openai/gpt-4o-mini`, `openai/gpt-5.5`, `openai/gpt-5.4`, `anthropic/claude-sonnet-5-5`, `anthropic/claude-opus-5-5`, `anthropic/claude-fable-5.1`, `anthropic/claude-sonnet-5`, `anthropic/claude-opus-5` and 6 more |
 | **Doubao** | `doubao-seed-2.0-pro-32k`, `doubao-seed-2.0-pro-256k`, `doubao-seed-2.0-lite`, `doubao-seed-2.0-code` |
 | **Cerebras** | `gpt-oss-120b`, `gemma-4-31b` |
@@ -326,6 +327,7 @@ The community hosts ship short built-in lists (the first id is the default). Som
 | **Chutes** | `deepseek-ai/DeepSeek-V4-Flash-0731-TEE` |
 | **Featherless** | `Qwen/Qwen3-32B` |
 | **Vercel AI Gateway** | `openai/gpt-5.5`, `anthropic/claude-sonnet-5` |
+| **Amazon Bedrock** | `deepseek.v3.2`, `openai.gpt-oss-120b-1:0`, `openai.gpt-oss-20b-1:0`, `amazon.nova-pro-v1:0`, `amazon.nova-2-lite-v1:0`, `amazon.nova-micro-v1:0`, `global.anthropic.claude-sonnet-5`, `global.anthropic.claude-sonnet-4-6` and 11 more |
 <!-- /generated: community -->
 
 > **Note:** OpenRouter, Requesty, Together, Fireworks and SambaNova use provider-prefixed or vendor-specific model IDs (`anthropic/claude-sonnet-5` on OpenRouter, `deepseek-ai/DeepSeek-V4-Pro-0813` on Together); see the provider's own catalog for exact strings, or use **Fetch models from provider...**. The routers spell the same model differently: `anthropic/claude-sonnet-5.5` and `x-ai/grok-4.3` on OpenRouter, `anthropic/claude-sonnet-5-5` and `xai/grok-4.3` on Requesty. Fireworks ids live under `accounts/fireworks/models/` and write a version's dots as "p" (`glm-5p3` is GLM-5.3).
@@ -370,26 +372,26 @@ The built-in picks, generated from the plugin's tier table when the page is publ
 | Provider | Frontier | Flagship | Standard | Fast | Ultrafast |
 |----------|----------|----------|----------|------|-----------|
 | **Anthropic** | `claude-fable-5-1` | `claude-opus-5-5` | `claude-sonnet-5-5` | `claude-haiku-5-5` | `claude-haiku-5-5` |
-| **OpenAI** | `gpt-6-astra` | `gpt-6.1-sol` | `gpt-5.6-terra` | `gpt-6-luna` | `gpt-6-luna` |
+| **OpenAI** | `gpt-6-astra` | `gpt-6.1-sol` | `gpt-6.1-terra` | `gpt-6-luna` | `gpt-6-luna` |
 | **OpenAI Subscription** | `gpt-6-astra` | `gpt-6.1-sol` | `gpt-5.6-terra` | `gpt-6-luna` | `gpt-6-luna` |
 | **DeepSeek** |  | `deepseek-v4-pro` | `deepseek-flash` | `deepseek-flash` | `deepseek-flash` |
 | **Gemini** | `gemini-4-argon` | `gemini-3.8-flash` | `gemini-3.8-flash` | `gemini-3.5-flash-lite` | `gemini-3.5-flash-lite` |
 | **Groq** |  | `openai/gpt-oss-120b` | `openai/gpt-oss-120b` | `openai/gpt-oss-20b` | `openai/gpt-oss-20b` |
-| **Mistral** |  | `mistral-large-latest` | `mistral-medium-latest` | `ministral-14b-latest` | `ministral-3b-latest` |
+| **Mistral** |  | `mistral-large-4` | `mistral-large-4` | `ministral-14b-latest` | `ministral-3b-latest` |
 | **xAI** |  | `grok-4.7` | `grok-4.20-0309-non-reasoning` | `grok-4.20-0309-non-reasoning` | `grok-4.20-0309-non-reasoning` |
 | **Z.AI** |  | `glm-5.3` | `glm-5` | `glm-5-turbo` | `glm-4.7-flash` |
 | **Cohere** |  | `command-a-plus-05-2026` | `command-a-plus-05-2026` | `command-r7b-12-2024` | `command-r7b-12-2024` |
-| **Kimi** |  | `kimi-k2.6` | `kimi-k2.6` | `kimi-k2.6` | `kimi-k2.6` |
+| **Kimi** |  | `kimi-k3.1-pro` | `kimi-k3` | `kimi-k3` | `kimi-k3` |
 | **Qwen** |  | `qwen3.8-max` | `qwen3.5-plus` | `qwen3.5-flash` | `qwen3.5-flash` |
 | **Ollama** |  | `llama4` | `llama3.3` | `llama3.2:3b` | `tinyllama` |
-| **Fireworks** |  | `accounts/fireworks/models/glm-5p3` | `accounts/fireworks/models/gpt-oss-120b` | `accounts/fireworks/models/gpt-oss-120b` | `accounts/fireworks/models/deepseek-v4p1-flash` |
+| **Fireworks** |  | `accounts/fireworks/models/glm-5p3` | `accounts/fireworks/models/deepseek-v4p1-flash` | `accounts/fireworks/models/deepseek-v4p1-flash` | `accounts/fireworks/models/deepseek-v4p1-flash` |
 | **NVIDIA** |  | `nvidia/nemotron-3-ultra-550b-a55b` | `nvidia/nemotron-3.5-super-vl-120b-a12b` | `openai/gpt-oss-20b` | `openai/gpt-oss-20b` |
 | **Together** |  | `deepseek-ai/DeepSeek-V4-Pro-0813` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` |
 | **SambaNova** |  | `gpt-oss-120b` | `Meta-Llama-3.3-70B-Instruct` | `Meta-Llama-3.3-70B-Instruct` | `Meta-Llama-3.3-70B-Instruct` |
 | **Doubao** |  | `doubao-seed-2.0-pro-32k` | `doubao-seed-2.0-pro-32k` | `doubao-seed-2.0-lite` | `doubao-seed-2.0-lite` |
 <!-- /generated: tiers -->
 
-- **Claude Haiku 5.5** (since v0.24.0, replacing Haiku 4.5) is Anthropic's fast and fastest model, so Translate, Quick Define and Quick Explain run on it when they use the faster model, still with reasoning off. It reads up to 1M tokens (Haiku 4.5: 200K) and costs $0.10 / $0.50 per million tokens, five times that for a request whose prompt passes 100K tokens. It also replaced Haiku 4.5 in the OpenRouter and Requesty lists.
+- **Claude Haiku 5.5** is Anthropic's fast and fastest model, so Translate, Quick Define and Quick Explain run on it when they use the faster model, still with reasoning off. It reads up to 1M tokens (Haiku 4.5: 200K) and costs $0.10 / $0.50 per million tokens, five times that for a request whose prompt passes 100K tokens.
 - **`gpt-6-luna`**, the cheapest OpenAI model, is the fast and fastest pick of OpenAI (it replaced GPT-5.6 Luna and GPT-5.4 nano) and of the OpenAI Subscription.
 - The Anthropic, OpenAI and OpenAI Subscription model lists read in this order: the default, then the flagship, frontier and fast picks, then one previous version per line.
 - Ollama's picks are model names your server may not have installed; point them at installed models with **Model tiers...**.
@@ -403,6 +405,7 @@ The built-in picks, generated from the plugin's tier table when the page is publ
 - **Gemini Content Filter:** Relaxed for books (the default) or Google default. Google's default filter can block answers about violent or sexual passages in books; the reply then arrives empty, with the reason named. Relaxed turns the four adjustable filter categories off for KOAssistant's requests; Google default sends no filter setting.
 - **Qwen Region:** International (Singapore, the default), China (Beijing) or US (Virginia). Keys are region-specific and not interchangeable.
 - **Kimi Region:** International (`api.moonshot.ai`, the default) or China (`api.moonshot.cn`). Keys are not interchangeable between the two platforms.
+- **Amazon Bedrock Region:** the AWS region whose Bedrock runtime answers (US East (N. Virginia) by default, 13 others). A key works in the region it was made for, and a model must be enabled there. A `base_url` in `configuration.lua` overrides it.
 
 Set the Qwen and Kimi regions to the platform that issued your key; Fetch models and Test provider follow the region too.
 
@@ -410,6 +413,7 @@ Set the Qwen and Kimi regions to the platform that issued your key; Fetch models
 
 What KOAssistant does differently per provider, mostly on its own. When the current model accepts only one temperature or none, **Settings → Advanced → Temperature** says so ("fixed by this model" or "ignored by this model").
 
+- **Amazon Bedrock:** the Converse API with a Bedrock API key as the bearer (not an AWS access key); answers arrive whole (no streaming yet); the reasoning settings do not reach it; consecutive messages of one role are folded into one turn, which Converse requires; Fetch models reads the control plane of the region set.
 - **Anthropic:** temperature capped at 1.0; adaptive or extended thinking forces it to exactly 1.0. Claude Opus 4.7, 4.8, 5 and 5.5, Sonnet 5 and 5.5, Fable 5 and 5.1 and Haiku 5.5 reject all sampling parameters (temperature is stripped entirely). Sonnet 5.5 cannot switch thinking fully off, so Off sends Anthropic's lowest setting, which does not think on ordinary questions. Sonnet 5.5, Opus 5.5 and Fable 5.1 refuse a forced tool call, so AI Book Tools asks them without the force (here and through OpenRouter). Prompt caching is automatic and gives up to 90% savings on repeated context ([Artifacts and Caching](Artifacts-and-Caching#prompt-caching)).
 - **OpenAI:** GPT-5.x and GPT-6 models accept only temperature 1.0; newer models use `max_completion_tokens`. **Native web search** rides the Responses API (`/v1/responses`) for capable models; Chat Completions has no native search, so a web-search request on an unsupported model simply runs without it. GPT-6 models reason by default.
 - **Gemini:** uses the "model" role instead of "assistant"; thinking uses the camelCase REST format: 2.5 models use `thinkingBudget` (0 = off, -1 = dynamic, 128-24576 = specific), 3.x models and Gemini 4 Argon use `thinkingLevel` and get no temperature (Google deprecated sampling parameters for Gemini 3, and Argon ignores them). Web search uses Google Search grounding (on free keys, neither web search nor AI Book Tools works with 3.x models: [Free tiers](#free-tiers)). Streaming may arrive in larger chunks than with other providers (cosmetic). Google's content filter is relaxed for book passages by default (**Settings → Advanced → Provider Settings → Gemini Content Filter**).
@@ -427,7 +431,7 @@ What KOAssistant does differently per provider, mostly on its own. When the curr
 - **Fireworks:** ids live under `accounts/fireworks/models/` with a version's dots written as "p"; GLM-5.3 and gpt-oss cannot turn reasoning off there, so Off gives them their lowest level.
 - **Doubao:** Volcano Engine may require a date-suffixed snapshot or endpoint id; check the exact string in its console.
 - **OpenCode Zen and OpenCode Go:** both send the conversation header OpenCode requires (`x-opencode-session`, carrying the chat's id). One account key works for both, entered under `opencode` and `opencode_go`. GPT, Claude and Gemini ids use other OpenCode endpoints and are not supported yet. Qwen 3.8 Flash, and on Go also Qwen 3.8 Max and 3.7 Plus, refuse a forced tool call while they reason, so AI Book Tools asks them without the force.
-- **Perplexity:** runs on Perplexity's Agent API since v0.23.0 (the Sonar chat API it used before retired on 2026-09-27). Perplexity serves its own Sonar model and other companies' models (GPT, Claude, Gemini, Grok and more) on one key; the model list holds a few of them, with `perplexity/sonar` as the default, and **Fetch models** lists the rest. Web search is on by default here. With web search on, the model answers inside Perplexity's `fast` search preset, so it searches and cites its sources, as picking a model in Perplexity's own app does; with web search off it answers without a search. The answer's sources list only what it cites; **Show Sources** lists everything found. A setting that still names an old Sonar model (`sonar`, `sonar-pro`, `sonar-reasoning-pro`, `sonar-deep-research`) moves to `perplexity/sonar`, with a one-time note. Perplexity's research presets (`low`, `medium`, `high`, which pick their own model) are not in the list but still work if typed in as a custom model; a preset always searches, so with web search off the request goes to `perplexity/sonar` without a search instead. Web search is reported as used only when results came back. Two Grok models (`xai/grok-4.20-reasoning` and `xai/grok-4.20-multi-agent`) refuse the preset's settings, so they answer on their own and search only when they decide to. **Test provider...** is not offered; **Settings → Advanced → Test Connection** checks it.
+- **Perplexity:** runs on Perplexity's Agent API. Perplexity serves its own Sonar model and other companies' models (GPT, Claude, Gemini, Grok and more) on one key; the model list holds a few of them, with `perplexity/sonar` as the default, and **Fetch models** lists the rest. Web search is on by default here. With web search on, the model answers inside Perplexity's `fast` search preset, so it searches and cites its sources, as picking a model in Perplexity's own app does; with web search off it answers without a search. The answer's sources list only what it cites; **Show Sources** lists everything found. A setting that still names an old Sonar model (`sonar`, `sonar-pro`, `sonar-reasoning-pro`, `sonar-deep-research`) moves to `perplexity/sonar`, with a one-time note. Perplexity's research presets (`low`, `medium`, `high`, which pick their own model) are not in the list but still work if typed in as a custom model; a preset always searches, so with web search off the request goes to `perplexity/sonar` without a search instead. Web search is reported as used only when results came back. Two Grok models (`xai/grok-4.20-reasoning` and `xai/grok-4.20-multi-agent`) refuse the preset's settings, so they answer on their own and search only when they decide to. **Test provider...** is not offered; **Settings → Advanced → Test Connection** checks it.
 - **Models that cannot turn reasoning off:** Minimal and the Quick chip give them their lowest level instead. Among them: GPT-6 Astra and GPT-6.1 Sol, Claude Opus 5.5 and Fable 5, Gemini 4 Argon, Gemini 3.8 Flash, 3.6 Flash and 3.1 Pro, GLM-5.3 and Grok 4.5 to 4.7; through Fireworks, GLM-5.3 and gpt-oss; through OpenRouter, Claude Sonnet 5.5, Opus 5.5 and Fable 5, Gemini 4 Argon, Grok 4.6, Qwen3.8 Max and gpt-oss; through Requesty, Claude Fable 5, Sonnet 5.5 and Opus 5.5. Reasoning from models that end their thinking with a bare `</think>` (Qwen3 Thinking, DeepSeek R1 on some hosts) goes to the reasoning view, not the answer. Per-model details: [Reasoning, Web Search and Book Tools](Reasoning-Web-Search-and-Book-Tools).
 
 ## Meta-providers

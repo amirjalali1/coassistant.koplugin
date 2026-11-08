@@ -35,7 +35,7 @@ koreader
 
 > **This is the only time you install by hand.** After this, KOAssistant updates itself: when a new version is available, you see its release notes with an **Update Now** button. One tap handles everything (download, install, keeping your settings). See [Backups and Updates](Backups-and-Updates).
 
-**Alternative:** install KOAssistant from inside KOReader with the [App Store plugin](https://github.com/omer-faruq/appstore.koplugin), which browses, installs and updates KOReader plugins without a computer. It can install from releases or from the latest main branch code.
+**Alternative:** [Storefront](https://github.com/ultimatejimmy/storefront.koplugin) or the [App Store plugin](https://github.com/omer-faruq/appstore.koplugin) install KOAssistant from inside KOReader, from releases or from the latest main branch code, with no computer.
 
 ## 2. Restart KOReader
 
@@ -56,7 +56,7 @@ You need an API key from at least one AI provider, or a ChatGPT account ([Option
 | OpenAI | Pay per use | [platform.openai.com](https://platform.openai.com/) |
 | OpenAI Subscription | Your ChatGPT plan (free accounts included), no key | [Option C](#option-c-openai-subscription-device-login) below |
 
-KOAssistant has 32 built-in providers; [Providers and Models](Providers-and-Models) lists them all with links to get keys.
+KOAssistant has 33 built-in providers; [Providers and Models](Providers-and-Models) lists them all with links to get keys.
 
 **Free options in brief:** Groq and Gemini need no card, Ollama needs no key at all, and a free ChatGPT account works through OpenAI Subscription (device login, experimental). Mistral, OpenRouter, Z.AI and NVIDIA have free allowances too; free tiers change often, and [Providers and Models](Providers-and-Models) has the current limits.
 
@@ -88,7 +88,7 @@ Edit `apikeys.lua` and add your API key(s):
 return {
     anthropic = "your-key-here",  -- console.anthropic.com
     openai = "",                  -- platform.openai.com
-    -- See apikeys.lua.sample for all 32 providers
+    -- See apikeys.lua.sample for all 33 providers
 }
 ```
 

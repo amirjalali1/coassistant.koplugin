@@ -41,8 +41,10 @@ XrayIndex.FILE = "koassistant_xray_index.lua"
 -- Bumped whenever the matcher finds different spans for the same form, so
 -- a stored index is found again (2: Arabic matches start a word, B339;
 -- 3: each occurrence's capitals, B533 S2; 4: written in capitals, a
--- sentence start, B533 S3)
-local VERSION = 4
+-- sentence start, B533 S3; 5: typeset apostrophes and hyphens folded to
+-- the typed ones, B596; 6: the word boundary applies to Vietnamese, the
+-- Indic scripts and Hebrew, the sweep of 2026-11-06)
+local VERSION = 6
 local MAX_LAYOUTS = 4
 -- A background request waits this long (debounced) before its pass starts:
 -- the book's own opening work and the first page turns go first
@@ -165,6 +167,23 @@ function XrayIndex.currentLayouts(file)
         end
     end
     return out
+end
+
+--- Among `layouts` (one layout, or a list newest first as currentLayouts
+--- gives them) the first holding every form of `forms`, or nil. New forms
+--- are stored in the layout in use only, so a name indexed after a font or
+--- orientation change is held by the newest layout alone: each name is
+--- judged on a layout that has it, never on the one with the most forms
+--- (B597).
+function XrayIndex.layoutHolding(layouts, forms)
+    if type(layouts) ~= "table" then return nil end
+    if type(layouts.forms) == "table" then layouts = { layouts } end
+    for _i, layout in ipairs(layouts) do
+        if type(layout) == "table" and type(layout.forms) == "table" and #XrayIndex.missing(layout, forms) == 0 then
+            return layout
+        end
+    end
+    return nil
 end
 
 --- Forms of `forms` (array or set) the layout does not hold.
@@ -330,7 +349,7 @@ function XrayIndex.scan(document, forms, first, last)
         return XrayParser.startsSentence(keep:sub(math.max(from, s - 64), s - 1))
     end
     local function capsSuffix(f, sp)
-        keep = keep or XrayParser.matchNormalizeKeepCase(text)
+        keep = keep or XrayParser.alignedKeepCase(text, norm)
         local seg = keep:sub(sp[1], sp[2])
         local out = ""
         -- Bytes the fold changed in length: unreadable, counted capitalized
@@ -639,17 +658,20 @@ end
 --- do) and set when XrayParser.autoCapsSwitch holds. A name of two
 --- characters or fewer, one with no capital, one never written without one
 --- and one a form of which is not indexed yet are not judged; a main name
---- the reader set to not matched neither. Pure against the layout.
---- @param layout table a stored layout ({ forms })
+--- the reader set to not matched neither. Pure against the layouts.
+--- @param layouts table a stored layout ({ forms }), or a list of them newest
+---   first (currentLayouts): each name is judged on the first holding all its
+---   forms (layoutHolding, B597)
 --- @param data table parsed X-Ray, the reader's names merged (mergeUserAliases)
 --- @param judged table|nil the names (lowered) judged already, skipped here and
 ---   added to: one judgement per name across the live X-Ray and the next
 ---   checkpoint (ActionCache.autoCaps)
 --- @return table { [name lowered] = true }
-function XrayIndex.autoCaps(layout, data, judged)
+function XrayIndex.autoCaps(layouts, data, judged)
     local out = {}
     judged = judged or {}
-    if not (layout and type(layout.forms) == "table" and type(data) == "table") then return out end
+    if type(layouts) == "table" and type(layouts.forms) == "table" then layouts = { layouts } end
+    if not (type(layouts) == "table" and #layouts > 0 and type(data) == "table") then return out end
     local function judge(name, entry)
         if type(name) ~= "string" or #name <= 2 then return end
         local low = name:lower()
@@ -657,10 +679,12 @@ function XrayIndex.autoCaps(layout, data, judged)
         judged[low] = true
         local set = XrayParser.matchTermSet({ name = name, _caps = { [low] = true } })
         if not (set and set.caps) then return end
+        -- the layout that holds every form of this name (B597)
+        local layout = XrayIndex.layoutHolding(layouts, set.all)
+        if not layout then return end
         -- written with every capital everywhere: nothing to learn (most names)
         local lower_seen = false
         for _i, f in ipairs(set.all) do
-            if layout.forms[f] == nil then return end
             if next(XrayIndex.decode(layout, f).caps) then lower_seen = true end
         end
         if not lower_seen then return end

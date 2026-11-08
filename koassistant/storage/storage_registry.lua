@@ -91,6 +91,7 @@ Registry.SETTINGS_SUBKEYS = {
     assets = {
         "custom_actions", "custom_prompts",                 -- top-level (see TOPLEVEL_SUBKEYS)
         "custom_behaviors", "custom_domains",
+        "custom_behavior_next_id", "custom_domain_next_id",  -- the ids' counters (never reused; the sweep of 2026-11-06)
         "custom_providers", "custom_models", "provider_default_models",
         "model_explicit",                                   -- which providers have a deliberate model pick
         "tier_overrides",                                   -- tier GUI placements (docs/tier_gui_plan.md)
@@ -106,6 +107,7 @@ Registry.SETTINGS_SUBKEYS = {
         "selected_behavior", "selected_domain", "trusted_providers",
         "gesture_actions", "markdown_font_size", "export_custom_path",
         "session_chips", "_dismissed_session_chips",
+        "_dismissed_gesture_actions",                        -- top-level (see TOPLEVEL_SUBKEYS): the gesture defaults the reader removed (B581)
         "minimal_popup_actions",
         "ollama_num_ctx",           -- ollama context-window cap (model menu row; nil = automatic sizing)
         "xray_default_categories",  -- global default for new X-Rays' category groups (presets v0.21)
@@ -116,6 +118,7 @@ Registry.SETTINGS_SUBKEYS = {
         "run_recent_models",        -- the hold menu's recent "More models…" picks (B345; newest first)
         "library_recent_folders",   -- folders added on the fly for a library run (newest first, five; never scan folders of their own)
         "favorite_models",          -- favorite models (B345): the long-press menus' first model spots; ♥ in pickers
+        "rtl_font",                 -- the font of right-to-left text in the Markdown view (nil = Noto Naskh Arabic, a family KOReader knows, false = none; B558)
     },
     internal = {
         "languages_migrated", "behavior_migrated",
@@ -160,6 +163,7 @@ Registry.TOPLEVEL_SUBKEYS = {
     custom_actions = true,
     custom_prompts = true,
     setup_wizard_completed = true,
+    _dismissed_gesture_actions = true,
 }
 
 -- ── The inventory ────────────────────────────────────────────────────────────

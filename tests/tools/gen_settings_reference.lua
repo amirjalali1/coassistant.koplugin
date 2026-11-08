@@ -16,6 +16,11 @@ local Gen = {}
 -- Owner page per row or submenu id. A row without an entry inherits its
 -- nearest ancestor's; the fallback is the Settings-Reference page itself.
 Gen.OWNERS = {
+    gestures_screen = "Setup-Gestures-and-Panels",
+    setup_wizard = "Setup-Gestures-and-Panels",
+    about = "Backups-and-Updates",
+    auto_check_updates = "Backups-and-Updates",
+    check_updates = "Backups-and-Updates",
     temperature = "Providers-and-Models",
     use_action_tiers = "Providers-and-Models",
     enable_book_tools = "Reasoning-Web-Search-and-Book-Tools",
@@ -143,6 +148,7 @@ Gen.DYNAMIC_LABELS = {
     gemini_safety = "Gemini Content Filter: Google default / Relaxed for books",
     qwen_region = "Qwen Region: International / China / US",
     kimi_region = "Kimi Region: International / China",
+    bedrock_region = "Amazon Bedrock Region: us-east-1 and 13 other AWS regions",
     tool_mode = "Book Tools Mode: Gather then answer / Interactive",
     tool_lookup_effort = "Book Tools Lookup Effort: Quick / Standard / Thorough",
     debug_display_level = "Debug Detail Level: Minimal / Names / Full",

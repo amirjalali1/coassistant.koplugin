@@ -363,7 +363,7 @@ end)
 TestRunner:test("built-in exclusions and inclusions carry the right flags", function()
     TestRunner:assertEqual(Actions.special.dictionary.use_surrounding_context, false, "dictionary excluded")
     TestRunner:assertEqual(Actions.special.quick_define.use_surrounding_context, false, "quick_define excluded")
-    TestRunner:assertEqual(Actions.special.deep.use_surrounding_context, false, "dictionary_deep excluded")
+    TestRunner:assertEqual(Actions.special.dictionary_deep.use_surrounding_context, false, "dictionary_deep excluded")
     TestRunner:assertEqual(Actions.highlight.wiki.use_surrounding_context, true, "wiki stays explicit-true")
     TestRunner:assertNil(Actions.highlight.fact_check.use_surrounding_context,
         "fact_check follows ambient (strong beneficiary)")
@@ -469,5 +469,25 @@ print("")
 print(string.rep("-", 50))
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))
 print(string.rep("-", 50))
+
+TestRunner:suite("sentence marks of scripts that write no space after them (the sweep of 2026-11-06)")
+
+TestRunner:test("limitAfter and the sentence mode stop at 。 and । with no following space", function()
+    local cjk = string.rep("あいうえおかきくけこ。", 20)
+    TestRunner:assertEqual(ScopeResolver.limitAfter(cjk, "sentence"), "あいうえおかきくけこ。", "one CJK sentence")
+    local hindi = string.rep("यह वाक्य है।", 10)
+    TestRunner:assertEqual(ScopeResolver.limitAfter(hindi, "sentence"), "यह वाक्य है।", "one Devanagari sentence")
+    local arabic = "هل هذا سؤال؟ثم جملة أخرى."
+    TestRunner:assertEqual(ScopeResolver.limitAfter(arabic, "sentence"), "هل هذا سؤال؟", "the Arabic question mark")
+    local lat = string.rep("Some words here. ", 30)
+    TestRunner:assertEqual(ScopeResolver.limitAfter(lat, "sentence"), "Some words here.", "Latin as before")
+    TestRunner:assertEqual(ScopeResolver.limitAfter("No end here", "sentence"), "No end here", "no mark: everything")
+    -- the sentence mode's window: one sentence before, the selection's own after
+    local r = ScopeResolver.trimContext(cjk, cjk, "X", "sentence", {})
+    assert(#r < 120, "a CJK window of a few sentences, not two paragraphs (" .. #r .. " bytes)")
+    TestRunner:assertContains(r, "あいうえおかきくけこ。")
+    local r2 = ScopeResolver.trimContext(lat, lat, "X", "sentence", {})
+    TestRunner:assertContains(r2, "Some words here. Some words here.")
+end)
 
 return TestRunner.failed == 0

@@ -9,8 +9,9 @@ local function setupPaths()
     package.path = table.concat({
         plugin_dir .. "/?.lua", tests_dir .. "/?.lua", tests_dir .. "/lib/?.lua", package.path,
     }, ";")
+    return plugin_dir
 end
-setupPaths()
+local PLUGIN_DIR = setupPaths()
 require("mock_koreader")
 
 local XrayParser = require("koassistant.xray.xray_parser")
@@ -990,6 +991,159 @@ TestRunner:test("merge: a dotted full-name alias bridges a rename (CJK rename fo
     XrayParser.merge(old, new)
     TestRunner:eq(#old.characters, 1, "folded, not duplicated")
     TestRunner:eq(old.characters[1].name, "ソーン導師", "new name is primary")
+end)
+
+TestRunner:suite("B596: typeset apostrophes and hyphens read as typed")
+TestRunner:test("matchNormalize folds the curly apostrophes and the typeset hyphens; the capitals copy the same", function()
+    TestRunner:eq(XrayParser.matchNormalize("King\u{2019}s Landing"), "king's landing", "U+2019")
+    TestRunner:eq(XrayParser.matchNormalize("\u{2018}O\u{2019}Brien\u{2019}"), "'o'brien'", "U+2018 too")
+    TestRunner:eq(XrayParser.matchNormalize("O\u{02BC}Brien"), "o'brien", "the modifier letter apostrophe")
+    TestRunner:eq(XrayParser.matchNormalize("Mary\u{2010}Jane and Mary\u{2011}Jane"), "mary-jane and mary-jane",
+        "the hyphen and the non-breaking hyphen")
+    TestRunner:eq(XrayParser.matchNormalizeKeepCase("King\u{2019}s Landing"), "King's Landing")
+    TestRunner:eq(XrayParser.matchNormalize("King's Landing"), "king's landing", "the typed ones as they were")
+end)
+TestRunner:test("a name the AI wrote with a straight apostrophe or hyphen is found in a typeset text", function()
+    local text = "They rode to King\u{2019}s Landing, where O\u{2019}Brien met Mary\u{2011}Jane and the Others\u{2019} guard."
+    local norm, keep = XrayParser.matchNormalize(text), XrayParser.matchNormalizeKeepCase(text)
+    local function hits(item)
+        local set = XrayParser.matchTermSet(item)
+        local out = {}
+        for _idx, o in ipairs(XrayParser.occurrencesIn(norm, set, nil, keep)) do
+            out[#out + 1] = keep:sub(o[1], o[2])
+        end
+        return table.concat(out, "|")
+    end
+    TestRunner:eq(hits({ name = "King's Landing" }), "King's Landing", "the span reads back from the capitals copy")
+    TestRunner:eq(hits({ name = "O'Brien" }), "O'Brien")
+    TestRunner:eq(hits({ name = "Mary-Jane" }), "Mary-Jane")
+    TestRunner:eq(hits({ name = "the Others" }), "the Others", "a possessive's apostrophe stays outside the span")
+end)
+TestRunner:test("the exact keys agree, so a selection from the book opens the AI's entry", function()
+    TestRunner:eq(XrayParser.exactQueryKeys("King\u{2019}s Landing")[1], XrayParser.exactKeys("King's Landing")[1])
+    TestRunner:eq(XrayParser.exactQueryKeys("Mary\u{2011}Jane")[1], XrayParser.exactKeys("Mary-Jane")[1])
+    TestRunner:eq(XrayParser.normalizeHandle("O\u{2019}Brien"), XrayParser.normalizeHandle("O'Brien"), "the containment layer too")
+end)
+TestRunner:test("the case-sensitive search pattern takes the book's apostrophe and hyphen too", function()
+    TestRunner:eq(XrayParser.caseSearchRegex("O'Brien", 1), "O['\\u2019\\u2018\\u02BC][bB][rR][iI][eE][nN]")
+    TestRunner:eq(XrayParser.caseSearchRegex("Mary-Jane", 0), "[mM][aA][rR][yY][-\\u2010\\u2011][jJ][aA][nN][eE]")
+end)
+
+TestRunner:test("alignedKeepCase: a character the fold shortens takes its folded bytes, the capitals after it stay readable (B598)", function()
+    -- the unit harness has no utf8proc: a fold that shortens the fi ligature stands in
+    local real_fold = XrayParser.foldCase
+    XrayParser.foldCase = function(s) return (s:gsub("\239\172\129", "fi")):lower() end
+    local text = "The \239\172\129rst time, past the drowned trees, the Drowned lit fires."
+    local norm = (XrayParser.matchNormalize(text):gsub("\239\172\129", "fi"))
+    local plain = XrayParser.matchNormalizeKeepCase(text)
+    TestRunner:eq(#plain, #norm + 1, "the plain copy is one byte longer than the folded text")
+    local keep = XrayParser.alignedKeepCase(text, norm)
+    TestRunner:eq(keep, "The first time, past the drowned trees, the Drowned lit fires.", "aligned: the ligature folded, the capitals kept")
+    TestRunner:eq(#keep, #norm)
+    local set = XrayParser.matchTermSet({ name = "The Drowned", _caps = { ["the drowned"] = true } })
+    TestRunner:eq(#XrayParser.occurrencesIn(norm, set, nil, plain), 2, "the shifted copy passed both as unreadable")
+    local occ = XrayParser.occurrencesIn(norm, set, nil, keep)
+    TestRunner:eq(#occ, 1, "aligned: the lowercase one is left out")
+    TestRunner:eq(keep:sub(occ[1][1], occ[1][2]), "the Drowned")
+    TestRunner:ok(XrayParser.spanCapsOk(norm, keep, occ[1][1], occ[1][2], 2))
+    -- the lengths agree already: the copy as it is, nothing rebuilt
+    local same = "Past the drowned trees, the Drowned lit fires."
+    TestRunner:eq(XrayParser.alignedKeepCase(same, XrayParser.matchNormalize(same)), XrayParser.matchNormalizeKeepCase(same))
+    -- a fold the rebuild cannot follow (a character dropped): the plain copy, as before
+    local odd = "Caf\195\169 \239\172\129ne"
+    TestRunner:eq(XrayParser.alignedKeepCase(odd, "cafe fine"), XrayParser.matchNormalizeKeepCase(odd), "a length nothing reaches: unchanged")
+    XrayParser.foldCase = real_fold
+end)
+TestRunner:test("the chapter finders and the index scan read the aligned copy", function()
+    local src = assert(io.open(PLUGIN_DIR .. "/koassistant/xray/xray_parser.lua", "r")):read("*a")
+    local _, n = src:gsub("XrayParser%.alignedKeepCase%(chapter_text, text_lower%)", "")
+    TestRunner:eq(n, 2, "findItemsInChapter and findCharactersInChapter")
+    TestRunner:ok(src:find("local kept = XrayParser.alignedKeepCase(text, folded)", 1, true) ~= nil, "the search's capitals copy")
+    local idx = assert(io.open(PLUGIN_DIR .. "/koassistant/xray/xray_index.lua", "r")):read("*a")
+    TestRunner:ok(idx:find("keep = keep or XrayParser.alignedKeepCase(text, norm)", 1, true) ~= nil, "the index scan")
+end)
+TestRunner:test("exactLookupHits: the lookup's exact filter reads not matched and capitals only (B601)", function()
+    local data = { type = "fiction", characters = {
+        { name = "Mike", aliases = { "Michael" }, description = "a man" },
+        { name = "Mikey", description = "a boy" },
+        { name = "The Others", description = "a faction" },
+    } }
+    XrayParser.mergeUserAliases(data, {
+        ["Mike"] = { ignore = { "Mike" } },
+        ["The Others"] = { case = { ["the others"] = "capitals" } },
+    })
+    TestRunner:ok(data.characters[1]._name_off, "Mike set to not matched")
+    local function names(hits)
+        local out = {}
+        for _idx, r in ipairs(hits) do out[#out + 1] = r.item.name end
+        return table.concat(out, ",")
+    end
+    local results = XrayParser.searchAll(data, "mike", { skip_description = true })
+    TestRunner:eq(names(results), "Mike,Mikey", "the substring search lists both")
+    TestRunner:eq(names(XrayParser.exactLookupHits(results, "mike")), "", "not matched: no exact hit; Mikey is not exact")
+    results = XrayParser.searchAll(data, "michael", { skip_description = true })
+    TestRunner:eq(names(XrayParser.exactLookupHits(results, "Michael")), "Mike", "the alias still opens the entry")
+    results = XrayParser.searchAll(data, "the others", { skip_description = true })
+    TestRunner:eq(names(results), "The Others")
+    TestRunner:eq(names(XrayParser.exactLookupHits(results, "the others")), "", "capitals only: the lowercase query opens nothing")
+    TestRunner:eq(names(XrayParser.exactLookupHits(results, "The Others")), "The Others")
+    TestRunner:eq(names(XrayParser.exactLookupHits(results, "THE OTHERS")), "The Others", "capitals pass")
+    TestRunner:eq(#XrayParser.exactLookupHits(results, ""), 0)
+    local plain = { type = "fiction", characters = { { name = "Mike" } } }
+    results = XrayParser.searchAll(plain, "MIKE", { skip_description = true })
+    TestRunner:eq(names(XrayParser.exactLookupHits(results, "MIKE")), "Mike", "no record: any case, as before")
+    local src = assert(io.open(PLUGIN_DIR .. "/koassistant/ui/dialogs.lua", "r")):read("*a")
+    TestRunner:ok(src:find("local exact = XrayParser.exactLookupHits(results, query)", 1, true) ~= nil, "the lookup's fast path uses it")
+    TestRunner:ok(src:find("normalizeArabic(h:lower()) == query_exact", 1, true) == nil, "the raw comparison is gone")
+end)
+
+TestRunner:suite("the sweep of 2026-11-06: one case fold for every search; the chapter finders count cheap first")
+
+TestRunner:test("the exact route, searchAll and searchCharacters fold case through XrayParser.foldCase", function()
+    -- a toy fold standing in for utf8proc's (the unit suite has none): three
+    -- Cyrillic capitals; everything else as string.lower
+    local saved = XrayParser.foldCase
+    local MAP = { ["А"] = "а", ["Н"] = "н", ["Д"] = "д", ["Е"] = "е" }
+    XrayParser.foldCase = function(text)
+        return (text:lower():gsub("[\208\209][\128-\191]", function(c) return MAP[c] or c end))
+    end
+    local data = { type = "fiction", characters = {
+        { name = "Анна", aliases = { "дед" }, description = "x" },
+        { name = "Anna", description = "z" } } }
+    local set = {}
+    XrayParser.foldExactHandles(data, set)
+    TestRunner:ok(XrayParser.matchExactHandle(set, "АННА"), "the route: capitals")
+    TestRunner:ok(XrayParser.matchExactHandle(set, "анна"), "the route: lowercase")
+    TestRunner:ok(XrayParser.matchExactHandle(set, "Дед"), "an alias")
+    TestRunner:ok(not XrayParser.matchExactHandle(set, "Никто"), "a miss stays a miss")
+    TestRunner:eq(#XrayParser.searchAll(data, "АННА"), 1, "fuzzy search, capitals")
+    TestRunner:eq(#XrayParser.searchAll(data, "Дед", { exact = true }), 1, "exact search, an alias")
+    TestRunner:eq(#XrayParser.searchCharacters(data, "АННА"), 1, "searchCharacters")
+    TestRunner:eq(XrayParser.normalizeHandle("АННА"), "анна", "normalizeHandle")
+    local with_ledger = { [XrayParser.DORMANT_KEY] = { { name = "Данна", category = "characters", description = "d" } } }
+    TestRunner:eq(#XrayParser.searchLedger(with_ledger, "ДАННА"), 1, "searchLedger")
+    XrayParser.foldCase = saved
+end)
+
+TestRunner:test("the chapter finders count without the containing handles first, then with them", function()
+    local data = XrayParser.parse('{"characters":[{"name":"Vivian Kubrick","description":"a"},{"name":"Kubrick","description":"b"},{"name":"Nobody","description":"c"}]}')
+    local text = "Vivian Kubrick came in. Kubrick left. Vivian Kubrick again."
+    local items = XrayParser.findItemsInChapter(data, text)
+    local by = {}
+    for _i, r in ipairs(items) do by[r.item.name] = r.count end
+    TestRunner:eq(by["Vivian Kubrick"], 2)
+    TestRunner:eq(by["Kubrick"], 1, "the inner hits inside the longer name are not his")
+    TestRunner:eq(by["Nobody"], nil, "a name the text lacks is not listed")
+    local chars = XrayParser.findCharactersInChapter(data, text)
+    local byc = {}
+    for _i, r in ipairs(chars) do byc[r.item.name] = r.count end
+    TestRunner:eq(byc["Kubrick"], 1)
+    TestRunner:eq(byc["Vivian Kubrick"], 2)
+    -- the same as the handles-always count
+    local norm = XrayParser.matchNormalize(text)
+    local keep = XrayParser.alignedKeepCase(text, norm)
+    local k = data.characters[2]
+    TestRunner:eq(XrayParser.countItemOccurrences(k, norm, XrayParser.containingMatchHandles(data, k), keep), 1)
 end)
 
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))

@@ -303,18 +303,29 @@ function ActionService:loadActions()
         end
     end
 
-    -- 2. Load custom actions from custom_actions.lua (future)
+    -- 2. Load custom actions from custom_actions.lua. A file that fails to
+    -- load (a syntax error, a runtime error, no list returned) is recorded
+    -- (B607): the list readers keep its actions' menu placements that round
+    -- instead of pruning them for good, and the first interaction says so
+    -- (main.lua ensureInitialized reads customActionsError).
+    self.custom_actions_error = nil
     local custom_actions_path = self:getCustomActionsPath()
     if custom_actions_path then
         local ok, custom_actions = pcall(dofile, custom_actions_path)
-        if ok and custom_actions then
+        if ok and type(custom_actions) == "table" then
             logger.dbg("ActionService: Loading custom actions from custom_actions.lua")
             for i, action in ipairs(custom_actions) do
                 local id = "config_" .. i
                 self:addCustomAction(id, action, "config", disabled_actions)
             end
-        elseif not ok then
-            logger.warn("ActionService: custom_actions.lua was not loaded: " .. tostring(custom_actions))
+        elseif ok then
+            self.custom_actions_error = { kind = "nolist" }
+            logger.warn("ActionService: custom_actions.lua returned no list of actions")
+        else
+            -- the error names the file by its full path: the file name is enough
+            local detail = (tostring(custom_actions):gsub("^.-custom_actions%.lua:", "custom_actions.lua:"))
+            self.custom_actions_error = { kind = "load", detail = detail }
+            logger.warn("ActionService: custom_actions.lua was not loaded: " .. detail)
         end
     end
 
@@ -506,14 +517,38 @@ function ActionService:updateUserAction(index, action_data)
     end
 end
 
--- Delete a user-created action
+-- Delete a user-created action. Its gesture-menu entries go with it (B609:
+-- a key the registration cannot resolve was skipped with a debug line and
+-- the Gestures screen could not list it). Returns the action removed and the
+-- gesture keys dropped ("<context>:ui_<index>"), so the caller can take
+-- KOReader's own bindings to its dispatcher id down too. (The app-made ids
+-- above it shift down one, B576: a gesture on one of those names the old
+-- position until B576 lands.)
 function ActionService:deleteUserAction(index)
     local custom_actions = self.settings:readSetting("custom_actions") or {}
     if custom_actions[index] then
-        table.remove(custom_actions, index)
+        local removed = table.remove(custom_actions, index)
         self.settings:saveSetting("custom_actions", custom_actions)
+        local dropped = {}
+        local features = self.settings:readSetting("features") or {}
+        if type(features.gesture_actions) == "table" then
+            local suffix = ":ui_" .. tostring(index)
+            for key in pairs(features.gesture_actions) do
+                if type(key) == "string" and key:sub(-#suffix) == suffix then
+                    dropped[#dropped + 1] = key
+                end
+            end
+            table.sort(dropped)
+            for _idx, key in ipairs(dropped) do
+                features.gesture_actions[key] = nil
+            end
+            if #dropped > 0 then
+                self.settings:saveSetting("features", features)
+            end
+        end
         self.settings:flush()
         self.actions_cache = nil
+        return removed, dropped
     end
 end
 
@@ -698,6 +733,15 @@ function ActionService:getCustomActionsPath()
     return nil
 end
 
+--- Why custom_actions.lua did not load at the last load (B607), or nil:
+--- { kind = "load", detail = "custom_actions.lua:12: …" } | { kind = "nolist" }
+function ActionService:customActionsError()
+    if not self.actions_cache then
+        self:loadActions()
+    end
+    return self.custom_actions_error
+end
+
 -- Initialize the service
 function ActionService:initialize()
     self:init()
@@ -756,6 +800,13 @@ local function buildDefaultFromFlags(actions_module, flag_field)
     return ids
 end
 
+-- An id of a file-defined action while custom_actions.lua failed to load
+-- (B607): every list reader keeps it that round, so a syntax error in the
+-- file does not strip its actions from every menu for good
+local function keptWhileFileBroken(service, id)
+    return service.custom_actions_error ~= nil and type(id) == "string" and id:match("^config_%d+$") ~= nil
+end
+
 -- Process a saved action list: prune stale IDs and inject new flagged defaults
 -- Returns the processed list (may be modified) and whether changes were made
 local function processActionList(service, saved, flag_field, dismissed_key)
@@ -766,7 +817,7 @@ local function processActionList(service, saved, flag_field, dismissed_key)
     -- Prune stale IDs (actions that no longer exist)
     local pruned = {}
     for _i, id in ipairs(saved) do
-        if service:getAction("highlight", id) then
+        if service:getAction("highlight", id) or keptWhileFileBroken(service, id) then
             table.insert(pruned, id)
         end
     end
@@ -1132,7 +1183,7 @@ local function processGeneralMenuList(service, saved)
     -- Prune stale IDs (actions that no longer exist)
     local pruned = {}
     for _i, id in ipairs(saved) do
-        if service:getAction("general", id) then
+        if service:getAction("general", id) or keptWhileFileBroken(service, id) then
             table.insert(pruned, id)
         end
     end
@@ -1298,7 +1349,7 @@ local function processQuickActionsList(service, saved, dismissed_key)
     -- Prune stale IDs (actions that no longer exist)
     local pruned = {}
     for _i, id in ipairs(saved) do
-        if service:getAction("book", id) then
+        if service:getAction("book", id) or keptWhileFileBroken(service, id) then
             table.insert(pruned, id)
         end
     end
@@ -1642,7 +1693,7 @@ local function processFileBrowserList(service, saved, dismissed_key)
     -- Prune stale IDs (actions that no longer exist)
     local pruned = {}
     for _i, item in ipairs(saved) do
-        if service:getAction("book", item.id) then
+        if service:getAction("book", item.id) or keptWhileFileBroken(service, item.id) then
             table.insert(pruned, item)
         end
     end
@@ -1937,16 +1988,42 @@ local function buildDefaultGestureActions(actions_module)
     return result
 end
 
+-- A gesture default the reader removed stays removed (B581: the toggle
+-- deleted its key and the next read injected it again): the dismissed
+-- record the six action lists keep, here for the gesture menu
+local function dismissedGestureSet(service)
+    local out = {}
+    for _idx, key in ipairs(service.settings:readSetting("_dismissed_gesture_actions") or {}) do
+        if type(key) == "string" then out[key] = true end
+    end
+    return out
+end
+
+--- Record that the reader removed (or put back) a gesture-menu entry, so a
+--- default is not injected again (B581).
+function ActionService:setGestureDismissed(key, dismissed)
+    if type(key) ~= "string" then return end
+    local list = self.settings:readSetting("_dismissed_gesture_actions") or {}
+    local kept = {}
+    for _idx, k in ipairs(list) do
+        if k ~= key then kept[#kept + 1] = k end
+    end
+    if dismissed then kept[#kept + 1] = key end
+    self.settings:saveSetting("_dismissed_gesture_actions", kept)
+end
+
 --- Get processed gesture actions map (with defaults injected)
 --- This should be called instead of directly reading features.gesture_actions
 --- @return table: Map of "context:action_id" -> true
 function ActionService:getGestureActions()
     local features = self.settings:readSetting("features") or {}
     local saved = features.gesture_actions
+    local dismissed = dismissedGestureSet(self)
 
     -- If no saved settings, inject defaults
     if not saved then
         local defaults = buildDefaultGestureActions(self.Actions)
+        for key in pairs(dismissed) do defaults[key] = nil end
         -- Save defaults to settings
         features.gesture_actions = defaults
         self.settings:saveSetting("features", features)
@@ -1959,7 +2036,7 @@ function ActionService:getGestureActions()
     local changed = false
 
     for key, _val in pairs(defaults) do
-        if saved[key] == nil then
+        if saved[key] == nil and not dismissed[key] then
             -- New default action not in saved settings - add it
             saved[key] = true
             changed = true
@@ -1973,6 +2050,19 @@ function ActionService:getGestureActions()
     end
 
     return saved
+end
+
+--- The name of a bypass action for a Settings row (B610): a built-in or one
+--- of the reader's own through the service, else a special action; nil when
+--- the id resolves to nothing (the row then says it no longer exists).
+function ActionService.bypassActionName(plugin, context, action_id)
+    local service = plugin and plugin.action_service
+    local action = service and service.getAction and service:getAction(context, action_id)
+    if action and action.text then return action.text end
+    local ok, Actions = pcall(require, "koassistant.prompts.actions")
+    local special = ok and Actions.special and Actions.special[action_id]
+    if special and special.text then return special.text end
+    return nil
 end
 
 -- ============================================================
@@ -2216,7 +2306,7 @@ function ActionService:_processInputList(ctx_name, saved)
     -- Prune stale IDs (actions that no longer exist or aren't eligible)
     local pruned = {}
     for _, id in ipairs(saved) do
-        if eligible_set[id] then
+        if eligible_set[id] or keptWhileFileBroken(self, id) then
             table.insert(pruned, id)
         end
     end

@@ -209,10 +209,8 @@ local SettingsSchema = {
             type = "submenu",
             emoji = "🤖",
             text_func = function(plugin)
-                local f = plugin.settings:readSetting("features") or {}
-                local provider = f.provider or "anthropic"
                 return T(_("Model: %1 (%2)"), plugin:getCurrentModel(),
-                    plugin:getProviderDisplayName(provider))
+                    plugin:getProviderDisplayName(plugin:getCurrentProvider()))
             end,
             callback = "buildProviderModelHub",
         },
@@ -249,7 +247,7 @@ local SettingsSchema = {
                                 { value = true, label = _("Markdown") },
                                 { value = false, label = _("Plain Text") },
                             },
-                            help_text = _("Markdown renders formatting. Plain Text has better font support for Arabic/CJK."),
+                            help_text = _("Markdown renders formatting; it draws Arabic and Persian in the right-to-left font, each paragraph in its own direction. Plain Text uses KOReader's interface fonts, which draw more scripts in their own face (Hebrew, Devanagari, Bengali) and show emoji."),
                         },
                         {
                             id = "render_math",
@@ -264,12 +262,27 @@ local SettingsSchema = {
                             help_text = _("Show LaTeX math from responses as readable formulas: Greek letters, operators, superscripts, vectors, fractions as a/b. Markdown view only. Saved chats, copies and exports keep the original notation, which Obsidian and similar apps render fully."),
                         },
                         {
+                            id = "rtl_font",
+                            type = "submenu",
+                            text = _("Right-to-left text font"),
+                            callback = "rtlFontMenuItems",
+                            text_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                return T(_("Right-to-left text font: %1"), require("koassistant.ui.rtl_font").label(f))
+                            end,
+                            enabled_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                return f.render_markdown ~= false
+                            end,
+                            help_text = _("The font of right-to-left paragraphs (Arabic, Persian and the other right-to-left scripts) in the Markdown view. Noto Naskh Arabic, the default, is the face KOReader gives Arabic books; Noto Sans Arabic UI is the face of its plain-text windows; any font KOReader knows can be picked (a font copied into KOReader's fonts folder appears after a restart). None shows those letters in the window's own fallback font, as before. Hebrew and other scripts the chosen font lacks keep that fallback."),
+                        },
+                        {
                             id = "chat_exchange_page_breaks",
                             type = "toggle",
                             text = _("Latest Reply on New Page"),
                             path = "features.chat_exchange_page_breaks",
                             default = true,
-                            help_text = _("Present the newest reply from the top of a fresh page. Markdown chats get a real page break before it (older exchanges stay compact; the break moves forward with each reply and never touches saves or exports); Plain Text chats align the view so the reply starts the screen. Chat viewer only."),
+                            help_text = _("Open the newest reply on a fresh page: your question, the usage line and the KOAssistant label stay on the page before, and the reply's first line opens the page. Markdown chats get a real page break (older exchanges stay compact; the break moves forward with each reply and never touches saves or exports); Plain Text chats align the view so the reply's first line starts the screen. Chat window only."),
                         },
                         {
                             id = "scroll_to_last_message",
@@ -277,7 +290,7 @@ local SettingsSchema = {
                             text = _("Open Chats at Latest Exchange"),
                             path = "features.scroll_to_last_message",
                             default = true,
-                            help_text = _("When opening a saved chat, jump to the newest question and reply instead of the top. Replies always land on the newest exchange regardless of this setting. Independent of New Page per Exchange (that one changes the page layout; this one changes where an opened chat starts)."),
+                            help_text = _("When opening a saved chat, jump to the newest reply instead of the top. Replies always land on the newest reply regardless of this setting. Independent of Latest Reply on New Page (that one changes the page layout; this one changes where an opened chat starts)."),
                         },
                         {
                             id = "plain_text_options",
@@ -301,7 +314,7 @@ local SettingsSchema = {
                             text = _("Text Mode for Dictionary"),
                             path = "features.dictionary_text_mode",
                             default = false,
-                            help_text = _("Use Plain Text mode for dictionary popup. Better font support for non-Latin scripts."),
+                            help_text = _("Use Plain Text mode for dictionary popup. Better for scripts the Markdown view draws in its plain fallback face (Hebrew, Devanagari, Bengali, Thai)."),
                         },
                         {
                             id = "rtl_dictionary_text_mode",
@@ -320,20 +333,20 @@ local SettingsSchema = {
                             type = "toggle",
                             text = _("Text Mode for RTL Translate"),
                             path = "features.rtl_translate_text_mode",
-                            default = true,
-                            help_text = _("Use Plain Text mode for translate popup when translation language is Arabic, Classical Arabic, Persian or Urdu."),
+                            default = false,
+                            help_text = _("Use Plain Text mode for the translate window when the translation language is Arabic, Classical Arabic, Persian or Urdu. Off by default: the Markdown view draws those languages in the right-to-left font, the translated text right-to-left and the original left-to-right."),
                         },
                         {
                             id = "rtl_chat_text_mode",
                             type = "toggle",
                             text = _("Auto RTL mode for Chat"),
                             path = "features.rtl_chat_text_mode",
-                            default = true,
+                            default = false,
                             enabled_func = function(plugin)
                                 local f = plugin.settings:readSetting("features") or {}
                                 return f.render_markdown ~= false
                             end,
-                            help_text = _("Automatically detect RTL content and switch to RTL mode (right-aligned text + Plain Text). Activates when the latest response has more RTL than Latin characters. Disabling removes all automatic RTL adjustments. Grayed out when markdown is disabled."),
+                            help_text = _("Switch chat and artifact windows to right-aligned Plain Text when the latest response has more right-to-left than Latin letters. Off by default: the Markdown view lays every paragraph out in its own direction and draws Arabic and Persian in the right-to-left font. Disabling removes all automatic RTL adjustments. Grayed out when markdown is disabled."),
                         },
                     },
                 },
@@ -739,7 +752,7 @@ local SettingsSchema = {
                     -- sites check ~= false; the resolver's "default" branch is
                     -- the single flip point for requests AND X-Ray promotion.
                     default = true,
-                    help_text = _("On by default: the AI is told not to reveal events beyond your current reading position in book and highlight chats, and X-Ray checkpoint updates follow your position instead of installing the newest version. Research mode disables protection. Override per book in Book Settings; per chat via the Spoiler chip (chat input's gear menu → Toolbar Buttons). Custom actions can use the {spoiler_free_nudge} placeholder."),
+                    help_text = _("On by default: the AI is told not to reveal events beyond your current reading position in book and highlight chats, and X-Ray checkpoint updates follow your position instead of installing the newest version. Research mode and a book marked Finished disable protection. Override per book in Book Settings; per chat via the Spoiler chip (chat input's gear menu → Toolbar Buttons). Custom actions can use the {spoiler_free_nudge} placeholder."),
                     separator = true,
                 },
                 -- Content Format submenu
@@ -1172,7 +1185,7 @@ local SettingsSchema = {
                                 { value = "name", text = _("Name only, tap to show a one-line description") },
                                 { value = "entry", text = _("First sentence right away") },
                             },
-                            help_text = _("What the card shows first for an upcoming entity, known only from the next checkpoint built ahead of you. Name only shows the tapped name and its category; a tap on the card adds the entry's first sentence, and another tap opens the full entry behind a spoiler confirmation. First sentence right away skips the first step (it can reveal that a name is another character's alias). Can be overridden per book."),
+                            help_text = _("What the card shows first for an upcoming entity, known only from the next checkpoint built past your reading position. Name only shows the tapped name as written and its category; a tap on the card adds the entry's first sentence, and another tap opens the full entry after a confirmation, whatever the spoiler setting. First sentence right away skips the first step. The confirmation box also offers Matching…, to stop a wrong underline without reading the entry. Can be overridden per book."),
                             enabled_func = function(plugin)
                                 local f = plugin.settings:readSetting("features") or {}
                                 return f.xray_show_ahead_entities ~= false
@@ -1200,7 +1213,7 @@ local SettingsSchema = {
                             text = _("Entity Card First"),
                             path = "features.xray_card_landing",
                             default = true,
-                            help_text = _("Exact entity hits (tapping a marked word, or selecting text that matches an entity) open a compact card first: the name, category and role, and a one-line identification, with the full entry a tap on the card away. The identification may come from the newest built checkpoint, so newly appearing names are known on sight; the full entry stays at your reading position, behind a confirmation, while spoiler protection is on. Off = open the full entry directly."),
+                            help_text = _("Exact entity hits (tapping a marked word, or selecting text that matches an entity) open a compact card first: the name, category and role, and a one-line identification, with the full entry a tap on the card away. An entity known only from the next checkpoint built past your reading position goes through stages instead (see Upcoming Entity Cards): its name, one line, then the full entry after a confirmation, whatever the spoiler setting. Off = open the full entry directly; an upcoming entity still goes through its stages."),
                             on_change = function(new_value, plugin)
                                 if plugin.syncXrayMarks then
                                     local UIManager = require("ui/uimanager")
@@ -1228,7 +1241,7 @@ local SettingsSchema = {
                                 { value = "footnote", text = _("Footnote panel (bottom of the screen)") },
                                 { value = "popup", text = _("Floating popup (near the tapped word)") },
                             },
-                            help_text = _("How the entity card is presented. The footnote panel slides in at the bottom of the screen, like KOReader's footnote popups, and follows the book's margins and font size. The floating popup is a small window anchored next to the tapped word. In both, tapping the card opens the full entry; tapping elsewhere dismisses it."),
+                            help_text = _("How the entity card is presented. The footnote panel slides in at the bottom of the screen, like KOReader's footnote popups, and follows the book's margins and font size. The floating popup is a small window anchored next to the tapped word. In both, tapping the card opens the full entry (an upcoming entity's card moves to its next stage); tapping elsewhere dismisses it."),
                         },
                         {
                             id = "xray_marking_density",
@@ -1648,17 +1661,9 @@ local SettingsSchema = {
                     text_func = function(plugin)
                         local f = plugin.settings:readSetting("features") or {}
                         local action_id = f.dictionary_bypass_action or "quick_define"
-                        -- Try to get action name
-                        local Actions = require("koassistant.prompts.actions")
-                        local action = Actions.getById(action_id)
-                        if action then
-                            return T(_("Bypass Action: %1"), action.text)
-                        end
-                        -- Check special actions
-                        if Actions.special and Actions.special[action_id] then
-                            return T(_("Bypass Action: %1"), Actions.special[action_id].text)
-                        end
-                        return T(_("Bypass Action: %1"), action_id)
+                        -- the reader's own actions by name too (B610)
+                        local name = require("koassistant.prompts.action_service").bypassActionName(plugin, "highlight", action_id)
+                        return T(_("Bypass Action: %1"), name or T(_("%1 (no longer exists)"), action_id))
                     end,
                     callback = "buildDictionaryBypassActionMenu",
                     help_text = _("Action to trigger when dictionary bypass is enabled. With Look up in X-Ray, a tapped word that has an X-Ray entry opens it directly; any other word falls through to the normal dictionary."),
@@ -1953,17 +1958,9 @@ local SettingsSchema = {
                     text_func = function(plugin)
                         local f = plugin.settings:readSetting("features") or {}
                         local action_id = f.highlight_bypass_action or "translate"
-                        -- Try to get action name
-                        local Actions = require("koassistant.prompts.actions")
-                        local action = Actions.getById(action_id)
-                        if action then
-                            return T(_("Bypass Action: %1"), action.text)
-                        end
-                        -- Check special actions
-                        if Actions.special and Actions.special[action_id] then
-                            return T(_("Bypass Action: %1"), Actions.special[action_id].text)
-                        end
-                        return T(_("Bypass Action: %1"), action_id)
+                        -- the reader's own actions by name too (B610)
+                        local name = require("koassistant.prompts.action_service").bypassActionName(plugin, "highlight", action_id)
+                        return T(_("Bypass Action: %1"), name or T(_("%1 (no longer exists)"), action_id))
                     end,
                     callback = "buildHighlightBypassActionMenu",
                     help_text = _("Action to trigger when highlight bypass is enabled"),
@@ -2449,7 +2446,7 @@ local SettingsSchema = {
                     text = _("Highlight Menu Actions"),
                     callback = "showHighlightMenuManager",
                     keep_menu_open = true,
-                    help_text = _("Choose which actions appear in the highlight menu. Changes take effect the next time the menu opens (up to 15 shown)."),
+                    help_text = _("Choose which actions appear in the highlight menu. Changes take effect the next time the menu opens (up to 30 shown)."),
                     separator = true,
                 },
                 -- Dictionary popup
@@ -2941,9 +2938,8 @@ local SettingsSchema = {
                     -- rather than disable — this is a GLOBAL default that still applies to every
                     -- other model the reader switches to (same rule as the QS web-search tile).
                     suffix_func = function(plugin)
-                        local f = plugin.settings:readSetting("features") or {}
                         local mode = ModelConstraints.temperatureSupport(
-                            f.provider or "anthropic", plugin:getCurrentModel())
+                            plugin:getCurrentProvider(), plugin:getCurrentModel())
                         if mode == "rejected" then return _("ignored by this model") end
                         if mode == "forced" then return _("fixed by this model") end
                         return nil
@@ -3084,7 +3080,7 @@ local SettingsSchema = {
                                 local f = plugin.settings:readSetting("features") or {}
                                 return T(_("OpenAI model: %1"), imageModelLabel("openai", f.image_gen_model_openai))
                             end,
-                            help_text = _("gpt-image-2.5-flare is fast (about 11 s at low quality) and cheap; gpt-image-2.5-sunburst gives the finest detail but is slower."),
+                            help_text = _("gpt-image-2.6-flare is fast (about 10 s at low quality) and cheap; gpt-image-2.6-sunburst gives the finest detail but is slower (about 25 s). The 2.5 pair and gpt-image-2 stay listed; gpt-image-1-mini shuts down on 2026-12-01."),
                             path = "features.image_gen_model_openai",
                             default = "default",
                             options = imageModelOptions("openai"),
@@ -3351,6 +3347,33 @@ local SettingsSchema = {
                             options = {
                                 { value = "international", text = _("International (api.moonshot.ai)") },
                                 { value = "china", text = _("China (api.moonshot.cn)") },
+                            },
+                        },
+                        {
+                            id = "bedrock_region",
+                            type = "radio",
+                            text_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                return T(_("Amazon Bedrock Region: %1"), f.bedrock_region or "us-east-1")
+                            end,
+                            help_text = _("The AWS region whose Bedrock runtime answers. A Bedrock API key is made in one region and works there; a model must be enabled for the account in that region. A base_url in configuration.lua overrides this setting."),
+                            path = "features.bedrock_region",
+                            default = "us-east-1",
+                            options = {
+                                { value = "us-east-1", text = _("US East (N. Virginia)") },
+                                { value = "us-east-2", text = _("US East (Ohio)") },
+                                { value = "us-west-2", text = _("US West (Oregon)") },
+                                { value = "ca-central-1", text = _("Canada (Central)") },
+                                { value = "eu-central-1", text = _("Europe (Frankfurt)") },
+                                { value = "eu-west-1", text = _("Europe (Ireland)") },
+                                { value = "eu-west-2", text = _("Europe (London)") },
+                                { value = "eu-west-3", text = _("Europe (Paris)") },
+                                { value = "eu-north-1", text = _("Europe (Stockholm)") },
+                                { value = "ap-south-1", text = _("Asia Pacific (Mumbai)") },
+                                { value = "ap-southeast-1", text = _("Asia Pacific (Singapore)") },
+                                { value = "ap-southeast-2", text = _("Asia Pacific (Sydney)") },
+                                { value = "ap-northeast-1", text = _("Asia Pacific (Tokyo)") },
+                                { value = "sa-east-1", text = _("South America (São Paulo)") },
                             },
                         },
                     },

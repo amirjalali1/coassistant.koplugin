@@ -550,4 +550,86 @@ TestRunner:test("namesBook: the book-info run option is offered only where the b
     TestRunner:assertEqual(NB(nil), false, "no action")
 end)
 
+TestRunner:test("webSearchPreview: the message's web flag is what the bake decides (B588)", function()
+    local function copy(t)
+        local out = {}
+        for k, v in pairs(t) do
+            if type(v) == "table" then
+                local c = {}
+                for k2, v2 in pairs(v) do c[k2] = v2 end
+                out[k] = c
+            else
+                out[k] = v
+            end
+        end
+        return out
+    end
+    local function effective(cfg)
+        if cfg.enable_web_search ~= nil then return cfg.enable_web_search == true end
+        if cfg.features.enable_web_search ~= nil then return cfg.features.enable_web_search == true end
+        return cfg.provider == "perplexity"
+    end
+    local quick_action = { id = "explain", accept_quick_answer = true }
+    local plain = { id = "explain" }
+    local cases = {
+        { "a run option's web off beats the global on", plain, { _run_variant = { web = false }, enable_web_search = true }, false },
+        { "a run option's web on", plain, { _run_variant = { web = true } }, true },
+        { "Quick turns web off for an action that takes the preset", quick_action, { _quick_answer_active = true, enable_web_search = true }, false },
+        { "Quick leaves an action that does not take it alone", plain, { _quick_answer_active = true, enable_web_search = true }, true },
+        { "the action's own pin beats Quick", { id = "x", accept_quick_answer = true, enable_web_search = true }, { _quick_answer_active = true }, true },
+        { "a run option's web pick touched the facet: Quick stands down", quick_action, { _quick_answer_active = true, _run_variant = { web = true } }, true },
+        { "the chat's toggle", plain, { _web_search_active = true }, true },
+        { "the chat's toggle off beats the global on", plain, { _web_search_active = false, enable_web_search = true }, false },
+        { "nothing set: the global default", plain, { enable_web_search = true }, true },
+        { "nothing set, no global: off", plain, {}, false },
+    }
+    for _idx, c in ipairs(cases) do
+        local label, action, features, want = c[1], c[2], c[3], c[4]
+        local preview = Dialogs.webSearchPreview(action, copy(features), "anthropic")
+        TestRunner:assertEqual(preview, want, label .. " (preview)")
+        local cfg = bake(copy(features), action, "anthropic", nil)
+        TestRunner:assertEqual(effective(cfg), want, label .. " (the bake)")
+    end
+    TestRunner:assertEqual(Dialogs.webSearchPreview(plain, {}, "perplexity"), true, "Perplexity searches by default")
+    TestRunner:assertEqual(Dialogs.webSearchPreview(plain, { enable_web_search = false }, "perplexity"), false, "unless turned off")
+end)
+
+TestRunner:test("the bake consumes the run option: a second bake on the same config needs it put back", function()
+    -- launchArtifactChat bakes, asks the stamps' question, and bakes again on
+    -- re-entry: the pick must be restored between, or the second bake runs
+    -- on the main model with reasoning on
+    local f = { is_book_context = true, _run_variant = { provider = "openai", model = "gpt-5.5", reasoning = "off" } }
+    local cfg = { provider = "anthropic", provider_settings = {}, features = f }
+    Dialogs._buildUnifiedRequestConfig(cfg, nil, nil, nil)
+    TestRunner:assertEqual(cfg.provider, "openai", "bake 1: the pick")
+    TestRunner:assertEqual(f._run_variant, nil, "consumed")
+    local d1 = cfg.api_params and cfg.api_params._reasoning
+    TestRunner:assertEqual(d1 and d1.option, "low", "No reasoning = the lowest effort on a model that cannot turn it off (bake 1)")
+    TestRunner:assertEqual(f._run_reasoning, "off", "the pick recorded for the window")
+    -- without the pick put back the second bake sends nothing (the model's own default)
+    Dialogs._buildUnifiedRequestConfig(cfg, nil, nil, nil)
+    local d2 = cfg.api_params and cfg.api_params._reasoning
+    TestRunner:assertEqual(d2 and d2.send_nothing, true, "bake 2 without the pick: the default")
+    TestRunner:assertEqual(f._run_reasoning, nil)
+    f._run_variant = { provider = "openai", model = "gpt-5.5", reasoning = "off" }
+    Dialogs._buildUnifiedRequestConfig(cfg, nil, nil, nil)
+    local d3 = cfg.api_params and cfg.api_params._reasoning
+    TestRunner:assertEqual(cfg.provider, "openai", "bake 3 with the pick put back")
+    TestRunner:assertEqual(d3 and d3.option, "low", "the pick again")
+    TestRunner:assertEqual(f._run_reasoning, "off")
+end)
+
+TestRunner:test("the preview reads the request's own config copy, not the consumed source (the sweep of 2026-11-06)", function()
+    -- handlePredefinedPrompt consumes the run option and the chat's web toggle
+    -- from the SOURCE config at its entry; the copy (temp_config) keeps them,
+    -- so the message's flag must be read there or every pick reads as unset
+    local f = assert(io.open("koassistant/ui/dialogs.lua"))
+    local src = f:read("*a")
+    f:close()
+    TestRunner:assertTrue(src:find("message_data.web_search_active = webSearchPreview(prompt, temp_config.features,", 1, true) ~= nil,
+        "the call site passes temp_config.features")
+    TestRunner:assertTrue(src:find("webSearchPreview(prompt, config.features,", 1, true) == nil,
+        "never the consumed source")
+end)
+
 return TestRunner:summary()

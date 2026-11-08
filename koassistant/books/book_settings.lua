@@ -1271,12 +1271,18 @@ function BookSettings.showDomainResearch(opts)
     local document_path = opts.document_path
 
     local is_group = opts.scope == "group"
-    local doc_settings = opts.doc_settings or resolveDocSettings(ui, document_path)
+    -- opts.global_only: the global values alone (a general or library chat's
+    -- Domain chip beside an open book, B586)
+    local doc_settings = nil
+    if not opts.global_only then doc_settings = opts.doc_settings or resolveDocSettings(ui, document_path) end
     local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
     local all_domains = DomainLoader.getSortedDomains(features.custom_domains or {})
 
     local book_domain = doc_settings and doc_settings:readSetting(BookSettings.KEY_DOMAIN) or nil
-    local book_research = doc_settings and doc_settings:readSetting(BookSettings.KEY_RESEARCH) or nil
+    -- (an explicit if: the book's Off is false, which `and ... or nil` read as
+    -- not set, the sweep of 2026-11-06)
+    local book_research = nil
+    if doc_settings then book_research = doc_settings:readSetting(BookSettings.KEY_RESEARCH) end
 
     -- Default to "book" whenever a book is in hand (2026-09-07: it used to
     -- need an existing override, so the normal first visit opened on Global).
@@ -1326,7 +1332,7 @@ function BookSettings.showDomainResearch(opts)
             closeDialog()
             BookSettings.showDomainResearch({
                 plugin = plugin, ui = ui, document_path = document_path,
-                doc_settings = opts.doc_settings, scope = opts.scope,
+                doc_settings = opts.doc_settings, scope = opts.scope, global_only = opts.global_only,
                 on_close = on_close, target_override = new_target,
             })
         end,
@@ -1582,6 +1588,13 @@ function BookSettings.showLayeredPicker(spec, opts)
     -- picker edits a GROUP's value; the book tab then reads "For this group"
     local is_group = opts.scope == "group"
     local doc_settings = opts.doc_settings or resolveDocSettings(ui, document_path)
+    -- A spec with no key and no rows has no per-book value (the position,
+    -- library and habits privacy pickers): no book layer, no For this book
+    -- tab, whatever book is in scope (a tap there saved under a nil key and
+    -- crashed KOReader; sweep 2026-11-06)
+    if spec.key == nil and spec.rows == nil then
+        doc_settings = nil
+    end
     local features = plugin and plugin.settings and plugin.settings:readSetting("features") or {}
     -- Explicit if-chain: read_book may legitimately return false (an and/or
     -- fold here would drop explicit-off overrides)
