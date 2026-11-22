@@ -31,7 +31,7 @@ Two faster routes skip the dialog:
 | Action | What it does |
 |---|---|
 | **Explain** | Detailed explanation of the passage |
-| **Quick Explain** | A short explanation meant to land in the [minimal popup](Chat-Windows) rather than the full window. In the highlight menu by default |
+| **Quick Explain** | A short explanation (two or three sentences, on your provider's fast model) meant to land in the [minimal popup](Chat-Windows) rather than the full window. It knows what Explain knows: your domain and the book's Background note go with it. In the highlight menu by default |
 | **ELI5** | Explain Like I'm 5: a simplified explanation |
 | **Summarize** | Concise summary of the text |
 | **Elaborate** | Expands on concepts, with additional context and details |
@@ -77,7 +77,7 @@ Several actions let you choose what the AI works from before they run. One popup
 
 - **Full document:** the entire document. For actions that already stop at your reading position (like Recap), this row reads **Up to current position (NN%)** instead.
 - **Up to current position (NN%):** for whole-document actions, limits the scope to what you have read so far (spoiler-safe). Offered from 1% of the book to about 98%.
-- **Pick section…:** a chapter or part from a hierarchical table-of-contents picker. The section's name appears below the scope buttons. Section results are saved as their own artifacts (for example "Section Key Arguments: Chapter 5").
+- **Pick section…:** a chapter or part from a hierarchical table-of-contents picker. The section's name appears below the scope buttons. Section results are saved as their own artifacts (for example "Section Key Arguments: Chapter 5"). The request is about that section alone; a Reading Guide of a section is a guide to that section, for when you are about to read it.
 - **From section… (to NN%):** from a section you pick up to your reading position.
 - **Pick section range…:** a start section and an end section.
 - **Current chapter** and **Current chapter so far:** Quiz only.
@@ -332,7 +332,7 @@ The response window has its own page, [Chat Windows](Chat-Windows): its buttons 
 
 **Use cases:** save explanations of difficult passages for later reference; keep translations alongside foreign text; build a glossary of term definitions within your book; annotate with AI-generated insights that become part of your reading notes.
 
-**Note:** Save to Note works only in highlight chats (where you selected text). In book, library and general chats the button is grayed out.
+**Note:** Save to Note works only in highlight chats (where you selected text). In book, library and general chats the button is grayed out. It also works only in the window the answer arrives in: the selection is not saved with the chat, so the button is grayed out in a highlight chat reopened later from Chat History. Save the note when the answer arrives, or copy the answer and add it as a note in KOReader yourself.
 
 ## Related
 

@@ -154,6 +154,7 @@ local InputTextStub = widgetClass("inputtext")
 function InputTextStub:setText() end
 function InputTextStub:addChars() end
 function InputTextStub:scrollToBottom() end
+function InputTextStub:resyncPos() end   -- a window that does not follow keeps the reader's place each tick (the default, B752)
 function InputTextStub:scrollUp() end
 function InputTextStub:scrollDown() end
 function InputTextStub:initTextBox() end
@@ -165,8 +166,12 @@ local last_dialog  -- the stream dialog the handler built last (its close callba
 function InputDialogStub:new(o)
     o = o or {}
     setmetatable(o, { __index = self })
-    o._input_widget = (o.inputtext_class or InputTextStub):new{}
-    o.title_bar = { init = function() end }
+    o._input_widget = (o.inputtext_class or InputTextStub):new{ parent = o, width = 500, height = 400 }
+    -- KOReader's Widget:new calls init; the stub classes do not (InputTextStub has none)
+    if o._input_widget.init then o._input_widget:init() end
+    -- setTitle is KOReader's TitleBar:setTitle: the title's moving dots go through it
+    o.title_bar = { init = function() end,
+        setTitle = function(bar, title) bar.titles = bar.titles or {}; bar.titles[#bar.titles + 1] = title end }
     last_dialog = o
     return o
 end
@@ -201,18 +206,19 @@ local REFUSAL_BODY = '{"error": {"message": "Request too large for model `openai
 
 --- Drive the real streaming loop over one recorded pipe buffer.
 --- @return boolean ok, string|nil content, string|nil err
-local function runStream(segments)
+local function runStream(segments, extra_settings)
     RL._reset()
     if type(segments) == "string" then segments = { { text = segments, delay = 0 } } end
     pipe.segs, pipe.idx, pipe.pos, pipe.tick, pipe.ready_at, held = segments, 1, 1, 0, 0, ""
     queue = {}
     local out = {}
+    -- 125 ms: the drain grace is max(4 polls, 0.5 s / interval), so this keeps
+    -- the bound at 4 polls; the replay never sleeps, so it costs nothing.
+    local settings = { provider_name = "groq", model = "openai/gpt-oss-20b",
+        poll_interval_ms = 125, display_interval_ms = 1, prompt_chars = 100 }
+    for k, v in pairs(extra_settings or {}) do settings[k] = v end
     StreamHandler:new{}:showStreamDialog(
-        function() end, "groq", "openai/gpt-oss-20b",
-        -- 125 ms: the drain grace is max(4 polls, 0.5 s / interval), so this keeps
-        -- the bound at 4 polls; the replay never sleeps, so it costs nothing.
-        { provider_name = "groq", model = "openai/gpt-oss-20b",
-          poll_interval_ms = 125, display_interval_ms = 1, prompt_chars = 100 },
+        function() end, "groq", "openai/gpt-oss-20b", settings,
         function(ok, content, err)
             -- pipe.tick counts pipe polls; snapshot it AT completion so the
             -- post-finish subprocess collection (cleanup's 5 s task) is not counted
@@ -514,9 +520,284 @@ TestRunner:test("a <think> block that starts mid-text is split off at the stream
     TestRunner:assertTrue(content:find("deep thought", 1, true) == nil, "the reasoning left the answer")
 end)
 
+-- Markdown while streaming (B562): the dialog's input widget is the Markdown
+-- view, which renders the chunks through the viewer's pipeline and the stream
+-- completes as before; a hidden stream keeps the plain widget.
+TestRunner:test("Markdown while streaming: the rendered view takes the chunks, the stream completes", function()
+    local saved_fc = package.loaded["ui/widget/container/framecontainer"].getSize
+    package.loaded["ui/widget/container/framecontainer"].getSize = function() return { w = 500, h = 400 } end
+    -- the first chunk alone, then the rest four polls later: the repaint tick
+    -- between them renders the chunk (the tick pending at the finish is dropped
+    -- with the dialog, as for the plain widget)
+    local first = 'data: {"choices":[{"index":0,"delta":{"content":"# Title\\n\\n"},"finish_reason":null}]}\n\n'
+    local rest = 'data: {"choices":[{"index":0,"delta":{"content":"A **bold** line"},"finish_reason":null}]}\n\n'
+        .. 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' .. 'data: [DONE]\n\n'
+    local ok, content = runStream({ { text = first, delay = 0 }, { text = rest, delay = 4 } },
+        { stream_markdown = true, features = { render_math = true }, text_align = "auto" })
+    TestRunner:assertTrue(ok, "stream completed")
+    TestRunner:assertEqual(content, "# Title\n\nA **bold** line", "answer text intact")
+    local iw = last_dialog._input_widget
+    TestRunner:assertTrue(iw and iw.markdown_stream == true, "the Markdown view is the dialog's widget")
+    TestRunner:assertTrue((iw.renders or 0) >= 2, "rendered the waiting text and the chunk: " .. tostring(iw.renders))
+    -- the unit mock's markdown renderer is not luamd: the chunk reached the HTML view
+    TestRunner:assertTrue(type(iw.scroll_w) == "table" and type(iw.scroll_w.html_body) == "string"
+        and iw.scroll_w.html_body:find("Title", 1, true) ~= nil, "the chunk reached the HTML view: " .. tostring(iw.scroll_w and iw.scroll_w.html_body))
+    TestRunner:assertEqual(last_dialog.koa_stream.text_align, "auto", "the render options ride the dialog")
+    ok = runStream(first .. rest, { stream_markdown = true, hidden_streaming = true })
+    TestRunner:assertTrue(ok, "a hidden stream completes")
+    TestRunner:assertTrue(not last_dialog._input_widget.markdown_stream, "a hidden stream keeps the plain widget")
+    package.loaded["ui/widget/container/framecontainer"].getSize = saved_fc
+end)
+
+-- Audit 2026-11-12: an emoji a provider writes as an escape pair
+-- (\uD83D\uDD0D) leaves KOReader's JSON decoder as two three-byte halves,
+-- invalid UTF-8 that drew as six replacement characters and was saved so.
+-- The decoder of this suite joins pairs by itself, so the halves are fed as
+-- the bytes KOReader's decoder produces.
+TestRunner:test("an emoji that arrives as two surrogate halves is joined, in one piece or split across two", function()
+    local HI, LO, EMOJI = "\237\160\189", "\237\180\141", "\240\159\148\141"
+    local function event(text)
+        return 'data: {"choices":[{"delta":{"content":"' .. text .. '"},"finish_reason":null}]}\n\n'
+    end
+    local done = 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+    local ok, content = runStream(event("look " .. HI .. LO .. " here") .. done)
+    TestRunner:assertTrue(ok, "the stream completes")
+    TestRunner:assertEqual(content, "look " .. EMOJI .. " here", "both halves in one piece: one character")
+    local ok2, content2 = runStream(event("look " .. HI) .. event(LO .. " here") .. done)
+    TestRunner:assertTrue(ok2, "the split stream completes")
+    TestRunner:assertEqual(content2, "look " .. EMOJI .. " here", "the halves in two pieces: joined at the end")
+    local ok3, content3 = runStream(event("plain text, caf\195\169 and \228\184\173") .. done)
+    TestRunner:assertTrue(ok3 and content3 == "plain text, caf\195\169 and \228\184\173", "other text is untouched")
+end)
+
 -- ------------------------------------------------------------------
 RL._reset()
 package.loaded["koassistant.request.stream_handler"] = nil
+-- A refused request on the transport every device uses: the provider's body
+-- comes BEFORE the status line (seen in the real app, 2026-11-12). A one-line
+-- body (Anthropic, DeepSeek, OpenRouter) starts with "{" and was taken as an
+-- NDJSON error event: its message alone was reported, without the HTTP status
+-- and the error's own code. An indented body (Gemini, OpenAI) lost its first
+-- line, a lone "{", and with it the code, which the account-limit tip reads.
+local STATUS_401 = "\r\nX-NON-200-STATUS:Error 401: Unauthorized\n\n"
+local ONE_LINE_401 = '{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}'
+
+TestRunner:test("a refused request's one-line body keeps its status and its error type", function()
+    local ok, _c, err = runStream(ONE_LINE_401 .. STATUS_401)
+    TestRunner:assertTrue(not ok, "reported as a failure")
+    TestRunner:assertTrue(type(err) == "string" and err:find("^HTTP 401: invalid x%-api%-key") ~= nil,
+        "the status leads the provider's sentence: " .. tostring(err))
+    TestRunner:assertTrue(err:find("authentication_error", 1, true) ~= nil, "the error's type rides with it: " .. err)
+    ok, _c, err = runStream({ { text = ONE_LINE_401, delay = 0 }, { text = STATUS_401, delay = 1 } })
+    TestRunner:assertTrue(not ok and type(err) == "string" and err:find("^HTTP 401: ") ~= nil,
+        "also when the status line trails by a poll: " .. tostring(err))
+    ok, _c, err = runStream({ { text = ONE_LINE_401 .. MARKER, delay = 0 }, { text = STATUS_401, delay = 1 } })
+    TestRunner:assertTrue(not ok and type(err) == "string" and err:find("^HTTP 401: ") ~= nil,
+        "and when the allowance marker came a poll before it: " .. tostring(err))
+end)
+
+TestRunner:test("an indented error body keeps the provider's code, so an empty account is not read as a rate limit", function()
+    local body = '{\n  "error": {\n    "message": "You exceeded your current quota, please check your plan and billing details.",\n'
+        .. '    "type": "insufficient_quota",\n    "param": null,\n    "code": "insufficient_quota"\n  }\n}\n'
+    local ok, _c, err = runStream(body .. "\r\nX-NON-200-STATUS:Error 429: Too Many Requests\n\n")
+    TestRunner:assertTrue(not ok, "reported as a failure")
+    TestRunner:assertTrue(type(err) == "string" and err:find("^HTTP 429: You exceeded your current quota") ~= nil,
+        "the status and the provider's sentence: " .. tostring(err))
+    TestRunner:assertTrue(err:find("insufficient_quota", 1, true) ~= nil, "the code is there: " .. err)
+    TestRunner:assertTrue(require("koassistant.request.model_constraints").isBillingWall(err),
+        "and the account-limit tip recognises its case")
+end)
+
+TestRunner:test("an error event in a stream that was answered 200 is still its message alone", function()
+    -- Ollama's mid-stream error: no status line follows
+    local ok, _c, err = runStream('{"error":"model requires more system memory"}\n')
+    TestRunner:assertTrue(not ok, "reported as a failure")
+    TestRunner:assertEqual(err, "model requires more system memory", "the message, as before")
+end)
+
+TestRunner:suite("the stream window in the chat window's frame (B696)")
+
+-- A dialog as InputDialog builds one, as far as the frame builder reads it:
+-- what it adds around its text is `chrome`, whatever the text's height
+local function fakeDialogs(chrome)
+    local made = {}
+    return made, function(text_height)
+        local bar = { title_multilines = true, bottom_v_padding = 0, cleared = 0, order = {} }
+        function bar:clear() self.cleared = self.cleared + 1; self.order[#self.order + 1] = "clear" end
+        function bar:init() self.order[#self.order + 1] = "init" end
+        local d = { text_height = text_height, title_bar = bar,
+            vgroup = { resetLayout = function(g) g.reset = true end },
+            dialog_frame = { getSize = function() return { w = 100, h = text_height + chrome } end },
+            free = function(dlg) dlg.freed = true end }
+        made[#made + 1] = d
+        return d
+    end
+end
+
+TestRunner:test("what a dialog adds around its text is measured: a window built on a wrong guess is built once more", function()
+    local build = StreamHandler._buildInChatFrame
+    local border = require("ui/size").border.window
+    local made, make = fakeDialogs(231)     -- not the guess (120 and the border twice)
+    local close = function() end
+    local d = build(make, 1000, "test-kind-a", close)
+    TestRunner:assertEqual(#made, 2, "the first on the guess, the second at the measure")
+    TestRunner:assertTrue(made[1].freed == true and d == made[2], "the first one is freed, the second returned")
+    TestRunner:assertEqual(d.dialog_frame:getSize().h, 1000 + 2 * border, "the chat window's frame: its height and its border")
+    -- the title bar as the chat window's, laid out again KOReader's way
+    local bar = d.title_bar
+    TestRunner:assertEqual(bar.close_callback, close, "the close button")
+    TestRunner:assertEqual(bar.title_multilines, false, "one line, as the chat window's title")
+    TestRunner:assertEqual(bar.bottom_v_padding, nil, "the bar's own space under its line (InputDialog gives it none)")
+    TestRunner:assertEqual(bar.title_face, require("koassistant.ui.chatgptviewer").title_face, "the chat window's face")
+    TestRunner:assertEqual(table.concat(bar.order, " "), "clear init", "cleared first: the first layout's title and line would stay underneath")
+    TestRunner:assertTrue(d.vgroup.reset == true, "and the dialog measures its bar again")
+    -- the next window of that kind is exact at once
+    local made2, make2 = fakeDialogs(231)
+    local d2 = build(make2, 800, "test-kind-a", close)
+    TestRunner:assertEqual(#made2, 1, "built once")
+    TestRunner:assertEqual(d2.dialog_frame:getSize().h, 800 + 2 * border)
+end)
+
+TestRunner:test("a right guess builds once; a dialog with no frame to measure is left as built", function()
+    local build = StreamHandler._buildInChatFrame
+    local border = require("ui/size").border.window
+    local made, make = fakeDialogs(120 + 2 * border)    -- the guess exactly
+    local d = build(make, 1000, "test-kind-b", function() end)
+    TestRunner:assertEqual(#made, 1)
+    TestRunner:assertEqual(d.dialog_frame:getSize().h, 1000 + 2 * border)
+    local bare = build(function(th) return { text_height = th, title_bar = { init = function() end } } end,
+        1000, "test-kind-c", function() end)
+    TestRunner:assertEqual(bare.text_height, 1000 - 120, "the guess, as before")
+end)
+
+TestRunner:test("both stream windows are built through it, at their sources", function()
+    local root = debug.getinfo(1, "S").source:match("@?(.*)"):match("(.+)/tests/unit/[^/]+$") or "."
+    local f = assert(io.open(root .. "/koassistant/request/stream_handler.lua", "r"))
+    local src = f:read("*a")
+    f:close()
+    local _a, dialogs = src:gsub("InputDialog:new{", "")
+    local _b, framed = src:gsub("buildInChatFrame%(function%(text_height%)%s*return InputDialog:new{", "")
+    TestRunner:assertEqual(dialogs, 2, "the lookup status window and the stream window")
+    TestRunner:assertEqual(framed, dialogs, "each inside the frame builder")
+    TestRunner:assertTrue(not src:find("title_bar:init()", 1, true), "no title bar is laid out again without the clear")
+end)
+
+TestRunner:suite("a stream that pauses after its first words shows the waiting dots (B709, #126)")
+
+-- Some Android e-readers sleep about 5 s after the last screen update, and a
+-- stream redraws only while words come: a pause (a web search, a slow
+-- provider) waited for the next tap. The dots after the text are display only.
+local function chunk(text)
+    return 'data: {"choices":[{"index":0,"delta":{"content":"' .. text .. '"},"finish_reason":null}]}\n\n'
+end
+local FINISH = 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+
+--- The texts the stream window showed during one replay
+local function shownDuring(segments)
+    local shown = {}
+    local saved_set = InputTextStub.setText
+    InputTextStub.setText = function(_self, text) shown[#shown + 1] = text end
+    local ok, content = runStream(segments)
+    InputTextStub.setText = saved_set
+    return shown, ok, content
+end
+
+local function withDots(text, shown)
+    for _idx, t in ipairs(shown) do
+        for _f, frame in ipairs(require("koassistant.ui.waiting").FRAMES) do
+            if t == text .. "\n\n" .. frame then return true end
+        end
+    end
+    return false
+end
+
+TestRunner:test("a pause shows the dots after the text, the next words take them away, the answer has none", function()
+    local shown, ok, content = shownDuring({ { text = chunk("First words."), delay = 0 },
+        { text = chunk(" More words."), delay = 12 }, { text = FINISH, delay = 1 } })
+    TestRunner:assertTrue(ok, "stream completed")
+    TestRunner:assertEqual(content, "First words. More words.", "the answer carries no dots")
+    TestRunner:assertTrue(withDots("First words.", shown),
+        "the dots showed after the text while nothing came: " .. table.concat(shown, " | "))
+    local plain = false
+    for _idx, t in ipairs(shown) do
+        if t == "First words. More words." then plain = true end
+    end
+    TestRunner:assertTrue(plain, "the next words showed without them: " .. table.concat(shown, " | "))
+end)
+
+TestRunner:test("words that keep coming show no dots", function()
+    local segments = {}
+    for i = 1, 6 do segments[i] = { text = chunk("w" .. i .. " "), delay = i == 1 and 0 or 1 } end
+    segments[7] = { text = FINISH, delay = 1 }
+    local shown, ok = shownDuring(segments)
+    TestRunner:assertTrue(ok, "stream completed")
+    for _idx, t in ipairs(shown) do
+        TestRunner:assertTrue(not t:find("\n\n%.+$"), "no dots while words come: " .. t)
+    end
+end)
+
+TestRunner:test("before the first words the waiting dots stand alone; the pause dots need words first", function()
+    local shown = shownDuring({ { text = chunk("Late."), delay = 10 }, { text = FINISH, delay = 1 } })
+    TestRunner:assertEqual(shown[1], ".", "the window opens on the waiting dots")
+    for _idx, t in ipairs(shown) do
+        TestRunner:assertTrue(not t:find("^\n\n"), "no pause dots before any word: " .. t)
+    end
+end)
+
+-- A window that does not follow (the default) shows a page that stands still
+-- while the answer grows under it, and the pause dots stand after the text,
+-- off that page. The title's dots are the one thing that moves whatever the
+-- page shows: from the first words to the end, at the waiting pace.
+local function titlesDuring(segments, extra)
+    local ok, content = runStream(segments, extra)
+    return (last_dialog and last_dialog.title_bar.titles) or {}, ok, content
+end
+
+TestRunner:test("the title's dots move from the first words to the end", function()
+    local titles, ok, content = titlesDuring({ { text = chunk("First words."), delay = 0 },
+        { text = chunk(" More words."), delay = 12 }, { text = FINISH, delay = 1 } },
+        { request_title = "Explain" })
+    TestRunner:assertTrue(ok, "stream completed")
+    TestRunner:assertEqual(content, "First words. More words.", "the answer carries no dots")
+    TestRunner:assertTrue(#titles >= 3, "the title was set at several ticks: " .. #titles)
+    local frames, seen = {}, {}
+    for _f, frame in ipairs(require("koassistant.ui.waiting").FRAMES) do frames["Explain " .. frame] = true end
+    for _idx, t in ipairs(titles) do
+        TestRunner:assertTrue(frames[t] == true, "a title is the request's title and one waiting frame: " .. t)
+        seen[t] = true
+    end
+    local distinct = 0
+    for _t in pairs(seen) do distinct = distinct + 1 end
+    TestRunner:assertTrue(distinct >= 2, "the title changed: " .. table.concat(titles, " | "))
+end)
+
+TestRunner:test("the title stands still before the first words", function()
+    -- While the window shows only its waiting dots, that line is what moves
+    local saved_set = InputTextStub.setText
+    local waiting_ticks, set_while_waiting = 0, 0
+    InputTextStub.setText = function(_self, text)
+        if text:find("^%.+$") then
+            waiting_ticks = waiting_ticks + 1
+            set_while_waiting = math.max(set_while_waiting, #((last_dialog and last_dialog.title_bar.titles) or {}))
+        end
+    end
+    local titles = titlesDuring({ { text = chunk("Late."), delay = 10 }, { text = FINISH, delay = 6 } })
+    InputTextStub.setText = saved_set
+    TestRunner:assertTrue(waiting_ticks >= 2, "the waiting dots ticked: " .. waiting_ticks)
+    TestRunner:assertEqual(set_while_waiting, 0, "no title was set while the window showed only its waiting dots")
+    TestRunner:assertTrue(#titles >= 1, "and the dots moved once the words were there: " .. #titles)
+    TestRunner:assertTrue(titles[1]:find("^AI is responding %.+$") ~= nil,
+        "a request without a title keeps the window's own: " .. tostring(titles[1]))
+end)
+
+TestRunner:test("a hidden stream's title stands still: its own line moves", function()
+    local titles, ok = titlesDuring({ { text = chunk("Question one."), delay = 0 },
+        { text = chunk(" Question two."), delay = 8 }, { text = FINISH, delay = 1 } },
+        { hidden_streaming = true })
+    TestRunner:assertTrue(ok, "stream completed")
+    TestRunner:assertEqual(#titles, 0, "no title was set: " .. table.concat(titles, " | "))
+end)
+
 for _idx, k in ipairs(SAVED_KEYS) do package.loaded[k] = saved[k] end
 
 print(string.format("\n  test_stream_ratelimit_marker: %d passed, %d failed",

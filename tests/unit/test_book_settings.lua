@@ -1314,6 +1314,250 @@ TestRunner:test("xrayPromotionHold: only the \"position\" sentinel pins (device 
         fakeDocSettings({ koassistant_book_xray_promotion = true })), false, "other values -> no hold")
 end)
 
+-- this file's runner has no assertTrue
+local function truthy(value, msg)
+    TestRunner:assertEqual(value and true or false, true, msg)
+end
+
+TestRunner:test("xraySmallModelNote: the form names a fast model only where the ask is big (B747)", function()
+    local note = BookSettings.xraySmallModelNote
+    -- a model that is not its provider's fast or ultrafast one: nothing, whatever the pick
+    for _i, tier in ipairs({ "standard", "flagship", "frontier" }) do
+        TestRunner:assertEqual(note(tier, "checkpoints", "deep", "m"), nil, tier .. " in checkpoints at Deep")
+    end
+    -- a fast model in one request at Standard or Light depth: nothing (it kept the cast apart there)
+    TestRunner:assertEqual(note("fast", nil, nil, "m"), nil, "one request, Standard")
+    TestRunner:assertEqual(note("fast", "one_bg", "light", "m"), nil, "one background request, Light")
+    -- checkpoints, either row, at any depth
+    for _i, delivery in ipairs({ "checkpoints", "follow" }) do
+        for _j, tier in ipairs({ "fast", "ultrafast" }) do
+            local text, case = note(tier, delivery, nil, "small-model")
+            TestRunner:assertEqual(case, "checkpoints", tier .. " / " .. delivery)
+            truthy(text:find("small-model", 1, true) ~= nil, "it names the model")
+            truthy(text:find("share a name", 1, true) ~= nil, "and says what was measured")
+        end
+    end
+    -- one request at Deep depth
+    local text, case = note("fast", nil, "deep", "small-model")
+    TestRunner:assertEqual(case, "deep")
+    truthy(text:find("Deep depth", 1, true) ~= nil)
+    -- checkpoints outrank the depth: one sentence, never two
+    local _t, both = note("fast", "checkpoints", "deep", "m")
+    TestRunner:assertEqual(both, "checkpoints")
+    -- no em dash in a sentence a reader sees
+    for _i, s in ipairs({ text, (note("fast", "follow", nil, "m")) }) do
+        truthy(not s:find("\226\128\148", 1, true), "no em dash")
+    end
+end)
+
+-- The warning is one line of the form's grey text at an e-reader's width
+local WARN_LINE_MAX = 60
+
+TestRunner:test("xraySmallModelWarning: the form's own call, the model the X-Ray action runs on", function()
+    local saved = package.loaded["koassistant.request.run_options"]
+    local base = { provider = "anthropic", model = nil }
+    package.loaded["koassistant.request.run_options"] = { stateFor = function() return { base = base } end }
+    local ModelLists = require("koassistant.request.model_lists")
+    local fast = ModelLists.getModelForTier("anthropic", "fast")
+    local standard = ModelLists.getModelForTier("anthropic", "standard")
+    local plugin = {
+        getCurrentProvider = function() return "anthropic" end,
+        getCurrentModel = function() return fast end,
+        settings = { readSetting = function() return {} end },
+    }
+    local warning = BookSettings.xraySmallModelWarning
+    base.model = fast
+    local w = warning(plugin, {}, "checkpoints", nil)
+    truthy(w and w.case == "checkpoints" and w.text:find(fast, 1, true) ~= nil,
+        "the provider's fast model in checkpoints: a warning that names the model")
+    truthy(w and #w.line <= WARN_LINE_MAX and w.line:find("^\226\154\160 Fast model and checkpoints") ~= nil,
+        "its grey line is short and starts with the warning sign, the sentence is a tap away: " .. tostring(w and w.line))
+    truthy(w and w.title == nil, "no button title: a warning is a line of the form, not a button among the dials")
+    TestRunner:assertEqual(warning(plugin, {}, nil, nil), nil, "in one request at the standing depth: nothing")
+    -- a plain update continues its X-Ray's own depth, whatever the standing pick
+    w = warning(plugin, {}, nil, { xray_depth = "deep" })
+    truthy(w and w.case == "deep" and w.line:find("Deep depth", 1, true) ~= nil and #w.line <= WARN_LINE_MAX,
+        "an update of a Deep X-Ray in one request")
+    plugin.settings.readSetting = function() return { xray_default_depth = "deep" } end
+    TestRunner:assertEqual(warning(plugin, {}, nil, { xray_depth = "light" }), nil,
+        "an update of a Light X-Ray, though new ones would be Deep")
+    truthy(warning(plugin, {}, nil, nil) ~= nil, "a new X-Ray at the standing Deep")
+    base.model = standard
+    TestRunner:assertEqual(warning(plugin, {}, "checkpoints", nil), nil, "the standard model: nothing")
+    -- a provider without curated tiers (a router, a custom one) is never called fast
+    base.provider, base.model = "openrouter", "anything/small"
+    TestRunner:assertEqual(warning(plugin, {}, "checkpoints", nil), nil, "no tier, no warning")
+    -- a plugin the form's tests build without the model helpers: nothing, no error
+    TestRunner:assertEqual(warning({}, {}, "checkpoints", nil), nil)
+    package.loaded["koassistant.request.run_options"] = saved
+    -- and the form asks for it where its rows are built
+    local fh = assert(io.open("main.lua", "r"))
+    local src = fh:read("*a")
+    fh:close()
+    truthy(src:find('xraySmallModelWarning(self_ref, action, cr.delivery,\n      (mode == "extend" and not pick_rebuild and not force_rebuild) and base_entry or nil)', 1, true) ~= nil,
+        "the creation form builds its warning from it")
+    truthy(src:find("tapLine(model_warning.line, function()", 1, true) ~= nil,
+        "as a grey line of the form that takes a tap")
+    truthy(src:find("fgcolor = Blitbuffer.COLOR_DARK_GRAY,\n        },\n      }\n      line.ges_events = { TapLine = {", 1, true) ~= nil,
+        "the line is grey text with a tap of its own")
+    truthy(not src:find("about_row", 1, true) and not src:find('"\226\154\160 " ..', 1, true),
+        "and no button of the dials carries help or a warning")
+end)
+
+-- The form's text budget. The maintainer, 2026-11-20: "too much information,
+-- causing you to have to scroll. explanatory text is too long, must be more
+-- concise"; and 2026-11-21, of the cut that left one sentence and put the
+-- rest behind an info icon: "did we move too much info to the info box? ...
+-- we can leave the explanation text under each item when selected like
+-- before (it wasnt taking too much space)". So: under the Build rows, what
+-- the picked way gives in two or three sentences; the protection case and a
+-- fast model's warning each on one line of their own; no info icon until its
+-- shape is decided for every window (B763). The real-app run measures the
+-- form on an e-reader's screen; these numbers keep a new sentence honest.
+local HINT_PICK_MAX = 170        -- what one way to build gives: three lines of the form at an e-reader's width
+local HINT_WORST_MAX = 330       -- with every fact at once: a section's name, a rebuild
+local PROTECTION_LINE_MAX = 130  -- two lines
+
+TestRunner:test("xrayFormHint: every pick says what it gives, in at most three lines", function()
+    local hint = BookSettings.xrayFormHint
+    for _i, delivery in ipairs({ "follow", "checkpoints", "one_bg", "now" }) do
+        for _j, coverage in ipairs({ "whole", "position", "target" }) do
+            for _k, extend in ipairs({ false, true }) do
+                local text = hint({ delivery = delivery ~= "now" and delivery or nil, coverage = coverage, extend = extend })
+                local where = delivery .. "/" .. coverage .. (extend and "/extend" or "")
+                truthy(type(text) == "string" and #text > 20, where .. ": a sentence")
+                truthy(#text <= HINT_PICK_MAX, where .. ": " .. #text .. " characters, at most " .. HINT_PICK_MAX .. ": " .. text)
+                truthy(not text:find("\226\128\148", 1, true), "no em dash: " .. text)
+                local _t, sentences = text:gsub("[%.!?]%s", "")
+                truthy(sentences + 1 <= 3, where .. ": at most three sentences (" .. (sentences + 1) .. ")")
+                truthy(not text:find("Spoiler protection", 1, true), where .. ": the protection case is a line of its own")
+            end
+        end
+    end
+    local idle = hint({ delivery = "follow", coverage = "whole", idle = true })
+    truthy(#idle <= HINT_PICK_MAX and idle:find("caught up", 1, true) ~= nil, "automatic building on and caught up says so")
+    -- the picks that differ in what they do differ in what they say
+    truthy(hint({ coverage = "whole" }) ~= hint({ coverage = "position" }), "the whole book and up to the position")
+    truthy(hint({ coverage = "whole" }) ~= hint({ coverage = "whole", extend = true }), "a new X-Ray and an update")
+    truthy(hint({ delivery = "checkpoints", coverage = "whole" }) ~= hint({ delivery = "follow", coverage = "whole" }),
+        "checkpoints now and as I read")
+    -- what a reader picks by, said under the row itself
+    local whole = hint({ coverage = "whole" })
+    truthy(whole:find("cheapest", 1, true) ~= nil and whole:find("ending", 1, true) ~= nil,
+        "the whole book in one request: the cheapest, and it holds the ending")
+    truthy(hint({ coverage = "position" }):find("update it later", 1, true) ~= nil, "up to the position: it can be updated later")
+    local now = hint({ delivery = "checkpoints", coverage = "whole" })
+    truthy(now:find("more requests", 1, true) ~= nil and now:find("minor names", 1, true) ~= nil
+        and now:find("each a version up to its own position", 1, true) ~= nil, "checkpoints now: what they are, what they find, what they cost")
+    truthy(hint({ delivery = "follow", coverage = "whole" }):find("ahead of you", 1, true) ~= nil, "as I read: the next one is ready ahead")
+    truthy(hint({ delivery = "one_bg", coverage = "whole" }):find("stay open", 1, true) ~= nil, "a background request names its condition")
+    truthy(hint({ delivery = "checkpoints", coverage = "whole", extend = true }):find("where your X%-Ray ends") ~= nil,
+        "an update in checkpoints continues")
+end)
+
+TestRunner:test("xrayFormHint: a pick that replaces the X-Ray says that one is safe meanwhile; every fact at once still fits", function()
+    local hint = BookSettings.xrayFormHint
+    local plain = hint({ coverage = "whole" })
+    local rebuild = hint({ coverage = "whole", rebuild = true })
+    truthy(rebuild:sub(1, #plain) == plain, "what the pick gives comes first")
+    TestRunner:assertEqual(rebuild:sub(#plain + 1), " The current X-Ray is kept until the new one is saved.",
+        "then one sentence that is true whether versions are archived or not")
+    truthy(not rebuild:find("archived", 1, true) and not rebuild:find("All versions", 1, true),
+        "it promises no archive: the rebuild's own confirm says what happens to the old X-Ray, by the archiving setting")
+    truthy(not plain:find("kept until", 1, true), "a first build says nothing of an X-Ray that is not there")
+    -- a rebuild's hint stays within the pick's four lines plus that one
+    for _i, delivery in ipairs({ "follow", "checkpoints", "one_bg", "now" }) do
+        local text = hint({ delivery = delivery ~= "now" and delivery or nil, coverage = "whole", rebuild = true })
+        truthy(#text <= HINT_PICK_MAX + 55, delivery .. ", a rebuild: " .. #text .. " characters")
+    end
+    -- every fact at once: a section's name, a rebuild
+    local worst = hint({ delivery = "follow", coverage = "target", target_label = string.rep("A long chapter title ", 3),
+        rebuild = true })
+    truthy(#worst <= HINT_WORST_MAX, "the worst case: " .. #worst .. " characters, at most " .. HINT_WORST_MAX)
+    -- an update to the position with a checkpoint already built ahead is a paid request: said, with the number
+    local ahead = hint({ coverage = "position", extend = true, built_ahead_pct = 60 })
+    truthy(ahead:find("new AI request", 1, true) ~= nil and ahead:find("60%", 1, true) ~= nil, "the new request is named")
+    truthy(#ahead <= HINT_PICK_MAX, "and it fits: " .. #ahead)
+    -- the two confirms of a rebuild say what happens to the old X-Ray, and neither promises an archive that is switched off
+    local fh = assert(io.open("main.lua", "r"))
+    local src = fh:read("*a")
+    fh:close()
+    local _s, promised = src:gsub('_%("[^"\n]*the outgoing version is archived then%."%)', "")
+    local _s2, honest = src:gsub("the outgoing version is replaced then: version archiving is off, so it will be gone%.", "")
+    TestRunner:assertEqual(promised, 1, "the checkpoint rebuild's confirm promises an archive in one sentence")
+    TestRunner:assertEqual(honest, 1, "and has the other sentence for when archiving is off")
+    truthy(src:find("state_line = ActionCache.checkpointLimitFromFeatures(features) ~= 0\n        and _(\"Replaces your current X-Ray from scratch.", 1, true) ~= nil,
+        "chosen by the archiving setting")
+    truthy(src:find("then replaced. Version archiving is off, so it will be gone.", 1, true) ~= nil,
+        "as the one-request rebuild's confirm does")
+end)
+
+TestRunner:test("xrayProtectionLine: the protection case is one line of its own, a tap from the setting", function()
+    local seen = {}
+    for _i, case in ipairs({
+        { fakeDocSettings({}), {}, "follows" },
+        { fakeDocSettings({}), { spoiler_free_chat = false }, "newest" },
+        { fakeDocSettings({ koassistant_book_xray_promotion = "position" }), { spoiler_free_chat = false }, "held" },
+    }) do
+        local line, which = BookSettings.xrayProtectionLine(case[1], case[2])
+        local note = (BookSettings.xrayCheckpointNote(case[1], case[2]))
+        TestRunner:assertEqual(which, case[3], "the case the installs follow")
+        truthy(line:sub(1, #note) == note, "it opens with what protection does with the checkpoints: " .. line)
+        truthy(line:sub(-15) == " Tap to change.", "and says a tap changes it")
+        truthy(#line <= PROTECTION_LINE_MAX, case[3] .. ": " .. #line .. " characters, at most " .. PROTECTION_LINE_MAX)
+        truthy(not seen[line], "each case in its own words")
+        seen[line] = true
+    end
+    -- the form: under a checkpoint row alone, built as the warning line is, opening the book's own picker
+    local fh = assert(io.open("main.lua", "r"))
+    local src = fh:read("*a")
+    fh:close()
+    truthy(src:find('if cr.delivery == "follow" or cr.delivery == "checkpoints" then\n      tapLine((BookSettings.xrayProtectionLine(', 1, true) ~= nil,
+        "the form shows it under the two checkpoint rows, as a line that takes a tap")
+    truthy(src:find('BookSettings.showSpoilerFree({\n          ui = self_ref.ui, plugin = self_ref, target_override = "book",\n          on_close = function() buildAndShow() end,', 1, true) ~= nil,
+        "the tap opens the book's Spoiler Protection picker, and the form comes back with the new case")
+    truthy(src:find("BookSettings.xrayFormHint({", 1, true) ~= nil, "the form's hint is xrayFormHint's")
+    truthy(not src:find("checkpoint_note", 1, true), "and no longer carries the protection sentence")
+    -- the info icon is suspended (B763): no icon in the form's title bar, no text behind it
+    truthy(not src:find("xrayFormAbout", 1, true) and BookSettings.xrayFormAbout == nil, "the info text is gone")
+    local form = src:match("function AskGPT:_showXrayCreationChooser.-\nfunction AskGPT:") or ""
+    truthy(#form > 1000, "the form's source was found")
+    truthy(not form:find('left_icon = "info"', 1, true), "and the form's title bar has no info icon")
+    truthy(not src:find("bounded background steps", 1, true), "the old long sentences stay out of the form's source")
+    -- a rebuild's form: still no grey line above its rows
+    truthy(not src:find("Building here replaces it", 1, true), "the rebuild's state lines stay out")
+    truthy(src:find('if mode == "extend" and not force_rebuild then', 1, true) ~= nil, "the state line is an update's alone")
+end)
+
+TestRunner:test("xrayCheckpointNote: the creation form's sentence follows the installs' own rule (B717)", function()
+    -- the same two reads the engine's installs make: the posture, then the hold
+    local text, case = BookSettings.xrayCheckpointNote(fakeDocSettings({}), {})
+    TestRunner:assertEqual(case, "follows", "protection on by default: the X-Ray follows the position")
+    TestRunner:assertEqual(text:find("when you reach it", 1, true) ~= nil, true, "and the sentence says so")
+    text, case = BookSettings.xrayCheckpointNote(fakeDocSettings({}), { spoiler_free_chat = false })
+    TestRunner:assertEqual(case, "newest", "protection off: the newest checkpoint is shown")
+    TestRunner:assertEqual(text:find("ahead of you", 1, true) ~= nil, true, "the sentence names the consequence")
+    local _text, book_case = BookSettings.xrayCheckpointNote(
+        fakeDocSettings({ koassistant_book_spoiler_free = false }), { spoiler_free_chat = true })
+    TestRunner:assertEqual(book_case, "newest", "the book's own Off counts, over the global On")
+    _text, book_case = BookSettings.xrayCheckpointNote(
+        fakeDocSettings({ koassistant_book_research_mode = true }), { spoiler_free_chat = true })
+    TestRunner:assertEqual(book_case, "newest", "research stands protection down for the installs too")
+    text, case = BookSettings.xrayCheckpointNote(
+        fakeDocSettings({ koassistant_book_xray_promotion = "position" }), { spoiler_free_chat = false })
+    TestRunner:assertEqual(case, "held", "protection off with X-Ray updates on Follow my position")
+    TestRunner:assertEqual(text:find("follow your position", 1, true) ~= nil, true, "which the sentence names")
+    -- the hold means nothing while protection is on (the posture already follows)
+    _text, book_case = BookSettings.xrayCheckpointNote(
+        fakeDocSettings({ koassistant_book_xray_promotion = "position" }), { spoiler_free_chat = true })
+    TestRunner:assertEqual(book_case, "follows", "with protection on the hold changes nothing")
+    -- every case is one sentence of its own, none of them an em dash
+    for _idx, s in ipairs({ text, (BookSettings.xrayCheckpointNote(fakeDocSettings({}), {})),
+            (BookSettings.xrayCheckpointNote(fakeDocSettings({}), { spoiler_free_chat = false })) }) do
+        TestRunner:assertEqual(s:find("\226\128\148", 1, true) == nil, true, "no em dash")
+    end
+end)
+
 TestRunner:test("resolveXrayPosture: per-book spoiler override wins both ways", function()
     local ds_on = fakeDocSettings({ koassistant_book_spoiler_free = true })
     local ds_off = fakeDocSettings({ koassistant_book_spoiler_free = false })
@@ -1610,8 +1854,31 @@ TestRunner:test("on by default; off and on at either layer; a book's on beats a 
     TestRunner:assertEqual(s, "off", "book off"); TestRunner:assertEqual(layer, "book", "layer")
     s = BookSettings.resolveXrayStatus(makeDocSettings({ [BookSettings.KEY_XRAY_STATUS] = "junk" }), { xray_default_status = 7 })
     TestRunner:assertEqual(s, nil, "junk on both layers is on")
-    TestRunner:assertEqual(BookSettings.xrayTrackLabel("people", "off"), "Characters only, no status block", "label")
-    TestRunner:assertEqual(BookSettings.xrayTrackLabel("people", nil), "Characters only", "label, status on")
+    -- the reader's name for the section is the browser's own row, Current State (B757)
+    TestRunner:assertEqual(BookSettings.xrayTrackLabel("people", "off"), "People, no Current State", "label")
+    TestRunner:assertEqual(BookSettings.xrayTrackLabel("people", nil), "People", "label, status on")
+    -- the categories label lists what is ticked and never borrows a preset's name (B757)
+    local label = BookSettings.xrayCategoriesLabel
+    TestRunner:assertEqual(label("people,places,ideas,terms"), "People, Places, Ideas, Terms", "the default four, by name")
+    TestRunner:assertEqual(label("people,events"), "People, Timeline", "two, by name")
+    TestRunner:assertEqual(label(nil), "All categories", "all five")
+    TestRunner:assertEqual(label("full"), "All categories", "the explicit sentinel too")
+    -- a button's label: three or more are counted, so it fits half a row
+    TestRunner:assertEqual(label("people,places,ideas,terms", true), "4 of 5", "a button counts four")
+    TestRunner:assertEqual(label("people,events", true), "People, Timeline", "and still names two")
+    TestRunner:assertEqual(label(nil, true), "All", "all five on a button")
+    TestRunner:assertEqual(BookSettings.xrayTrackLabel("people,places,ideas", "off", true), "3 of 5, no Current State",
+        "the Custom preset's words on the form's button")
+    for _i, p in ipairs(BookSettings.XRAY_PRESETS) do
+        for _j, value in ipairs({ p.categories, nil }) do
+            for _k, short in ipairs({ false, true }) do
+                TestRunner:assertEqual(label(value, short) ~= p.label, true,
+                    "no categories label is the preset name " .. p.label)
+            end
+        end
+        TestRunner:assertEqual(p.desc:find("status block", 1, true), nil,
+            p.label .. ": its row says Current State, not status block")
+    end
     local group_keys = {}
     for _i, key in ipairs(require("koassistant.books.group_settings").keys()) do group_keys[key] = true end
     TestRunner:assertEqual(group_keys[BookSettings.KEY_XRAY_STATUS], true, "a group can set it")
@@ -1674,7 +1941,10 @@ TestRunner:test("every preset is recognized from its own values; anything else i
             p.status == "off" and "off" or nil, p.depth ~= "standard" and p.depth or nil)
         TestRunner:assertEqual(found and found.id, p.id, p.id .. " maps to itself")
     end
-    TestRunner:assertEqual(#BookSettings.XRAY_PRESETS, 6, "six built-in presets")
+    TestRunner:assertEqual(#BookSettings.XRAY_PRESETS, 7, "seven built-in presets")
+    local who = BookSettings.xrayPresetFor("people", "off", "light")
+    TestRunner:assertEqual(who and who.id, "whoswho", "people only at Light depth with no status block is Who's who (B747)")
+    TestRunner:assertEqual(BookSettings.xrayPresetFor("people", "off", nil).id, "characters", "at Standard depth it is Characters only")
     TestRunner:assertEqual(BookSettings.xrayPresetFor("people", nil, nil), nil,
         "characters with the status block on is no preset")
     TestRunner:assertEqual(BookSettings.xrayPresetFor("people,places", "off", "deep"), nil, "a mix is Custom")
@@ -1781,14 +2051,14 @@ TestRunner:test("the categories picker is one checkbox per category plus the sta
     presetTrue(not all:find("Category sets", 1, true), "no sets header")
     presetTrue(not all:find("Characters and story", 1, true), "no set rows")
     presetTrue(not all:find("Pick one by one", 1, true), "no second header")
-    TestRunner:assertEqual(checks, 6, "five categories and Where things stand")
+    TestRunner:assertEqual(checks, 6, "five categories and Current State")
     TestRunner:assertEqual(#captured.buttons, 9, "layer tabs, Follow global, six checkboxes, Done")
-    presetTrue(texts[2]:find("\u{25CF} Follow global (Reference)", 1, true) ~= nil,
+    presetTrue(texts[2]:find("\u{25CF} Follow global (People, Places, Ideas, Terms)", 1, true) ~= nil,
         "a book with no pick of its own follows global: " .. texts[2])
     -- A checkbox still writes the book's own pick: Reference plus the timeline is all five
     tapRow(captured, "Timeline")
     TestRunner:assertEqual(ds._data[BookSettings.KEY_XRAY_CATEGORIES], "full", "all five checked = the explicit sentinel")
-    tapRow(captured, "Where things stand")
+    tapRow(captured, "Current State")
     TestRunner:assertEqual(ds._data[BookSettings.KEY_XRAY_STATUS], "off", "the status block is its own key")
 end)
 

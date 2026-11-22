@@ -51,6 +51,16 @@ function Migrations.run(features)
     features.use_new_request_format = nil
     needs_save = true
   end
+  -- The plain-text switches for right-to-left text left 2026-11-07 (B621):
+  -- the Markdown view lays every block out in its own direction and draws
+  -- every script in its own face, so a reader who had one on would otherwise
+  -- never see that. Cleared, not kept.
+  for _idx, k in ipairs({ "rtl_chat_text_mode", "rtl_translate_text_mode", "rtl_dictionary_text_mode" }) do
+    if features[k] ~= nil then
+      features[k] = nil
+      needs_save = true
+    end
+  end
 
   -- Clean up transient flags that should never be persisted
   -- These are set at runtime for dictionary lookups but should not be saved
@@ -467,6 +477,21 @@ function Migrations.run(features)
       logger.info("KOAssistant: Privacy switches reset to Ask (the question model)")
     end
     features._privacy_ask_migrated = true
+    needs_save = true
+  end
+
+  -- ONE-TIME migration (B752): Auto-scroll Streaming became off by default.
+  -- A stored "on" is cleared so those installs follow the new default too: a
+  -- settings reset writes every schema default into the file
+  -- (SettingsSchema.applyDefaults), so a stored `true` says nothing about a
+  -- choice. The stamp means that turning it on afterwards sticks. A stored
+  -- "off" is the reader's own, and is the default now.
+  if not features._stream_autoscroll_off_migrated then
+    if features.stream_auto_scroll == true then
+      features.stream_auto_scroll = nil
+      logger.info("KOAssistant: Auto-scroll Streaming moved to its new default, off")
+    end
+    features._stream_autoscroll_off_migrated = true
     needs_save = true
   end
 

@@ -58,6 +58,56 @@ TestRunner:test("carriedKinds lists what the gather put in the request, in KINDS
     TestRunner:assertEqual(DataAccess.carriedKinds({ highlights = "" }), nil, "an empty section is nothing")
 end)
 
+TestRunner:test("carriedKinds: a highlights-only copy sent under a notes refusal is highlights (B619)", function()
+    local k = DataAccess.carriedKinds({ annotations = "a passage, no note", _annotations_degraded = true })
+    TestRunner:assertEqual(table.concat(k, ","), "highlights", "the degraded copy holds no notes")
+    k = DataAccess.carriedKinds({ annotations = "a passage [Note: mine]", _annotations_degraded = false })
+    TestRunner:assertEqual(table.concat(k, ","), "annotations", "the full copy holds the notes")
+    k = DataAccess.carriedKinds({ annotations = "a passage [Note: mine]" })
+    TestRunner:assertEqual(table.concat(k, ","), "annotations", "with nothing said about it, the section is notes (the strict reading)")
+    -- and a pin made from such a chat is not stamped with notes either
+    local stamps = DataAccess.stampsFromKinds(DataAccess.carriedKinds({ annotations = "p", _annotations_degraded = true }))
+    TestRunner:assertEqual(stamps.used_annotations, false, "a pin of that chat carries no notes stamp")
+    TestRunner:assertEqual(stamps.used_highlights, true, "and the highlights one")
+end)
+
+-- The stamps a saved result is written with (B617), as the write site itself
+-- computes them: its own lines, cut from dialogs.lua and run on what the
+-- gather hands it, then read back by the gates' own reader.
+TestRunner:test("a result built with the reader's notes is stamped as built with notes (B617)", function()
+    local root = debug.getinfo(1, "S").source:match("@?(.*)"):match("(.+)/tests/unit/[^/]+$") or "."
+    local f = assert(io.open(root .. "/koassistant/ui/dialogs.lua", "r"))
+    local src = f:read("*a")
+    f:close()
+    local a = assert(src:find("local highlights_were_provided = (message_data.highlights", 1, true), "the write site's first line")
+    local b = assert(src:find("-- Position-irrelevant actions (no use_reading_progress) store 1.0", a, true), "its last")
+    local body = src:sub(a, b - 1)
+    TestRunner:assertEqual(src:find("used_annotations = annotations_were_provided or nil,", b, true) ~= nil, true,
+        "and the write passes the notes stamp on")
+    local stampsOf = assert(load("local message_data, using_cache = ...\n" .. body
+        .. "\nreturn { used_highlights = highlights_were_provided, used_annotations = annotations_were_provided or nil }",
+        "=dialogs.lua (the stamps)"))
+    local Gates = require("koassistant.request.privacy_gates")
+    local function kinds(md, using_cache)
+        local st = stampsOf(md, using_cache)
+        st.used_book_text = false
+        return table.concat(Gates.stampedList(st), ",")
+    end
+    TestRunner:assertEqual(kinds({ highlights = "h", annotations = "h [Note: n]", _annotations_degraded = false }),
+        "highlights,annotations", "notes sent: the result says so")
+    TestRunner:assertEqual(kinds({ annotations = "h [Note: n]", _annotations_degraded = false }),
+        "highlights,annotations", "also when the action asks for the notes section alone")
+    TestRunner:assertEqual(kinds({ highlights = "h", annotations = "h", _annotations_degraded = true }),
+        "highlights", "a highlights-only copy is highlights")
+    TestRunner:assertEqual(kinds({ highlights = "", annotations = "" }), "", "nothing sent, nothing stamped")
+    TestRunner:assertEqual(kinds({ highlights = "", annotations = "", _inherited_stamps = { annotations = true, highlights = true } }),
+        "highlights,annotations", "a result built from a result that held notes inherits the stamp")
+    TestRunner:assertEqual(kinds({ highlights = "", annotations = "", cached_used_highlights = true, cached_used_annotations = true }, true),
+        "highlights,annotations", "an update of a result built with notes keeps it")
+    TestRunner:assertEqual(kinds({ highlights = "", annotations = "", cached_used_annotations = true }, true),
+        "", "an old entry whose notes stamp meant highlights adds no notes stamp by itself")
+end)
+
 TestRunner:test("stampsFromKinds: a record as an artifact's stamps; nothing recorded is text-free", function()
     local s = DataAccess.stampsFromKinds({ "book_text", "notebook" })
     TestRunner:assertEqual(s.used_book_text, true)
@@ -294,6 +344,84 @@ TestRunner:test("the funnel's Cancel clears every dispatch transient, as the dis
         end
     end
     TestRunner:assertTrue(n >= 7, "the read sites were found (" .. n .. ")")
+end)
+
+-- Audit 2026-11-12: a run that continues its own saved result sends that
+-- result back with the new text, so what the result was built with is a kind
+-- the run needs. The question named the book's text alone; the dispatch then
+-- withheld a result built with highlights whatever the reader answered: an
+-- X-Ray from when X-Rays read highlights was rebuilt in full by every update
+-- and never continued by a checkpoint step ("nothing was sent").
+print("")
+print("  [a run that continues its own saved result asks for what it was built with]")
+
+local function kindsOf(needs)
+    local out = {}
+    for _idx, n in ipairs(needs) do out[#out + 1] = n.kind .. (n.required and "!" or "") .. ":" .. n.state end
+    return table.concat(out, " ")
+end
+
+TestRunner:test("Gates.needs: the saved result's highlights and notes are asked, optional; the text stays the action's", function()
+    local action = { id = "xray", use_book_text = true, requires = { "book_text" },
+        prompt = "{book_text_section}", update_prompt = "{cached_result} {incremental_book_text_section}" }
+    local ctx = Gates.context({}, "openai", {})
+    TestRunner:assertEqual(kindsOf(Gates.needs(action, ctx, {})), "book_text!:ask", "no saved result: the text alone")
+    TestRunner:assertEqual(kindsOf(Gates.needs(action, ctx, { stamps = { own = { result = "{}", used_book_text = true } } })),
+        "book_text!:ask", "a result built from text alone adds nothing")
+    TestRunner:assertEqual(kindsOf(Gates.needs(action, ctx,
+        { stamps = { own = { result = "{}", used_book_text = true, used_highlights = true } } })),
+        "book_text!:ask highlights:ask", "a result built with highlights: highlights asked, optional")
+    TestRunner:assertEqual(kindsOf(Gates.needs(action, ctx,
+        { stamps = { own = { result = "{}", used_highlights = true, used_annotations = true } } })),
+        "book_text!:ask highlights:ask annotations:ask", "and with notes: both")
+    -- nothing live to send does not drop a kind the saved result carries
+    TestRunner:assertEqual(kindsOf(Gates.needs(action, ctx,
+        { stamps = { own = { result = "{}", used_highlights = true } }, exists = { highlights = false } })),
+        "book_text!:ask highlights:ask", "kept although the book holds no highlights now")
+    -- already allowed: listed as allowed, so the question has nothing to ask for it
+    local allowed = Gates.context({ enable_highlights_sharing = true }, "openai", {})
+    TestRunner:assertEqual(kindsOf(Gates.needs(action, allowed,
+        { stamps = { own = { result = "{}", used_highlights = true } } })),
+        "book_text!:ask highlights:allow", "Highlights on Allow: nothing to ask")
+end)
+
+TestRunner:test("baseKinds: the kinds and the question's lines for a build that lists its kinds by hand", function()
+    local kinds, amounts = DataAccess.baseKinds({ result = "{}", used_book_text = true, used_highlights = true }, "X-Ray")
+    TestRunner:assertEqual(#kinds, 1, "one kind")
+    TestRunner:assertEqual(kinds[1].kind, "highlights")
+    TestRunner:assertEqual(kinds[1].required, false, "optional: declined, the run starts over from the text")
+    TestRunner:assertEqual(amounts.highlights, "the saved X-Ray, which was built with your highlights")
+    local none = DataAccess.baseKinds({ result = "{}", used_book_text = true }, "X-Ray")
+    TestRunner:assertEqual(#none, 0, "a result built from text alone: nothing more to ask")
+    TestRunner:assertEqual(#DataAccess.baseKinds(nil, "X-Ray"), 0, "no saved result")
+    -- the list a build hands to the question: the text required, the rest optional
+    local list = { "book_text" }
+    for _idx, k in ipairs(kinds) do list[#list + 1] = k end
+    local needs = DataAccess.needsFor({ id = "xray" }, { features = {}, provider = "openai", kinds = list, required = true })
+    TestRunner:assertEqual(kindsOf(needs), "book_text!:ask highlights:ask", "as the question reads it")
+    local plan = DataAccess.plan(needs)
+    TestRunner:assertEqual(#plan.asked, 2, "both asked in one question")
+end)
+
+TestRunner:test("the three X-Ray build questions and the dispatch question all ask for the saved result's kinds", function()
+    local function read(rel)
+        local info = debug.getinfo(1, "S").source:match("@?(.*)")
+        local root = info:match("(.+)/tests/unit/[^/]+$") or "."
+        local f = assert(io.open(root .. "/" .. rel, "r"))
+        local text = f:read("*a")
+        f:close()
+        return text
+    end
+    local main = read("main.lua")
+    local n = 0
+    for _hit in main:gmatch("kinds = self:_xrayBuildKinds%(") do n = n + 1 end
+    TestRunner:assertEqual(n, 3, "the automatic engine's question, the background update's and the checkpoint build's")
+    TestRunner:assertTrue(main:find('kinds = { "book_text" }, required = true', 1, true) == nil,
+        "no X-Ray build lists the text alone any more")
+    local da = read("koassistant/ui/data_access.lua")
+    TestRunner:assertTrue(da:find("stamps.own = own", 1, true) ~= nil, "the dispatch question collects the run's own saved result")
+    TestRunner:assertTrue(da:find("not cf._xray_rebuild and not cf._ladder_fresh", 1, true) ~= nil,
+        "never for a rebuild, which sends no saved result")
 end)
 
 SDS.resolve = saved.resolve

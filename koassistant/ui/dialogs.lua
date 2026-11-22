@@ -466,6 +466,29 @@ local function webSearchPreview(action, features, provider)
     if features.enable_web_search ~= nil then return features.enable_web_search == true end
     return provider == "perplexity"
 end
+
+-- A request whose answer is saved as a result has no later turn (B728): the
+-- window that opens is the saved result's, and a chat about it starts from the
+-- result, never from this prompt. A prompt-cache mark on such a request buys a
+-- cache nothing reads (Anthropic bills the write at 1.25 times the input price:
+-- 18% of a whole-book X-Ray, measured 2026-11-18), so the request says it is
+-- one-shot and the handlers that send a mark for the messages leave it off
+-- (anthropic_request.lua, openrouter.lua; the system block keeps its own mark,
+-- which a chain of checkpoint steps reads back). Not with web search on: the
+-- provider runs several passes inside that one request, which was not measured.
+-- config.system is built per request, so the mark ends with the request.
+-- Returns whether it marked.
+local function markOneShot(config, saves_result)
+    if not saves_result or type(config) ~= "table" or type(config.system) ~= "table" then
+        return false
+    end
+    local web = config.enable_web_search
+    if web == nil then web = config.features and config.features.enable_web_search end
+    if web == true then return false end
+    config.system.one_shot = true
+    return true
+end
+
 local function ensureReasoningHeadroom(api_params, provider, decision)
     if not (api_params and api_params.max_tokens and decision) then return end
     local might_reason = decision.mode == "on"
@@ -2092,36 +2115,12 @@ local function createSaveDialog(document_path, history, chat_history_manager, is
         },
     }
 
-    -- Add rotation support to save dialog
-    local recreate_save_dialog  -- Forward declaration for recursive calls
-    recreate_save_dialog = function(input_text)
-        local new_dialog
-        new_dialog = InputDialog:new{
-            title = _("Save Chat"),
-            input = input_text or suggested_title,
-            buttons = save_dialog.buttons,
-        }
-        new_dialog.onScreenResize = function(self, dimen)
-            local current_input = self:getInputText()
-            UIManager:close(self)
-            UIManager:scheduleIn(0.2, function()
-                recreate_save_dialog(current_input)
-            end)
-            return true
-        end
-        new_dialog.onSetRotationMode = function(self, rotation)
-            return self:onScreenResize(nil)
-        end
-        save_dialog = new_dialog  -- the buttons close and read THIS dialog now
-        UIManager:show(new_dialog)
-    end
-
+    -- A turned screen (an Android device, a resized window): the dialog lays
+    -- itself out again in place, KOReader's own way, with what was typed. It
+    -- used to close and come back a moment later as a new dialog, at the same
+    -- moment as the chat window under it, which then landed on top of it
     save_dialog.onScreenResize = function(self, dimen)
-        local current_input = self:getInputText()
-        UIManager:close(self)
-        UIManager:scheduleIn(0.2, function()
-            recreate_save_dialog(current_input)
-        end)
+        self:reinit()
         return true
     end
 
@@ -2330,38 +2329,9 @@ local function showTagsMenu(document_path, chat_id, chat_history_manager)
                     },
                 }
 
-                -- Add rotation support to tag input dialog
-                local recreate_tag_dialog
-                recreate_tag_dialog = function(input_text)
-                    local new_tag_dialog
-                    new_tag_dialog = InputDialog:new{
-                        title = _("New Tag"),
-                        input = input_text or "",
-                        input_hint = _("Enter tag name"),
-                        buttons = tag_input.buttons,
-                    }
-                    new_tag_dialog.onScreenResize = function(self, dimen)
-                        local current = self:getInputText()
-                        UIManager:close(self)
-                        UIManager:scheduleIn(0.2, function()
-                            recreate_tag_dialog(current)
-                        end)
-                        return true
-                    end
-                    new_tag_dialog.onSetRotationMode = function(self, rotation)
-                        return self:onScreenResize(nil)
-                    end
-                    tag_input = new_tag_dialog  -- the buttons act on THIS dialog now
-                    UIManager:show(new_tag_dialog)
-                    new_tag_dialog:onShowKeyboard()
-                end
-
+                -- A turned screen: laid out again in place with what was typed
                 tag_input.onScreenResize = function(self, dimen)
-                    local current_input = self:getInputText()
-                    UIManager:close(self)
-                    UIManager:scheduleIn(0.2, function()
-                        recreate_tag_dialog(current_input)
-                    end)
+                    self:reinit()
                     return true
                 end
 
@@ -2498,6 +2468,8 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
             update_debug_callback = state.update_debug_callback,
             -- Pass recreate function for subsequent rotations
             _recreate_func = recreate_func,
+            -- where the reader was (the viewer lands there before its first paint)
+            _initial_place = state.place,
         }
         -- Set close_callback after creation so new_viewer is defined.
         -- Inherits the stacked-view restore duty (see showResponseDialog's close_callback).
@@ -2512,11 +2484,6 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
 
         -- Show the new viewer
         UIManager:show(new_viewer)
-
-        -- Restore scroll position
-        if state.scroll_ratio and state.scroll_ratio > 0 then
-            new_viewer:restoreScrollPosition(state.scroll_ratio)
-        end
     end
 
     -- Check if compact view should be used
@@ -3455,16 +3422,20 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
     }
 
     -- Minimal popup view (Minimal Popup settings): registered highlight actions
-    -- open their response in a chrome-less popup next to the selection; tapping
-    -- it opens this full viewer. Eligibility (registration, highlight launch,
+    -- open their response in a chrome-less popup next to the selection (or in
+    -- a panel at the foot of the screen, minimal_popup_style); tapping it
+    -- opens this full viewer. Eligibility (registration, highlight launch,
     -- not full-page translate) was decided at dispatch (createTempConfig,
     -- _minimal_popup_eligible); the fit decision is made HERE because it needs
     -- the finished response ("When it fits" = only_if_fits below — the popup
-    -- reports whether the whole response renders without the ellipsis, so
-    -- script density and font size are handled by construction). The viewer is
+    -- reports whether the whole response fits under its height cap, measured
+    -- laid out, so script density and font size are handled by construction;
+    -- "Always" shows it whatever its length, scrolling). The viewer is
     -- fully built either way — the popup only defers showing it, so expand
     -- keeps every callback/history wire intact and dismissing leaves
     -- ActiveChatViewer untouched (no restore needed: it was never claimed).
+    -- The popup's content is this viewer's own drawing of the answer
+    -- (answerWidget): what the window would show, in the popup's frame.
     local mp_f = temp_config and temp_config.features
     local use_minimal_popup = mp_f and mp_f._minimal_popup_eligible == true
         and not mp_f.is_full_page_translate
@@ -3500,21 +3471,11 @@ local function showResponseDialog(title, history, highlightedText, addMessage, t
     if use_minimal_popup then
         popup_shown = require("koassistant.ui.minimal_popup").showForResponse({
             history = history,
+            viewer = chatgpt_viewer,
+            style = mp_f.minimal_popup_style,
             selection_data = selection_data,
             ui = ui_instance,
             only_if_fits = (mp_f.minimal_popup_mode or "short") == "short",
-            -- RTL hint: translate renders in the translation language, the
-            -- dictionary family in the dictionary language; anything else
-            -- auto-detects (dominant-RTL, same gate as the standard chat view).
-            rtl_language = (use_translate_view and mp_f.translation_language)
-                or ((use_compact_view or use_dictionary_view) and mp_f.dictionary_language)
-                or nil,
-            -- Text-mode settings + the dict-family gate for the IPA bidi fix:
-            -- the popup renders through the viewer's shared text-mode pipeline
-            -- and honors the same settings (strip_markdown_in_text_mode,
-            -- rtl_chat_text_mode).
-            features = mp_f,
-            is_dictionary = (use_compact_view or use_dictionary_view) or nil,
             on_expand = function()
                 _G.ActiveChatViewer = chatgpt_viewer
                 UIManager:show(chatgpt_viewer)
@@ -4090,6 +4051,13 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
         temp_config.features.hidden_streaming = true
     end
 
+    -- An answer that is data, not prose (an X-Ray build's JSON), streams as
+    -- the text it is: Markdown While Streaming would flow it into one paragraph
+    if prompt.cache_as_xray then
+        temp_config.features = temp_config.features or {}
+        temp_config.features.plain_streaming = true
+    end
+
     -- NEW ARCHITECTURE (v0.5.2+): Unified request config for all providers
     -- System prompt is built by buildUnifiedRequestConfig and passed in config.system
     -- No longer embedded in the consolidated message
@@ -4131,7 +4099,16 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     -- sidecar. Other contexts keep preferring book_metadata.file (file browser/artifact
     -- target); book-level entries repopulate it for their target before reaching here.
     local per_book_file
-    if context == "highlight" and ui and ui.document and ui.document.file then
+    if context == "highlight" and config.features and config.features._xray_entry_book then
+        -- A chat or an AI Wiki article about an X-Ray entry is a highlight
+        -- request whose "highlight" belongs to the entry's book, which need not
+        -- be the open one (a Book Hub's or a group's X-Ray beside another open
+        -- book): the request took the open book's domain, languages, research
+        -- mode and spoiler posture, and judged the nearby-text gate for it,
+        -- while its text came from the entry's book (the shared-state map,
+        -- 2026-11-12). The entry's own entry points name the book.
+        per_book_file = config.features._xray_entry_book
+    elseif context == "highlight" and ui and ui.document and ui.document.file then
         per_book_file = ui.document.file
     elseif context == "general" or context == "library" then
         -- no book: a general or library action beside an open book took that
@@ -4188,6 +4165,10 @@ handlePredefinedPrompt = function(prompt_type_or_action, highlightedText, ui, co
     -- Consume X-Ray context prefix (transient flag set by action buttons from chatAboutItem)
     local xray_prefix = config.features and config.features._xray_context_prefix
     if config.features then config.features._xray_context_prefix = nil end
+    -- A chat about an X-Ray entry started by one of the dialog's actions is an
+    -- X-Ray chat like one started by a typed question (the Send sets the same
+    -- tag): the X-Ray browser's "X-Ray chats" row counts both
+    if xray_prefix then history.launched_from = "xray_chat" end
 
     local message_data = {
         highlighted_text = highlightedText,
@@ -5046,6 +5027,23 @@ if prune_book_text then
             .rawPageAt(ui.document, lt) or message_data.progress_page
     end
 
+    -- B765: an X-Ray built up to a position that IS the end of the work ends
+    -- with the Conclusion, as a whole-book build does (the whole-book prompt
+    -- asks for it itself; an update takes its own swap in the cache branch)
+    if prompt and prompt.id == "xray" and type(prompt.prompt) == "string"
+            and not (config.features and config.features._full_document_xray)
+            and (tonumber(message_data.progress_decimal) or 0) >= 0.995 then
+        local at_end = PromptsActions.xrayPromptAtEnd(prompt.prompt)
+        if at_end ~= prompt.prompt then
+            local original_prompt = prompt
+            prompt = {}
+            for k, v in pairs(original_prompt) do prompt[k] = v end
+            prompt._is_copy = true
+            prompt.prompt = at_end
+            message_data._xray_at_end = true
+        end
+    end
+
     -- Where the saved page starts in the text (B503): the page number holds in
     -- this layout only, the position in any (another device, a rotation, a
     -- font change), so the next update starts where this request's text ends
@@ -5265,8 +5263,19 @@ if prune_book_text then
                     -- with nothing new may answer an empty object
                     local cached_status = PromptsActions.normalizeXrayStatus(cached_entry.xray_status)
                     message_data._xray_status_applied = cached_status
+                    -- A create prompt's end-of-work swap is not this update's
+                    message_data._xray_at_end = nil
                     if cached_status then
                         prompt.prompt = PromptsActions.xrayUpdateWithoutStatus(prompt.prompt)
+                    elseif current_progress >= 0.995 then
+                        -- B765: the update that reaches the end of the work
+                        -- asks for the Conclusion, as a whole-book build does
+                        local old = message_data._parsed_old_xray
+                        local at_end = PromptsActions.xrayPromptAtEnd(prompt.prompt,
+                            old and (XrayParser.isAcademic(old) and "academic"
+                                or XrayParser.isFiction(old) and "fiction" or "nonfiction") or nil)
+                        message_data._xray_at_end = at_end ~= prompt.prompt or nil
+                        prompt.prompt = at_end
                     end
                     if cached_entry.xray_categories then
                         local cat_keys = PromptsActions.xrayCategoryKeysFor(
@@ -5595,14 +5604,20 @@ if prune_book_text then
                     -- it afterwards, and it would read as current)
                     if message_data._xray_status_applied == "off" then
                         parsed.current_state, parsed.current_position, parsed.conclusion = nil, nil, nil
+                    elseif using_cache and not message_data._xray_at_end then
+                        -- B765: a Conclusion is written by the request that
+                        -- reaches the end of the work, and by no update before
+                        -- it (it would hide every later status behind it)
+                        parsed.conclusion = nil
                     end
                     -- Merge partial update into existing data when available
                     if using_cache and message_data._parsed_old_xray then
                         -- To debug X-Ray merge: uncomment koassistant_debug_utils.dumpXrayMerge() below
-                        local never_pairs = cache_file
-                            and require("koassistant.artifacts.action_cache").getNeverMergePairs(cache_file)
-                        parsed = XrayParser.merge(message_data._parsed_old_xray, parsed,
-                            never_pairs and { never_pairs = never_pairs } or nil)
+                        -- the reader's never-merge pairs, and the update's own
+                        -- rule for a name that is only somebody's alias (B732)
+                        local merge_opts = cache_file
+                            and require("koassistant.artifacts.action_cache").updateMergeOptions(cache_file)
+                        parsed = XrayParser.merge(message_data._parsed_old_xray, parsed, merge_opts or nil)
                         logger.dbg("KOAssistant: Merged incremental X-Ray update into existing data")
                         -- Wake-pass (carry layer 2): entities arriving in this
                         -- slice promote their carried history
@@ -5675,6 +5690,11 @@ if prune_book_text then
                         if renamed > 0 then
                             logger.dbg("KOAssistant: X-Ray create kept", renamed, "renamed entit(y/ies)")
                         end
+                    end
+                    -- B765: the Conclusion takes the place of the status it
+                    -- follows. An answer that sent none keeps what there is
+                    if message_data._xray_at_end and type(parsed.conclusion) == "table" then
+                        parsed.current_state, parsed.current_position = nil, nil
                     end
                     -- Round 28 (#90): reconcile mechanical background against the
                     -- book's group — backfill file identities onto legacy labeled
@@ -5906,6 +5926,22 @@ if prune_book_text then
                 if message_data._inherited_stamps and message_data._inherited_stamps.highlights then
                     highlights_were_provided = true
                 end
+                -- The reader's notes (B617): the annotations section carries them
+                -- unless it was degraded to a highlights-only copy (notes refused,
+                -- highlights allowed), which is highlights. No write stamped
+                -- used_annotations, so a result built with notes read as built
+                -- with highlights alone and a chat about it never asked for notes.
+                local annotations_sent = type(message_data.annotations) == "string" and message_data.annotations ~= ""
+                local annotations_were_provided = annotations_sent and message_data._annotations_degraded ~= true
+                -- either form holds the highlighted passages themselves
+                if annotations_sent then highlights_were_provided = true end
+                if using_cache and message_data.cached_used_annotations == true
+                        and message_data.cached_used_highlights ~= nil then
+                    annotations_were_provided = true
+                end
+                if message_data._inherited_stamps and message_data._inherited_stamps.annotations then
+                    annotations_were_provided = true
+                end
                 -- Position-irrelevant actions (no use_reading_progress) store 1.0
                 -- so the popup correctly shows "Redo" instead of misleading "Update to X%"
                 local save_progress = prompt and prompt.use_reading_progress
@@ -5918,6 +5954,9 @@ if prune_book_text then
                     save_progress,
                     { model = ConfigHelper:getModelInfo(temp_config), used_book_text = book_text_was_provided, provider = temp_config.provider,
                       used_highlights = highlights_were_provided,
+                      -- stamped beside a stated used_highlights only: alone, an old
+                      -- entry's used_annotations means highlights (Gates.stampedKinds)
+                      used_annotations = annotations_were_provided or nil,
                       -- the notebook, stamped since B395 slice 5
                       used_notebook = (message_data.notebook_content ~= nil and message_data.notebook_content ~= "") or nil,
                       used_reasoning = (reasoning ~= nil and reasoning ~= ""),
@@ -6349,6 +6388,12 @@ if prune_book_text then
         -- handleResponse's error display. Predefined actions carry _tools_active=false, so
         -- shouldUse returns false and this stays a plain send — queryWith just adds the
         -- quick-retry interception. This is the only send path that bypassed queryWith.
+        -- An answer that is saved as a result has no later turn: no cache mark (B728).
+        -- A run on a section is one too: its answer is saved under the section's
+        -- key, whatever the action's own caching says (the section runner turns
+        -- that off on its copy of the action)
+        local section_saved = config.features and (config.features._section_scope or config.features._section_xray)
+        markOneShot(temp_config, cache_enabled or (type(section_saved) == "table" and section_saved.cache_key ~= nil))
         local result = BookToolRunner.queryWith(queryChatGPT, history:getMessages(), temp_config, handleResponse, plugin, ui)
 
         -- If streaming is in progress, return nil (result comes via callback)
@@ -7437,6 +7482,17 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
             on_close = function()
                 book_domain_id = getBookDomain(doc_settings)
                 book_research_id = getBookResearchMode(doc_settings)
+                -- A Global pick is written to the settings and to the plugin's
+                -- shared configuration; this dialog may run on a COPY of it (a
+                -- chat about an X-Ray entry does), which the pick never
+                -- reached: the chip and the Send kept the old domain (audit
+                -- 2026-11-12). The two global values are read from the
+                -- settings and put on this dialog's own configuration.
+                local saved = plugin and plugin.settings and plugin.settings:readSetting("features")
+                if type(saved) == "table" and configuration and configuration.features then
+                    configuration.features.selected_domain = saved.selected_domain
+                    configuration.features.research_mode = saved.research_mode
+                end
                 selected_domain = configuration and configuration.features
                     and configuration.features.selected_domain or nil
                 refreshInputDialog()
@@ -10203,6 +10259,14 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
                         -- the next dialog starts on the setting
                         shared_features._data_once = nil
                         shared_features._session_book_info = nil
+                        -- The consent to read past the position (written just
+                        -- above, before this copy) is this request's alone: it
+                        -- rides the copy, which spends it. Left on the shared
+                        -- table, the next chat opened by an entry that does not
+                        -- scrub (a file-browser or Book Hub chat) sent its first
+                        -- protected turn without the spoiler line (the
+                        -- shared-state map, 2026-11-12)
+                        shared_features._spoiler_scope_consent = nil
                         -- Per-chat conversation id on the private copy (B285 / #107)
                         configuration.conversation_id = history.conversation_id
                         -- Send's long-press pick rides the private copy to the bake
@@ -11308,9 +11372,20 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
         return true
     end
 
-    -- Rotation support via in-place refresh (no close-and-reopen gap)
+    -- A change of the screen (a turned Android device, a resized window): the
+    -- dialog is rebuilt for the new size with its text. On the next tick,
+    -- never inside the event: KOReader BROADCASTS a resize to every window and
+    -- starts over whenever a new window appears, so a dialog that replaced
+    -- itself inside its handler was told again as the new dialog, and again,
+    -- and the app hung (25,000 rebuilds in the first resize run in the real
+    -- app). Once per dialog, and not for one that was closed meanwhile
     input_dialog.onScreenResize = function(self, dimen)
-        refreshInputDialog()
+        if not self._koa_resize_pending then
+            self._koa_resize_pending = true
+            UIManager:nextTick(function()
+                if not self._koa_closed then refreshInputDialog() end
+            end)
+        end
         return true
     end
     input_dialog.onSetRotationMode = function(self, rotation)
@@ -11326,6 +11401,7 @@ local function showChatGPTDialog(ui_instance, highlighted_text, config, prompt_t
     -- paths (redundant-harmless here). Read the text before teardown; pcall for safety.
     local koaOrigOnCloseWidget = input_dialog.onCloseWidget
     input_dialog.onCloseWidget = function(self_dlg)
+        self_dlg._koa_closed = true  -- a rebuild waiting for its tick stands down
         if plugin and not self_dlg._koa_internal_close then
             local ok, txt = pcall(function() return self_dlg:getInputText() end)
             if ok and txt and txt ~= "" then plugin._last_input = txt end
@@ -13887,13 +13963,9 @@ local function generateSummaryCache(ui, configuration, plugin, book_metadata, on
         section_action.use_reading_progress = false
         section_action.use_response_caching = false
         section_action._section_scope = section_scope  -- Scopes text extraction to section pages
-        -- Inject section scope context into prompt
-        if section_action.prompt then
-            local scope_line = string.format(
-                'This is a section of "{title}"{author_clause}.\nSection: "%s" (%s)\nFocus your summary on this section only.\n\n',
-                section_scope.label, section_scope.page_summary)
-            section_action.prompt = scope_line .. section_action.prompt
-        end
+        -- The prompt a run on one section sends (the one writer, B741)
+        section_action.prompt = Actions.scopedPrompt(section_action,
+            { kind = "section", label = section_scope.label, pages = section_scope.page_summary })
         summary_action = section_action
     end
 
@@ -14249,6 +14321,7 @@ return {
     -- Test seam (tests/unit/test_run_options.lua): the request bake
     _buildUnifiedRequestConfig = buildUnifiedRequestConfig,
     webSearchPreview = webSearchPreview,  -- the message's web flag before the bake (B588)
+    _markOneShot = markOneShot,  -- test seam: the request that has no later turn (B728)
     DISPATCH_TRANSIENTS = DISPATCH_TRANSIENTS,  -- the keys a dispatch consumes from its source config
     dropDispatchTransients = dropDispatchTransients,  -- the funnel's Cancel clears them as a dispatch would
     -- Test seam (tests/unit/test_front_matter_flow.lua): what a headless run hands back

@@ -1,6 +1,6 @@
 # Book Groups and Series
 
-A group is a named list of books: a series, a project on one subject, or just a list. The X-Rays of a series or a project share what they know, on their own and for free, and you can link names by hand or run an AI merge for one request per book. In a series, reading order is spoiler order: a later book stays out of reach until the books before it are read.
+A group is a named list of books: a series, a project on one subject, or just a list. The X-Rays of a series or a project share what they know, on their own and for free, and you can link names by hand. An AI merge, for one request per book, is there too; it is [experimental for now](#ai-merge-paid). In a series, reading order is spoiler order: a later book stays out of reach until the books before it are read.
 
 ## Group kinds
 
@@ -14,7 +14,7 @@ The kind decides what passes between the books' X-Rays.
 
 Whatever the kind, the books share a hub, a group chat and group settings.
 
-Only a Series is ordered, and its order decides what may feed what: earlier books feed later ones. Switching a series to Project or Plain turns the order off, and everything that depends on it stands down: carrying from earlier books, the series AI merge, the question before a new X-Ray and the "book N of M" labels.
+Only a Series is ordered, and its order decides what may feed what: earlier books feed later ones. Switching a series to Project or Plain turns the order off, and everything that depends on it stands down: carrying from earlier books, the series AI merge and the "book N of M" labels.
 
 A new group asks **What kind of group?** right after you name it; a tap outside keeps Series. To change the kind later, use **Kind: …** (the row names the current kind) in the Group Hub's ☰ menu, or in the popup you get by holding the group in the Groups list. That popup describes the current kind, and a tap on another kind switches at once.
 
@@ -24,7 +24,7 @@ A new group asks **What kind of group?** right after you name it; a tap outside 
 |---|---|---|
 | **Carried entries** | What the group's other books know waits on this book's carried list and joins its X-Ray on its own when the book introduces it. An entry this book already has gets the other book's description attached. | Free and automatic; nothing is sent |
 | **Link** | You say two names are one thing: a carried entry and an entry of this book, two carried entries, or entries of two books. | Free; nothing is sent |
-| **AI merge** | The model reads two X-Rays, links names that differ between the books, and writes what the other book adds to the entries they share. | One request per book; the X-Rays are sent, never the books |
+| **AI merge** | The model reads two X-Rays, links names that differ between the books, and writes what the other book adds to the entries they share. Experimental for now. | One request per book; the X-Rays are sent, never the books |
 | **Merge duplicates** | Two entries of one X-Ray become one (**Find duplicate entities…**, see [Using X-Ray](Using-X-Ray)). | Free; its AI merge option, a combined description, sends a request |
 
 Each is described below: [Carried entries](#carried-entries), [Link](#link-joining-two-names-free), [AI merge](#ai-merge-paid).
@@ -66,7 +66,6 @@ The title-bar ☰ menu repeats the create rows and adds **Sort groups…**: **By
 A full-screen page per group: the title is the group's name, the subtitle its authors, kind and number of books. Top to bottom:
 
 - **Group Settings…**, with how many values the group sets and how many books do not follow them (see [Group settings](#group-settings)).
-- The group's AI merge: **AI merge the series (1 request per book)…** in a series, **AI merge the group into one book (1 request per book)…** in a project (see [AI merge](#ai-merge-paid)). A plain group has none.
 - **Series Chat/Action…**, **Project Chat/Action…** or **Group Chat/Action…**: the library chat with every book of the group already selected, for questions and comparisons across them (see [Contexts and Chat](Contexts-and-Chat)).
 - The books in order. Tap one for its Book Hub; hold it to move, open or remove it. The open book is marked "open", a book whose file is gone "(missing)".
 - The add rows.
@@ -80,7 +79,7 @@ Other ways in: the **Group** row of a book's Book Settings or Book Hub (a **Whic
 A group can hold values for many of the settings a book can, so a series is set up once:
 
 - **Domain**, **Research mode**, **Background** and **Spoiler protection**;
-- under **X-Ray ▸**: **Automatic X-Ray**, **New X-Ray preset**, **New X-Ray categories** (with the status block), **New X-Ray depth**, **New X-Ray type**, **Checkpoint spacing** and **Carried entries**;
+- under **X-Ray ▸**: **Automatic X-Ray**, **New X-Ray preset**, **New X-Ray categories** (with Current State), **New X-Ray depth**, **New X-Ray type**, **Checkpoint spacing** and **Carried entries**;
 - under **Privacy & Data ▸**: **Book text**, **Highlights**, **Annotation notes**, **Notebook** and **Text around what you tap**, each Not set, Allow or Never. A group's Never keeps that kind of every member out of every request, trusted providers included, as a book's own Never does ([Privacy and Data](Privacy-and-Data#group-values));
 - under **Languages ▸**: the AI response language, translation language, dictionary language and book text language.
 
@@ -101,9 +100,9 @@ Carried entries are what the other books of a group know that this book has not 
 - On its own, at no cost: nothing is sent. Building or updating any X-Ray of the group, and any change to the group (books added, removed or moved, the kind changed), refreshes the books' carried lists in the background.
 - The carried list follows the group as it is now. When a book leaves the group, the group is deleted, the books are put in another order or the kind changes, each book drops the carried entries, and the "From" lines on its own entries, of the books it no longer takes from: a book that left, every book of a deleted group, in a series a book that now comes after it, everything in a plain group. What an AI merge added stays, and so do an entry you carried by hand (**Add to this book's carried list**), an entry you added from the carried list, and the ones you removed. Putting a book back brings its entries back.
 - In a series, a book's list comes from the nearest earlier book with an X-Ray, and that book's own carried list comes along with it, so one book passes on everything before it. In a project it comes from every other book with an X-Ray.
-- A book holds a carried list once it has its own main X-Ray. Only X-Rays your privacy settings let the AI read are used: text extraction allowed for that book, or a trusted provider (see [Privacy and Data](Privacy-and-Data)).
+- A book holds a carried list once it has its own main X-Ray. A book whose text is set to Never contributes nothing; a book on Ask is carried too, since carrying sends nothing (see [Privacy and Data](Privacy-and-Data)).
 - An entry this book already has gets what the other book says about it attached as a line naming that book, also at no cost. "Already has" means an entry of the same kind (a person as a person, a place as a place): the earlier book's character "the Warden" is carried even when this book has the term "Warden".
-- A book's timeline (or argument development) and its status block are never carried: they belong to that book.
+- A book's timeline (or argument development) and its Current State are never carried: they belong to that book.
 - When the earlier books name one character differently (a short name in one volume, the full name in the next), the list still shows one row, with the other volume's description as a "From earlier books" line. When two books carry the same entry, each book's text is kept as that book's line.
 - Japanese names that a model wrote with "_" or "-" in place of "・" are read as one name, so one character does not become two entries.
 - An update request lists only the carried names its new text mentions, and an AI merge request only those the other X-Ray mentions, so a long carried list does not make every request bigger.
@@ -153,44 +152,40 @@ In an entry's **More…** popup, **Link with a group member's entry…** asks fo
 
 ### Adding another book's entry to this book
 
-An entry found in another book of the group (by a lookup, a card or the search) opens read-only with **Open in *Title*'s X-Ray** and **Add to this book's carried list**: it then waits on this book's carried list like any carried entry, at no cost. The row reads **Already in this book's X-Ray** or **Already on this book's carried list** when that is so, judged by an entry of the same kind. Adding needs text extraction allowed for the other book, or a trusted provider.
+An entry found in another book of the group (by a lookup, a card or the search) opens read-only with **Open in *Title*'s X-Ray** and **Add to this book's carried list**: it then waits on this book's carried list like any carried entry, at no cost. The row reads **Already in this book's X-Ray** or **Already on this book's carried list** when that is so, judged by an entry of the same kind. Adding is refused only when the other book's text is set to Never.
 
 ## AI merge (paid)
+
+**Experimental: not recommended for now.** How well an AI merge links names that differ between two books has not been measured, and a wrong link puts a name on the wrong entry. In a series, the free carry and **Possible matches** already do most of the work. If you use it: the X-Ray from before the merge is under **All versions**, and a name it put on the wrong entry can be set to **Not matched** in that entry's **Names and matching…**. KOAssistant never starts an AI merge or offers one by itself: you start it from the rows below.
 
 An AI merge asks the model to combine two X-Rays. It matches entries by name, alias and description (a role in one book can be a name in the other), links the names that differ, and writes what the other book adds to the entries the two share. Every row, confirm, progress line and result of a paid merge says **AI merge**, and every row ends with its request count.
 
 ### What is sent and what changes
 
 - One request per book: the two X-Rays are sent, never the books.
-- This book's entries are kept exactly as they are. What the other book knew is attached to each shared entry as a background line naming that book. Entities of the other book that matter for this one can arrive as new entries, and the rest go on this book's carried list. This book's timeline and status block are never touched.
+- This book's entries are kept exactly as they are. What the other book knew is attached to each shared entry as a background line naming that book. Entities of the other book that matter for this one can arrive as new entries, and the rest go on this book's carried list. This book's timeline and Current State are never touched.
 - It brings in everything the other X-Ray covers, later events included. A book that comes later in the series can be merged in; the confirm cautions that its background includes events beyond this book.
-- The receiving X-Ray is archived first, so an AI merge can be undone from **All versions**.
+- The receiving X-Ray is archived first, so an AI merge can be undone from **All versions**. With Settings → Reading & Library → X-Ray → X-Ray Versions to Keep at 0 nothing is archived, and there is no undo.
 - Every confirm says how many requests it will send, and whether a book was merged in before. Merging one book again sends both X-Rays again, which is worth it only when one of them has changed. The series and project merges skip the books already merged and up to date (**AI merge new only**), run again the ones whose X-Ray changed, and can run everything again (**Re-run all**, **AI merge all**).
-- It needs both X-Rays readable under your privacy settings: text extraction allowed for each book, or a trusted provider. A merge missing that for a book does not start.
+- After the confirm it asks once for what the X-Rays were built from, where that is still on Ask; a book whose text is set to Never is refused, with a button to its settings.
 - When the two books share nothing, it says so and changes nothing. When the merge may have left one figure under two names, it offers **Review duplicates…**.
-- The X-Ray browser's ☰ menu → **Info** lists the books AI merges brought in under **Includes background from:**, each "up to date" or "changed since the AI merge".
+- The X-Ray browser's ☰ menu → **Info** lists the books AI merges brought in under **Includes background from:**, each marked (up to date) or (changed since the AI merge).
 
 ### The AI merge rows
 
 | Row | Where | What it does | Requests |
 |---|---|---|---|
 | **AI merge with another book (1 request)…** | **Link and merge…**, the carried list's **AI merge…**, **AI merge X-Rays…** in the member list | Merges one book you pick into this one. The group's books come first (the earlier ones nearest first), then every other book with an X-Ray, under **Other books with an X-Ray (N)…**. | 1 |
-| **AI merge the series (1 request per book)…** | **Link and merge…** (a book with two or more earlier books), the Group Hub | Merges each book's X-Ray into the next one's, oldest first (1 into 2, 2 into 3, and so on) up to this book, so every book ends up carrying what the books before it know. It changes the X-Ray of every book after the first; each is archived first. From the hub it runs to the last book with an X-Ray. | 1 per merge: one fewer than the books it covers |
+| **AI merge the series (1 request per book)…** | **Link and merge…** (a book with two or more earlier books) | Merges each book's X-Ray into the next one's, oldest first (1 into 2, 2 into 3, and so on) up to this book, so every book ends up carrying what the books before it know. It changes the X-Ray of every book after the first; each is archived first. To cover the whole series, start it from its last book. | 1 per merge: one fewer than the books it covers |
 | **AI merge the group into this book (1 request per book)…** | **Link and merge…** (a project) | Merges every other book's X-Ray into this one. The other books are not changed. | 1 per other book with an X-Ray |
-| **AI merge the group into one book (1 request per book)…** | The Group Hub (a project) | Asks which book receives, then as above. | 1 per other book with an X-Ray |
 
 Books without an X-Ray are skipped, and the confirm says how many. The receiving book needs its own main X-Ray. A project merge archives this X-Ray at every step, and only as many versions are kept as Settings → Reading & Library → X-Ray → X-Ray Versions to Keep: with that many steps or more, the version from before the run may drop out of the list, and the confirm says so.
 
-### The question before a new X-Ray in a series
+### A new X-Ray in a series
 
-When you create a book's X-Ray in one request and the previous book of its series has an X-Ray, a question comes first. It says what happens on its own (the earlier book's knowledge is carried in for free: its names stay linked, and what it says about a person, place or term is attached when this book has that entry) and what an AI merge would add. The choices:
+A new X-Ray of a later book in a series is built like any other: no question comes first and no extra request is sent. What the earlier books know is carried in for free: their names stay linked, and what they say about a person, place or term is attached when this book has that entry.
 
-- **Just this book**: no AI merge.
-- **Also AI merge when done (1 request)**: merges the previous book in once the new X-Ray is saved.
-- **AI merge the series (N requests)**: offered when the previous book has not been merged with its own earlier books, so a merge with it alone would not bring their knowledge.
-- **Cancel**: no X-Ray.
-
-Whatever you answer, the new X-Ray's request lists the earlier book's names, so a recurring character, place or term can be linked to its earlier name even when this book calls it something else. Every new X-Ray of a later book in a series gets this list, built in one request or in checkpoints, and so does a rebuild. It rides in the X-Ray's own request, so it adds no request of its own. When the previous book has no X-Ray at all, a note after the create says to build one there to carry its knowledge forward.
+The new X-Ray's request lists the earlier book's names, so a recurring character, place or term can be linked to its earlier name even when this book calls it something else. Every new X-Ray of a later book in a series gets this list, built in one request or in checkpoints, and so does a rebuild. It rides in the X-Ray's own request, so it adds no request of its own. When the previous book has no X-Ray at all, a note after the create says to build one there to carry its knowledge forward. An AI merge is never part of a new X-Ray: to run one afterwards, use the rows above.
 
 ## The Link and merge group
 
@@ -202,7 +197,7 @@ The X-Ray popup and the X-Ray browser's ☰ menu show the same **Link and merge�
 4. **AI merge section X-Rays (N)…**: the book's own section X-Rays (see [Using X-Ray](Using-X-Ray)).
 5. **Find duplicate entities…**: Merge duplicates (see [Using X-Ray](Using-X-Ray)).
 
-A row that does not apply is left out. The X-Ray popup shows the group when the book is in a group or has section X-Rays; the browser's ☰ menu has it on every main X-Ray. The Group Hub carries the group's own AI merge row, and the carried list's **AI merge…** row opens the two AI merges between books.
+A row that does not apply is left out. The X-Ray popup shows the group when the book is in a group or has section X-Rays; the browser's ☰ menu has it on every main X-Ray. The carried list's **AI merge…** row opens the two AI merges between books. The Group Hub has no AI merge row: a paid merge starts from the X-Ray it changes.
 
 ## Looking things up across a group
 
@@ -221,7 +216,7 @@ In a series, lookups look past a book only once it is read (marked **Finished**,
 
 - When a later book with an X-Ray is held back, the search results and the no-results message carry a row naming it: **Search *Title* too (may contain spoilers)…**. The row shows whether or not that book has a hit, so it gives nothing away.
 - Each confirm (**Search this book**) opens exactly one more book, on its own page (**Results for "…" in *Title***), stacked over the page you confirmed from, so going back steps to the previous book. That page carries the row for the next one. A reveal does not stick: the next search starts at the chain again.
-- In the member list (**→ Group**), a held-back book is listed as "(later in the series)" without checking whether the entry appears in it, and opens only after a confirm (**Open it**). The Group Hub's book rows say and ask the same before that book's Book Hub opens, when the hub was reached from an earlier book (its Group button, Book Hub or X-Ray); from the Groups list nothing is held back.
+- In the member list (**→ Group**), a held-back book is listed as "(later in the series)" without checking whether the entry appears in it, and opens only after a confirm (**Open it**). The Group Hub's book rows say and ask the same before that book's Book Hub opens, judged from the book the hub was opened for (its Group button, Book Hub or X-Ray), or from the open book when you come from the Groups list; with no book open nothing is held back.
 - Marks, entity cards and matching selections never reach past the chain.
 - A project shares between all its books in both directions; a plain group shares nothing.
 

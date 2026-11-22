@@ -316,6 +316,13 @@ end
 local function pdfWholeWord(matched_text, term_text)
     local needle = (XrayParser.matchNormalize(term_text or ""):match("^%s*(.-)%s*$")) or ""
     if needle == "" or type(matched_text) ~= "string" then return true end
+    -- A script written without spaces (Chinese, Japanese, Thai): the PDF
+    -- engine hands each character back as a word box of its own and KOReader
+    -- joins the boxes with spaces ("林 黛 玉" for 林黛玉), so the whole-word
+    -- test never held and every mention of such a name was dropped (audit
+    -- 2026-11-12). There is no word boundary to check there, as in a
+    -- reflowable book.
+    if XrayParser._skipBoundaryCheck(needle) then return true end
     return #XrayParser._collectMatchSpans(XrayParser.matchNormalize(matched_text), needle) > 0
 end
 XrayBrowser._pdfWholeWord = pdfWholeWord
@@ -421,7 +428,7 @@ end
 --- @return table|nil hits, nil when the reader cancelled
 local function gatherMentionHitsInSubprocess(ui, terms, exclude)
     local Trapper = require("ui/trapper")
-    local info = InfoMessage:new{ text = _("Searching the book… (tap to cancel)") }
+    local info = require("koassistant.ui.waiting").message{ text = _("Searching the book… (tap to cancel)") }
     UIManager:show(info)
     UIManager:forceRePaint()
     local completed, hits = Trapper:dismissableRunInSubprocess(function()
@@ -1379,6 +1386,27 @@ end
 ---   with no carried list is not parsed (this runs when the popup opens, and
 ---   a long series' X-Ray is large)
 --- @return string|nil
+--- What an X-Ray was built with, as lines for its Info (B568): the preset its
+--- three dials match, or "Custom" with the dials themselves. The values are
+--- the saved entry's own stamps (an entry from before a dial existed carries
+--- none, which is that dial's widest value: all categories, standard depth,
+--- the status block on). The research track takes no dials. Pure.
+--- @param entry table|nil the saved X-Ray entry (xray_categories, xray_depth, xray_status)
+--- @param academic boolean the X-Ray is on the research track
+--- @return table lines
+function XrayBrowser.buildLines(entry, academic)
+    if type(entry) ~= "table" or academic then return {} end
+    local BookSettings = require("koassistant.books.book_settings")
+    local preset = BookSettings.xrayPresetFor(entry.xray_categories, entry.xray_status, entry.xray_depth)
+    local lines = { _("Preset:") .. " " .. BookSettings.xrayPresetLabel(preset) }
+    if not preset then
+        lines[#lines + 1] = _("Categories:") .. " " .. BookSettings.xrayCategoriesLabel(entry.xray_categories)
+        lines[#lines + 1] = _("Depth:") .. " " .. BookSettings.xrayDepthLabel(entry.xray_depth)
+        lines[#lines + 1] = _("Current State:") .. " " .. (entry.xray_status == "off" and _("Off") or _("On"))
+    end
+    return lines
+end
+
 function XrayBrowser.carriedListLabel(book_file, raw)
     if type(raw) == "string"
             and not raw:find('"' .. XrayParser.DORMANT_KEY .. '"', 1, true) then
@@ -2875,6 +2903,65 @@ function XrayBrowser:_dismissDetail(viewer)
     self._detail_nav_close = nil
 end
 
+--- The words of "First appears" and "Last seen" (B748), pure.
+--- @param first table { page, chapter } the first page the entry is written on
+--- @param last table|nil the last one (nil or the same page: one statement)
+--- @param reach_limited boolean the reader's reach ends before the book does
+---   (spoiler protection): the last page is the last one SO FAR
+--- @return string
+function XrayBrowser.firstLastText(first, last, reach_limited)
+    local function where(at)
+        if type(at.chapter) == "string" and at.chapter:find("%S") then
+            return T(_("%1 (p. %2)"), at.chapter, at.page)
+        end
+        return T(_("p. %1"), at.page)
+    end
+    if not last or last.page == first.page then
+        return T(_("First appears: %1."), where(first))
+    end
+    if reach_limited then
+        return T(_("First appears: %1.\nLast seen: %2."), where(first), where(last))
+    end
+    return T(_("First appears: %1.\nLast appears: %2."), where(first), where(last))
+end
+
+--- That line for an entry of the open book, or nil (B748): the first and the
+--- last page its names are written on, up to the reader's reach (the gate
+--- Mentions clips at) or inside a section browser's own pages, read from the
+--- book's STORED name index. No model, no pass over the book and nothing new
+--- stored: nil while the index does not hold the entry's names (the marks
+--- keep it up to date; Chapter Appearances and Mentions build it when asked).
+--- @return string|nil
+function XrayBrowser:_firstLastLine(item, category_key, title)
+    local ui = self.ui
+    local doc = ui and ui.document
+    if not doc or DISTRIBUTION_EXCLUDED[category_key] or XrayParser.TEXT_MATCH_EXCLUDED[category_key] then
+        return nil
+    end
+    local owner = self.metadata and self.metadata.book_file
+    if owner and doc.file ~= owner then return nil end
+    local XrayIndex = require("koassistant.xray.xray_index")
+    if not XrayIndex.supported(doc) then return nil end
+    local layout = XrayIndex.layout(doc.file, XrayIndex.stamp(ui))
+    local set = layout and XrayParser.matchTermSet(item, title)
+    if not set then return nil end
+    local gate = self:_spoilerGate()
+    local from, to = nil, gate
+    if self.scope then from, to = self.scope_start, self.scope_end end
+    local lo, hi = XrayIndex.firstLast(layout, set,
+        XrayParser.containingMatchHandles(self.xray_data, item), from, to)
+    if not lo then return nil end
+    local function at(page)
+        local chapter
+        if ui.toc and ui.toc.getTocTitleByPage then
+            local ok, found = pcall(ui.toc.getTocTitleByPage, ui.toc, page)
+            chapter = ok and type(found) == "string" and found or nil
+        end
+        return { page = page, chapter = chapter }
+    end
+    return XrayBrowser.firstLastText(at(lo), hi and at(hi) or nil, gate ~= nil)
+end
+
 function XrayBrowser:showItemDetail(item, category_key, title, source, nav_context)
     require("koassistant.core.logger").dbg("KOAssistant XrayBrowser: entity",
         (item and item.name) or "?", "in", tostring(category_key),
@@ -2906,6 +2993,13 @@ function XrayBrowser:showItemDetail(item, category_key, title, source, nav_conte
     if (category_key == "current_state" or category_key == "current_position") and self.metadata.progress then
         detail_text = _("As of") .. " " .. self.metadata.progress .. "\n\n" .. detail_text
         chat_text = _("As of") .. " " .. self.metadata.progress .. "\n\n" .. chat_text
+    end
+    -- Where the book first writes this entry's name and where it last does,
+    -- as far as the reader has read (B748). On the page only: "Chat about
+    -- this" sends the entry, as before.
+    do
+        local ok_fl, first_last = pcall(self._firstLastLine, self, item, category_key, title)
+        if ok_fl and first_last then detail_text = detail_text:gsub("%s+$", "") .. "\n\n" .. first_last end
     end
     -- G2 (group hub plan, 2026-09-06): what the other books of the group say
     -- about this entry, as far as the chain reaches (earlier books; later
@@ -5066,6 +5160,9 @@ function XrayBrowser:chatAboutItem(detail_text, entity)
         config.features.book_metadata = freshBookMetadata(config.features.book_metadata,
             self.metadata.book_file, self.metadata.title, self.metadata.book_author)
     end
+    -- The entry's book, for the request's per-book settings: this X-Ray need
+    -- not be the open book's (set or cleared on every open, as the block below)
+    config.features._xray_entry_book = self.metadata.book_file or nil
     -- Clear stale selection data - the "highlight" is AI-generated, not a real book selection,
     -- so "Save to Note" must be disabled (prevents saving to a random prior highlight position)
     config.features.selection_data = nil
@@ -5191,6 +5288,8 @@ function XrayBrowser:runWikiForItem(item, category_key, title, source, nav_conte
         config.features.book_metadata = freshBookMetadata(config.features.book_metadata,
             file, self.metadata.title, self.metadata.book_author)
     end
+    -- and the request reads that book's own settings (see chatAboutItem)
+    config.features._xray_entry_book = file
 
     -- Set item description as disambiguation context (consumed by _forced_surrounding_context)
     config.features._forced_surrounding_context = XrayParser.formatItemDetail(item, category_key)
@@ -7330,7 +7429,7 @@ function XrayBrowser:_showChapterMentions(item, category_key, item_title, chapte
         else
             require("ui/trapper"):wrap(function()
                 local Trapper = require("ui/trapper")
-                local info = InfoMessage:new{ text = _("Collecting the mentions… (tap to cancel)") }
+                local info = require("koassistant.ui.waiting").message{ text = _("Collecting the mentions… (tap to cancel)") }
                 UIManager:show(info)
                 UIManager:forceRePaint()
                 local completed, rows = Trapper:dismissableRunInSubprocess(function()
@@ -8610,6 +8709,19 @@ function XrayBrowser:showOptions()
         or XrayParser.isFiction(self.xray_data) and _("Fiction")
         or _("Non-Fiction")
     table.insert(info_parts, _("Type:") .. " " .. type_label)
+    -- What it was built with (B568), from the saved entry itself, read at the
+    -- tap like the checkpoints line below: the shown version's own entry, a
+    -- section's, or the live X-Ray's
+    do
+        local built_entry = self.metadata.checkpoint and self.metadata.checkpoint_data or nil
+        if not self.metadata.checkpoint and self.metadata.book_file then
+            built_entry = require("koassistant.artifacts.action_cache").get(self.metadata.book_file,
+                (self.scope and self.scope.cache_key) or "_xray_cache")
+        end
+        for _idx, line in ipairs(XrayBrowser.buildLines(built_entry, XrayParser.isAcademic(self.xray_data))) do
+            table.insert(info_parts, line)
+        end
+    end
     if self.metadata.source_label then
         table.insert(info_parts, _("Source:") .. " " .. self.metadata.source_label)
     end
@@ -8640,8 +8752,8 @@ function XrayBrowser:showOptions()
                 local src = ProvActionCache.getXrayCache(rec.file)
                 local src_ts = src and tonumber(src.timestamp)
                 if src_ts then
-                    line = line .. " — " .. (src_ts > tonumber(rec.source_ts)
-                        and _("changed since the AI merge") or _("up to date"))
+                    line = line .. " (" .. (src_ts > tonumber(rec.source_ts)
+                        and _("changed since the AI merge") or _("up to date")) .. ")"
                 end
             end
             table.insert(info_parts, line)

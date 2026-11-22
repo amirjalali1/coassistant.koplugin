@@ -43,6 +43,47 @@ local SpinWidget = require("ui/widget/spinwidget")
 local UIConstants = require("koassistant.ui.constants")
 local Languages = require("koassistant.core.languages")
 local Constants = require("koassistant.core.constants")
+local ScriptFonts = require("koassistant.ui.script_fonts")
+local Place = require("koassistant.ui.viewer_place")
+
+-- Task lists ("- [ ] to do", "- [x] done", GitHub's extension): the Markdown
+-- library knows no task items and MuPDF draws no form controls, so the box is
+-- written as a character at the item's start. Lines inside a code fence are
+-- left as typed. One copy for both views (the plain-text view strips through
+-- it too).
+local TASK_OPEN, TASK_DONE = "☐", "☑"
+local function taskListBoxes(text)
+    if not text or not text:find("%[[ xX]%]") then return text end
+    local out, in_fence = {}, false
+    for typed in (text .. "\n"):gmatch("([^\n]*)\n") do
+        local line = typed
+        if line:match("^%s*```") then in_fence = not in_fence end
+        if not in_fence then
+            line = line:gsub("^(%s*[-*+]%s+)%[([ xX])%](%s)", function(lead, mark, gap)
+                return lead .. (mark == " " and TASK_OPEN or TASK_DONE) .. gap
+            end, 1)
+            line = line:gsub("^(%s*%d+[.)]%s+)%[([ xX])%](%s)", function(lead, mark, gap)
+                return lead .. (mark == " " and TASK_OPEN or TASK_DONE) .. gap
+            end, 1)
+        end
+        out[#out + 1] = line
+    end
+    return table.concat(out, "\n")
+end
+
+-- A task item draws its box in the bullet's place: an item of a bulleted
+-- list of the Markdown view's HTML that begins with a box gets no marker
+-- (inline, which MuPDF applies). A numbered item keeps its number.
+local function taskListItems(html)
+    if not html:find(TASK_OPEN, 1, true) and not html:find(TASK_DONE, 1, true) then return html end
+    return (html:gsub("<ul>.-</ul>", function(list)
+        for _i, box in ipairs({ TASK_OPEN, TASK_DONE }) do
+            list = list:gsub("<li>(%s*)" .. box, '<li style="list-style-type: none">%1' .. box)
+            list = list:gsub("<li>(%s*<p>%s*)" .. box, '<li style="list-style-type: none">%1' .. box)
+        end
+        return list
+    end))
+end
 
 -- Strip markdown syntax for text mode (preserves readability without formatting)
 -- Used when render_markdown is false - converts markdown to plain text with visual hints
@@ -61,7 +102,8 @@ local function stripMarkdown(text, is_rtl)
     -- In RTL mode, skip LRM to let para_direction_rtl control paragraph direction
     local LRM = is_rtl and "" or "\u{200E}"  -- Left-to-Right Mark - resets direction after RTL text
 
-    local result = text
+    -- task boxes while the code fences still stand (lines inside one are left)
+    local result = taskListBoxes(text)
 
     -- Code blocks FIRST (before other transformations can affect content inside)
     -- ```lang\ncode\n``` → indented with 4 spaces
@@ -139,6 +181,8 @@ local function stripMarkdown(text, is_rtl)
     result = result:gsub("^[%-]%s+", "• ")
     -- For * lists, only at start of line (not mid-line asterisks)
     result = result:gsub("\n%*%s+", "\n• ")
+    -- a task item shows its box in the bullet's place
+    result = result:gsub("• " .. TASK_OPEN, TASK_OPEN):gsub("• " .. TASK_DONE, TASK_DONE)
 
     -- Horizontal rules: --- or *** or ___ → line (15 chars, subtle separator)
     local hr_line = "───────────────"
@@ -155,25 +199,50 @@ local function stripMarkdown(text, is_rtl)
     -- Clean up multiple blank lines
     result = result:gsub("\n\n\n+", "\n\n")
 
-    -- BiDi fix: Prepend LRM to lines containing RTL characters to establish LTR base direction
-    -- Without this, lines starting with RTL text get RTL paragraph direction, reversing everything
-    -- Skip in RTL mode: para_direction_rtl already sets the correct base direction
+    -- A line that mixes right-to-left and Latin letters takes the direction
+    -- the Markdown view gives its block (Bidi.blockDirection: the line's own
+    -- words, and the language of the message it stands in), said with a mark
+    -- at its start, since the text widget reads a paragraph's direction from
+    -- its first letter alone. An English definition that opens with an Arabic
+    -- headword stays left-to-right (the left-to-right mark); an Arabic
+    -- sentence with an English name in it stays right-to-left (the
+    -- right-to-left mark: until 2026-11-17 EVERY mixed line was made
+    -- left-to-right, and such a sentence came out in the wrong order in the
+    -- Plain Text view and the minimal popup). Lines of one script and headers
+    -- keep the widget's own reading.
+    -- Skip in RTL mode: para_direction_rtl already sets the base direction
     if not is_rtl then
-        -- Add LRM only to truly mixed RTL+Latin lines (right-to-left letters of
-        -- any script, koassistant/ui/bidi.lua). Pure RTL lines (even with
-        -- numbers/punctuation) should align right naturally
-        local latin_pattern = "[a-zA-Z]"  -- Latin letters indicate mixed content needing LTR base
+        local RLM = "\u{200F}"
+        local latin_pattern = "[a-zA-Z]"  -- Latin letters indicate mixed content
         local header_pattern = "^%s*[▉◤◆✿❖·]"  -- Header symbols from header processing above
-        local fixed_lines = {}
-        for line in result:gmatch("([^\n]*)\n?") do
-            -- Add LRM only to mixed RTL+Latin lines (not headers, not pure RTL)
-            if Bidi.hasRTL(line) and line:match(latin_pattern) and not line:match(header_pattern) then
-                table.insert(fixed_lines, LRM .. line)
-            else
-                table.insert(fixed_lines, line)
+        local rows = {}
+        for line in result:gmatch("([^\n]*)\n?") do rows[#rows + 1] = line end
+        -- A message runs from one "▶" / "◉" marker to the next
+        local main, piece_end = nil, 0
+        for i, row in ipairs(rows) do
+            if i > piece_end then
+                piece_end = #rows
+                for j = i + 1, #rows do
+                    if rows[j]:find("^\226\150\182") or rows[j]:find("^\226\151\137") then
+                        piece_end = j - 1
+                        break
+                    end
+                end
+                main = Bidi.mainDirection(table.concat(rows, "\n", i, piece_end))
+            end
+            if Bidi.hasRTL(row) and not row:match(header_pattern) then
+                local line = row
+                local rtl = Bidi.blockDirection(line, { main = main }) == "rtl"
+                -- The left-to-right mark after a bold word (above) is for a
+                -- right-to-left headword in a left-to-right line; in a
+                -- right-to-left line it turned what follows the word around
+                -- ("**word** (Name)," lost its space to the far side)
+                if rtl then line = line:gsub(PTF_BOLD_END .. LRM, PTF_BOLD_END) end
+                if line:match(latin_pattern) then line = (rtl and RLM or LRM) .. line end
+                rows[i] = line
             end
         end
-        result = table.concat(fixed_lines, "\n")
+        result = table.concat(rows, "\n")
     end
 
     -- Trim the trailing newline the line-loops above append (gmatch's final
@@ -212,25 +281,11 @@ local function fixIPABidi(text)
     return text
 end
 
--- Auto RTL mode's test (the switch to plain text, for chat and artifact
--- windows): right-to-left letters of any script (Arabic, Hebrew, Persian,
--- Urdu, Syriac ...) outnumber Latin ones, so English text that merely quotes
--- Arabic stays as it is. Optional sample_size limits the scan to the first N
--- bytes (large cached content).
+-- The minimal popup's direction test (exported below): right-to-left letters
+-- of any script (Arabic, Hebrew, Persian, Urdu, Syriac ...) outnumber Latin
+-- ones, so English text that merely quotes Arabic stays as it is. Optional
+-- sample_size limits the scan to the first N bytes (large cached content).
 local hasDominantRTL = Bidi.hasDominantRTL
-
--- Get the latest assistant response from message history (excludes user input/context)
-local function getLatestResponse(message_history)
-    if not message_history or not message_history.messages then return "" end
-    -- Iterate backwards to find the last assistant message
-    for i = #message_history.messages, 1, -1 do
-        local msg = message_history.messages[i]
-        if msg.role == "assistant" and msg.content then
-            return msg.content
-        end
-    end
-    return ""
-end
 
 -- "Latest reply on new page" (default on since 2026-08-12): a CSS page break
 -- after the newest reply's label makes the reply start at a physical page top
@@ -265,6 +320,29 @@ local function uprefix(s, n)
     i = i + step
   end
   return s
+end
+
+-- The text the plain-text view counts in. That view shows the transcript with
+-- its Markdown stripped (a rule drawn as a line of fifteen characters, the
+-- bold marks taken out by the widget itself), so a position found in the
+-- transcript is somewhere else in it: every search for a place in the
+-- plain-text view reads this, never self.text.
+local function shownPlainText(viewer)
+  local tw = viewer.scroll_text_w and viewer.scroll_text_w.text_widget
+  if tw and type(tw.text) == "string" then return tw.text end
+  return viewer.text
+end
+
+-- Put a line of the plain-text view at the top of the window, through the
+-- widget's own scroll path (free, render, layout): scrollToRatio(r, false)
+-- shows line 1 + floor(r * #lines - lines_per_page / 2), solved here for
+-- `line` with half a line of margin. The widget never scrolls past a full
+-- last screen. No cursor is placed: TextBoxWidget:moveCursorToCharPos draws
+-- one and scrolls the view back to a character above it.
+local function topAlignLine(scroll_text_w, line)
+  local tw = scroll_text_w.text_widget
+  scroll_text_w:scrollToRatio(
+    (line - 1 + tw.lines_per_page / 2 + 0.5) / #tw.vertical_string_list, false)
 end
 
 local function extractCarryAnchor(snippet)
@@ -463,7 +541,7 @@ local function applyCarryPageBreak(html_body, carry_anchor, carry_occurrence)
   return html_body:sub(1, best - 1) .. DIV .. html_body:sub(best)
 end
 
-local function applyExchangePageBreaks(html_body, configuration, carry_anchor, carry_occurrence)
+local function applyExchangePageBreaks(html_body, configuration, carry_anchor, carry_occurrence, lands)
   -- Runs AFTER addHtmlBidiAttributes since 2026-08-15: splitting a mixed
   -- Arabic paragraph BEFORE the bidi pass made the two halves classify
   -- differently (isPureRTL = has-RTL AND no-Latin), so the landed half
@@ -484,12 +562,36 @@ local function applyExchangePageBreaks(html_body, configuration, carry_anchor, c
   -- probe), so an empty spacer div carrying the -after rule does the split
   -- (see div.koa-exchange-break in getViewerCSS). luamd emits the marker as
   -- its own plain paragraph (verified against the bundled lib).
-  -- The spacer sits AFTER the reply's label (maintainer 2026-11-06, B561):
+  -- The break comes AFTER the reply's label (maintainer 2026-11-06, B561):
   -- the question, the usage line (reasoning, web, lookups) and the label stay
   -- on the page before, and the landed page opens with the reply's first
-  -- line. The short-prefix skip of 2026-08-12 (a short first question kept
-  -- its reply under it) is gone: the reply always opens its own page.
-  -- Returns the body and whether the spacer went in (the landing reads it).
+  -- line. Three rules from the audit of 2026-11-12, each seen as a defect in
+  -- the real widget (tests/scenarios/s09_reply_landing.lua):
+  -- 1. The label goes to the page before only where the window lands on the
+  --    reply. A window that opens at the top (`lands` false: Open Chats at
+  --    Latest Exchange off, the Chat button of a dictionary or translate
+  --    window, a saved chat of one exchange) showed a first page holding the
+  --    question and the label, the reply a page turn away: it keeps the rule
+  --    of every release up to v0.24.1 (the break BEFORE the label, so the
+  --    label and its reply start the new page together, and none after a
+  --    short prefix, where the reply belongs under its question).
+  -- 2. Nothing before the label (an action run with nothing typed): no
+  --    break, or a page would hold the label alone.
+  -- 3. Where the window lands, the break rides the label's own paragraph.
+  --    As an empty spacer block after it, the block spilled onto a page of
+  --    its own whenever the label was a page's last line, and the window
+  --    landed on that empty page.
+  -- 4. The reply's first block keeps its top margin (B696): MuPDF gives the
+  --    first block after a forced break none, while the same block at a
+  --    document's start has it, so the reply sat higher in this window than
+  --    in the stream window it takes over from (18 to 24 pixels on a 300 dpi
+  --    screen: "finished stream shifts a bit up"). An empty block after the
+  --    label's paragraph, with no break of its own, restores the margin for
+  --    every kind of block (probed through the app's MuPDF: heading,
+  --    paragraph, list, table, code, quote, formula); a sibling rule with a
+  --    padding missed code blocks and formulas.
+  -- Returns the body and whether the landing's break went in (the landing
+  -- reads it: the reply is then on the page after the label's).
   local marker = "<p>◉ KOAssistant:</p>"
   local last_pos, search_start = nil, 1
   while true do
@@ -509,9 +611,27 @@ local function applyExchangePageBreaks(html_body, configuration, carry_anchor, c
     logger.dbg("KOAssistant: exchange page break — nothing after the label")
     return html_body, false
   end
+  -- Nothing visible before the label: the page before would hold it alone
+  local visible_prefix = html_body:sub(1, last_pos - 1):gsub("<[^>]*>", "")
+  if not visible_prefix:match("%S") then
+    logger.dbg("KOAssistant: exchange page break — nothing before the label")
+    return html_body, false
+  end
+  if lands == false then
+    -- Rough visible-text length of the prefix is the proxy for "fits the
+    -- first page" (the released rule, 2026-08-12)
+    if #visible_prefix < 500 then
+      logger.dbg("KOAssistant: exchange page break — opens at the top, short prefix, none")
+      return html_body, false
+    end
+    logger.dbg("KOAssistant: exchange page break before the last reply's label (opens at the top): yes")
+    return html_body:sub(1, last_pos - 1)
+      .. '<div class="koa-exchange-break"></div>'
+      .. html_body:sub(last_pos), false
+  end
   logger.dbg("KOAssistant: exchange page break after the last reply's label: yes")
-  return html_body:sub(1, after - 1)
-    .. '<div class="koa-exchange-break"></div>'
+  return html_body:sub(1, last_pos - 1)
+    .. '<p class="koa-exchange-break">◉ KOAssistant:</p><div></div>'
     .. html_body:sub(after), true
 end
 
@@ -702,8 +822,9 @@ local WIDE_TABLE_COLS = 3
 -- every MD() call site. (The third, footnote escaping, is unnecessary:
 -- preprocessBrackets already entity-escapes "[^1]" — probed 2026-08-25.)
 --  1. Fence heal: an odd number of ``` fences (a response cut short inside a
---     code block) makes luamd throw (md.lua:280, match on nil) and the whole
---     viewer falls back to plain text; append the closing fence instead.
+--     code block, or one still streaming) makes luamd throw (md.lua:280,
+--     match on nil) and the whole viewer falls back to plain text; append the
+--     closing fence instead.
 --  2. Math protection: inside $...$ / $$...$$ spans, luamd's emphasis pass
 --     pairs underscores/asterisks ACROSS spans ("$a_1$ and $b_2$" -> <em>);
 --     entity-escape them so the math text renders literally and intact.
@@ -745,13 +866,21 @@ end
 
 local function healMarkdown(text)
     if not text then return text end
-    -- 1. fence heal
-    local fences = 0
+    -- 1. fence heal, at the open fence's own indentation: luamd closes a
+    -- fence only with one at the same depth, so a code block under a list
+    -- item ("1. Run:" then an indented fence) closed at the margin still
+    -- threw, and the whole answer showed as plain text for as long as that
+    -- block was streaming
+    local fences, open_indent = 0, ""
     for line in text:gmatch("[^\n]*") do
-        if line:match("^%s*```") then fences = fences + 1 end
+        local indent = line:match("^(%s*)```")
+        if indent then
+            fences = fences + 1
+            if fences % 2 == 1 then open_indent = indent end
+        end
     end
     if fences % 2 == 1 then
-        text = text .. "\n```\n"
+        text = text .. "\n" .. open_indent .. "```\n"
     end
     -- 2. math protection ($$...$$ first, then single-$ spans on one line)
     local function shield(body)
@@ -846,14 +975,13 @@ local function preprocessMarkdownTables(text)
             local table_html = {}
             if #header_cells > WIDE_TABLE_COLS then
                 -- Too wide for MuPDF to fit -- stack each row as labeled blocks.
+                -- (the direction pass finds these blocks by their tags: Bidi.STACK_OPEN / STACK_LINE)
                 for _r, cells in ipairs(body_rows) do
-                    table.insert(table_html,
-                        '<div style="margin:0.6em 0; padding-left:0.6em; border-left:2px solid #ccc">')
+                    table.insert(table_html, Bidi.STACK_OPEN)
                     for j = 1, #header_cells do
                         local val = cells[j]
                         if val and val ~= "" then
-                            table.insert(table_html, string.format(
-                                '<p style="margin:0.15em 0"><b>%s:</b> %s</p>', header_cells[j], val))
+                            table.insert(table_html, Bidi.STACK_LINE .. "<b>" .. header_cells[j] .. ":</b> " .. val .. "</p>")
                         end
                     end
                     table.insert(table_html, '</div>')
@@ -891,6 +1019,98 @@ local function preprocessMarkdownTables(text)
     end
 
     return table.concat(result, "\n")
+end
+
+-- A translate window's lines are paragraphs (B697). KOReader hands a page or
+-- a selection over with one line break between its paragraphs, a model that
+-- translates it answers the same way, and Markdown reads a single line break
+-- as a space: the page's paragraphs, the original's and the translation's,
+-- showed as one block (the Plain Text view showed them apart). Display only:
+-- a blank line goes between two lines of plain text, so each is a paragraph
+-- of its own. Lines the Markdown library gives a meaning are left alone (a
+-- list item, a heading, a quote, a table row, a rule or a heading's
+-- underline, an HTML block, indented code), and so is everything inside a
+-- code fence or a display formula. A line's fate rests on the line before it
+-- alone, never across a blank line, so a text converted in pieces cut at
+-- blank lines (the Markdown stream view) gives the whole conversion's HTML.
+local function isTextLine(line)
+  if not line:find("%S") or line:find("^    ") or line:find("^\t") then return false end
+  local s = line:match("^%s*(.*)$")
+  return not (s:find("^[-*+]%s") or s:find("^%d+[.)]%s") or s:find("^#") or s:find("^>") or s:find("^<")
+    or s:find("^[=%-_%*]+%s*$") or s:find("|", 1, true) or s:find("^%$%$") or s:find("^\\[%[%]]"))
+end
+
+-- Every line of a text with what it is: fn(line, is_text), is_text = a line
+-- of plain text outside a code fence and a display formula
+local function eachLine(text, fn)
+  local in_fence, in_formula, in_bracket = false, false, false
+  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+    local is_text = false
+    if line:find("^%s*```") or line:find("^%s*~~~") then
+      in_fence = not in_fence
+    elseif not in_fence then
+      -- a display formula across lines: "$$" on a line of its own or \[ ... \]
+      local was_inside = in_formula or in_bracket
+      local _d, dollars = line:gsub("%$%$", "")
+      if dollars % 2 == 1 then in_formula = not in_formula end
+      local _o, opens = line:gsub("\\%[", "")
+      local _c, closes = line:gsub("\\%]", "")
+      if opens > closes then in_bracket = true elseif closes > opens then in_bracket = false end
+      is_text = not was_inside and not in_formula and not in_bracket and isTextLine(line)
+    end
+    fn(line, is_text)
+  end
+end
+
+local function lineParagraphs(text)
+  if type(text) ~= "string" or not text:find("\n", 1, true) then return text end
+  local out, after_text = {}, false
+  eachLine(text, function(line, is_text)
+    if is_text and after_text then out[#out + 1] = "" end
+    out[#out + 1] = line
+    after_text = is_text
+  end)
+  return table.concat(out, "\n")
+end
+
+-- The reader's own lines are paragraphs too (B712). A message typed with line
+-- breaks in it showed as one block in the Markdown view, for the same reason
+-- (the Plain Text view shows the lines as typed). Display only, and in the
+-- chat window's conversion of its whole text alone (the stream view shows an
+-- answer): inside a message of the reader's, from its "▶ User:" label to the
+-- next "◉ KOAssistant:" label, the rule above. A window without the labels (a
+-- dictionary or compact view) is as it was. Not a line break tag: MuPDF adds
+-- the paragraph's bottom margin after a paragraph's first <br> and after no
+-- later one (probed 2026-11-17: line tops 36, 26, 26 px apart), so three
+-- typed lines showed as one line and a pair.
+local function typedLineParagraphs(text)
+  if type(text) ~= "string" or not text:find("▶ User:", 1, true) then return text end
+  local out, after_text, typed = {}, false, false
+  eachLine(text, function(line, is_text)
+    if line == "▶ User:" then
+      typed = true
+    elseif line == "◉ KOAssistant:" then
+      typed = false
+    end
+    if typed and is_text and after_text then out[#out + 1] = "" end
+    out[#out + 1] = line
+    after_text = is_text
+  end)
+  return table.concat(out, "\n")
+end
+
+-- Whether a window shows a translation whose lines are paragraphs: the
+-- viewer's own mark, else the request's (the stream view's stand-in has only
+-- the features). Not for a PDF or DjVu page (the request's page_printed_lines,
+-- set by Translate Page from what the extractor says): such a page is handed
+-- over with a line break at the end of every printed LINE, the answer may
+-- keep them, and Markdown's own reading of a line break, a space, is the
+-- right one there
+local function linesAreParagraphs(viewer)
+  local f = viewer.configuration and viewer.configuration.features
+  local translate = (f and f.translate_view == true) or false
+  if viewer.translate_view ~= nil then translate = viewer.translate_view == true end
+  return translate and not (f and f.page_printed_lines == true)
 end
 
 -- Auto-linkify plain URLs that aren't already part of markdown links
@@ -993,8 +1213,8 @@ local function preprocessBrackets(text)
 end
 
 -- CSS for markdown rendering (function to support dynamic text-align).
--- rtl_css: the right-to-left font's rules (koassistant/ui/rtl_font.lua; the
--- direction pass marks those blocks with class="koa-rtl"), appended last.
+-- rtl_css: the script fonts' rules (koassistant/ui/script_fonts.lua; its run
+-- pass wraps the scripts' runs and emoji in spans of those classes), appended last.
 local function getViewerCSS(text_align, rtl_css)
     text_align = text_align or "auto"
     -- "auto" (recon 2g default, 2026-08-17): no text-align rule — paragraphs
@@ -1022,14 +1242,15 @@ blockquote {
     border-left: 3px solid #ccc;
 }
 
-/* "Latest reply on new page": applyExchangePageBreaks puts an empty spacer
-   div after the newest reply's label (B561). MuPDF's plain-HTML layout
-   implements page-break-AFTER but NOT page-break-before (probed headlessly
-   against the bundled libwrap-mupdf 2026-08-12 and 2026-10-28: 30 paras +
-   pb-after = 31 pages, pb-before = no-op), so the break rides an -after rule
-   on the spacer. Inline style attributes ARE applied (the direction pass
-   writes the alignment swap and a quote's inset inline). */
-div.koa-exchange-break {
+/* "Latest reply on new page": applyExchangePageBreaks gives the newest
+   reply's label paragraph this class (B561), and the stream-position carry
+   puts an empty spacer div of the same class before the reader's block.
+   MuPDF's plain-HTML layout implements page-break-AFTER but NOT
+   page-break-before (probed headlessly against the bundled libwrap-mupdf
+   2026-08-12 and 2026-10-28: 30 paras + pb-after = 31 pages, pb-before =
+   no-op), so both ride an -after rule. Inline style attributes ARE applied
+   (the direction pass writes the alignment swap and a quote's inset inline). */
+.koa-exchange-break {
     page-break-after: always;
 }
 
@@ -1096,11 +1317,18 @@ table {
     table-layout: fixed;
 }
 
+/* No "overflow-wrap: break-word" on cells (B702). MuPDF never makes a column
+   narrower than its widest word (its min width is that word's, whatever this
+   property says: a long word runs off the page with it and without it, probed
+   2026-11-17), so the property only ever acted where a column holds single
+   words: such a column is given exactly its word's width, the room MuPDF
+   then finds in the cell differs from it by a rounding, and half of the time
+   the word was split over two lines ("capital" and its full stop, an Arabic
+   word after its second letter). Without it a word that is a hair too wide
+   has no place to break and stays whole. */
 td, th {
     border: 1px solid #ccc;
     padding: 0.3em 0.5em;
-    word-wrap: break-word;
-    overflow-wrap: break-word;
 }
 
 th {
@@ -1254,18 +1482,208 @@ local ChatGPTViewer = InputContainer:extend {
   configuration = nil,
 }
 
--- The right-to-left font's CSS rules for this window (Settings > Display
--- Settings > Rendering > Right-to-left text font; B558), read from the
--- window's own configuration so a chat opened before a change keeps its look
-function ChatGPTViewer:_rtlFontCSS()
+-- The script fonts' CSS rules for this window (Settings > Display Settings >
+-- Rendering > Right-to-left text font for the Arabic face; the fixed faces for
+-- Hebrew, Devanagari, Bengali and emoji; B558, B621), read from the window's
+-- own configuration so a chat opened before a change keeps its look. Second
+-- value: the folder the renderer reads those fonts from, for the widget's
+-- html_resource_directory (nil when the rules name no file in it)
+function ChatGPTViewer:_scriptFontCSS(html_body)
   local features = self.configuration and self.configuration.features
-  return require("koassistant.ui.rtl_font").css(features)
+  return ScriptFonts.css(features, html_body)
+end
+
+-- A dictionary window of a right-to-left language: the IPA reorder before
+-- the Markdown pass and the "starts with RTL" block rule of the direction pass
+function ChatGPTViewer:_needsRtlFix()
+  local dict_lang = self.configuration and self.configuration.features
+      and self.configuration.features.dictionary_language
+  return (self.compact_view or self.dictionary_view) and Languages.isRTL(dict_lang) or false
+end
+
+-- The direction of the answer in a dictionary window that shows the book's
+-- own sentence above it (the excerpt). The two have no marker between them,
+-- so the direction pass would count the excerpt's words into the answer's
+-- main direction: an English definition under a long Arabic sentence was
+-- judged an Arabic text, and its line, which opens with the Arabic headword,
+-- was laid out right-to-left. The answer's direction is the answer's own
+-- words'. nil = no excerpt shown (the pass counts as everywhere else).
+function ChatGPTViewer:_answerDirection(text)
+  if not (self.compact_view or self.dictionary_view) or type(text) ~= "string" then return nil end
+  local history = self._message_history or self.original_history
+  local excerpt = history and history.source_excerpt
+  if type(excerpt) ~= "string" or excerpt == "" or text:sub(1, #excerpt) ~= excerpt then return nil end
+  return Bidi.mainDirection(text:sub(#excerpt + 1))
+end
+
+-- THE Markdown pipeline, one copy for every build of the HTML view (init,
+-- update, rebuildScrollWidget, the translate toggle; the refresh goes through
+-- rebuild; the streaming window renders through the export below): the IPA
+-- reorder, the math pass, links, brackets, tables, luamd, the direction pass
+-- (post-bidi page breaks copy the classified opening tag so a split Arabic
+-- paragraph keeps its direction, 2026-08-15), then the script runs' spans
+-- last, since the page breaks match the HTML by its text. `viewer` is any
+-- table with render_math, text_align and configuration.
+--
+-- Two halves, so the streaming window can keep the first half's result for
+-- the part of an answer that is finished and convert only what is new
+-- (koassistant/request/stream_markdown.lua, which also says where a text may
+-- be cut): markdownBlocks = the text to the Markdown library's HTML, block by
+-- block, and what it costs most of; finishHtml = the passes that read the
+-- whole document (a message's main direction, the reply's page break, the
+-- script runs). opts.quiet: no log line and no plain-text stand-in when the
+-- library fails, nil and the error instead.
+local function markdownBlocks(viewer, text, opts)
+  local source_text = text or ""
+  if opts.ipa_fix then source_text = fixIPABidi(source_text) end
+  if linesAreParagraphs(viewer) then source_text = lineParagraphs(source_text) end
+  local auto_linked = autoLinkUrls(applyMath(viewer, source_text))
+  local bracket_escaped = preprocessBrackets(taskListBoxes(auto_linked))
+  local preprocessed_text = preprocessMarkdownTables(bracket_escaped)
+  -- Each numbered item carries its own number through the library, which
+  -- drops it (koassistant/ui/list_numbers.lua; resolved in finishHtml)
+  local html_body, err = MD(require("koassistant.ui.list_numbers").mark(preprocessed_text), {})
+  if err then
+    if opts.quiet then return nil, err end
+    logger.warn("ChatGPTViewer: could not generate HTML", err)
+    -- Fallback to plain text if HTML generation fails
+    html_body = "<pre>" .. (text or "Missing text.") .. "</pre>"
+  end
+  return taskListItems(html_body)
+end
+
+local function finishHtml(viewer, html_body, opts)
+  -- Numbered lists as the answer numbered them: before the direction pass,
+  -- which writes a right-to-left list's markers by counting its items
+  html_body = require("koassistant.ui.list_numbers").resolve(html_body)
+  html_body = addHtmlBidiAttributes(html_body,
+    { use_starts_with_rtl = opts.ipa_fix, main = opts.main, text_align = viewer.text_align })
+  local reply_break
+  html_body, reply_break = applyExchangePageBreaks(html_body, viewer.configuration,
+    opts.carry_anchor, opts.carry_occurrence, viewer.scroll_to_last_question)
+  return ScriptFonts.markRuns(html_body), reply_break
+end
+
+local function markdownHtml(viewer, text, opts)
+  opts = opts or {}
+  return finishHtml(viewer, markdownBlocks(viewer, text, opts), opts)
+end
+
+-- This window's HTML for its text: the pipeline above on its own settings
+-- and carry anchor; the reply break it finds is kept for the landing
+function ChatGPTViewer:_markdownHtml(text)
+  local html_body, reply_break = markdownHtml(self, typedLineParagraphs(text), {
+    ipa_fix = self:_needsRtlFix(),
+    main = self:_answerDirection(text),
+    carry_anchor = self._stream_carry_anchor,
+    carry_occurrence = self._stream_carry_occurrence,
+  })
+  self._reply_break = reply_break
+  return html_body
+end
+
+-- The content widget of the HTML view, one copy: the CSS with the script
+-- fonts' rules and the folder MuPDF reads those fonts from (since 1.28 it
+-- loads a font a page's style sheet names from the page's resource folder
+-- only), the font size, the link handler. `dialog` = the window that shows
+-- the widget when that is not this viewer (the minimal popup)
+function ChatGPTViewer:_htmlWidget(html_body, width, height, dialog)
+  local font_css, font_dir = self:_scriptFontCSS(html_body)
+  return ScrollHtmlWidget:new {
+    html_body = html_body,
+    css = getViewerCSS(self.text_align, font_css),
+    html_resource_directory = font_dir,
+    default_font_size = Screen:scaleBySize(self.markdown_font_size),
+    width = width,
+    height = height,
+    dialog = dialog or self,
+    highlight_text_selection = true,
+    html_link_tapped_callback = handleLinkTap,
+  }
+end
+
+-- The content widget of the Plain Text view, one copy as well. `dialog` as
+-- above; the window's own widget also tells the button row where it scrolled
+function ChatGPTViewer:_plainWidget(display_text, width, height, dialog)
+  local scroll_callback
+  if not dialog then scroll_callback = self._buttons_scroll_callback end
+  return ScrollTextWidget:new {
+    text = display_text,
+    face = self.text_face,
+    fgcolor = self.fgcolor,
+    line_height = 0.2,  -- Denser than default 0.3 to match markdown view
+    width = width,
+    height = height,
+    dialog = dialog or self,
+    alignment = self.alignment,
+    justified = self.justified,
+    lang = self.lang,
+    para_direction_rtl = self.para_direction_rtl,
+    auto_para_direction = self.auto_para_direction,
+    alignment_strict = self.alignment_strict,
+    scroll_callback = scroll_callback,
+    highlight_text_selection = true,
+  }
+end
+
+-- The first block of a document without its top margin. MuPDF gives a block
+-- its top margin at the top of the first page and none at the top of any
+-- later one, so a frame that pads its content (the minimal popup) had that
+-- margin above the text on top of its own padding, on the first page only.
+-- Written inline on the block's own tag: MuPDF applies an inline style (the
+-- direction pass relies on it already), while a first-child selector was not
+-- checked on the older MuPDF versions readers run.
+local function flushTop(html)
+  return (html:gsub("^(%s*<%a%w*)([^>]-)(/?>)", function(open, attrs, close)
+    local styled, n = attrs:gsub('style="', 'style="margin-top:0;', 1)
+    if n == 0 then styled = attrs .. ' style="margin-top:0"' end
+    return open .. styled .. close
+  end, 1))
+end
+ChatGPTViewer._flushTop = flushTop
+
+--- One answer of this chat the way this window would show it, for a window
+--- that is not this viewer (the minimal popup): the HTML view when the window
+--- renders Markdown, the plain-text widget otherwise, in this window's font,
+--- size, alignment and direction. Nothing of the window's own state is
+--- touched (its own pipeline call records where its reply breaks; this one
+--- does not). The text starts at the top of its area on every page (no
+--- margin above the first block): the frame around it is the other window's.
+function ChatGPTViewer:answerWidget(text, width, height, dialog)
+  if self.render_markdown then
+    local html_body = flushTop(markdownHtml(self, text, { ipa_fix = self:_needsRtlFix() }))
+    return self:_htmlWidget(html_body, width, height, dialog)
+  end
+  local display_text = self.strip_markdown_in_text_mode and stripMarkdown(text, self.para_direction_rtl) or text
+  if self:_needsRtlFix() then display_text = fixIPABidi(display_text) end
+  -- a trailing line break would be a blank last line, and count against the fit
+  return self:_plainWidget((display_text:gsub("%s+$", "")), width, height, dialog)
+end
+
+--- An artifact window is about its own book. Its creators build it on the
+--- plugin's shared configuration, whose `document_path` can name another
+--- book (a chat continued from Chat History wrote its book there, and nothing
+--- took it off): Add to Notebook then wrote into that book's notebook, and a
+--- held word was looked up in that book's X-Ray. The window takes a copy of
+--- the configuration's top level that names its own book; `features` stays
+--- the shared table, so settings read live as before.
+--- @return table|nil the configuration the window uses
+function ChatGPTViewer.ownBookConfiguration(configuration, simple_view, artifact_file)
+  if not (simple_view and artifact_file and type(configuration) == "table")
+      or configuration.document_path == artifact_file then
+    return configuration
+  end
+  local own = {}
+  for k, v in pairs(configuration) do own[k] = v end
+  own.document_path = artifact_file
+  return own
 end
 
 function ChatGPTViewer:init()
   if self.default_hold_callback == nil then
     self.default_hold_callback = function() self:holdClose() end
   end
+  self.configuration = ChatGPTViewer.ownBookConfiguration(self.configuration, self.simple_view, self._artifact_file)
   -- Window dimensions come from the shared constants, which honor the
   -- "Window Size" setting (standard 95% / expanded near-full). The region is
   -- what we are centred in: expanded mode shrinks it to keep the status bar
@@ -1729,66 +2147,23 @@ function ChatGPTViewer:init()
     if self.configuration.features.translate_hide_quote then
       self.translate_hide_quote = true
     end
-    -- Dictionary view: text mode and RTL settings (applies to both compact and full dictionary)
+    -- Dictionary windows (compact and full-size): Plain Text when the reader
+    -- asked for it, and the plain-text widget's direction from the dictionary
+    -- language. The Markdown view needs no switch: every block is laid out
+    -- in its own direction and every script drawn in its own face (B621).
     if self.compact_view or self.dictionary_view then
-      -- Check if text mode is forced for all dictionary lookups
-      if self.configuration.features.dictionary_text_mode then
+      if ChatGPTViewer.dictionaryPlainText(self.configuration.features, self) then
         self.render_markdown = false
       end
-      -- Set RTL paragraph direction when dictionary language is RTL
-      local dict_lang = self.configuration.features.dictionary_language
-      if Languages.isRTL(dict_lang) then
+      if Languages.isRTL(self.configuration.features.dictionary_language) then
         self.para_direction_rtl = true
         self.auto_para_direction = false  -- Override auto-detection with explicit RTL
-        -- Default to text mode for RTL dictionary if setting enabled (and not already forced)
-        if not self.configuration.features.dictionary_text_mode and
-           self.configuration.features.rtl_dictionary_text_mode ~= false then
-          self.render_markdown = false
-        end
       end
     end
-    -- Translate view: RTL text mode setting
-    if self.translate_view then
-      local trans_lang = self.configuration.features.translation_language
-      if Languages.isRTL(trans_lang) then
-        self.para_direction_rtl = true
-        self.auto_para_direction = false  -- Override auto-detection with explicit RTL
-        -- Default to text mode for RTL translation if setting enabled
-        if self.configuration.features.rtl_translate_text_mode == true then
-          self.render_markdown = false
-        end
-      end
-    end
-    -- Standard chat view: auto-detect RTL in AI response if setting enabled
-    -- (compact_view and translate_view have their own RTL handling via language settings)
-    if not self.compact_view and not self.dictionary_view and not self.translate_view and not self.simple_view then
-      if self.configuration.features.rtl_chat_text_mode == true then
-        local latest_response = getLatestResponse(self._message_history or self.original_history)
-        if hasDominantRTL(latest_response) then
-          self.para_direction_rtl = true
-          self.auto_para_direction = false
-          -- The per-chat MD/TXT tap (toggleMarkdown writes _chat_view_mode on
-          -- this chat's config) beats Auto RTL's plain text: a reader who
-          -- chose Markdown for an Arabic chat keeps it on every reply, reopen
-          -- and rotation (the sweep of 2026-11-06)
-          if self.configuration.features._chat_view_mode == nil then
-            self.render_markdown = false
-          end
-        end
-      end
-    end
-    -- Simple view (caches/summaries): auto-detect RTL in content
-    -- Uses sampling (first 10KB) for performance on large cached content
-    if self.simple_view and self.text then
-      if self.configuration.features.rtl_chat_text_mode == true then
-        if hasDominantRTL(self.text, 10000) then
-          self.para_direction_rtl = true
-          self.auto_para_direction = false
-          if self.configuration.features._chat_view_mode == nil then
-            self.render_markdown = false
-          end
-        end
-      end
+    -- Translate window: the plain-text widget's direction from the translation language
+    if self.translate_view and Languages.isRTL(self.configuration.features.translation_language) then
+      self.para_direction_rtl = true
+      self.auto_para_direction = false  -- Override auto-detection with explicit RTL
     end
   end
 
@@ -2885,40 +3260,13 @@ function ChatGPTViewer:init()
   local text_chrome = titlebar:getHeight() + self.button_table:getSize().h
     + 2 * self.text_padding + 2 * self.text_margin
 
-  -- For dictionary popup with RTL language, detect early for IPA fix
-  local dict_lang = self.configuration and self.configuration.features
-      and self.configuration.features.dictionary_language
-  local is_rtl_lang = Languages.isRTL(dict_lang)
-  local needs_rtl_fix = (self.compact_view or self.dictionary_view) and is_rtl_lang
+  local needs_rtl_fix = self:_needsRtlFix()
 
   -- The text as the content widget shows it: HTML when rendering Markdown,
   -- plain text otherwise
   local html_body, display_text
   if self.render_markdown then
-    -- Convert Markdown to HTML and render in a ScrollHtmlWidget
-    -- 1. Auto-linkify plain URLs, 2. Escape non-link brackets, 3. Convert tables
-    local source_text = self.text
-    -- Fix IPA BiDi issues before HTML conversion when RTL dictionary language
-    if needs_rtl_fix then
-      source_text = fixIPABidi(source_text)
-    end
-    local auto_linked = autoLinkUrls(applyMath(self, source_text))
-    local bracket_escaped = preprocessBrackets(auto_linked)
-    local preprocessed_text = preprocessMarkdownTables(bracket_escaped)
-    local err
-    html_body, err = MD(preprocessed_text, {})
-    if err then
-      logger.warn("ChatGPTViewer: could not generate HTML", err)
-      -- Fallback to plain text if HTML generation fails
-      html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
-    end
-    -- For dictionary popup with RTL language, use "starts with RTL" detection
-    local bidi_opts = { use_starts_with_rtl = needs_rtl_fix, text_align = self.text_align }
-    html_body = addHtmlBidiAttributes(html_body, bidi_opts)
-    -- Page breaks run POST-bidi (2026-08-15): the paragraph splitter copies
-    -- the classified opening tag so a split Arabic paragraph keeps direction
-    html_body, self._reply_break = applyExchangePageBreaks(html_body, self.configuration,
-      self._stream_carry_anchor, self._stream_carry_occurrence)
+    html_body = self:_markdownHtml(self.text)
   else
     -- If not rendering Markdown, optionally strip markdown syntax for cleaner display
     display_text = self.strip_markdown_in_text_mode and stripMarkdown(self.text, self.para_direction_rtl) or self.text
@@ -2931,34 +3279,9 @@ function ChatGPTViewer:init()
   -- window, again at the height the text needs for a fitted one
   local function buildContent(h)
     if html_body then
-      return ScrollHtmlWidget:new {
-        html_body = html_body,
-        css = getViewerCSS(self.text_align, self:_rtlFontCSS()),
-        default_font_size = Screen:scaleBySize(self.markdown_font_size),
-        width = self.width - 2 * self.text_padding - 2 * self.text_margin,
-        height = h,
-        dialog = self,
-        highlight_text_selection = true,
-        html_link_tapped_callback = handleLinkTap,
-      }
+      return self:_htmlWidget(html_body, self.width - 2 * self.text_padding - 2 * self.text_margin, h)
     end
-    return ScrollTextWidget:new {
-      text = display_text,
-      face = self.text_face,
-      fgcolor = self.fgcolor,
-      line_height = 0.2,  -- Denser than default 0.3 to match markdown view
-      width = self.width - 2 * self.text_padding - 2 * self.text_margin,
-      height = h,
-      dialog = self,
-      alignment = self.alignment,
-      justified = self.justified,
-      lang = self.lang,
-      para_direction_rtl = self.para_direction_rtl,
-      auto_para_direction = self.auto_para_direction,
-      alignment_strict = self.alignment_strict,
-      scroll_callback = self._buttons_scroll_callback,
-      highlight_text_selection = true,
-    }
+    return self:_plainWidget(display_text, self.width - 2 * self.text_padding - 2 * self.text_margin, h)
   end
   local fit = self._fit_height
   self._fit_height = nil
@@ -3423,11 +3746,23 @@ function ChatGPTViewer:askAnotherQuestion()
       },
     },
   }
-  -- Non-bold title (Regular weight, same size as default Bold)
-  input_dialog.title_bar.title_face = Font:getFace("smallinfofont")
-  input_dialog.title_bar:init()
-  -- Lighter input field border
-  input_dialog._input_widget._frame_textwidget.color = Blitbuffer.COLOR_GRAY
+  local function styleReplyBox()
+    -- Non-bold title (Regular weight, same size as default Bold)
+    input_dialog.title_bar.title_face = Font:getFace("smallinfofont")
+    input_dialog.title_bar:init()
+    -- Lighter input field border
+    input_dialog._input_widget._frame_textwidget.color = Blitbuffer.COLOR_GRAY
+  end
+  styleReplyBox()
+  -- A turned screen (an Android device, a resized window): the box lays
+  -- itself out again in place, KOReader's own way, with what was typed. It
+  -- stays where it is in the window list, over the chat window, which is
+  -- rebuilt beneath it
+  input_dialog.onScreenResize = function(dialog)
+    dialog:reinit()
+    styleReplyBox()
+    return true
+  end
   UIManager:show(input_dialog)
   input_dialog:onShowKeyboard()
 end
@@ -3452,11 +3787,15 @@ end
 -- footnote popup sizes itself), plain text counts its lines. The height is
 -- clamped to [floor_h, ceil_h]; start_h is the first layout tried (the floor
 -- when most texts fit there, so they cost one layout). Returns the widget and
--- its text-area height.
-function ChatGPTViewer:_fitContent(build, floor_h, ceil_h, start_h)
+-- its text-area height. `hug` (a frame with nothing under its text: the
+-- minimal popup): a text longer than the ceiling gets an area as tall as what
+-- its first page holds, so the frame ends under that page's last line and
+-- not up to a line lower (one layout more).
+function ChatGPTViewer:_fitContent(build, floor_h, ceil_h, start_h, hug)
   -- MuPDF moves a line to the next page by its line box, and the measure is
   -- ink: leave the last line its descent and leading (line-height 1.3)
-  local slack = math.ceil(0.6 * Screen:scaleBySize(self.markdown_font_size))
+  local em = Screen:scaleBySize(self.markdown_font_size)
+  local slack = math.ceil(0.6 * em)
   -- The height the text needs (nil: unknown, HTML past one page) and whether
   -- it fits a text area h tall
   local function need(w, h)
@@ -3471,17 +3810,49 @@ function ChatGPTViewer:_fitContent(build, floor_h, ceil_h, start_h)
   local function free(w)
     if w.htmlbox_widget then w.htmlbox_widget:free() else w.text_widget:free(true) end
   end
+  -- What the first page of a text longer than its area h needs: where its ink
+  -- ends and the last line's slack (HTML), its whole lines (plain text)
+  local function firstPage(w, h)
+    local box = w.htmlbox_widget
+    if not box then
+      local line_h = w:getLineHeight()
+      return math.floor(h / line_h) * line_h
+    end
+    local ok, bottom = pcall(function()
+      local page = box.document:openPage(1)
+      local _x0, _y0, _x1, y1 = page:getUsedBBox()
+      page:close()
+      return y1
+    end)
+    if ok and type(bottom) == "number" then return math.ceil(bottom) + slack end
+  end
+  -- A text longer than its area, hugged. Not when the first page ends more
+  -- than a line and a paragraph's gap above the foot: something that cannot
+  -- break (a table's row) went to the next page, and needs the room there
+  local function hugged(w, cur)
+    if not hug then return w, cur end
+    local h = firstPage(w, cur)
+    if not h or h >= cur or h < floor_h or cur - h > 2.5 * em then return w, cur end
+    local tight = build(h)
+    if tight.htmlbox_widget and firstPage(tight, h) ~= h then
+      -- a line moved to the next page: the first layout stays
+      free(tight)
+      return w, cur
+    end
+    free(w)
+    return tight, h
+  end
   local widget, cur = build(start_h), start_h
   local want, fits = need(widget, cur)
   if fits and cur <= floor_h then return widget, cur end
   if not want then
-    if cur >= ceil_h then return widget, cur end
+    if cur >= ceil_h then return hugged(widget, cur) end
     -- Longer than the floor: lay it out at the ceiling to learn its height
     local tall = build(ceil_h)
     free(widget)
     widget, cur = tall, ceil_h
     want = need(tall, ceil_h)
-    if not want then return widget, cur end  -- longer than the ceiling too
+    if not want then return hugged(widget, cur) end  -- longer than the ceiling too
   end
   local h = math.max(floor_h, math.min(ceil_h, want))
   if h ~= cur then
@@ -3494,7 +3865,14 @@ function ChatGPTViewer:_fitContent(build, floor_h, ceil_h, start_h)
       free(exact)
     end
   end
+  if want > cur then return hugged(widget, cur) end  -- plain text longer than the ceiling
   return widget, cur
+end
+
+-- The same fit for a window that is not this viewer (the minimal popup)
+function ChatGPTViewer.fitContent(build, floor_h, ceil_h, start_h, font_size, hug)
+  return ChatGPTViewer._fitContent({ markdown_font_size = font_size or ChatGPTViewer.markdown_font_size },
+    build, floor_h, ceil_h, start_h, hug)
 end
 
 -- Calculate scroll ratio to show the last user question at top of viewport
@@ -3668,17 +4046,19 @@ function ChatGPTViewer:landOnStreamPosition()
     end
     return true
   elseif self.scroll_text_w.moveCursorToCharPos and self.text then
-    -- Plain text carries the response verbatim. The anchor came from the
+    -- Searched in the text the widget shows (shownPlainText): the anchor is a
+    -- run of plain words, the same in both. The anchor came from the
     -- newest reply, so search FROM its marker: first occurrence after it is
     -- the reader's spot — bare "last occurrence" mis-landed when the phrase
     -- repeated inside the reply itself (device 2026-08-13). Marker-less text
     -- (streamed artifacts) keeps the last-occurrence rule. Then top-align
     -- the line — the same line-precise recipe as the marker landing.
+    local shown = shownPlainText(self)
     local marker_byte
     do
       local msearch = 1
       while true do
-        local s = self.text:find("◉ KOAssistant:", msearch, true)
+        local s = shown:find("◉ KOAssistant:", msearch, true)
         if not s then break end
         marker_byte = s
         msearch = s + 1
@@ -3691,7 +4071,7 @@ function ChatGPTViewer:landOnStreamPosition()
       local want = tonumber(self._stream_carry_occurrence) or 1
       local from = marker_byte
       for _n = 1, want do
-        local s = self.text:find(anchor, from, true)
+        local s = shown:find(anchor, from, true)
         if not s then break end
         last_byte = s
         from = s + 1
@@ -3700,7 +4080,7 @@ function ChatGPTViewer:landOnStreamPosition()
     if not last_byte then
       local search_start = 1
       while true do
-        local s = self.text:find(anchor, search_start, true)
+        local s = shown:find(anchor, search_start, true)
         if not s then break end
         last_byte = s
         search_start = s + 1
@@ -3710,27 +4090,18 @@ function ChatGPTViewer:landOnStreamPosition()
       logger.dbg("KOAssistant: stream-position carry txt — anchor not found")
       return false
     end
-    local _stripped, nchars = self.text:sub(1, last_byte - 1):gsub("[^\128-\191]", "")
-    local target_pos = nchars + 1
+    local target_pos = Place.charOfByte(shown, last_byte)
     local tw = self.scroll_text_w.text_widget
     if tw and tw.lines_per_page and tw.vertical_string_list
         and #tw.vertical_string_list > 0 and self.scroll_text_w.scrollToRatio then
       local lines = tw.vertical_string_list
-      local L = 1
-      for i = #lines, 1, -1 do
-        if (lines[i].offset or 1) <= target_pos then
-          L = i
-          break
-        end
-      end
+      local L = Place.lineOfChar(lines, target_pos)
       logger.dbg("KOAssistant: stream-position carry txt — line", L, "of", #lines, "to top")
       if L > tw.lines_per_page then
-        self.scroll_text_w:scrollToRatio(
-          (L - 1 + tw.lines_per_page / 2 + 0.5) / #lines, false)
+        topAlignLine(self.scroll_text_w, L)
       else
         self.scroll_text_w:scrollToRatio(0, false)
       end
-      self.scroll_text_w:moveCursorToCharPos(target_pos)
     else
       logger.dbg("KOAssistant: stream-position carry txt — cursor to char", target_pos)
       self.scroll_text_w:moveCursorToCharPos(target_pos, 5)
@@ -3806,11 +4177,16 @@ function ChatGPTViewer:scrollToLastQuestion()
       logger.dbg("KOAssistant: scrollToLastQuestion md — findText/scrollToRatio unavailable, using ratio fallback")
     end
   elseif self.scroll_text_w.moveCursorToCharPos then
+    -- The label is looked for in the text the widget shows (shownPlainText):
+    -- its position in the transcript is another one, further off with every
+    -- rule and bold word before it (the maintainer's report of 2026-11-13: a
+    -- fifth reply opened five lines above its label)
+    local shown = shownPlainText(self)
     local last_byte
     for _idx, marker in ipairs(markers) do
       local search_start = 1
       while true do
-        local s = self.text:find(marker, search_start, true)
+        local s = shown:find(marker, search_start, true)
         if not s then break end
         last_byte = s
         search_start = s + 1
@@ -3818,31 +4194,19 @@ function ChatGPTViewer:scrollToLastQuestion()
       if last_byte then break end
     end
     if last_byte then
-      -- moveCursorToCharPos wants UTF-8 CHARS, not bytes: count the
-      -- non-continuation bytes before the marker
-      local _stripped, nchars = self.text:sub(1, last_byte - 1):gsub("[^\128-\191]", "")
-      local target_pos = nchars + 1
+      -- the line table counts UTF-8 CHARS, not bytes
+      local target_pos = Place.charOfByte(shown, last_byte)
       local f = self.configuration and self.configuration.features
       local tw = self.scroll_text_w.text_widget
       if not (f and f.chat_exchange_page_breaks == false)
           and tw and tw.lines_per_page and tw.vertical_string_list
           and #tw.vertical_string_list > 0 and self.scroll_text_w.scrollToRatio then
-        -- TXT mode: put the marker's LINE at the top of the view (a line
-        -- scroller can top any line — hard-page snapping only reached the
-        -- screenful CONTAINING the marker, round-11 device round). Ride the
-        -- widget's OWN scroll path (free + re-render + layout — writing
-        -- virtual_line_num directly desyncs state from screen since
-        -- moveCursorToCharPos only paints the cursor for in-view targets).
-        -- scrollToRatio(r, false): line = 1 + floor(r*#lines - lpp/2); solve
-        -- for our line with a +0.5 margin so floor lands exactly.
+        -- TXT mode: put a LINE at the top of the view (a line scroller can
+        -- top any line — hard-page snapping only reached the screenful
+        -- CONTAINING the marker, round-11 device round), through
+        -- topAlignLine.
         local lines = tw.vertical_string_list
-        local L = 1
-        for i = #lines, 1, -1 do
-          if (lines[i].offset or 1) <= target_pos then
-            L = i
-            break
-          end
-        end
+        local L = Place.lineOfChar(lines, target_pos)
         -- The reply's first line of TEXT, past the label and the blank line
         -- under it (an empty line has end_offset = offset - 1): the landed
         -- screen opens with the reply, the label and the question sit on the
@@ -3856,10 +4220,7 @@ function ChatGPTViewer:scrollToLastQuestion()
         end
         if R > #lines then R = L end
         logger.dbg("KOAssistant: scrollToLastQuestion txt — line", R, "of", #lines, "to top")
-        self.scroll_text_w:scrollToRatio(
-          (R - 1 + tw.lines_per_page / 2 + 0.5) / #lines, false)
-        -- Cursor placement on the freshly rendered view (cursor-only paint)
-        self.scroll_text_w:moveCursorToCharPos(target_pos)
+        topAlignLine(self.scroll_text_w, R)
       else
         -- Centered variant (count 5, TextViewer's find pattern) — the bare
         -- call scrolls MINIMALLY and parks the target on the BOTTOM line
@@ -3896,7 +4257,12 @@ function ChatGPTViewer:onShow()
   -- anchor (consumed at init) routes even viewers that would not otherwise
   -- scroll — a FIRST streamed reply opens at the top, a streamed artifact
   -- view has no transcript markers.
-  if self._stream_carry_anchor then
+  if self._initial_place then
+    -- A window rebuilt for a rotation or a size toggle: where the reader was
+    local place = self._initial_place
+    self._initial_place = nil
+    self:restorePlace(place)
+  elseif self._stream_carry_anchor then
     -- The carry exists only when the reader deliberately scrolled away
     -- during the stream, so it outranks the exchange landing (2026-09-07:
     -- from the second reply on, scroll_to_last_question was tested first and
@@ -4203,7 +4569,12 @@ function ChatGPTViewer.isSingleWord(text)
   return tokens == 1
 end
 
-function ChatGPTViewer:handleTextSelection(text, hold_duration, start_idx, end_idx, to_source_index_func)
+--- @param elsewhere table|nil the selection was made in another window that
+---   shows this chat's text (the minimal popup, which hands every selection
+---   here so both windows do the same with one): { clear_highlight = that
+---   window's }. This window's reply box is not on screen then, so the
+---   selection popup has no Add to reply.
+function ChatGPTViewer:handleTextSelection(text, hold_duration, start_idx, end_idx, to_source_index_func, elsewhere)
   if self.text_selection_callback then
     self.text_selection_callback(text, hold_duration, start_idx, end_idx, to_source_index_func)
     return
@@ -4220,22 +4591,32 @@ function ChatGPTViewer:handleTextSelection(text, hold_duration, start_idx, end_i
       if book == "__GENERAL_CHATS__" or book == "__LIBRARY_CHATS__" then book = nil end
       ui.dictionary._koassistant_lookup_book = book
       ui.dictionary:onLookupWord(text)
-      self:clearTextHighlight()
+      if elsewhere and elsewhere.clear_highlight then
+        elsewhere.clear_highlight()
+      else
+        self:clearTextHighlight()
+      end
       return
     end
   end
 
   -- 2+ words, or single word + long hold: show selection popup
-  self:showTextSelectionPopup(text)
+  self:showTextSelectionPopup(text, elsewhere)
 end
 
-function ChatGPTViewer:showTextSelectionPopup(text)
+function ChatGPTViewer:showTextSelectionPopup(text, elsewhere)
   local ui = self._ui or (self.configuration and self.configuration._rerun_ui)
   local document_path = self.configuration and self.configuration.document_path
   local plugin = self._plugin
   local self_ref = self
 
   local ReplyQuote = require("koassistant.ui.reply_quote")
+  local add_to_reply
+  if not elsewhere and ReplyQuote.eligible(self) then
+    add_to_reply = function(selected_text)
+      self_ref:addSelectionToReply(selected_text)
+    end
+  end
   ChatGPTViewer.buildTextSelectionPopup(text, {
     ui = ui,
     plugin = plugin,
@@ -4244,10 +4625,8 @@ function ChatGPTViewer:showTextSelectionPopup(text)
     append_to_notebook = function(selected_text)
       self_ref:appendSelectionToNotebook(selected_text)
     end,
-    add_to_reply = ReplyQuote.eligible(self) and function(selected_text)
-      self_ref:addSelectionToReply(selected_text)
-    end or nil,
-    clear_highlight = function()
+    add_to_reply = add_to_reply,
+    clear_highlight = elsewhere and elsewhere.clear_highlight or function()
       self_ref:clearTextHighlight()
     end,
   })
@@ -4347,7 +4726,13 @@ function ChatGPTViewer.buildTextSelectionPopup(text, opts)
         dui.dictionary._koassistant_non_reader_lookup = true
         -- Carry the surface's own book for bypass / dict-popup X-Ray lookups
         dui.dictionary._koassistant_lookup_book = book_path
+        -- Dictionary picked by name: the reader's dictionary flow, never the
+        -- X-Ray card (a name that is an entry opened its card from here, with
+        -- "Look up in X-Ray" one row away). Set for this one call: the
+        -- wrapper clears it, and so does this row when no wrapper is installed.
+        dui.dictionary._koassistant_skip_xray = true
         dui.dictionary:onLookupWord(text)
+        dui.dictionary._koassistant_skip_xray = nil
       end,
     })
   end
@@ -4511,39 +4896,11 @@ function ChatGPTViewer:update(new_text, scroll_to_bottom)
   end
   
   if self.render_markdown then
-    -- Convert Markdown to HTML and update the ScrollHtmlWidget
-    -- 1. Auto-linkify plain URLs, 2. Escape non-link brackets, 3. Convert tables
-    local auto_linked = autoLinkUrls(applyMath(self, new_text))
-    local bracket_escaped = preprocessBrackets(auto_linked)
-    local preprocessed_text = preprocessMarkdownTables(bracket_escaped)
-    local html_body, err = MD(preprocessed_text, {})
-    if err then
-      logger.warn("ChatGPTViewer: could not generate HTML", err)
-      html_body = "<pre>" .. (new_text or "Missing text.") .. "</pre>"
-    end
-    -- For dictionary popup with RTL language, use "starts with RTL" detection
-    local dict_lang = self.configuration and self.configuration.features
-        and self.configuration.features.dictionary_language
-    local bidi_opts = { use_starts_with_rtl = (self.compact_view or self.dictionary_view) and Languages.isRTL(dict_lang),
-      text_align = self.text_align }
-    html_body = addHtmlBidiAttributes(html_body, bidi_opts)
-    -- Page breaks run POST-bidi (2026-08-15): the paragraph splitter copies
-    -- the classified opening tag so a split Arabic paragraph keeps direction
-    html_body, self._reply_break = applyExchangePageBreaks(html_body, self.configuration,
-      self._stream_carry_anchor, self._stream_carry_occurrence)
-
     -- Recreate the ScrollHtmlWidget with new content
-    self.scroll_text_w = ScrollHtmlWidget:new {
-      html_body = html_body,
-      css = getViewerCSS(self.text_align, self:_rtlFontCSS()),
-      default_font_size = Screen:scaleBySize(self.markdown_font_size),
-      width = self.width - 2 * self.text_padding - 2 * self.text_margin,
-      height = self.textw:getSize().h - 2 * self.text_padding - 2 * self.text_margin,
-      dialog = self,
-      highlight_text_selection = true,
-      html_link_tapped_callback = handleLinkTap,
-    }
-    
+    self.scroll_text_w = self:_htmlWidget(self:_markdownHtml(new_text),
+      self.width - 2 * self.text_padding - 2 * self.text_margin,
+      self.textw:getSize().h - 2 * self.text_padding - 2 * self.text_margin)
+
     -- Update the frame container with the new scroll widget
     self.textw:clear()
     self.textw[1] = self.scroll_text_w
@@ -4562,23 +4919,9 @@ function ChatGPTViewer:update(new_text, scroll_to_bottom)
     if (self.compact_view or self.dictionary_view) and self.para_direction_rtl then
       display_text = fixIPABidi(display_text)
     end
-    self.scroll_text_w = ScrollTextWidget:new {
-      text = display_text,
-      face = self.text_face,
-      fgcolor = self.fgcolor,
-      line_height = 0.2,  -- Denser than default 0.3 to match markdown view
-      width = self.width - 2 * self.text_padding - 2 * self.text_margin,
-      height = self.textw:getSize().h - 2 * self.text_padding - 2 * self.text_margin,
-      dialog = self,
-      alignment = self.alignment,
-      justified = self.justified,
-      lang = self.lang,
-      para_direction_rtl = self.para_direction_rtl,
-      auto_para_direction = self.auto_para_direction,
-      alignment_strict = self.alignment_strict,
-      scroll_callback = self._buttons_scroll_callback,
-      highlight_text_selection = true,
-    }
+    self.scroll_text_w = self:_plainWidget(display_text,
+      self.width - 2 * self.text_padding - 2 * self.text_margin,
+      self.textw:getSize().h - 2 * self.text_padding - 2 * self.text_margin)
 
     -- Update the frame container with the new scroll widget
     self.textw:clear()
@@ -4681,47 +5024,17 @@ end
 -- Extracted from toggleMarkdown so other display-setting changes (strip-markdown in
 -- text mode, slice (e) note E) can re-render in place without flipping the mode.
 function ChatGPTViewer:rebuildScrollWidget()
-  -- Rebuild the scroll widget with new rendering mode
+  -- Rebuild the scroll widget with new rendering mode, at the place the old
+  -- one shows
+  local place = self:capturePlace()
   local textw_height = self.textw:getSize().h
   
-  -- Check if RTL dictionary popup for IPA fix
-  local dict_lang = self.configuration and self.configuration.features
-      and self.configuration.features.dictionary_language
-  local needs_rtl_fix = (self.compact_view or self.dictionary_view) and Languages.isRTL(dict_lang)
+  local needs_rtl_fix = self:_needsRtlFix()
 
   if self.render_markdown then
-    -- Convert to markdown
-    -- 1. Auto-linkify plain URLs, 2. Escape non-link brackets, 3. Convert tables
-    local source_text = self.text
-    -- Fix IPA BiDi issues before HTML conversion when RTL dictionary language
-    if needs_rtl_fix then
-      source_text = fixIPABidi(source_text)
-    end
-    local auto_linked = autoLinkUrls(applyMath(self, source_text))
-    local bracket_escaped = preprocessBrackets(auto_linked)
-    local preprocessed_text = preprocessMarkdownTables(bracket_escaped)
-    local html_body, err = MD(preprocessed_text, {})
-    if err then
-      logger.warn("ChatGPTViewer: could not generate HTML", err)
-      html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
-    end
-    -- For dictionary popup with RTL language, use "starts with RTL" detection
-    local bidi_opts = { use_starts_with_rtl = needs_rtl_fix, text_align = self.text_align }
-    html_body = addHtmlBidiAttributes(html_body, bidi_opts)
-    -- Page breaks run POST-bidi (2026-08-15): the paragraph splitter copies
-    -- the classified opening tag so a split Arabic paragraph keeps direction
-    html_body, self._reply_break = applyExchangePageBreaks(html_body, self.configuration,
-      self._stream_carry_anchor, self._stream_carry_occurrence)
-    self.scroll_text_w = ScrollHtmlWidget:new {
-      html_body = html_body,
-      css = getViewerCSS(self.text_align, self:_rtlFontCSS()),
-      default_font_size = Screen:scaleBySize(self.markdown_font_size),
-      width = self.width - 2 * self.text_padding - 2 * self.text_margin,
-      height = textw_height - 2 * self.text_padding - 2 * self.text_margin,
-      dialog = self,
-      highlight_text_selection = true,
-      html_link_tapped_callback = handleLinkTap,
-    }
+    self.scroll_text_w = self:_htmlWidget(self:_markdownHtml(self.text),
+      self.width - 2 * self.text_padding - 2 * self.text_margin,
+      textw_height - 2 * self.text_padding - 2 * self.text_margin)
   else
     -- Convert to plain text with optional markdown stripping
     local display_text = self.strip_markdown_in_text_mode and stripMarkdown(self.text, self.para_direction_rtl) or self.text
@@ -4729,23 +5042,9 @@ function ChatGPTViewer:rebuildScrollWidget()
     if needs_rtl_fix then
       display_text = fixIPABidi(display_text)
     end
-    self.scroll_text_w = ScrollTextWidget:new {
-      text = display_text,
-      face = self.text_face,
-      fgcolor = self.fgcolor,
-      line_height = 0.2,  -- Denser than default 0.3 to match markdown view
-      width = self.width - 2 * self.text_padding - 2 * self.text_margin,
-      height = textw_height - 2 * self.text_padding - 2 * self.text_margin,
-      dialog = self,
-      alignment = self.alignment,
-      justified = self.justified,
-      lang = self.lang,
-      para_direction_rtl = self.para_direction_rtl,
-      auto_para_direction = self.auto_para_direction,
-      alignment_strict = self.alignment_strict,
-      scroll_callback = self._buttons_scroll_callback,
-      highlight_text_selection = true,
-    }
+    self.scroll_text_w = self:_plainWidget(display_text,
+      self.width - 2 * self.text_padding - 2 * self.text_margin,
+      textw_height - 2 * self.text_padding - 2 * self.text_margin)
   end
 
   -- Update the frame container
@@ -4759,7 +5058,9 @@ function ChatGPTViewer:rebuildScrollWidget()
     button:setText(self.render_markdown and "MD ON" or "TXT ON", button.width)
   end
 
-  -- Refresh display (view toggle always starts at top - no scroll restoration)
+  if place then self:restorePlace(place) end
+
+  -- Refresh display
   UIManager:setDirty(self, function()
     return "ui", self.frame.dimen
   end)
@@ -5243,52 +5544,14 @@ function ChatGPTViewer:toggleTranslateQuoteVisibility()
   local textw_height = self.textw:getSize().h
 
   if self.render_markdown then
-    local auto_linked = autoLinkUrls(applyMath(self, self.text))
-    local bracket_escaped = preprocessBrackets(auto_linked)
-    local preprocessed_text = preprocessMarkdownTables(bracket_escaped)
-    local html_body, err = MD(preprocessed_text, {})
-    if err then
-      logger.warn("ChatGPTViewer: could not generate HTML", err)
-      html_body = "<pre>" .. (self.text or "Missing text.") .. "</pre>"
-    end
-    -- For dictionary popup with RTL language, use "starts with RTL" detection
-    local dict_lang = self.configuration and self.configuration.features
-        and self.configuration.features.dictionary_language
-    local bidi_opts = { use_starts_with_rtl = (self.compact_view or self.dictionary_view) and Languages.isRTL(dict_lang),
-      text_align = self.text_align }
-    html_body = addHtmlBidiAttributes(html_body, bidi_opts)
-    -- Page breaks run POST-bidi (2026-08-15): the paragraph splitter copies
-    -- the classified opening tag so a split Arabic paragraph keeps direction
-    html_body, self._reply_break = applyExchangePageBreaks(html_body, self.configuration,
-      self._stream_carry_anchor, self._stream_carry_occurrence)
-    self.scroll_text_w = ScrollHtmlWidget:new {
-      html_body = html_body,
-      css = getViewerCSS(self.text_align, self:_rtlFontCSS()),
-      default_font_size = Screen:scaleBySize(self.markdown_font_size),
-      width = self.scroll_text_w.width,
-      height = self.scroll_text_w.height,
-      dialog = self,
-      highlight_text_selection = true,
-      html_link_tapped_callback = handleLinkTap,
-    }
+    self.scroll_text_w = self:_htmlWidget(self:_markdownHtml(self.text),
+      self.scroll_text_w.width, self.scroll_text_w.height)
   else
     -- Plain text mode with optional markdown stripping
     local display_text = self.strip_markdown_in_text_mode and stripMarkdown(self.text, self.para_direction_rtl) or self.text
-    self.scroll_text_w = ScrollTextWidget:new {
-      text = display_text,
-      face = self.text_face,
-      fgcolor = self.fgcolor,
-      width = self.scroll_text_w.width,
-      height = self.scroll_text_w.height,
-      dialog = self,
-      alignment = self.alignment,
-      justified = self.justified,
-      lang = self.lang,
-      para_direction_rtl = self.para_direction_rtl,
-      auto_para_direction = self.auto_para_direction,
-      alignment_strict = self.alignment_strict,
-      highlight_text_selection = true,
-    }
+    -- (the one builder: this site once left the line height and the button
+    -- row's scroll report out, so Show Original changed the line spacing)
+    self.scroll_text_w = self:_plainWidget(display_text, self.scroll_text_w.width, self.scroll_text_w.height)
   end
 
   -- Update the frame container
@@ -5698,6 +5961,41 @@ end
 -- Internal function to handle rotation/resize recreation
 -- Called by both onSetRotationMode and onScreenResize, and by cycleWindowSize
 -- with immediate=true (see the schedule below).
+-- The windows KOReader shows over `widget`, bottom to top (UIManager's own
+-- window list, read and reordered here for one purpose: the two functions
+-- below keep an order, they add and remove nothing)
+local function windowsAbove(widget)
+  local stack = UIManager._window_stack
+  local above, seen = {}, false
+  for _i, entry in ipairs(type(stack) == "table" and stack or {}) do
+    if seen then above[#above + 1] = entry.widget end
+    if entry.widget == widget then seen = true end
+  end
+  return above
+end
+
+-- A rebuilt window is shown on top, where KOReader puts every new window.
+-- Back under the windows that stood over the old one and still are shown: a
+-- reply box, Save Chat, a menu. Without this a turned screen left the reader
+-- looking at the chat window with the dialog they were in hidden beneath it
+local function settleBelow(above)
+  local stack = UIManager._window_stack
+  if type(stack) ~= "table" or #above == 0 or #stack < 2 then return end
+  local was_above = {}
+  for _i, w in ipairs(above) do was_above[w] = true end
+  local top = stack[#stack]
+  if was_above[top.widget] then return end
+  for i = 1, #stack - 1 do
+    if was_above[stack[i].widget] then
+      table.remove(stack, #stack)
+      table.insert(stack, i, top)
+      UIManager:setDirty("all", "ui")
+      return
+    end
+  end
+end
+ChatGPTViewer._windowsAbove, ChatGPTViewer._settleBelow = windowsAbove, settleBelow
+
 function ChatGPTViewer:_handleScreenChange(immediate)
   if not self._recreate_func then
     return false
@@ -5711,6 +6009,7 @@ function ChatGPTViewer:_handleScreenChange(immediate)
 
   -- Capture current state before closing
   local state = self:captureState()
+  local above = windowsAbove(self)
 
   -- Close current viewer
   UIManager:close(self)
@@ -5722,22 +6021,36 @@ function ChatGPTViewer:_handleScreenChange(immediate)
   -- Use 0.2s to ensure Screen:getWidth()/getHeight() return new values.
   -- A window-size toggle has nothing to settle — the screen is unchanged and
   -- the new geometry is already in the constants — so it recreates at once.
+  local function recreate()
+    self._recreate_func(state)
+    settleBelow(above)
+  end
   if immediate then
-    UIManager:nextTick(function()
-      self._recreate_func(state)
-    end)
+    UIManager:nextTick(recreate)
   else
-    UIManager:scheduleIn(0.2, function()
-      self._recreate_func(state)
-    end)
+    UIManager:scheduleIn(0.2, recreate)
   end
 
   return true
 end
 
 -- Handle screen rotation by recreating the viewer with new dimensions
--- This preserves state (text, scroll position, settings) across rotation
+-- This preserves state (text, scroll position, settings) across rotation.
+-- A device whose own sensor KOReader reads (a Kobo, a Kindle) hands a turn to
+-- the window on top and to nobody else: the window turns the screen itself,
+-- through the reader or the file browser underneath, as KOReader's own
+-- full-screen lists do (Menu:onSetRotationMode). It did not, so the screen
+-- stayed as it was and the window was rebuilt for nothing. An Android device
+-- turns its own surface and tells every window (onScreenResize below).
 function ChatGPTViewer:onSetRotationMode(rotation)
+  if self._recreate_func and rotation ~= nil and rotation ~= Screen:getRotationMode() then
+    local ui = ChatGPTViewer.liveUI()
+    if ui and ui.view and ui.view.onSetRotationMode then
+      ui.view:onSetRotationMode(rotation)
+    elseif ui and ui.onSetRotationMode then
+      ui:onSetRotationMode(rotation)
+    end
+  end
   return self:_handleScreenChange()
 end
 
@@ -5748,26 +6061,13 @@ end
 
 -- Capture current viewer state for restoration after recreation
 function ChatGPTViewer:captureState()
-  -- The place in the answer as the ratio scrollToRatio takes back (B611; the
-  -- two names asked for before existed in no KOReader, so every rotation,
-  -- resize and window-size toggle reopened the answer at its top): the HTML
-  -- widget's page ratio, or the plain-text widget's first visible line
-  local scroll_ratio = 0
-  local w = self.scroll_text_w
-  if w then
-    if w.getCurrentRatio then
-      scroll_ratio = w:getCurrentRatio() or 0
-    elseif w.text_widget and w.text_widget.getVisibleHeightRatios then
-      scroll_ratio = (w.text_widget:getVisibleHeightRatios()) or 0
-    end
-  end
-
   return {
     title = self.title,
     text = self.text,
     render_markdown = self.render_markdown,
     show_debug_in_chat = self.show_debug_in_chat,
-    scroll_ratio = scroll_ratio,
+    -- where the reader is, for the rebuilt window (capturePlace; nil = the top)
+    place = self:capturePlace(),
     configuration = self.configuration,
     original_history = self.original_history,
     original_highlighted_text = self.original_highlighted_text,
@@ -5791,21 +6091,77 @@ function ChatGPTViewer:captureState()
   }
 end
 
--- Restore scroll position after recreation
-function ChatGPTViewer:restoreScrollPosition(scroll_ratio)
-  if not self.scroll_text_w or not scroll_ratio or scroll_ratio == 0 then
-    return
-  end
+-- How many pages each side of the expected one the Markdown view is read for
+-- the place's words
+local PLACE_PAGES = 4
 
-  -- Schedule scroll restoration after widget is fully rendered
-  UIManager:scheduleIn(0.2, function()
-    if self.scroll_text_w then
-      if self.scroll_text_w.scrollToRatio then
-        self.scroll_text_w:scrollToRatio(scroll_ratio)
+--- The place this window shows, to find again in another layout of the same
+--- text (the view switched, the window's size toggled, the screen rotated):
+--- { ratio = how far through, words = the first words on screen }, nil at the
+--- top. Read from KOReader's own widgets: the HTML widget's page (the names
+--- are checked against the installed bundle in tests/unit/test_viewer_place.lua)
+--- or the plain-text widget's first visible line.
+function ChatGPTViewer:capturePlace()
+  local w = self.scroll_text_w
+  if not w then return nil end
+  local box = w.htmlbox_widget
+  if box then
+    local page, count = tonumber(box.page_number), tonumber(box.page_count)
+    if not (page and count and page > 1 and count > 0 and box.document) then return nil end
+    return { ratio = (page - 1) / count, words = Place.anchor(Place.pageText(box, page)) }
+  end
+  local tw = w.text_widget
+  local lines = tw and tw.vertical_string_list
+  local top = tw and tonumber(tw.virtual_line_num)
+  if not (type(lines) == "table" and top and top > 1 and lines[top]) then return nil end
+  local words
+  if type(tw.text) == "string" then
+    local from = Place.byteOfChar(tw.text, lines[top].offset or 1)
+    words = Place.anchor(tw.text:sub(from, from + 600))
+  end
+  return { ratio = (top - 1) / #lines, words = words }
+end
+
+--- Show the place a capture describes (capturePlace): the copy of its words
+--- nearest as far through this layout, else as far through. The Markdown view
+--- shows the page the words start on; the plain-text view tops their line.
+--- Returns false when there is nothing to do it with.
+function ChatGPTViewer:restorePlace(place)
+  local w = self.scroll_text_w
+  if not (w and w.scrollToRatio and type(place) == "table") then return false end
+  local ratio = math.max(0, math.min(1, tonumber(place.ratio) or 0))
+  local box = w.htmlbox_widget
+  if box then
+    local count = tonumber(box.page_count) or 1
+    if count <= 1 then return false end
+    local expected = math.min(count, 1 + math.floor(ratio * count))
+    local target = expected
+    if place.words and box.document then
+      local pages = {}
+      for n = math.max(1, expected - PLACE_PAGES), math.min(count, expected + PLACE_PAGES) do
+        pages[#pages + 1] = { number = n, text = Place.pageText(box, n) }
       end
-      UIManager:setDirty(self, "ui")
+      target = Place.findPage(pages, place.words, expected) or expected
     end
-  end)
+    logger.dbg("KOAssistant: restorePlace md — page", target, "of", count, "expected", expected)
+    if target ~= box.page_number then
+      -- mid-page ratio: 1 + floor(count * (target - 0.5) / count) == target
+      w:scrollToRatio((target - 0.5) / count)
+    end
+    return true
+  end
+  local tw = w.text_widget
+  local lines = tw and tw.vertical_string_list
+  if not (type(lines) == "table" and #lines > 0 and tw.lines_per_page) then return false end
+  local line
+  if place.words and type(tw.text) == "string" then
+    local at = Place.find(tw.text, place.words, math.floor(ratio * #tw.text))
+    if at then line = Place.lineOfChar(lines, Place.charOfByte(tw.text, at)) end
+  end
+  line = line or (1 + math.floor(ratio * #lines))
+  logger.dbg("KOAssistant: restorePlace txt — line", line, "of", #lines)
+  topAlignLine(w, line)
+  return true
 end
 
 -- Helper to get display name for text alignment
@@ -6061,36 +6417,6 @@ function ChatGPTViewer:cycleWindowSize()
   })
 end
 
--- Re-apply the auto-RTL-for-chat setting to THIS viewer after it is toggled from the
--- MD/TXT quick menu (note E). Mirrors the detection init runs on open: when the
--- setting is on (off by default since the Markdown view lays right-to-left blocks
--- out through the direction pass and draws them in the right-to-left font, B558)
--- and the content is dominantly RTL, force RTL paragraph direction + plain text;
--- otherwise restore LTR auto-direction and the chat's own tap, else the user's
--- markdown preference. Then rebuild in place.
-function ChatGPTViewer:reapplyRtlMode()
-  local features = self.configuration and self.configuration.features or {}
-  local rtl_enabled = features.rtl_chat_text_mode == true
-  local is_rtl = rtl_enabled and self.text and hasDominantRTL(self.text, 10000)
-  if is_rtl then
-    self.para_direction_rtl = true
-    self.auto_para_direction = false
-    -- the per-chat tap keeps its view (the sweep of 2026-11-06)
-    if features._chat_view_mode == nil then self.render_markdown = false end
-  else
-    self.para_direction_rtl = false
-    self.auto_para_direction = true
-    -- Restore the per-chat tap, else the user's markdown preference (init
-    -- treats nil as the default: on).
-    if features._chat_view_mode ~= nil then
-      self.render_markdown = features._chat_view_mode
-    else
-      self.render_markdown = features.render_markdown ~= false
-    end
-  end
-  self:rebuildScrollWidget()
-end
-
 -- Anchor helper (slice (e) note A): returns a ButtonDialog `anchor` function pointing
 -- at a button in the viewer's button row by id, so the popup opens next to its
 -- triggering button. Returns nil when the button row is absent (dialog then centers);
@@ -6258,19 +6584,6 @@ function ChatGPTViewer:showRenderingQuickSettings()
           self:showRenderingQuickSettings()
         end,
       }},
-      {{
-        text = _("Auto RTL mode for Chat") .. ": "
-          .. ((self.configuration and self.configuration.features
-               and self.configuration.features.rtl_chat_text_mode == true) and _("On") or _("Off")),
-        callback = function()
-          local features = self.configuration and self.configuration.features or {}
-          local enabled = features.rtl_chat_text_mode == true
-          self:persistFeatureSetting("rtl_chat_text_mode", not enabled)
-          self:reapplyRtlMode()
-          UIManager:close(dialog)
-          self:showRenderingQuickSettings()
-        end,
-      }},
     },
   }
   UIManager:show(dialog)
@@ -6343,14 +6656,64 @@ end
 -- detection) rather than growing its own. Any text-mode rendering fix made here
 -- reaches the popup for free.
 ChatGPTViewer.stripMarkdown = stripMarkdown
+-- the task-list passes, for tests
+ChatGPTViewer._taskListBoxes = taskListBoxes
+ChatGPTViewer._taskListItems = taskListItems
+ChatGPTViewer._lineParagraphs = lineParagraphs
+ChatGPTViewer._typedLineParagraphs = typedLineParagraphs
+ChatGPTViewer._linesAreParagraphs = linesAreParagraphs
 ChatGPTViewer.fixIPABidi = fixIPABidi
 ChatGPTViewer.hasDominantRTL = hasDominantRTL
+
+-- The Markdown pipeline and the CSS for a window that is not this viewer
+-- (the streaming window's Markdown view, koassistant/request/stream_handler.lua):
+-- opts = { features = the request's features, text_align = the setting }.
+-- The exchange page breaks need the transcript markers, which a streamed
+-- answer has none of, so none are added there.
+local function standInViewer(opts)
+  opts = opts or {}
+  local features = opts.features or {}
+  return {
+    render_math = features.render_math ~= false,
+    text_align = opts.text_align or features.text_align or "auto",
+    configuration = { features = features },
+  }
+end
+function ChatGPTViewer.markdownHtml(text, opts)
+  return (markdownHtml(standInViewer(opts), text, {}))
+end
+-- The pipeline's two halves (see markdownBlocks above): the first for a
+-- piece of the text, nil and the error when the Markdown library fails on
+-- it; the second for the joined HTML of the pieces
+function ChatGPTViewer.markdownBlocks(text, opts)
+  return markdownBlocks(standInViewer(opts), text, { quiet = true })
+end
+function ChatGPTViewer.markdownFinish(html_body, opts)
+  return (finishHtml(standInViewer(opts), html_body, {}))
+end
+-- Returns the style sheet and the folder its fonts are read from: a window
+-- built on this style sheet passes the folder as html_resource_directory
+function ChatGPTViewer.viewerCSS(text_align, features, html_body)
+  local font_css, font_dir = ScriptFonts.css(features, html_body)
+  return getViewerCSS(text_align or "auto", font_css), font_dir
+end
 
 -- Exported for the stream capture side (2026-08-15): the occurrence ordinal
 -- must be counted against the SAME anchor the viewer will extract, so the
 -- extractor is shared rather than duplicated (inline-required there — no
 -- module cycle: capture runs long after both modules are loaded)
 ChatGPTViewer.extractCarryAnchor = extractCarryAnchor
+
+--- Whether a dictionary window (compact or full-size) shows Plain Text
+--- whatever the View Mode: the reader's Text Mode for Dictionary. One rule
+--- for the window (`window` = the viewer, whose caller may have set its kind
+--- on it) and for the stream that fills it (the request's features alone:
+--- StreamMarkdown.applies).
+function ChatGPTViewer.dictionaryPlainText(features, window)
+    if type(features) ~= "table" or not features.dictionary_text_mode then return false end
+    return (features.compact_view or features.dictionary_view
+        or (window and (window.compact_view or window.dictionary_view))) and true or false
+end
 -- Test seam (tests/unit/test_viewer_landing.lua): the spacer after the label
 ChatGPTViewer._applyExchangePageBreaks = applyExchangePageBreaks
 

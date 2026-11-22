@@ -351,6 +351,101 @@ function BookSettings.xrayPromotionHold(doc_settings)
     return (doc_settings and doc_settings:readSetting(BookSettings.KEY_XRAY_PROMOTION)) == "position"
 end
 
+--- What a reader is SHOWN of an X-Ray built in checkpoints (B717): the rows of
+--- the creation form build the same versions whatever the protection; the
+--- book's spoiler protection decides which one is installed. One short
+--- sentence, from the two resolvers the engine's installs read
+--- (resolveXrayPosture and the promotion hold), for the form's protection line
+--- (xrayProtectionLine; the test holds the length).
+--- @return string the sentence
+--- @return string "follows" | "newest" | "held" (the case, for tests)
+function BookSettings.xrayCheckpointNote(doc_settings, features)
+    local posture = BookSettings.resolveXrayPosture(doc_settings, features)
+    if posture == "track" then
+        return _("Spoiler protection is on: each checkpoint appears when you reach it."), "follows"
+    end
+    if BookSettings.xrayPromotionHold(doc_settings) then
+        return _("Spoiler protection is off, but X-Ray updates follow your position: each checkpoint appears when you reach it."), "held"
+    end
+    return _("Spoiler protection is off: the newest checkpoint is shown as soon as it is built, even ahead of you."), "newest"
+end
+
+--- The creation form's protection line: what the book's spoiler protection
+--- does with the checkpoints the pick builds, as ONE grey line of its own
+--- under the hint that takes a tap (the tap opens the book's Spoiler
+--- Protection picker, where it is changed). Shown under a checkpoint row
+--- alone, as the fast model's warning is shown only when it applies (the
+--- maintainer, 2026-11-21: "the same way that the fast model warning
+--- dynamically pops up ... spoiler protection can pop up that way"). It was
+--- the last sentence of the hint.
+--- @return string the line
+--- @return string the case ("follows" | "newest" | "held")
+function BookSettings.xrayProtectionLine(doc_settings, features)
+    local note, case = BookSettings.xrayCheckpointNote(doc_settings, features)
+    return note .. " " .. _("Tap to change."), case
+end
+
+--- The grey text under the X-Ray creation form's Build rows: what the picked
+--- way to build gives, in two or three short sentences, and the facts that
+--- change a decision about money or about the saved X-Ray. Pure. The text had
+--- grown to eleven lines and the form scrolled on an e-reader's screen (the
+--- maintainer, 2026-11-20: "too much information ... must be more concise");
+--- cut to one sentence with the rest behind an info icon, it said too little
+--- where the choice is made (2026-11-21: "did we move too much info to the
+--- info box? ... we can leave the explanation text under each item when
+--- selected like before"). The info icon is gone until its shape is decided
+--- for every window (B763); what protection does with checkpoints and a fast
+--- model's warning are lines of their own (xrayProtectionLine,
+--- xraySmallModelWarning). tests/unit/test_book_settings holds the budget.
+--- @param pick table { delivery = "follow" | "checkpoints" | "one_bg" | nil
+---   (one request now), coverage = "whole" | "position" | "target",
+---   extend = boolean (a plain update of the saved X-Ray), idle = boolean
+---   (automatic building on and caught up), target_label = string|nil,
+---   rebuild = boolean (the pick makes a new X-Ray in place of the one that
+---   is there: one true sentence, and the rebuild's confirm says whether the
+---   old one is archived), built_ahead_pct = number|nil (a checkpoint already
+---   built past the position) }
+--- @return string
+function BookSettings.xrayFormHint(pick)
+    local hint
+    if pick.delivery == "follow" and pick.idle then
+        hint = _("Automatic building is on and caught up. The next checkpoint builds by itself as you read on.")
+    elseif pick.delivery == "follow" then
+        hint = _("Builds each checkpoint in the background as you read, the next one ready ahead of you. Checkpoints missing up to your position are built right away.")
+        if pick.coverage == "target" and pick.target_label then
+            hint = hint .. " " .. T(_("It stops at the end of \"%1\"."), pick.target_label)
+        end
+    elseif pick.delivery == "checkpoints" then
+        hint = pick.extend
+            and _("Continues from where your X-Ray ends, in background steps, each a version up to its own position. You can keep reading, cancel any time and resume later.")
+            or _("Builds it now in background steps, each a version up to its own position. It finds more of the minor names and hard words than one request, for more requests.")
+    elseif pick.delivery == "one_bg" then
+        hint = _("The same single request in the background: a notification arrives when it is ready. The book must stay open.")
+    elseif pick.extend then
+        if pick.coverage == "whole" then
+            hint = _("Updates your X-Ray to 100% in one request.")
+        elseif pick.coverage == "position" then
+            hint = _("Updates your X-Ray to your position in one request.")
+        else
+            hint = _("Updates your X-Ray to the end of that section in one background request.")
+        end
+    elseif pick.coverage == "whole" then
+        hint = _("The whole book in one request: the cheapest way, and every entry is written with the whole book in view. It covers the ending too.")
+    elseif pick.coverage == "position" then
+        hint = _("Reads up to your position in one request: the cheapest way. You can update it later as you read on, by hand or automatically.")
+    else
+        hint = _("Reads up to the end of that section in one background request. You can update it later as you read on.")
+    end
+    if pick.rebuild then
+        hint = hint .. " " .. _("The current X-Ray is kept until the new one is saved.")
+    end
+    if pick.built_ahead_pct then
+        hint = hint .. " " .. T(_("This is a new AI request; the checkpoint built to %1% still installs for free as you read on."),
+            pick.built_ahead_pct)
+    end
+    return hint
+end
+
 --- Forget the per-book state that described a DELETED X-Ray lineage: the
 --- coverage-ask stamp (a future from-nothing build should ask again), the
 --- promotion hold (it described the deleted timeline) and the Automatic X-Ray
@@ -2288,14 +2383,17 @@ function BookSettings.resolveXrayStatus(doc_settings, features)
     return nil, nil
 end
 
---- Label for what a new X-Ray tracks: the category set, and the status block
---- when it is off ("Characters only, no status block").
+--- Label for what a new X-Ray tracks: the categories, and the status section
+--- when it is off ("People, no Current State"). The reader's name for that
+--- section is Current State, the browser's own row (B757: "status block" was
+--- no word a reader knows, and the picker called it by a third name).
+--- @param short boolean|nil the short form of the categories (a button's)
 --- @param categories string|nil stored or resolved category value
 --- @param status string|nil "off" | anything else = on
-function BookSettings.xrayTrackLabel(categories, status)
-    local label = BookSettings.xrayCategoriesLabel(categories)
+function BookSettings.xrayTrackLabel(categories, status, short)
+    local label = BookSettings.xrayCategoriesLabel(categories, short)
     if status == "off" then
-        return T(_("%1, no status block"), label)
+        return T(_("%1, no Current State"), label)
     end
     return label
 end
@@ -2361,9 +2459,12 @@ end
 -- spacing is left alone (it has no global or group layer to set).
 -- categories: canonical csv, or "full" for all five groups.
 BookSettings.XRAY_PRESETS = {
+    { id = "whoswho", categories = "people", status = "off", depth = "light",
+      label = _("Who's who"),
+      desc = _("the cast alone, one line each, no Current State: the shortest and cheapest") },
     { id = "characters", categories = "people", status = "off", depth = "standard",
       label = _("Characters only"),
-      desc = _("the cast alone, no status block: the cheapest") },
+      desc = _("the cast alone, a few sentences each, no Current State") },
     { id = "story", categories = "people,events", status = "on", depth = "standard",
       label = _("Characters and story"),
       desc = _("the cast and the story arc") },
@@ -2375,7 +2476,7 @@ BookSettings.XRAY_PRESETS = {
       desc = _("all five categories, the story arc included: the largest") },
     { id = "light", categories = "people,places", status = "off", depth = "light",
       label = _("Light companion"),
-      desc = _("who and where, one line each, no status block") },
+      desc = _("who and where, one line each, no Current State") },
     { id = "deep", categories = "full", status = "on", depth = "deep",
       label = _("Deep study"),
       desc = _("everything, longer entries, richer connections") },
@@ -2396,6 +2497,61 @@ function BookSettings.xrayPresetFor(categories, status, depth)
         if p_sel == sel and p.status == st and p.depth == dp then return p end
     end
     return nil
+end
+
+--- What the X-Ray creation form says when a fast model gets a big ask (B747).
+--- Pure. Measured on a provider's cheapest model (xray_knowledge_picture.md
+--- 13.15): a checkpoint chain mixes up people who share a name at every size
+--- of X-Ray, one request keeps them apart, and a smaller X-Ray is cheaper,
+--- not more accurate. So the sentence is about the model and the way of
+--- building, never about the preset.
+--- @param tier string the model's tier (ModelLists.getTierForModel)
+--- @param delivery string|nil the form's pick: "follow" | "checkpoints" | other
+--- @param depth string|nil "light" | "deep" | nil (= standard)
+--- @param model string the model, as the form names it
+--- @return string|nil sentence, string|nil case "checkpoints" | "deep"
+function BookSettings.xraySmallModelNote(tier, delivery, depth, model)
+    if tier ~= "fast" and tier ~= "ultrafast" then return nil end
+    if delivery == "follow" or delivery == "checkpoints" then
+        return T(_("%1 is a fast model. Built in checkpoints, such a model tends to mix up people who share a name. A single request keeps them apart better, and a stronger model is the safer pick for checkpoints."), model),
+            "checkpoints"
+    end
+    if depth == "deep" then
+        return T(_("%1 is a fast model, and Deep depth asks a lot of it: a stronger model writes fuller and more exact entries."), model),
+            "deep"
+    end
+    return nil
+end
+
+--- That note as the form's warning, or nil: one grey line under the hint, the
+--- sentence a tap away (the form's text budget, xrayFormHint; a warning is
+--- no choice, so it is no button among the dials: the maintainer,
+--- 2026-11-20). The model is the one the X-Ray action runs on (its own pin or
+--- tier, else the main model: the run options' own resolver), the depth the
+--- one the build will use (a continued X-Ray's own stamp, else the standing
+--- pick).
+--- @param plugin table the plugin instance
+--- @param action table|nil the X-Ray action
+--- @param delivery string|nil the form's pick
+--- @param lineage_entry table|nil the saved X-Ray a plain update continues
+--- @return table|nil { line = string, text = string, case = string }
+function BookSettings.xraySmallModelWarning(plugin, action, delivery, lineage_entry)
+    if not (plugin and plugin.getCurrentProvider and plugin.getCurrentModel and plugin.settings) then return nil end
+    local base = require("koassistant.request.run_options").stateFor(plugin, action or {}, {}).base
+    if not (base and base.provider and base.model) then return nil end
+    local depth
+    if lineage_entry then
+        depth = require("koassistant.prompts.actions").normalizeXrayDepth(lineage_entry.xray_depth)
+    else
+        depth = BookSettings.resolveXrayDepth(plugin._openBookDS and plugin:_openBookDS() or nil,
+            plugin.settings:readSetting("features") or {})
+    end
+    local tier = require("koassistant.request.model_lists").getTierForModel(base.provider, base.model)
+    local note, case = BookSettings.xraySmallModelNote(tier, delivery, depth, base.model)
+    if not note then return nil end
+    return { text = note, case = case,
+        line = case == "deep" and _("⚠ Fast model and Deep depth. Tap for more.")
+            or _("⚠ Fast model and checkpoints. Tap for more.") }
 end
 
 local function xrayPresetById(id)
@@ -2446,7 +2602,7 @@ function BookSettings.showXrayPresetPicker(opts)
             local now = BookSettings.resolveXrayPreset(ctx.is_book_target and ctx.doc_settings or nil,
                 ctx.features)
             return _("Preset for new X-Rays") .. "\n"
-                .. _("One tap sets what is tracked, the status block and the depth. Each can still be changed on its own afterwards; the preset then reads Custom. Applies to new builds and rebuilds.")
+                .. _("One tap sets the categories, Current State and the depth. Each can still be changed on its own afterwards; the preset then reads Custom. Applies to new builds and rebuilds.")
                 .. (now and "" or ("\n" .. _("Now: Custom (the dials match no preset).")))
         end,
         key = BookSettings.KEY_XRAY_CATEGORIES,
@@ -2652,24 +2808,36 @@ function BookSettings.showXrayTypePicker(opts)
     }, opts)
 end
 
---- Short label for a stored category selection (row/button text).
+-- The categories by one word each, for a label that lists a selection
+local XRAY_CATEGORY_WORDS = {
+    people = _("People"),
+    places = _("Places"),
+    ideas = _("Ideas"),
+    terms = _("Terms"),
+    events = _("Timeline"),
+}
+
+--- Label for a stored category selection (row/button text): the categories
+--- that are ticked, by one word each ("People, Places, Ideas, Terms"), or
+--- "All categories". Never a preset's name (B757): the form read "Preset:
+--- Reference" above "Categories: Reference", two dials under one word, and
+--- which of them a tap changes was a guess. Timeline is the heaviest block of
+--- an X-Ray (bench: 25-32 events at Standard depth); cost lives on the depth
+--- dial.
 --- @param value string|nil raw stored value (normalized internally)
---- @return string "All" / "Characters only" / "Characters and story" / "Reference" / "N of 5"
---- Preset names (2026-08-25, depth-axis session): "All" frees "Full" for the
---- document scope; "Light" left this axis because the timeline is the single
---- heaviest block of an X-Ray (bench: 25-32 events at Standard depth), so a
---- people+events preset is a PURPOSE preset, not a cheap one. Cost now lives on
---- the depth dial. "Reference" = every static entry, no timeline.
-function BookSettings.xrayCategoriesLabel(value)
+--- @param short boolean|nil a button's label: three categories or more are
+---   counted ("4 of 5"), all five are "All"
+--- @return string
+function BookSettings.xrayCategoriesLabel(value, short)
     local Actions = require("koassistant.prompts.actions")
     local sel = Actions.normalizeXrayCategories(value)
-    if not sel then return _("All categories") end
-    if sel == "people" then return _("Characters only") end
-    if sel == "people,events" then return _("Characters and story") end
-    if sel == "people,places,ideas,terms" then return _("Reference") end
-    local n = 0
-    for _id in sel:gmatch("[^,]+") do n = n + 1 end
-    return T(_("%1 of %2"), n, #Actions.XRAY_CATEGORY_ORDER)
+    if not sel then return short and _("All") or _("All categories") end
+    local names = {}
+    for id in sel:gmatch("[^,]+") do names[#names + 1] = XRAY_CATEGORY_WORDS[id] or id end
+    if short and #names > 2 then
+        return T(_("%1 of %2"), #names, #Actions.XRAY_CATEGORY_ORDER)
+    end
+    return table.concat(names, ", ")
 end
 
 --- implicitly. Book mode (default) writes KEY_XRAY_CATEGORIES on the spot
@@ -2853,7 +3021,7 @@ function BookSettings.showXrayCategoriesPicker(opts)
     else
         status_on = BookSettings.resolveXrayStatus(doc_settings, features) ~= "off"
     end
-    buttons[#buttons + 1] = {{ text = mark(status_on) .. _("Where things stand (current state, conclusion)"),
+    buttons[#buttons + 1] = {{ text = mark(status_on) .. _("Current State (Current Position, Conclusion)"),
         callback = function()
             local value = status_on and "off" or "on"
             if is_global then
@@ -2872,7 +3040,7 @@ function BookSettings.showXrayCategoriesPicker(opts)
     local title = (is_global and _("What new X-Rays track (global)")
             or is_group and _("What new X-Rays track (this group)")
             or _("What new X-Rays track (this book)")) .. "\n"
-        .. _("Applies to new builds and rebuilds. Fewer categories are faster and cheaper; without \"Where things stand\" every update is shorter.")
+        .. _("Applies to new builds and rebuilds. Fewer categories are faster and cheaper; without Current State every update is shorter.")
     dialog = ButtonDialog:new{
         title = title,
         buttons = buttons,
@@ -3645,8 +3813,10 @@ function BookSettings.showXrayConfig(opts)
     -- here so closed books can set it before their first build (the creation
     -- chooser's button needs the form).
     local cat_sel, cat_layer = BookSettings.resolveXrayCategories(doc_settings, features)
+    -- A button's label: three categories or more are counted, so the row
+    -- stays one line (the picker it opens lists them)
     local track_label = BookSettings.xrayTrackLabel(cat_sel,
-        (BookSettings.resolveXrayStatus(doc_settings, features)))
+        (BookSettings.resolveXrayStatus(doc_settings, features)), true)
     table.insert(buttons, {{ text = T(_("New X-Ray categories: %1"),
             cat_layer == "book"
                 and (BookSettings.followGroupLabel(doc_settings, BookSettings.KEY_XRAY_CATEGORIES,

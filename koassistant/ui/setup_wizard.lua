@@ -612,9 +612,9 @@ function SetupWizard.offerFontInstall(plugin, opts)
         or _("KOReader ships no emoji font, so KOAssistant's menu icons show as empty boxes. Install the bundled Noto Emoji font (about 860 KB) into KOReader now?")
     local tail
     if ctx then
-        tail = _("Icons appear in plugin menus, buttons and panels, never inside the Markdown chat view. Requires a KOReader restart; a glyph test follows after it.")
+        tail = _("Icons appear in plugin menus, buttons, panels and plain-text windows; the Markdown chat view draws emoji on its own. Requires a KOReader restart; a glyph test follows after it.")
     else
-        tail = _("Icons appear in plugin menus, buttons and panels, never inside the Markdown chat view. Requires a KOReader restart; the Emoji Font row then offers a display test.")
+        tail = _("Icons appear in plugin menus, buttons, panels and plain-text windows; the Markdown chat view draws emoji on its own. Requires a KOReader restart; the Emoji Font row then offers a display test.")
     end
     local parts = {}
     if ctx then table.insert(parts, _("ICONS")) end
@@ -647,7 +647,7 @@ local function showGlyphTest(plugin, ctx, next_step)
         "📄 Document  📝 Notes  📓 Notebook\n" ..
         "🔍 Search  🌐 Web  🎭 Behavior\n" ..
         "📜 History  🔖 Bookmark  📖 Book" .. "\n\n" ..
-        _("Emoji appear in plugin menus, buttons and panels, never inside the Markdown chat view (a KOReader renderer limit).") .. "\n\n" ..
+        _("This font serves the plugin's menus, buttons, panels and plain-text windows; the Markdown chat view draws emoji on its own.") .. "\n\n" ..
         _("If you see blank boxes or question marks, choose \"No\".")
 
     local advancing = false
@@ -1159,7 +1159,12 @@ function SetupWizard.stepIcons(plugin, ctx, next_step)
     if registered then
         return showGlyphTest(plugin, ctx, next_step)
     end
-    SetupWizard.offerFontInstall(plugin, { wizard = ctx, done = next_step })
+    -- A reader who has not turned the icons on (the default: off) sees no
+    -- empty boxes; the offer says what the font is for, not what is broken
+    local f_now = feats(plugin)
+    local icons_on = (f_now.enable_emoji_icons or f_now.enable_emoji_panel_icons or f_now.enable_data_access_indicators) and true or false
+    SetupWizard.offerFontInstall(plugin, { wizard = ctx, done = next_step,
+        intro = not icons_on and _("KOAssistant can mark its menus, buttons and panels with emoji icons. KOReader ships no emoji font, so they need the bundled Noto Emoji font (about 860 KB). Install it into KOReader now?") or nil })
 end
 
 

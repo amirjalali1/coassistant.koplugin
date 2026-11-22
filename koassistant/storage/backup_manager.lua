@@ -3,6 +3,7 @@ local LuaSettings = require("luasettings")
 local logger = require("koassistant.core.logger")
 local lfs = require("libs/libkoreader-lfs")
 local _ = require("koassistant.core.gettext")
+local T = require("ffi/util").template
 local DocSettings = require("docsettings")
 local SafeDocSettings = require("koassistant.storage.doc_settings")
 local BookStore = require("koassistant.storage.book_store")
@@ -618,7 +619,7 @@ function BackupManager:_decodeJSON(json_str)
         return nil, pos
     end
 
-    local value, _ = parse_value(json_str, 1)
+    local value = parse_value(json_str, 1)
     return value
 end
 
@@ -750,7 +751,7 @@ function BackupManager:_countItems(options)
 
         counts.custom_behaviors = 0
         if features.custom_behaviors then
-            for _idx, _ in pairs(features.custom_behaviors) do
+            for _idx in pairs(features.custom_behaviors) do
                 counts.custom_behaviors = counts.custom_behaviors + 1
             end
         end
@@ -778,6 +779,105 @@ function BackupManager:exportBookSettingsToTable()
         end
     end
     return out
+end
+
+-- Two lists of things the reader made, joined by id (a restore in Merge
+-- mode, B660): an item both hold takes the backup's version in the device's
+-- place, an item only the device holds stays, an item only the backup holds
+-- is added after them. Before, the backup's list replaced the device's, and
+-- everything made after the backup was gone.
+local function mergeListById(current, backup)
+    if type(backup) ~= "table" then return current end
+    if type(current) ~= "table" then return backup end
+    local from_backup = {}
+    for _idx, item in ipairs(backup) do
+        if type(item) == "table" and item.id ~= nil then from_backup[item.id] = item end
+    end
+    local out, placed = {}, {}
+    for _idx, item in ipairs(current) do
+        local id = type(item) == "table" and item.id or nil
+        if id ~= nil and from_backup[id] then
+            out[#out + 1] = from_backup[id]
+            placed[id] = true
+        else
+            out[#out + 1] = item
+        end
+    end
+    for _idx, item in ipairs(backup) do
+        local id = type(item) == "table" and item.id or nil
+        if id == nil or not placed[id] then out[#out + 1] = item end
+    end
+    return out
+end
+BackupManager._mergeListById = mergeListById
+
+-- An id counter is never lowered by a restore, in either mode: `target` keeps
+-- the larger of its own value and `other`'s for every counter the registry
+-- names. A lower counter handed the next new domain the id of one the restore
+-- had dropped, which a book's own setting could still point at (B660).
+local function keepCounters(target, other)
+    for _idx, key in ipairs(StorageRegistry.ID_COUNTERS) do
+        local mine, theirs = tonumber(target[key]), tonumber(other[key])
+        if theirs and (not mine or theirs > mine) then target[key] = other[key] end
+    end
+end
+
+--- The book groups file of a backup onto the device's. Replace: the backup's
+--- file as it is. Merge: its groups joined with the device's by id (a group
+--- made after the backup stays). In both, the id counter is never lowered: a
+--- book that followed a group made after the backup keeps that group's
+--- marker, and the next new group would take that id and the book would
+--- follow it (B660).
+function BackupManager:_restoreGroupsFile(src, dest, merge_mode)
+    local function groupsOf(path)
+        if lfs.attributes(path, "mode") ~= "file" then return nil end
+        local ok, data = pcall(function() return LuaSettings:open(path):readSetting("book_groups") end)
+        return ok and type(data) == "table" and data or nil
+    end
+    local had, incoming = groupsOf(dest), groupsOf(src)
+    if not had or not incoming then
+        -- nothing to join and no counter to keep: the backup's file as it is
+        return self:_copyFile(src, dest)
+    end
+    local data = incoming
+    if merge_mode then
+        data = had
+        data.groups = mergeListById(had.groups, incoming.groups)
+        data.version = math.max(tonumber(had.version) or 1, tonumber(incoming.version) or 1)
+    else
+        local ok, e = self:_copyFile(src, dest)
+        if not ok then return false, e end
+    end
+    local next_id = math.max(tonumber(had.next_id) or 1, tonumber(incoming.next_id) or 1)
+    for _idx, group in ipairs(type(data.groups) == "table" and data.groups or {}) do
+        local n = type(group) == "table" and type(group.id) == "string" and tonumber(group.id:match("^g(%d+)$"))
+        if n and n >= next_id then next_id = n + 1 end
+    end
+    if not merge_mode and next_id == (tonumber(incoming.next_id) or 1) then return true end
+    data.next_id = next_id
+    local ok, e = pcall(function()
+        local store = LuaSettings:open(dest)
+        store:saveSetting("book_groups", data)
+        store:flush()
+    end)
+    if not ok then return false, "Failed to write the book groups: " .. tostring(e) end
+    return true
+end
+
+--- A pin file of a backup onto the device's, in Merge mode: the pins joined
+--- by id, so a pin made after the backup stays (B660). A file that is no pin
+--- list on either side is copied as it is.
+function BackupManager:_mergePinFile(src, dest)
+    local PinnedManager = require("koassistant.artifacts.pinned_manager")
+    local incoming = PinnedManager.readFile(src)
+    local current = lfs.attributes(dest, "mode") == "file" and PinnedManager.readFile(dest) or nil
+    if not incoming or not current or #current == 0 then
+        return self:_copyFile(src, dest)
+    end
+    if not PinnedManager.writeFile(dest, mergeListById(current, incoming)) then
+        return false, "Failed to write " .. tostring(dest:match("[^/]+$"))
+    end
+    return true
 end
 
 -- Restore per-book settings from koassistant_book_settings.json.
@@ -912,6 +1012,16 @@ function BackupManager:createBackup(options)
     local temp_dir = self.BACKUP_DIR .. "/.temp_" .. timestamp .. "_" .. random_suffix
     local backup_name = "koassistant_backup_" .. timestamp .. ".koa"
     local backup_path = self.BACKUP_DIR .. "/" .. backup_name
+    -- Never over an existing archive: the name holds the time to the second,
+    -- and a restore point made in the second its backup was made was written
+    -- over that backup and renamed away, so the restore then had nothing to
+    -- restore from (audit 2026-11-12)
+    local nth = 1
+    while lfs.attributes(backup_path, "mode") do
+        nth = nth + 1
+        backup_name = "koassistant_backup_" .. timestamp .. "_" .. nth .. ".koa"
+        backup_path = self.BACKUP_DIR .. "/" .. backup_name
+    end
 
     -- Create temp directory
     if not lfs.attributes(temp_dir, "mode") then
@@ -927,6 +1037,31 @@ function BackupManager:createBackup(options)
     -- Count items for manifest
     local counts = self:_countItems(options)
 
+    -- Every copy and write below is checked (audit 2026-11-12). They were
+    -- not: on a nearly full card a backup reported success with a file
+    -- missing or cut, and a restore's restore point is made here, so a
+    -- rollback from such a point said "rolled back" while chats or groups
+    -- made since the backup were gone. The first failure fails the backup.
+    local failure
+    local function copyChecked(src, dest)
+        local ok, e = self:_copyFile(src, dest)
+        if not ok and not failure then
+            failure = e or ("Could not copy " .. (tostring(src):match("[^/]+$") or "a file"))
+        end
+    end
+    local function writeChecked(path, data, what)
+        local f = io.open(path, "w")
+        local ok = f ~= nil
+        if f then
+            if not f:write(data) then ok = false end
+            if not f:close() then ok = false end
+        end
+        -- a write the card cut short may report no error: the size on disk says
+        if ok and lfs.attributes(path, "size") ~= #data then ok = false end
+        if not ok and not failure then failure = "Could not write " .. what end
+        return ok
+    end
+
     -- Copy settings (always include, excluding API keys if requested)
     if options.include_settings then
         local settings_dir = temp_dir .. "/settings"
@@ -936,7 +1071,7 @@ function BackupManager:createBackup(options)
         if lfs.attributes(settings_file, "mode") == "file" then
             if options.include_api_keys then
                 -- Copy settings as-is
-                self:_copyFile(settings_file, settings_dir .. "/koassistant_settings.lua")
+                copyChecked(settings_file, settings_dir .. "/koassistant_settings.lua")
             else
                 -- Copy settings but remove API keys
                 local settings = LuaSettings:open(settings_file)
@@ -959,6 +1094,9 @@ function BackupManager:createBackup(options)
                 end
 
                 temp_settings:flush()
+                if not failure and (lfs.attributes(settings_dir .. "/koassistant_settings.lua", "size") or 0) == 0 then
+                    failure = "Could not write the settings"
+                end
 
                 -- Restore API keys in original settings (don't modify user's settings)
                 -- No need to restore since we're just reading
@@ -971,14 +1109,13 @@ function BackupManager:createBackup(options)
         if next(book_settings) then
             local ok_enc, json_string = pcall(JSON.encode, book_settings)
             if ok_enc then
-                local bs_file = io.open(settings_dir .. "/koassistant_book_settings.json", "w")
-                if bs_file then
-                    bs_file:write(json_string)
-                    bs_file:close()
+                if writeChecked(settings_dir .. "/koassistant_book_settings.json", json_string,
+                        "the per-book settings") then
                     logger.info("BackupManager: Exported per-book settings")
                 end
             else
-                logger.warn("BackupManager: Failed to encode per-book settings:", json_string)
+                logger.warn("BackupManager: Failed to encode per-book settings (" .. #tostring(json_string) .. " bytes of error)")
+                if not failure then failure = "Could not encode the per-book settings" end
             end
         end
 
@@ -987,7 +1124,7 @@ function BackupManager:createBackup(options)
         for _idx, ref in ipairs(StorageRegistry.backupSettingsFiles()) do
             local src = self.SETTINGS_DIR .. "/" .. ref
             if lfs.attributes(src, "mode") == "file" then
-                self:_copyFile(src, settings_dir .. "/" .. ref)
+                copyChecked(src, settings_dir .. "/" .. ref)
             end
         end
     end
@@ -1000,7 +1137,7 @@ function BackupManager:createBackup(options)
             if not entry.credential or options.include_api_keys then
                 local src = self.PLUGIN_DIR .. "/" .. entry.ref
                 if lfs.attributes(src, "mode") == "file" then
-                    self:_copyFile(src, configs_dir .. "/" .. entry.ref)
+                    copyChecked(src, configs_dir .. "/" .. entry.ref)
                 end
             end
         end
@@ -1044,22 +1181,12 @@ function BackupManager:createBackup(options)
                 if not options.skip_lock then
                     self:_releaseLock()
                 end
-                return { success = false, error = "Failed to encode chats to JSON: " .. tostring(json_string) }
+                return { success = false, error = "Failed to encode chats to JSON" }
             end
 
-            local file = io.open(json_path, "w")
-            if not file then
-                self:_removeTempDir(temp_dir)
-                if not options.skip_lock then
-                    self:_releaseLock()
-                end
-                return { success = false, error = "Failed to create chat JSON file" }
+            if writeChecked(json_path, json_string, "the chats") then
+                logger.info("BackupManager: Exported chats to JSON (v2 storage)")
             end
-
-            file:write(json_string)
-            file:close()
-
-            logger.info("BackupManager: Exported chats to JSON (v2 storage)")
         else
             logger.info("BackupManager: No chats to backup (v2 storage)")
         end
@@ -1067,16 +1194,18 @@ function BackupManager:createBackup(options)
 
     -- Create manifest
     local manifest_json = self:_createManifest(options, counts)
-    local manifest_file = io.open(temp_dir .. "/manifest.json", "w")
-    if not manifest_file then
+    writeChecked(temp_dir .. "/manifest.json", manifest_json, "the backup's manifest")
+
+    -- Anything above that was not copied or written whole: no backup, and
+    -- for a restore no restore point, so the restore stops before it starts
+    if failure then
+        logger.warn("BackupManager: backup not made: " .. failure)
         self:_removeTempDir(temp_dir)
         if not options.skip_lock then
             self:_releaseLock()
         end
-        return { success = false, error = "Failed to create manifest file" }
+        return { success = false, error = failure }
     end
-    manifest_file:write(manifest_json)
-    manifest_file:close()
 
     -- Create archive
     local success, err_msg = self:_createArchive(temp_dir, backup_path)
@@ -1134,7 +1263,7 @@ function BackupManager:validateBackup(backup_path)
     local manifest_file = io.open(temp_dir .. "/manifest.json", "r")
     if not manifest_file then
         -- Clean up and return error
-        local safe_temp, _ = self:_sanitizePath(temp_dir)
+        local safe_temp = self:_sanitizePath(temp_dir)
         if safe_temp then
             os.execute(string.format('rm -rf "%s"', safe_temp))
         end
@@ -1147,7 +1276,7 @@ function BackupManager:validateBackup(backup_path)
     local manifest, parse_err = self:_parseManifest(manifest_text)
     if not manifest then
         -- Clean up and return error
-        local safe_temp, _ = self:_sanitizePath(temp_dir)
+        local safe_temp = self:_sanitizePath(temp_dir)
         if safe_temp then
             os.execute(string.format('rm -rf "%s"', safe_temp))
         end
@@ -1155,7 +1284,7 @@ function BackupManager:validateBackup(backup_path)
     end
 
     -- Clean up temp directory
-    local safe_temp, _ = self:_sanitizePath(temp_dir)
+    local safe_temp = self:_sanitizePath(temp_dir)
     if safe_temp then
         os.execute(string.format('rm -rf "%s"', safe_temp))
     end
@@ -1173,7 +1302,7 @@ function BackupManager:validateBackup(backup_path)
         -- Simple version comparison (would need more sophisticated logic for production)
         -- For now, just warn if versions differ
         if manifest.plugin_version ~= current_version then
-            table.insert(warnings, "Backup was created with a different plugin version (" .. manifest.plugin_version .. ")")
+            table.insert(warnings, T(_("Backup was created with a different plugin version (%1)"), manifest.plugin_version))
         end
     end
 
@@ -1249,7 +1378,7 @@ function BackupManager:_validateActionOverrides(overrides)
             valid_overrides[action_id] = override_config
         else
             -- Action no longer exists, skip and warn
-            table.insert(warnings, string.format("Skipped override for missing action: %s", action_id))
+            table.insert(warnings, T(_("Skipped override for missing action: %1"), action_id))
             logger.warn("BackupManager: Skipped override for missing action:", action_id)
         end
     end
@@ -1274,7 +1403,7 @@ function BackupManager:_validateCustomActions(custom_actions)
         if type(action_config) == "table" and action_config.text and (action_config.prompt or action_config.template) then
             valid_actions[action_id] = action_config
         else
-            table.insert(warnings, string.format("Skipped invalid custom action: %s", action_id))
+            table.insert(warnings, T(_("Skipped invalid custom action: %1"), action_id))
             logger.warn("BackupManager: Skipped invalid custom action:", action_id)
         end
     end
@@ -1317,7 +1446,13 @@ function BackupManager:createRestorePoint()
     local safe_dest, err_dest = self:_sanitizePath(restore_point_path)
 
     if safe_src and safe_dest then
-        os.execute(string.format('mv "%s" "%s"', safe_src, safe_dest))
+        -- a rename that fails leaves no restore point under its name: the
+        -- rollback would look for a file that is not there
+        if not shellOk(os.execute(string.format('mv "%s" "%s"', safe_src, safe_dest)))
+                or not lfs.attributes(restore_point_path, "mode") then
+            logger.err("BackupManager: could not rename the backup to a restore point")
+            return { success = false, error = "Failed to rename backup to restore point" }
+        end
     else
         logger.err("BackupManager: Path sanitization failed for mv:", err_src or err_dest)
         return { success = false, error = "Failed to rename backup to restore point" }
@@ -1352,7 +1487,10 @@ function BackupManager:restoreChatsFromJSON(json_path, merge_mode)
     -- Decode JSON
     local success, all_chats = pcall(JSON.decode, content)
     if not success then
-        return false, "Failed to decode chat JSON: " .. tostring(all_chats)
+        -- The decoder's message quotes the text it failed on: the reader's
+        -- chats. It reaches the log and the restore's warning, so only the
+        -- size goes out (audit 2026-11-12)
+        return false, "Failed to decode chat JSON (" .. tostring(#content) .. " bytes)"
     end
 
     local restored_count = 0
@@ -1404,7 +1542,7 @@ function BackupManager:restoreChatsFromJSON(json_path, merge_mode)
                 end
 
                 local ok_w, err_w = BookStore.writeChats(doc_path, existing_chats)
-                if not ok_w then error(err_w or "chats write failed") end
+                if not ok_w then error(err_w or "chats write failed", 0) end
 
                 -- Update chat index (title/author: KOReader's doc_props)
                 local doc_settings = SafeDocSettings.resolve(doc_path)
@@ -1533,13 +1671,22 @@ function BackupManager:restoreBackup(backup_path, options)
                     end
                 end
 
-                -- Merge other features (backup takes precedence)
+                -- Merge other features (backup takes precedence). The lists of
+                -- things the reader made are joined by id, and no id counter
+                -- is lowered (B660)
+                local had = {}
+                for _idx, key in ipairs(StorageRegistry.MERGE_BY_ID) do had[key] = current_features[key] end
+                for _idx, key in ipairs(StorageRegistry.ID_COUNTERS) do had[key] = current_features[key] end
                 for key, value in pairs(backup_features) do
                     local credential = key == "api_keys" or key == "openai_codex_oauth"
                     if not credential or (options.restore_api_keys and manifest.contents.api_keys) then
                         current_features[key] = value
                     end
                 end
+                for _idx, key in ipairs(StorageRegistry.MERGE_BY_ID) do
+                    current_features[key] = mergeListById(had[key], backup_features[key])
+                end
+                keepCounters(current_features, had)
 
                 -- Validate and clean custom actions from features
                 if current_features.custom_actions then
@@ -1599,11 +1746,13 @@ function BackupManager:restoreBackup(backup_path, options)
 
                 -- Create new settings file with validated data
                 local new_settings = LuaSettings:open(current_settings_file)
+                local current_features = new_settings:readSetting("features") or {}
+                -- no id counter is lowered, in this mode either (B660)
+                keepCounters(backup_features, current_features)
                 if not options.restore_api_keys or not manifest.contents.api_keys then
                     -- The keys entered in Settings, the subscription sign-in and
                     -- the key selection stay as they are: a Replace restore from
                     -- a backup without keys (the default backup) wiped them (B471)
-                    local current_features = new_settings:readSetting("features") or {}
                     backup_features.api_keys = current_features.api_keys
                     backup_features.openai_codex_oauth = current_features.openai_codex_oauth
                     backup_features.api_key_selected = current_features.api_key_selected
@@ -1636,27 +1785,44 @@ function BackupManager:restoreBackup(backup_path, options)
                 new_settings:flush()
 
                 if not options.restore_api_keys or not manifest.contents.api_keys then
-                    table.insert(warnings, "API keys were not included in the backup; the keys you had are kept.")
+                    table.insert(warnings, _("API keys were not included in the backup; the keys you had are kept."))
                 end
             end
         end
 
-        -- Settings-dir stores copied back as-is (same registry list as the backup side)
+        -- Settings-dir stores (same registry list as the backup side): copied
+        -- back as they are, except where the registry names a way to join
+        -- them (Merge mode keeps the pins and groups made after the backup,
+        -- and the groups' id counter is never lowered, B660)
         -- (a copy that fails is the restore failing: the error reaches the
         -- rollback below and the reader, the sweep of 2026-11-06)
         for _idx, ref in ipairs(StorageRegistry.backupSettingsFiles()) do
             local src = temp_dir .. "/settings/" .. ref
             if lfs.attributes(src, "mode") == "file" then
-                local ok, e = self:_copyFile(src, self.SETTINGS_DIR .. "/" .. ref)
-                if not ok then error(e or ("Failed to restore " .. ref)) end
+                local dest = self.SETTINGS_DIR .. "/" .. ref
+                local kind = StorageRegistry.mergeKind(ref)
+                local ok, e
+                if kind == "groups" then
+                    ok, e = self:_restoreGroupsFile(src, dest, options.merge_mode)
+                elseif kind == "pins" and options.merge_mode then
+                    ok, e = self:_mergePinFile(src, dest)
+                else
+                    ok, e = self:_copyFile(src, dest)
+                end
+                if not ok then error(e or ("Failed to restore " .. ref), 0) end
             end
         end
+        -- The groups file is among them: the book groups module holds one
+        -- handle on it for the session and would write the groups from
+        -- before the restore back at the next group change (audit
+        -- 2026-11-12). It opens the file again at its next read.
+        pcall(function() require("koassistant.books.book_groups").reload() end)
         -- Old backups carry the library pinned store under its pre-rename name
         local backup_pinned_multi_old = temp_dir .. "/settings/koassistant_pinned_multi_book.lua"
         if lfs.attributes(temp_dir .. "/settings/koassistant_pinned_library.lua", "mode") ~= "file"
                 and lfs.attributes(backup_pinned_multi_old, "mode") == "file" then
             local ok, e = self:_copyFile(backup_pinned_multi_old, self.SETTINGS_DIR .. "/koassistant_pinned_library.lua")
-            if not ok then error(e or "Failed to restore koassistant_pinned_library.lua") end
+            if not ok then error(e or "Failed to restore koassistant_pinned_library.lua", 0) end
         end
     end
 
@@ -1668,7 +1834,7 @@ function BackupManager:restoreBackup(backup_path, options)
                 local src = temp_dir .. "/configs/" .. entry.ref
                 if lfs.attributes(src, "mode") == "file" then
                     local ok, e = self:_copyFile(src, self.PLUGIN_DIR .. "/" .. entry.ref)
-                    if not ok then error(e or ("Failed to restore " .. entry.ref)) end
+                    if not ok then error(e or ("Failed to restore " .. entry.ref), 0) end
                 end
             end
         end
@@ -1687,7 +1853,7 @@ function BackupManager:restoreBackup(backup_path, options)
                     end
                 end
                 local ok, e = self:_copyDirectory(src, dest)
-                if not ok then error(e or ("Failed to restore " .. dir_name)) end
+                if not ok then error(e or ("Failed to restore " .. dir_name), 0) end
             end
         end
     end
@@ -1705,7 +1871,7 @@ function BackupManager:restoreBackup(backup_path, options)
             local json_success, json_err = self:restoreChatsFromJSON(json_path, options.merge_mode)
             if not json_success then
                 logger.err("BackupManager: Failed to restore chats from JSON:", json_err)
-                table.insert(warnings, "Failed to restore some chats: " .. (json_err or "unknown error"))
+                table.insert(warnings, T(_("Failed to restore some chats: %1"), json_err or _("Unknown error")))
             end
         elseif lfs.attributes(backup_chats_dir, "mode") == "directory" then
             -- v1: Legacy directory backup - restore to CHAT_DIR
@@ -1714,7 +1880,7 @@ function BackupManager:restoreBackup(backup_path, options)
             if not options.merge_mode then
                 -- Replace mode: clear existing chats first
                 if lfs.attributes(self.CHAT_DIR, "mode") == "directory" then
-                    local safe_path, _ = self:_sanitizePath(self.CHAT_DIR)
+                    local safe_path = self:_sanitizePath(self.CHAT_DIR)
                     if safe_path then
                         os.execute(string.format('rm -rf "%s"', safe_path))
                     end
@@ -1722,7 +1888,7 @@ function BackupManager:restoreBackup(backup_path, options)
             end
 
             local ok, e = self:_copyDirectory(backup_chats_dir, self.CHAT_DIR)
-            if not ok then error(e or "Failed to restore the chats folder") end
+            if not ok then error(e or "Failed to restore the chats folder", 0) end
             -- Nothing reads that layout any more: the caller runs the v1
             -- importer (AskGPT:migrateChatsToDocSettings) when this is set
             v1_chats_restored = true

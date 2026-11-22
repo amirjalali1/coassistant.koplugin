@@ -480,6 +480,23 @@ local function runCreateResultTextTests()
         TestRunner:assertContains(result, "Response text")
     end)
 
+    -- KOReader hands a selection over with ONE line break between its
+    -- paragraphs, which the Markdown view reads as a space: the quote at the
+    -- top of a chat showed a highlight of several paragraphs as one block
+    TestRunner:test("a highlight of several paragraphs is quoted with its paragraphs apart", function()
+        local h = MessageHistory:new()
+        h:addUserMessage("Q")
+        h:addAssistantMessage("Response text")
+        local quoted = function(text) return h:createResultText(text, emptyConfig()) end
+        TestRunner:assertContains(quoted("First paragraph.\nSecond paragraph.\nThird."),
+            'Highlighted text: "First paragraph.\n\nSecond paragraph.\n\nThird."\n\n')
+        TestRunner:assertContains(quoted("One.  \n \t Two."), 'Highlighted text: "One.\n\nTwo."', "the spaces around the break go with it")
+        TestRunner:assertContains(quoted("One.\n\n\nTwo."), 'Highlighted text: "One.\n\nTwo."', "one blank line, however many there were")
+        TestRunner:assertContains(quoted("a\nb\nc"), 'Highlighted text: "a\n\nb\n\nc"', "lines of one character too")
+        TestRunner:assertContains(quoted("no line break here"), 'Highlighted text: "no line break here"\n\n', "a PDF selection, a single paragraph: as it was")
+        TestRunner:assertContains(quoted("ends with a break\n"), 'Highlighted text: "ends with a break\n"', "the highlight's own end is left alone")
+    end)
+
     TestRunner:test("dictionary excerpt stands in for the quote, hidden with it", function()
         local h = MessageHistory:new()
         h.source_excerpt = "She found the **derelict** ship"
@@ -541,6 +558,84 @@ local function runCreateResultTextTests()
         }
         local result = h:createResultText(nil, config)
         TestRunner:assertContains(result, "Debug Info")
+    end)
+
+    -- The debug view's Config line named the reader's settings, whatever the
+    -- request carried: the global domain under an action that leaves the
+    -- domain out, the global behavior under an action's own (the maintainer,
+    -- 2026-11-21: "if a user wants to make sure that e.g an x ray chat used
+    -- the domain, what it sent"). It reads the request's own system text.
+    TestRunner:test("the debug line names the domain, the behavior and the Background the request carried, not the settings", function()
+        local ConfigHelper = require("koassistant.core.config_helper")
+        local SystemPrompts = require("koassistant.prompts.system_prompts")
+        local DomainLoader = require("koassistant.prompts.domain_loader")
+        local saved_all = DomainLoader.getAllDomains
+        DomainLoader.getAllDomains = function()
+            return {
+                synthesis = { id = "synthesis", context = "The synthesis text." },
+                law = { id = "law", context = "The law text." },
+                twin_b = { id = "twin_b", context = "One text, two domains." },
+                twin_a = { id = "twin_a", context = "One text, two domains." },
+            }
+        end
+        local function line(config)
+            local h = MessageHistory:new()
+            h:addUserMessage("Q")
+            h:addAssistantMessage("A", "m", nil, ConfigHelper:buildDebugInfo(config))
+            config.features.show_debug_in_chat = true
+            config.features.debug_display_level = "names"
+            return (h:createResultText(nil, config):match("● Config: [^\n]*") or "")
+        end
+        local function request(sys, features)
+            sys.global_variant = sys.global_variant or "standard"
+            return { provider = "anthropic", features = features or { selected_domain = "synthesis", selected_behavior = "standard" },
+                system = SystemPrompts.buildUnifiedSystem(sys) }
+        end
+        local ok, err = pcall(function()
+            -- the domain went along: named
+            TestRunner:assertContains(line(request({ domain_context = "The synthesis text." })), "domain=synthesis", "sent, and it is the setting's")
+            -- an action that leaves the domain out: none, though the setting names one
+            local out = line(request({ domain_context = nil }))
+            TestRunner:assertContains(out, "domain=none", "left out: " .. out)
+            TestRunner:assertNotContains(out, "synthesis", "the setting's domain is not claimed")
+            -- a book's or an action's own domain: that one, not the setting's
+            TestRunner:assertContains(line(request({ domain_context = "The law text." })), "domain=law", "another domain than the setting's")
+            -- a text no domain holds any more
+            TestRunner:assertContains(line(request({ domain_context = "A text that was edited since." })), "domain=custom", "no domain has this text")
+            -- two domains with one text: the setting's when it is one of them, else the first by id
+            TestRunner:assertContains(line(request({ domain_context = "One text, two domains." },
+                { selected_domain = "twin_b" })), "domain=twin_b", "the setting's own")
+            TestRunner:assertContains(line(request({ domain_context = "One text, two domains." },
+                { selected_domain = "synthesis" })), "domain=twin_a", "else the first by id")
+            -- the Background note
+            out = line(request({ domain_context = "The synthesis text.", book_background = "I read it for the trade routes." }))
+            TestRunner:assertContains(out, "domain=synthesis, background=yes", "the Background went along: " .. out)
+            TestRunner:assertNotContains(line(request({ domain_context = "The synthesis text." })), "background", "and is not named when it did not")
+            -- the behavior: an action's own variant, its own text, none, the global one
+            TestRunner:assertContains(line(request({ behavior_variant = "mini" })), "behavior=mini", "an action's own behavior")
+            TestRunner:assertContains(line(request({ behavior_variant = "none" })), "behavior=none", "an action without a behavior")
+            TestRunner:assertContains(line(request({ behavior_override = "Answer as a pirate." })), "behavior=own text", "an action's own text")
+            TestRunner:assertContains(line(request({ global_variant = "full" })), "behavior=full", "the reader's behavior")
+            -- a config with no system text (a chat from before, a caller that built none): the settings, as before
+            out = line({ provider = "anthropic", features = { selected_domain = "synthesis", selected_behavior = "full" } })
+            TestRunner:assertContains(out, "behavior=full, domain=synthesis", "no system text to read: " .. out)
+            TestRunner:assertEqual(ConfigHelper.domainSent({ features = {} }), false, "nothing to read from")
+            TestRunner:assertEqual(ConfigHelper.domainSent(request({})), nil, "a system text without a domain")
+        end)
+        DomainLoader.getAllDomains = saved_all
+        if not ok then error(err, 0) end
+    end)
+
+    TestRunner:test("a chat without a stored debug record reads the config's own system text too", function()
+        local SystemPrompts = require("koassistant.prompts.system_prompts")
+        local h = MessageHistory:new()
+        h:addUserMessage("Q")
+        h:addAssistantMessage("A")
+        local config = { provider = "anthropic",
+            features = { show_debug_in_chat = true, debug_display_level = "names", selected_domain = "synthesis" },
+            system = SystemPrompts.buildUnifiedSystem({ global_variant = "standard", behavior_variant = "none" }) }
+        local out = h:createResultText(nil, config):match("● Config: [^\n]*") or ""
+        TestRunner:assertContains(out, "behavior=none, domain=none", "what the system text holds, not the setting: " .. out)
     end)
 
     TestRunner:test("reasoning indicator shown by default", function()
@@ -753,6 +848,115 @@ end
 -- Run All Tests
 -- =============================================================================
 
+-- =============================================================================
+-- wireMessages: what a request sends
+-- =============================================================================
+
+local function runWireMessagesTests()
+    print("\n--- wireMessages (the shown copy of the first question stays out) ---")
+
+    -- The history as the input dialog's Send leaves it once the answer is in
+    local function freeformChat(question, attach)
+        local h = MessageHistory:new()
+        h:addUserMessage(table.concat({ "[Context]", "A general chat.", "", "[User Question]", question }, "\n"), true)
+        if attach then h:addUserMessage("Attached notebook:\n" .. attach, true) end
+        h:addUserMessage(question, false)
+        h:addAssistantMessage("An answer.")
+        return h
+    end
+
+    local function contents(messages)
+        local out = {}
+        for i, m in ipairs(messages) do out[i] = m.role .. ":" .. m.content end
+        return table.concat(out, " | ")
+    end
+
+    TestRunner:test("a reply sends the first question once", function()
+        local h = freeformChat("how are you today")
+        h:addUserMessage("a reply", false)
+        local wire = MessageHistory.wireMessages(h:getMessages())
+        TestRunner:assertEqual(#wire, 3)
+        TestRunner:assertEqual(wire[1], h.messages[1], "the context message itself, not a copy")
+        TestRunner:assertEqual(wire[2].role, "assistant")
+        TestRunner:assertEqual(wire[3].content, "a reply")
+        local _text, count = contents(wire):gsub("how are you today", "")
+        TestRunner:assertEqual(count, 1, "the question's text once in the whole request")
+        TestRunner:assertEqual(#h.messages, 4, "the stored chat keeps the shown message")
+    end)
+
+    TestRunner:test("an action's typed text: the tail block and the shown copy", function()
+        local h = MessageHistory:new()
+        h:addUserMessage("Explain the passage.\n\n[Additional user input]\nin simple words", true)
+        h:addUserMessage("in simple words", false)
+        h:addAssistantMessage("Explained.")
+        h:addUserMessage("thanks", false)
+        TestRunner:assertEqual(contents(MessageHistory.wireMessages(h:getMessages())),
+            "user:Explain the passage.\n\n[Additional user input]\nin simple words | assistant:Explained. | user:thanks")
+    end)
+
+    TestRunner:test("typed text inside the prompt ({user_input})", function()
+        local h = MessageHistory:new()
+        h:addUserMessage("Compare this book with: the other one. Be brief.", true)
+        h:addUserMessage("the other one", false)
+        h:addAssistantMessage("Compared.")
+        TestRunner:assertEqual(#MessageHistory.wireMessages(h:getMessages()), 2)
+    end)
+
+    TestRunner:test("attachment messages between the context and the shown copy", function()
+        local h = freeformChat("what does my notebook say", "a note")
+        h:addUserMessage("and then?", false)
+        local wire = MessageHistory.wireMessages(h:getMessages())
+        TestRunner:assertEqual(#wire, 4)
+        TestRunner:assertEqual(wire[2].is_context, true)
+        TestRunner:assertEqual(wire[3].role, "assistant")
+    end)
+
+    TestRunner:test("a system message first", function()
+        local h = MessageHistory:new("You are helpful")
+        h:addUserMessage("[User Question]\nhello there", true)
+        h:addUserMessage("hello there", false)
+        h:addAssistantMessage("Hi.")
+        local wire = MessageHistory.wireMessages(h:getMessages())
+        TestRunner:assertEqual(#wire, 3)
+        TestRunner:assertEqual(wire[1].role, "system")
+    end)
+
+    TestRunner:test("nothing to leave out returns the same table", function()
+        local first = MessageHistory:new()
+        first:addUserMessage("[User Question]\nhello", true)
+        TestRunner:assertEqual(MessageHistory.wireMessages(first.messages), first.messages, "the first send")
+
+        local no_input = MessageHistory:new()
+        no_input:addUserMessage("Summarize the book.", true)
+        no_input:addAssistantMessage("A summary.")
+        no_input:addUserMessage("Summarize", false)
+        TestRunner:assertEqual(MessageHistory.wireMessages(no_input.messages), no_input.messages,
+            "a reply after the answer is never the shown copy, whatever its words")
+
+        local unanswered = MessageHistory:new()
+        unanswered:addUserMessage("[User Question]\nhello", true)
+        unanswered:addUserMessage("hello", false)
+        TestRunner:assertEqual(MessageHistory.wireMessages(unanswered.messages), unanswered.messages,
+            "a question with no answer after it is being asked now")
+
+        local other_text = MessageHistory:new()
+        other_text:addUserMessage("[User Question]\nhello", true)
+        other_text:addUserMessage("something else", false)
+        other_text:addAssistantMessage("Hi.")
+        TestRunner:assertEqual(MessageHistory.wireMessages(other_text.messages), other_text.messages,
+            "a message the context does not hold is kept")
+
+        TestRunner:assertNil(MessageHistory.wireMessages(nil))
+    end)
+
+    TestRunner:test("a chat sent without its stored context keeps its question", function()
+        -- DataAccess.sendableMessages took the context messages out first
+        local h = freeformChat("how are you today")
+        local sendable = { h.messages[2], h.messages[3] }
+        TestRunner:assertEqual(MessageHistory.wireMessages(sendable), sendable)
+    end)
+end
+
 local function runAll()
     print("\n=== Testing MessageHistory ===")
 
@@ -765,6 +969,7 @@ local function runAll()
     runGetSuggestedTitleTests()
     runCreateResultTextTests()
     runProvenanceTests()
+    runWireMessagesTests()
 
     print(string.format("\n=== Results: %d passed, %d failed ===\n", TestRunner.passed, TestRunner.failed))
     return TestRunner.failed == 0

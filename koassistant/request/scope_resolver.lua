@@ -166,6 +166,31 @@ function ScopeResolver.utf8FirstBad(s)
     end
 end
 
+--- A character outside the Basic Multilingual Plane (an emoji, a rare CJK
+--- character, a mathematical letter) that a provider's JSON wrote as an
+--- escape pair (\uD83D\uDD0D) comes out of KOReader's JSON decoder as two
+--- three-byte halves: the decoder (common/json/decode/strings.lua) turns each
+--- \uXXXX into its own sequence and knows no pairs. The result is invalid
+--- UTF-8: six replacement characters on screen, saved so in the chat, and
+--- dropped at the next send. The two halves are joined into the one
+--- four-byte character; a half with no partner stays as it is (the request
+--- encoder drops it). One find for a string that holds none.
+--- @param s any
+--- @return any the string repaired, or the value itself when it is no string
+function ScopeResolver.joinSurrogates(s)
+    if type(s) ~= "string" or not s:find("\237[\160-\175]") then return s end
+    return (s:gsub("\237([\160-\175])([\128-\191])\237([\176-\191])([\128-\191])", function(a, b, c, d)
+        local hi = 0xD000 + (a:byte() - 0x80) * 64 + (b:byte() - 0x80)
+        local lo = 0xD000 + (c:byte() - 0x80) * 64 + (d:byte() - 0x80)
+        local cp = 0x10000 + (hi - 0xD800) * 0x400 + (lo - 0xDC00)
+        return string.char(
+            0xF0 + math.floor(cp / 0x40000),
+            0x80 + math.floor(cp / 0x1000) % 0x40,
+            0x80 + math.floor(cp / 0x40) % 0x40,
+            0x80 + cp % 0x40)
+    end))
+end
+
 -- Where a sentence ends: the ASCII marks followed by a space (or at the end
 -- of the text unless `need_space`), and the marks of scripts that write no
 -- space after them, 。！？ (CJK), । (Devanagari) and ؟ (Arabic), anywhere
@@ -183,6 +208,35 @@ local function sentenceEndPos(text, from, need_space)
         if m and (not start or m < start) then start, stop = m, m + #mark - 1 end
     end
     return stop
+end
+
+--- The string with every byte that is not part of a valid UTF-8 sequence
+--- replaced by "?": the SAME length, so a position found in the result
+--- holds in the original; the string itself when it is clean. For text
+--- handed to KOReader's utf8proc wrapper (ffi/utf8proc.lua): its fold and
+--- its NFC return NULL on invalid UTF-8 and the wrapper passes that to
+--- ffi.string, which ends the app with a segfault no pcall catches. A held
+--- word of a PDF or DjVu text layer, a name in an old X-Ray, a tool's query
+--- can carry such bytes (audit 2026-11-12).
+function ScopeResolver.utf8Mask(s)
+    local first = ScopeResolver.utf8FirstBad(s)
+    if not first then return s end
+    local out, pos, keep_from = {}, first, 1
+    while true do
+        local i = s:find("[\128-\255]", pos)
+        if not i then break end
+        local len = utf8SeqLen(s, i)
+        if len then
+            pos = i + len
+        else
+            out[#out + 1] = s:sub(keep_from, i - 1)
+            out[#out + 1] = "?"
+            pos = i + 1
+            keep_from = pos
+        end
+    end
+    out[#out + 1] = s:sub(keep_from)
+    return table.concat(out)
 end
 
 --- Drop every byte that is not part of a valid UTF-8 sequence.

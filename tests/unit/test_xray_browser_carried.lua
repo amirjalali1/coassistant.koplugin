@@ -737,6 +737,133 @@ TestRunner:test("history from another book is not enough; the hand-added record 
     if not ok then error(err, 0) end
 end)
 
+-- ------------------------------------------------------------------ Info: what it was built with (B568)
+TestRunner:test("Info names the preset an X-Ray was built with, or Custom with its dials", function()
+    local function lines(entry, academic)
+        return table.concat(XrayBrowser.buildLines(entry, academic), " | ")
+    end
+    TestRunner:assertEqual(lines({ xray_categories = "people,places,ideas,terms" }), "Preset: Reference",
+        "the default preset by its name, one line")
+    TestRunner:assertEqual(lines({ xray_categories = "people", xray_status = "off" }), "Preset: Characters only",
+        "a preset with the status block off")
+    TestRunner:assertEqual(lines({ xray_depth = "deep" }), "Preset: Deep study", "all categories at Deep")
+    TestRunner:assertEqual(lines({}), "Preset: Everything",
+        "an entry from before the dials carries no stamp: all categories, standard, the status block on")
+    TestRunner:assertEqual(lines({ xray_categories = "people,places,ideas,terms", xray_depth = "deep" }),
+        "Preset: Custom | Categories: People, Places, Ideas, Terms | Depth: Deep | Current State: On",
+        "dials that match no preset are listed themselves")
+    TestRunner:assertEqual(lines({ xray_categories = "people,places", xray_status = "off" }),
+        "Preset: Custom | Categories: People, Places | Depth: Standard | Current State: Off", "with Current State off")
+    TestRunner:assertEqual(lines({ xray_categories = "people" }, true), "", "the research track takes no dials: no lines")
+    TestRunner:assertEqual(lines(nil), "", "no saved entry, no lines")
+end)
+
+TestRunner:test("the Info row reads the shown X-Ray's own saved entry", function()
+    local info = debug.getinfo(1, "S").source:match("@?(.*)")
+    local root = info:match("(.+)/tests/unit/[^/]+$") or "."
+    local f = assert(io.open(root .. "/koassistant/xray/xray_browser.lua", "r"))
+    local src = f:read("*a")
+    f:close()
+    local from = src:find("-- What it was built with (B568)", 1, true)
+    TestRunner:assertTrue(from ~= nil, "the block is there")
+    local block = src:sub(from, src:find("if self.metadata.source_label then", from, true))
+    TestRunner:assertTrue(block:find("self.metadata.checkpoint and self.metadata.checkpoint_data", 1, true) ~= nil,
+        "a version shown from the versions list brings its own entry")
+    TestRunner:assertTrue(block:find('(self.scope and self.scope.cache_key) or "_xray_cache"', 1, true) ~= nil,
+        "a section X-Ray reads its own entry, the main X-Ray the live one")
+    TestRunner:assertTrue(block:find("XrayBrowser.buildLines(built_entry, XrayParser.isAcademic(self.xray_data))", 1, true) ~= nil,
+        "and the lines are the helper's")
+end)
+
+-- ------------------------------------------- First appears / Last seen (B748)
+print("\n  [" .. "First appears and Last seen on an entry page (B748)" .. "]")
+
+TestRunner:test("the words: a chapter and a page, one statement for one page, 'seen' only while the reach is limited", function()
+    local text = XrayBrowser.firstLastText
+    TestRunner:assertEqual(text({ page = 12, chapter = "Chapter 1" }, { page = 240, chapter = "Chapter 14" }, true),
+        "First appears: Chapter 1 (p. 12).\nLast seen: Chapter 14 (p. 240).")
+    TestRunner:assertEqual(text({ page = 12, chapter = "Chapter 1" }, { page = 240, chapter = "Chapter 14" }, false),
+        "First appears: Chapter 1 (p. 12).\nLast appears: Chapter 14 (p. 240).", "the whole book is in reach")
+    TestRunner:assertEqual(text({ page = 12, chapter = "" }, { page = 240 }, true),
+        "First appears: p. 12.\nLast seen: p. 240.", "a book without a table of contents")
+    TestRunner:assertEqual(text({ page = 12, chapter = "Chapter 1" }, { page = 12, chapter = "Chapter 1" }, true),
+        "First appears: Chapter 1 (p. 12).", "written on one page: no second statement")
+    TestRunner:assertEqual(text({ page = 12, chapter = "Chapter 1" }, nil, false), "First appears: Chapter 1 (p. 12).")
+end)
+
+TestRunner:test("the line reads the STORED name index up to the reader's reach, and says nothing without it", function()
+    local XrayIndex = require("koassistant.xray.xray_index")
+    local saved_fn = { supported = XrayIndex.supported, layout = XrayIndex.layout, stamp = XrayIndex.stamp,
+        firstLast = XrayIndex.firstLast, request = XrayIndex.request, ready = XrayIndex.ready, buildNow = XrayIndex.buildNow }
+    local asked, built = {}, 0
+    XrayIndex.supported = function() return true end
+    XrayIndex.stamp = function() return "S" end
+    XrayIndex.layout = function(file, stamp) asked.layout = { file, stamp } return { stamp = "S", forms = {} } end
+    XrayIndex.firstLast = function(_layout, set, _handles, first, last)
+        asked.range = { first, last }
+        asked.forms = set and set.all
+        return 12, 240, true
+    end
+    -- nothing on this path may start a pass over the book
+    XrayIndex.request = function() built = built + 1 end
+    XrayIndex.ready = function() built = built + 1 end
+    XrayIndex.buildNow = function() built = built + 1 end
+    local item = { name = "Anna Bell", aliases = { "Mrs Bell" } }
+    local browser = {
+        ui = { document = { file = "/books/a.epub" },
+               toc = { getTocTitleByPage = function(_toc, page) return page < 100 and "Chapter 1" or "Chapter 14" end } },
+        metadata = { book_file = "/books/a.epub" },
+        xray_data = { characters = { item } },
+        _spoilerGate = function() return 250 end,
+    }
+    local line = XrayBrowser._firstLastLine(browser, item, "characters", "Anna Bell")
+    TestRunner:assertEqual(line, "First appears: Chapter 1 (p. 12).\nLast seen: Chapter 14 (p. 240).")
+    TestRunner:assertEqual(asked.range[1], nil, "from the book's start")
+    TestRunner:assertEqual(asked.range[2], 250, "to the gate Mentions clips at")
+    TestRunner:assertTrue(type(asked.forms) == "table" and #asked.forms >= 2, "the entry's name and its alias are asked")
+    -- protection off (no gate): the whole book, and the last page is the book's own
+    browser._spoilerGate = function() return nil end
+    line = XrayBrowser._firstLastLine(browser, item, "characters", "Anna Bell")
+    TestRunner:assertEqual(asked.range[2], nil)
+    TestRunner:assertTrue(line:find("Last appears:", 1, true) ~= nil, "no gate: 'Last appears'")
+    -- a section browser: its own pages
+    browser.scope, browser.scope_start, browser.scope_end = { cache_key = "k" }, 30, 60
+    XrayBrowser._firstLastLine(browser, item, "characters", "Anna Bell")
+    TestRunner:assertEqual(asked.range[1], 30)
+    TestRunner:assertEqual(asked.range[2], 60)
+    browser.scope, browser.scope_start, browser.scope_end = nil, nil, nil
+    -- the index does not hold the names: no line, and no pass is started for one
+    XrayIndex.firstLast = function() return nil, nil, false end
+    TestRunner:assertEqual(XrayBrowser._firstLastLine(browser, item, "characters", "Anna Bell"), nil, "not indexed: nothing")
+    XrayIndex.layout = function() return nil end
+    TestRunner:assertEqual(XrayBrowser._firstLastLine(browser, item, "characters", "Anna Bell"), nil, "no stored index: nothing")
+    TestRunner:assertEqual(built, 0, "the entry page never starts a pass over the book")
+    -- a category that is not matched in the text, another book's X-Ray, a PDF
+    XrayIndex.layout = function() return { stamp = "S", forms = {} } end
+    XrayIndex.firstLast = function() return 12, 240, true end
+    TestRunner:assertEqual(XrayBrowser._firstLastLine(browser, item, "timeline", "Anna Bell"), nil, "a timeline entry")
+    browser.metadata.book_file = "/books/other.epub"
+    TestRunner:assertEqual(XrayBrowser._firstLastLine(browser, item, "characters", "Anna Bell"), nil,
+        "an X-Ray of a book that is not the open one")
+    browser.metadata.book_file = "/books/a.epub"
+    XrayIndex.supported = function() return false end
+    TestRunner:assertEqual(XrayBrowser._firstLastLine(browser, item, "characters", "Anna Bell"), nil, "a PDF has no name index")
+    for k, v in pairs(saved_fn) do XrayIndex[k] = v end
+end)
+
+TestRunner:test("the entry page shows it and Chat about this does not send it", function()
+    local f = assert(io.open("koassistant/xray/xray_browser.lua", "r"))
+    local src = f:read("*a")
+    f:close()
+    local from = src:find("function XrayBrowser:showItemDetail(", 1, true)
+    local body = src:sub(from, from + 6000)
+    TestRunner:assertTrue(body:find('local ok_fl, first_last = pcall(self._firstLastLine, self, item, category_key, title)\n'
+        .. '        if ok_fl and first_last then detail_text = detail_text:gsub("%s+$", "") .. "\\n\\n" .. first_last end', 1, true) ~= nil,
+        "the line is appended to the text the page shows")
+    TestRunner:assertTrue(not body:find("chat_text = chat_text .. first_last", 1, true)
+        and not body:find('chat_text .. "\\n\\n" .. first_last', 1, true), "never to the text a chat sends")
+end)
+
 -- ------------------------------------------------------------------ cleanup
 SDS.resolve = saved_resolve
 ActionCache.getAvailableArtifactsWithPinned = saved_artifacts

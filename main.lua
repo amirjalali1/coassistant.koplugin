@@ -1609,6 +1609,10 @@ function AskGPT:initSettings()
       -- The Ask reset (B395 slice 2) is for installs that had switches; a
       -- fresh one starts at Ask and gets no notice
       _privacy_ask_migrated = true,
+      -- Auto-scroll Streaming's new default (B752) is cleared out of installs
+      -- that stored the old one; a fresh install's configuration.lua value is
+      -- the reader's own
+      _stream_autoscroll_off_migrated = true,
     }
     if user_config_loaded then
       for k, v in pairs(config_file_defaults.features) do
@@ -1743,7 +1747,7 @@ function AskGPT:initSettings()
       -- Unprompted at startup, so the first line names the plugin it comes from.
       UIManager:show(InfoMessage:new{
         text = _("KOAssistant") .. "\n\n" .. (notice.retired
-          and T(_("Model updated to %1.\n\nYour provider no longer offers %2. Pick a different model any time in Settings."),
+          and T(_("Model updated to %1.\n\nYour provider retired %2, or is about to. Pick a different model any time in Settings."),
             notice.to, notice.from or "?")
           or T(_("Model updated to %1.\n\nYour provider's default changed (you were on %2). Pick a different model any time in Settings."),
             notice.to, notice.from or "?")),
@@ -1826,6 +1830,7 @@ function AskGPT:updateConfigFromSettings(opts)
     dictionary_view = true,
     minimal_buttons = true,
     is_full_page_translate = true,
+    page_printed_lines = true,
   }
   if not configuration.features then
     configuration.features = features
@@ -1861,6 +1866,7 @@ function AskGPT:updateConfigFromSettings(opts)
   configuration.features.dictionary_view = nil
   configuration.features.minimal_buttons = nil
   configuration.features.is_full_page_translate = nil  -- Only set by translateCurrentPage
+  configuration.features.page_printed_lines = nil  -- likewise
 
   -- Push GUI tier placements + global tier pins into the pure override layer
   -- (tier GUI, docs/tier_gui_plan.md). ModelOverrides never reads settings
@@ -2552,16 +2558,15 @@ function AskGPT:providerSupportsTest(provider_id)
   return type(d.base_url) == "string" and d.base_url:find("/chat/completions$") ~= nil
 end
 
--- Fetch the live model list from a provider's list endpoint (18g; universal
--- since REVISION 2 M2). Synchronous like fetchDerivedModelCaps — only called
--- behind an explicit user action. Returns a sorted array of ids, or nil + error.
-function AskGPT:fetchProviderModels(provider_id, opts)
+-- The request for a provider's live model list (18g; universal since REVISION 2
+-- M2): its list endpoint, its auth and the fields its answer names the ids in.
+-- Returns { url, headers, list_field, name_field }, or nil + error.
+function AskGPT:modelListRequest(provider_id)
   local d = self:getProviderDescriptor(provider_id)
   if not d or not d.base_url or d.base_url == "" then
     return nil, _("Provider has no base URL")
   end
   local BaseHandler = require("koassistant.api.base")
-  local json = require("json")
   local key = BaseHandler.getApiKey(provider_id, self.settings)
   if not (type(key) == "string" and key ~= "" and not BaseHandler.isPlaceholderKey(key)) then
     key = nil
@@ -2597,15 +2602,19 @@ function AskGPT:fetchProviderModels(provider_id, opts)
     models_url = models_url:gsub("/+$", "") .. "/models"
     headers = key and { ["Authorization"] = "Bearer " .. key } or nil
   end
+  return { url = models_url, headers = headers, list_field = list_field, name_field = name_field }
+end
 
-  local code, body = BaseHandler.fetchInSubprocess(models_url,
-    { timeout = (opts and opts.timeout) or 15, headers = headers })
+-- The ids in a model list's answer (`req` = modelListRequest's): a sorted
+-- array, or nil + error.
+function AskGPT:parseModelList(req, code, body)
+  local json = require("json")
   if not tonumber(code) then
     return nil, T(_("Network error: %1"), tostring(body))
   end
   if tonumber(code) ~= 200 then
     -- never echo the key (gemini rides it in the URL)
-    local msg = T(_("HTTP %1 from %2"), tostring(code), models_url:gsub("key=[^&]+", "key=***"))
+    local msg = T(_("HTTP %1 from %2"), tostring(code), req.url:gsub("key=[^&]+", "key=***"))
     local n = tonumber(code)
     if n == 401 or n == 403 then
       msg = msg .. "\n" .. _("This provider needs an API key. Add one in Settings → API Keys & Auth.")
@@ -2618,6 +2627,7 @@ function AskGPT:fetchProviderModels(provider_id, opts)
   end
   -- Type-check every level: luajson decodes JSON null to a truthy function sentinel.
   local rows
+  local list_field, name_field = req.list_field, req.name_field
   if list_field then
     rows = type(decoded[list_field]) == "table" and decoded[list_field] or {}
   else
@@ -2646,24 +2656,47 @@ function AskGPT:fetchProviderModels(provider_id, opts)
   return ids
 end
 
--- Shared entry for the fetch flow (notification -> fetch -> picker/error)
+-- The live model list, fetched while the caller waits: for the short local
+-- fetch of Ollama's installed models (refreshOllamaModels), behind an explicit
+-- user action. Returns a sorted array of ids, or nil + error.
+function AskGPT:fetchProviderModels(provider_id, opts)
+  local req, err = self:modelListRequest(provider_id)
+  if not req then return nil, err end
+  local code, body = require("koassistant.api.base").fetchInSubprocess(req.url,
+    { timeout = (opts and opts.timeout) or 15, headers = req.headers })
+  return self:parseModelList(req, code, body)
+end
+
+-- Shared entry for the fetch flow (waiting message -> fetch -> picker/error).
+-- The fetch runs off the UI loop behind a message that moves (B709: a blocked
+-- loop can show nothing that moves, and a device that sleeps between screen
+-- updates stopped mid-fetch until a touch). A tap on the message stops it.
 function AskGPT:startFetchModels(provider_id, on_change)
   local self_ref = self
-  UIManager:show(Notification:new{
+  local function failed(err)
+    UIManager:show(InfoMessage:new{
+      text = T(_("Could not fetch models: %1"), err or _("unknown error")),
+    })
+  end
+  local req, req_err = self:modelListRequest(provider_id)
+  if not req then return failed(req_err) end
+  local cancel
+  local note = require("koassistant.ui.waiting").message{
     text = _("Fetching model list..."),
-    timeout = 1,
-  })
-  -- Delayed so the notification paints before the synchronous fetch
-  UIManager:scheduleIn(0.2, function()
-    local ids, err = self_ref:fetchProviderModels(provider_id)
-    if ids then
-      self_ref:showFetchedModelsPicker(provider_id, ids, nil, on_change)
-    else
-      UIManager:show(InfoMessage:new{
-        text = T(_("Could not fetch models: %1"), err or _("unknown error")),
-      })
-    end
-  end)
+    dismiss_callback = function() if cancel then cancel() end end,
+  }
+  UIManager:show(note)
+  cancel = require("koassistant.api.base").fetchAsync(req.url, { timeout = 15, headers = req.headers },
+    function(code, body)
+      note.dismiss_callback = nil  -- our own close is not the reader's tap
+      UIManager:close(note)
+      local ids, err = self_ref:parseModelList(req, code, body)
+      if ids then
+        self_ref:showFetchedModelsPicker(provider_id, ids, nil, on_change)
+      else
+        failed(err)
+      end
+    end)
 end
 
 -- Tap-to-add picker over a fetched model list (18g). Tapping a model adds it to the
@@ -2827,6 +2860,9 @@ function AskGPT:testProvider(provider_id)
       features = { custom_providers = self:getCustomProviders() },
     }) or model
   end
+  -- A stored pick the provider retired goes out as its replacement (the
+  -- router maps it the same way), so the probe tests what a request sends
+  model = require("koassistant.request.model_lists").retiredReplacement(provider_id, model) or model
   if not model or model == "" then
     model = self:getCustomModels(provider_id)[1]
   end
@@ -2877,21 +2913,27 @@ function AskGPT:testProvider(provider_id)
   })
   if provider.is_custom then base.base_url = provider.base_url end
 
-  local function post(step)
-    local req = ProviderProbe.request(handler, base, step)
-    local code, body, resp_headers = BaseHandler.fetchInSubprocess(req.url, {
+  -- One probe request, off the UI loop (B709: a blocked loop can show nothing
+  -- that moves, and a device that sleeps between screen updates stopped
+  -- mid-test until a touch). done(code, body, responses); the function
+  -- returned stops the request, and done is not called then.
+  local RL = require("koassistant.request.rate_limits")
+  local function post(probe, done)
+    local req = ProviderProbe.request(handler, base, probe)
+    return BaseHandler.fetchAsync(req.url, {
       method = "POST", headers = req.headers, body = req.payload, timeout = 20,
-    })
-    -- Per-minute admission limits (docs/tpm_admission_plan.md): the probe's
-    -- response headers name the plan's tokens-per-minute allowance, so the
-    -- first real request is already sized to fit (Groq free: 8K/min against
-    -- a 32K default budget refused every request until this was learned).
-    local RL = require("koassistant.request.rate_limits")
-    if RL.record(provider_id, key_model, RL.fromHeaders(resp_headers), "probe") then
-      logger.dbg("KOAssistant: test probe learned per-minute allowance",
-        RL.known(provider_id, key_model).limit_tokens, "for", provider_id, key_model)
-    end
-    return code, body, req.responses
+      keep_headers = RL.safeFields,
+    }, function(code, body, limits)
+      -- Per-minute admission limits (docs/tpm_admission_plan.md): the probe's
+      -- response headers name the plan's tokens-per-minute allowance, so the
+      -- first real request is already sized to fit (Groq free: 8K/min against
+      -- a 32K default budget refused every request until this was learned).
+      if RL.record(provider_id, key_model, limits, "probe") then
+        logger.dbg("KOAssistant: test probe learned per-minute allowance",
+          RL.known(provider_id, key_model).limit_tokens, "for", provider_id, key_model)
+      end
+      done(code, body, req.responses)
+    end)
   end
 
   -- The server's own explanation of a refusal, when the body carries one
@@ -2917,9 +2959,11 @@ function AskGPT:testProvider(provider_id)
   local results = {}  -- { {label, ok = true|false|nil(skipped), detail} }
   local caps = {}     -- positive findings for the derived layer
 
+  -- Each step: the request it sends (`probe`), what the answer means (`judge`
+  -- returns ok and a detail) and, where it rests on an earlier step, `skip`
+  -- (a reason = the request is not sent)
   local steps = {
-    { label = _("Reachability"), run = function()
-        local code, body, responses = post("plain")
+    { label = _("Reachability"), probe = "plain", judge = function(code, body, responses)
         local n = tonumber(code)
         if n == 200 then
           -- The parser's verdict on the 200 (B484): an answer in a shape it
@@ -2941,8 +2985,7 @@ function AskGPT:testProvider(provider_id)
         if not n or serverSays(body) then return false, failure(code, body) end
         return false, T(_("HTTP %1 - check base URL and model id"), n)
       end },
-    { label = _("Streaming (SSE)"), run = function()
-        local code, body = post("stream")
+    { label = _("Streaming (SSE)"), probe = "stream", judge = function(code, body)
         if tonumber(code) ~= 200 then return false, failure(code, body) end
         if type(body) == "string" and (body:find("^data:") or body:find("\ndata:")
             or body:find("^event:") or body:find("\nevent:")) then
@@ -2950,17 +2993,18 @@ function AskGPT:testProvider(provider_id)
         end
         return false, _("200 but not SSE - streaming may be unsupported")
       end },
-    { label = _("Tool calling"), run = function()
-        local code, body, responses = post("tools")
+    { label = _("Tool calling"), probe = "tools", judge = function(code, body, responses)
         if tonumber(code) == 200 then
           caps.tools = true
           return true, responses and _("sent to the Responses endpoint, which book tools use on this model") or nil
         end
         return false, failure(code, body)
       end },
-    { label = _("Forced tool use (book-tools search)"), run = function()
-        if not caps.tools then return nil, _("skipped - tools not accepted") end
-        local code, body = post("forced_tools")
+    { label = _("Forced tool use (book-tools search)"), probe = "forced_tools",
+      skip = function()
+        if not caps.tools then return _("skipped - tools not accepted") end
+      end,
+      judge = function(code, body)
         if tonumber(code) == 200 then return true end
         -- a model that refuses a forced call cannot serve the gather round:
         -- Record must not grant it tools (the sweep of 2026-11-06)
@@ -2968,8 +3012,7 @@ function AskGPT:testProvider(provider_id)
         if serverSays(body) then return false, failure(code, body) end
         return false, T(_("HTTP %1 - book tools' search phase may not work"), tostring(code))
       end },
-    { label = _("Reasoning effort parameter"), run = function()
-        local code, body = post("effort")
+    { label = _("Reasoning effort parameter"), probe = "effort", judge = function(code, body)
         if tonumber(code) == 200 then
           caps.reasoning = true
           return true, _("accepted (some hosts silently ignore it)")
@@ -2979,33 +3022,52 @@ function AskGPT:testProvider(provider_id)
   }
 
   local step_i = 0
-  local function runNext()
+  local runNext
+  local function record(step, ok, detail)
+    table.insert(results, { label = step.label, ok = ok, detail = detail })
+    if step_i == 1 and ok == false then
+      -- Baseline failed: the rest would just repeat the same error
+      self_ref:showProviderTestReport(provider, model, results, caps)
+      return
+    end
+    runNext()
+  end
+  runNext = function()
     step_i = step_i + 1
     local step = steps[step_i]
     if not step then
       self_ref:showProviderTestReport(provider, model, results, caps)
       return
     end
-    UIManager:show(Notification:new{
+    local skipped = step.skip and step.skip()
+    if skipped then return record(step, nil, skipped) end
+    -- The step's wait moves while its request runs; a tap on it stops the test
+    local cancel
+    local note = require("koassistant.ui.waiting").message{
       text = T(_("Testing %1/%2: %3"), step_i, #steps, step.label),
-      timeout = 1,
-    })
-    -- Delayed so the notification paints before the synchronous request
-    UIManager:scheduleIn(0.3, function()
-      -- A crashing step must render as a result, never a silent empty report
-      local run_ok, ok, detail = pcall(step.run)
-      if not run_ok then
-        detail = T(_("test error: %1"), tostring(ok))
-        ok = false
-      end
-      table.insert(results, { label = step.label, ok = ok, detail = detail })
-      if step_i == 1 and ok == false then
-        -- Baseline failed: the rest would just repeat the same error
-        self_ref:showProviderTestReport(provider, model, results, caps)
-        return
-      end
-      runNext()
+      dismiss_callback = function() if cancel then cancel() end end,
+    }
+    local function closeNote()
+      note.dismiss_callback = nil  -- our own close is not the reader's tap
+      UIManager:close(note)
+    end
+    UIManager:show(note)
+    -- A crashing step must render as a result, never a silent empty report
+    local sent, err = pcall(function()
+      cancel = post(step.probe, function(code, body, responses)
+        closeNote()
+        local run_ok, ok, detail = pcall(step.judge, code, body, responses)
+        if not run_ok then
+          detail = T(_("test error: %1"), tostring(ok))
+          ok = false
+        end
+        record(step, ok, detail)
+      end)
     end)
+    if not sent then
+      closeNote()
+      record(step, false, T(_("test error: %1"), tostring(err)))
+    end
   end
   runNext()
 end
@@ -5277,6 +5339,11 @@ function AskGPT:showApiKeyDialog(provider, display_name, key_optional, on_change
   else
     hint_text = _("Enter API key...")
   end
+  -- KOReader's selection starts at the start of the letters and digits under
+  -- the finger, and a dot, dash or underscore ends them: a key copied in a
+  -- file opened in KOReader loses its start ("AQ.", "sk-") unless the hold
+  -- began on its first character, and nothing at Save can tell (#125).
+  hint_text = hint_text .. "\n\n" .. _("Copied the key in KOReader? Check its start after pasting: a selection that does not begin on the key's first character can leave out its first few characters.")
 
   local InputDialog = require("ui/widget/inputdialog")
   local input_dialog
@@ -5351,6 +5418,11 @@ function AskGPT:showApiKeyDialog(provider, display_name, key_optional, on_change
               else
                 f.api_keys[provider] = new_key
               end
+              -- The key just saved is the key in use (#125): an added key used
+              -- to wait behind the first one until it was tapped in the key
+              -- list, so a reader replacing a dead key kept sending the dead one.
+              f.api_key_selected = f.api_key_selected or {}
+              f.api_key_selected[provider] = require("koassistant.api.base").keyFingerprint(new_key)
               local message = T(_("%1 API key saved"), display_name)
               if removed > 0 then
                 -- Never silent: the user typed/pasted something we changed.
@@ -6294,8 +6366,8 @@ function AskGPT:_toggleMinimalPopupAction(action_id)
 end
 
 -- Minimal Popup quick settings (QS tile hold, maintainer design 2026-08-17):
--- the view mode as one radio row, then the action registry as tap-to-toggle
--- rows, two per row. Self-rebuilding on every change (fresh marks); Close and
+-- the view mode as one radio row, the shape as a second, then, under a double
+-- line, the action registry as tap-to-toggle rows, two per row. Self-rebuilding on every change (fresh marks); Close and
 -- tap-outside both return to the caller via on_close.
 function AskGPT:showMinimalPopupQuickSettings(on_close)
   local ButtonDialog = require("ui/widget/buttondialog")
@@ -6303,12 +6375,23 @@ function AskGPT:showMinimalPopupQuickSettings(on_close)
   local function dot(active) return active and "\u{25CF} " or "\u{25CB} " end
   local f = self.settings:readSetting("features") or {}
   local mode = f.minimal_popup_mode or "short"
+  local style = f.minimal_popup_style == "panel" and "panel" or "box"
   local set = Constants.resolveMinimalPopupActions(f.minimal_popup_actions)
 
   local dialog
   local function reshow()
     UIManager:close(dialog)
     self_ref:showMinimalPopupQuickSettings(on_close)
+  end
+  local function setStyle(new_style)
+    return function()
+      local ff = self_ref.settings:readSetting("features") or {}
+      ff.minimal_popup_style = new_style
+      self_ref.settings:saveSetting("features", ff)
+      self_ref.settings:flush()
+      self_ref:updateConfigFromSettings()
+      reshow()
+    end
   end
   local function setMode(new_mode)
     return function()
@@ -6327,11 +6410,17 @@ function AskGPT:showMinimalPopupQuickSettings(on_close)
       { text = dot(mode == "short") .. _("When it fits"), callback = setMode("short") },
       { text = dot(mode == "always") .. _("Always"), callback = setMode("always") },
     },
+    -- the shape (Settings: Minimal Popup, Popup Style)
+    {
+      { text = dot(style == "box") .. _("Floating box"), callback = setStyle("box") },
+      { text = dot(style == "panel") .. _("Footnote panel"), callback = setStyle("panel") },
+    },
   }
 
   -- Registered actions, same eligibility as the Settings screen picker above
   local actions = self.action_service
     and self.action_service:getAllActions("highlight", true, true) or {}
+  local action_rows = {}
   local row = {}
   for _idx, action in ipairs(actions) do
     if (action.original_context or action.context) == "highlight" and action.id
@@ -6345,12 +6434,18 @@ function AskGPT:showMinimalPopupQuickSettings(on_close)
         end,
       })
       if #row == 2 then
-        table.insert(buttons, row)
+        table.insert(action_rows, row)
         row = {}
       end
     end
   end
-  if #row > 0 then table.insert(buttons, row) end
+  if #row > 0 then table.insert(action_rows, row) end
+  if #action_rows > 0 then
+    -- KOReader's group separator (an empty row, the double line of the hold
+    -- menus): how the popup shows above it, which actions use it below
+    table.insert(buttons, {})
+    for _idx, action_row in ipairs(action_rows) do table.insert(buttons, action_row) end
+  end
 
   table.insert(buttons, {
     {
@@ -7083,7 +7178,7 @@ end
 function AskGPT:showOpenRouterImageCatalog(on_pick, on_close)
   local self_ref = self
   NetworkMgr:runWhenConnected(function()
-    local note = InfoMessage:new{ text = _("Fetching OpenRouter's image models…") }
+    local note = require("koassistant.ui.waiting").message{ text = _("Fetching OpenRouter's image models…") }
     UIManager:show(note)
     require("koassistant.images.image_generator").fetchOpenRouterCatalog(function(models, err)
       UIManager:close(note)
@@ -8620,7 +8715,7 @@ function AskGPT:showCacheActionPopup(action, action_id, on_update, opts)
         end,
       }})
       table.insert(nc_buttons, {{
-        text = _("Cancel"),
+        text = _("Close"),
         callback = function()
           UIManager:close(no_cache_dialog)
         end,
@@ -8772,9 +8867,9 @@ function AskGPT:showCacheActionPopup(action, action_id, on_update, opts)
     }})
   end
 
-  -- Cancel
+  -- Close (nothing is cancelled: a build that runs goes on)
   table.insert(buttons, {{
-    text = _("Cancel"),
+    text = _("Close"),
     callback = function()
       UIManager:close(dialog)
     end,
@@ -8847,7 +8942,7 @@ function AskGPT:_showAnalyzeNotesScopePopup(action, action_id, on_update, cached
       end,
     }})
     table.insert(buttons, {{
-      text = _("Cancel"),
+      text = _("Close"),
       callback = function()
         UIManager:close(dialog)
       end,
@@ -8919,7 +9014,7 @@ function AskGPT:_showAnalyzeNotesScopePopup(action, action_id, on_update, cached
     }})
 
     table.insert(buttons, {{
-      text = _("Cancel"),
+      text = _("Close"),
       callback = function()
         UIManager:close(dialog)
       end,
@@ -9724,7 +9819,8 @@ function AskGPT:_showUnifiedActionPopup(action, action_id, opts)
                 local rsf_label = T(_("Up to %1"), reading_progress.formatted)
                 self_ref:_executeSectionAction(action, action_id,
                   { start_page = 1, end_page = current_page }, rsf_label,
-                  { source_mode = state.source, read_so_far = true, data_once = state.data_once })
+                  { source_mode = state.source, read_so_far = true, data_once = state.data_once,
+                    position = reading_progress.formatted })
               elseif state.scope == "chapter_so_far" then
                 -- Quiz-only preset: current chapter's start → current page, so-far framing.
                 -- The label carries the % so successive positions don't clobber each other.
@@ -9997,7 +10093,7 @@ function AskGPT:_generateSummaryAndContinue(on_done, section_scope, data_once)
   for k, v in pairs((configuration or {}).features or {}) do
     config_copy.features[k] = v
   end
-  config_copy.features.is_book_context = true
+  self:_asBookRun(config_copy.features)
   -- The popup's allowance covers the summary generated on the way (B395)
   config_copy.features._data_once = nil
   if data_once then
@@ -10437,7 +10533,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       }})
     end
     table.insert(buttons, {{
-      text = _("Cancel"),
+      text = _("Close"),
       callback = function()
         UIManager:close(dialog)
       end,
@@ -10894,7 +10990,7 @@ function AskGPT:_showXrayScopePopup(action, action_id, on_update, cached_entry, 
       end,
     }})
     table.insert(buttons, {{
-      text = _("Cancel"),
+      text = _("Close"),
       callback = function()
         UIManager:close(dialog)
       end,
@@ -11802,6 +11898,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
         or mode == "extend" and _("Extend X-Ray")
         or _("Create X-Ray"),
       title_shrink_font_to_fit = true,
+      -- No info icon here for now: what each way to build gives is under the
+      -- picked row again, and help in a window's title bar waits for one
+      -- shape for every window (B763; the maintainer, 2026-11-21)
       close_callback = function() UIManager:close(current_dialog) end,
     }
     local function addLabel(text)
@@ -11813,12 +11912,11 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
       table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
     end
 
-    -- Round 23: state line — what exists, and what picking here does to it
+    -- The state line of an update: what the saved X-Ray covers, which the
+    -- rows below are read against. A rebuild has none (what happens to the
+    -- X-Ray that is there is the last sentence of the hint under the rows).
     local state_line
-    if force_rebuild then
-      state_line = T(_("Your X-Ray covers to %1%. Building here replaces it from scratch (the outgoing version is archived under \"All versions\")."),
-        math.floor((base_progress or 0) * 100 + 0.5))
-    elseif mode == "extend" then
+    if mode == "extend" and not force_rebuild then
       -- Name BOTH numbers when they differ (device 2026-08-14: "covers to
       -- 60%" while the reader's viewer showed the installed 50% read as a
       -- contradiction)
@@ -11833,11 +11931,6 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
         state_line = T(_("Your X-Ray covers to %1%."),
           math.floor((base_progress or 0) * 100 + 0.5))
       end
-    elseif mode == "rebuild" and base_entry then
-      local flavor = base_entry.full_document and _("analyzed as a whole")
-        or base_entry.source_mode == "ai_knowledge" and _("made from AI knowledge")
-        or _("in an older format")
-      state_line = T(_("Your current X-Ray was %1, so it can't be extended. Building here replaces it (the outgoing version is archived under \"All versions\")."), flavor)
     end
     -- Round 2 (device: "it says auto is on, but no next checkpoint or
     -- anything"): with automatic building on, the state line names where the
@@ -12016,72 +12109,78 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
     }
     table.insert(vgroup, del_table)
 
-    -- Gray hint under the Build group — every pick explains itself up front
-    -- (round 22, §25(f); previously only the follow pick had one)
-    local hint
-    -- Item 50(c): the forward story every extendable one-request pick carries
-    local later_line = _("You can update it manually anytime, or turn on automatic updates later; both build on top of what you have.")
-    if cr.delivery == "follow" and followIdle() then
-      hint = _("Automatic building is on and caught up. The next checkpoint builds by itself as you read on.")
-    elseif cr.delivery == "follow" then
-      hint = _("Builds checkpoints in the background as you read, keeping the next one ready ahead of you. Missing checkpoints up to your position build right away.")
-      if cr.coverage == "whole" then
-        hint = hint .. " " .. _("Coverage reaches 100% when you finish the book.")
-      elseif cr.coverage == "target" and cr.target_label then
-        hint = hint .. " " .. T(_("It stops at the end of \"%1\"."), cr.target_label)
+    -- Grey text under the Build group: what the picked way to build gives, in
+    -- two or three sentences, and the facts that change a decision about
+    -- money or about the saved X-Ray (BookSettings.xrayFormHint holds the
+    -- words and its test their budget). Under it, each on one line of its own
+    -- and only when it applies: what the book's spoiler protection does with
+    -- the checkpoints (a tap opens the book's Spoiler Protection picker), and
+    -- a fast model's warning (a tap shows its sentence). The form's grey text
+    -- had grown to eleven lines and scrolled (the maintainer, 2026-11-20);
+    -- one sentence with the rest behind an info icon said too little where
+    -- the choice is made (2026-11-21).
+    local rebuilds = force_rebuild or mode == "rebuild" or (pick_rebuild and mode == "extend")
+    local hint = BookSettings.xrayFormHint({
+      delivery = cr.delivery, coverage = cr.coverage,
+      extend = mode == "extend" and not pick_rebuild,
+      idle = cr.delivery == "follow" and followIdle(),
+      target_label = cr.target_label,
+      -- A pick that makes a new X-Ray in place of the one that is there says
+      -- that one is safe until the new one is saved (whether it is archived
+      -- then is the rebuild's own confirm's to say, by the archiving setting)
+      rebuild = (rebuilds and base_entry) and true or nil,
+      -- With a checkpoint already built ahead, "update to where I am" can
+      -- read as the free install (device 2026-08-14): the pick is a new paid
+      -- request and the built checkpoint stays free
+      built_ahead_pct = (mode == "extend" and not pick_rebuild and cr.coverage == "position"
+        and (base_progress or 0) > decimal + 0.005)
+        and math.floor((base_progress or 0) * 100 + 0.5) or nil,
+    })
+    table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
+    table.insert(vgroup, TextBoxWidget:new{
+      text = hint, face = info_face, width = content_width,
+      fgcolor = Blitbuffer.COLOR_DARK_GRAY,
+    })
+    -- A grey line that takes a tap: never a button among the dials (the
+    -- maintainer, 2026-11-20), and one way to build both of them
+    local function tapLine(text, on_tap)
+      local line = require("ui/widget/container/inputcontainer"):new{
+        TextBoxWidget:new{
+          text = text, face = info_face, width = content_width,
+          fgcolor = Blitbuffer.COLOR_DARK_GRAY,
+        },
+      }
+      line.ges_events = { TapLine = { GestureRange:new{
+        ges = "tap",
+        range = function() return line.dimen or Geom:new{ w = 0, h = 0 } end,
+      } } }
+      function line:onTapLine()
+        on_tap()
+        return true
       end
-    elseif cr.delivery == "checkpoints" then
-      -- Item 33(1): checkpoints are a quality/size mechanism first, spoiler
-      -- safety second — the copy names both, in that order. Item 50(b): the
-      -- INDIVIDUAL-requests-stay-small fact, plainly (the total text read is
-      -- the same; only each request shrinks).
-      hint = (mode == "extend" and not pick_rebuild)
-        and _("Continues from your current coverage in bounded background steps, each a spoiler-safe version. Keep reading, cancel anytime, resume later.")
-        or _("Covers the range in bounded background steps, each a spoiler-safe version up to its position. A usable X-Ray installs after the first step; keep reading, cancel anytime, resume later.")
-    elseif cr.delivery == "one_bg" then
-      hint = _("The same single request in the background; a notification arrives when it is ready. The book must stay open.")
-      if cr.coverage ~= "whole" then
-        hint = hint .. " " .. later_line
-      end
-    elseif mode == "extend" and not pick_rebuild then
-      if cr.coverage == "whole" then
-        hint = _("Updates your existing X-Ray to 100% in a single request.")
-      elseif cr.coverage == "position" then
-        hint = _("Updates your existing X-Ray up to your position in a single request.")
-          .. " " .. later_line
-      else
-        hint = _("Updates your existing X-Ray to the end of the chosen section in one background request; a notification arrives when it is ready.")
-      end
-    elseif cr.coverage == "whole" then
-      hint = _("Analyzes the whole book in a single request, shown as it streams in. Large for long books, no spoiler-safe intermediate versions.")
-    elseif cr.coverage == "position" then
-      hint = _("Reads the book up to your position in a single request, shown as it streams in.")
-        .. " " .. later_line
-    else
-      hint = _("Reads the book up to the end of the chosen section in one background request; a notification arrives when it is ready.")
-        .. " " .. later_line
-    end
-    -- Round 24: rebuild picks carry the replacement fact in the hint too
-    -- (forced rebuilds skip it — "already covered" would be wrong for a
-    -- whole-book force, and the state line above already names replacement)
-    if pick_rebuild and mode == "extend" and not force_rebuild then
-      hint = hint .. " " .. _("Rebuilds from scratch and replaces the current X-Ray (the outgoing version is archived).")
-    end
-    -- With a checkpoint already built ahead, "update to where I am" can read
-    -- as the mechanical/free install (device 2026-08-14) — say plainly that
-    -- this pick is a fresh paid request and the built checkpoint stays free
-    if mode == "extend" and not pick_rebuild and cr.coverage == "position"
-        and (base_progress or 0) > decimal + 0.005 then
-      hint = (hint and (hint .. " ") or "")
-        .. T(_("Note: this is a fresh AI request; the checkpoint already built to %1% still installs for free as you read past it."),
-          math.floor((base_progress or 0) * 100 + 0.5))
-    end
-    if hint then
       table.insert(vgroup, VerticalSpan:new{ width = Size.padding.small })
-      table.insert(vgroup, TextBoxWidget:new{
-        text = hint, face = info_face, width = content_width,
-        fgcolor = Blitbuffer.COLOR_DARK_GRAY,
-      })
+      table.insert(vgroup, line)
+    end
+    -- The two checkpoint rows build the same versions whatever the book's
+    -- spoiler protection; which one the reader is SHOWN depends on it (B717).
+    -- Said where it applies, and changed from there.
+    if cr.delivery == "follow" or cr.delivery == "checkpoints" then
+      tapLine((BookSettings.xrayProtectionLine(self_ref.ui.doc_settings,
+          self_ref.settings:readSetting("features") or {})), function()
+        UIManager:close(current_dialog)
+        BookSettings.showSpoilerFree({
+          ui = self_ref.ui, plugin = self_ref, target_override = "book",
+          on_close = function() buildAndShow() end,
+        })
+      end)
+    end
+    -- A fast model with a big ask (B747): a warning, not a choice
+    local model_warning = BookSettings.xraySmallModelWarning(self_ref, action, cr.delivery,
+      (mode == "extend" and not pick_rebuild and not force_rebuild) and base_entry or nil)
+    if model_warning then
+      tapLine(model_warning.line, function()
+        UIManager:show(InfoMessage:new{ text = model_warning.text, icon = "notice-warning" })
+      end)
     end
 
     -- Options row (2026-08-25 redesign, ref #90): the two sticky per-book
@@ -12177,7 +12276,9 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
           end,
       }
     option_buttons[#option_buttons + 1] = {
-      text = T(_("Categories: %1 ▾"), BookSettings.xrayCategoriesLabel(cat_value)),
+      -- What is ticked, never a preset's name (B757: "Preset: Reference"
+      -- stood above "Categories: Reference")
+      text = T(_("Categories: %1 ▾"), BookSettings.xrayCategoriesLabel(cat_value, true)),
       font_size = 16, font_bold = false,
       enabled = categories_on,
       callback = function()
@@ -12215,13 +12316,13 @@ function AskGPT:_showXrayCreationChooser(action, action_id, on_update, opts, for
       end,
     }
     -- B383: the preset the three dials amount to, one tap to set them all.
-    -- "Custom" names what the dials hold, the status block included (the
+    -- "Custom" names what the dials hold, Current State included (the
     -- Categories button below has no room for it).
     local preset_now = BookSettings.xrayPresetFor(cat_value, status_value, depth_value)
     local preset_row = {{
       text = preset_now and T(_("Preset: %1 ▾"), preset_now.label)
         or T(_("Preset: Custom (%1, %2) ▾"),
-          BookSettings.xrayTrackLabel(cat_value, status_value),
+          BookSettings.xrayTrackLabel(cat_value, status_value, true),
           BookSettings.xrayDepthLabel(depth_value)),
       font_size = 16, font_bold = false,
       enabled = categories_on,
@@ -12805,7 +12906,8 @@ end
 --- @param entry table TOC entry { title, start_page, end_page }
 --- @param label string Display label for the section
 --- @param opts table|nil { source_mode = string,
----   read_so_far = boolean,  -- "Up to current position" framing (label = the position)
+---   read_so_far = boolean,  -- "Up to current position" framing
+---   position = string,      -- with read_so_far: the reading percentage the prompt names
 ---   section_so_far = { section = string, position = string } | nil,  -- start→position framing
 ---     (quiz "Current chapter so far" preset + generic "From section… (to current position)")
 --- } for source_selection actions
@@ -12845,7 +12947,7 @@ function AskGPT:_executeSectionAction(action, action_id, entry, label, opts)
   section_action.cache_as_analyze = false
   section_action._section_scope = scope
 
-  -- Inject section scope context into the prompt
+  -- The prompt a run on part of the work sends (Actions.scopedPrompt, B741)
   if section_action.prompt then
     -- To-position actions ({book_text...}, e.g. recap) executed with a section scope: swap to
     -- the full-document placeholders — those are the ones _section_scope range-bounds in the
@@ -12853,37 +12955,19 @@ function AskGPT:_executeSectionAction(action, action_id, entry, label, opts)
     section_action.prompt = section_action.prompt
         :gsub("{book_text_section}", "{full_document_section}")
         :gsub("{book_text}", "{full_document}")
-    local scope_line
+    local prompt_scope
     if opts and opts.read_so_far then
-      -- Read-so-far framing: scope everything to the reader's current position and make the spoiler
-      -- boundary explicit. Phrased to hold in both modes — when text is extracted (it ends at this
-      -- point) and when the model works from its own knowledge (recap-style instruction boundary).
-      -- Position is the reading percentage only (like recap): a TOC-title pick is level-ambiguous
-      -- (deepest heading, or the parent on shared-start pages) and edition-dependent, so it's an
-      -- unreliable boundary signal; the percentage is sufficient and predictable.
-      scope_line = string.format(
-          'This concerns "{title}"{author_clause} only up to the reader\'s current position (%s).\nCover only material up to this point — do not use, reference, or reveal anything beyond it (no later events, results, or conclusions).\n\n',
-          label)
+      -- "Up to current position": the start of the work to the reader's place
+      prompt_scope = { kind = "so_far", position = opts.position, label = label }
     elseif opts and opts.section_so_far then
-      -- Section-so-far framing (flexible scope phase 1): section boundary + spoiler boundary
-      -- in one. Used by the quiz "Current chapter so far" preset AND the generic "From
-      -- section… (to current position)" scope. Phrased to hold in both source modes —
-      -- extracted text ends at the position; AI-knowledge mode gets an instruction boundary
-      -- (like read_so_far).
-      scope_line = string.format(
-          'This concerns the section "%s" of "{title}"{author_clause}, and only up to the reader\'s current position (%s of the whole work).\nCover only material up to this point — do not use, reference, or reveal anything beyond it (no later events, results, or conclusions).\n\n',
-          opts.section_so_far.section, opts.section_so_far.position)
-      -- The section pipeline forces {reading_progress} to 100% (the _full_document_xray
-      -- progress override) — pre-resolve it with the real position so prompts that reference
-      -- it (e.g. recap's "No spoilers beyond {reading_progress}") stay true.
-      section_action.prompt = section_action.prompt:gsub("{reading_progress}",
-          function() return opts.section_so_far.position end)
+      -- A section's start to the reader's place: the quiz "Current chapter so far"
+      -- preset and the generic "From section… (to current position)"
+      prompt_scope = { kind = "section_so_far", section = opts.section_so_far.section,
+          position = opts.section_so_far.position }
     else
-      scope_line = string.format(
-          'This is a section of "{title}"{author_clause}.\nSection: "%s" (%s)\nFocus your analysis on this section only.\n\n',
-          label, scope.page_summary)
+      prompt_scope = { kind = "section", label = label, pages = scope.page_summary }
     end
-    section_action.prompt = scope_line .. section_action.prompt
+    section_action.prompt = require("koassistant.prompts.actions").scopedPrompt(section_action, prompt_scope)
   end
 
   local exec_opts = { section_scope = scope }
@@ -14414,8 +14498,10 @@ function AskGPT:viewCachedAction(action, action_id, cached_entry, opts)
           configuration.features.is_general_context = nil
           configuration.features.is_book_context = true
           configuration.features.is_library_context = nil
-          configuration.features.book_metadata = buildBookMetadata(bt, ba, file, getRawDocProps(file))
-          configuration.features.book_context = bookContextString(configuration.features.book_metadata)
+          local own_metadata = buildBookMetadata(bt, ba, file, getRawDocProps(file))
+          local own_context = bookContextString(own_metadata)
+          configuration.features.book_metadata = own_metadata
+          configuration.features.book_context = own_context
           NetworkMgr:runWhenConnected(function()
             self_ref2:ensureInitialized()
             self_ref2:updateConfigFromSettings()
@@ -14427,8 +14513,11 @@ function AskGPT:viewCachedAction(action, action_id, cached_entry, opts)
             for k, v in pairs((configuration or {}).features or {}) do
               config_copy.features[k] = v
             end
+            -- as executeFileBrowserAction: the last dialog's leftovers go,
+            -- the book is this window's
+            self_ref2:_asBookRunFor(config_copy.features, own_metadata, own_context)
             Dialogs.executeDirectAction(self_ref2.ui, action,
-                config_copy.features.book_context or "", config_copy, self_ref2)
+                own_context or "", config_copy, self_ref2)
           end)
           end)
         end
@@ -15017,12 +15106,13 @@ function AskGPT:_askXrayAutoConsent(file, action, features)
   local Gates = require("koassistant.request.privacy_gates")
   local self_ref = self
   local cf = configuration and configuration.features or features
+  local auto_amounts = { book_text = _("text from this book, in checkpoints as you read") }
   require("koassistant.ui.data_access").withAccess(self, action, {
     features = cf, path = file, ui = self.ui,
     provider = Gates.dispatchProvider(cf, action, action.provider or cf.provider),
-    action_name = _("Automatic X-Ray"), kinds = { "book_text" }, required = true,
+    action_name = _("Automatic X-Ray"), kinds = self:_xrayBuildKinds(file, auto_amounts), required = true,
     standing_only = true,
-    amounts = { book_text = _("text from this book, in checkpoints as you read") },
+    amounts = auto_amounts,
     note = _("Automatic X-Ray is on for this book. \"Allow for this book\" lets it build in the background; Cancel pauses it for this book."),
     on_cancel = function()
       XrayAuto.suppressAuto(file, "consent")
@@ -15233,12 +15323,14 @@ function AskGPT:_fireXrayAutoUpdate(opts)
       -- unasked (2026-10-20): the question writes on a private copy
       local da_feats = {}
       for k, v in pairs(cf) do da_feats[k] = v end
+      local update_amounts = { book_text = _("text from this book, up to your reading position") }
       require("koassistant.ui.data_access").withAccess(self, action, {
         features = da_feats, path = file, ui = self.ui,
         provider = Gates.dispatchProvider(cf, action,
           (opts.run_variant and opts.run_variant.provider) or action.provider or cf.provider),
-        action_name = action.text or _("X-Ray"), kinds = { "book_text" }, required = true,
-        amounts = { book_text = _("text from this book, up to your reading position") },
+        action_name = action.text or _("X-Ray"), kinds = self:_xrayBuildKinds(file, update_amounts),
+        required = true,
+        amounts = update_amounts,
       }, function(granted)
         opts.data_asked = true
         opts.data_once = granted and granted.once or nil
@@ -15260,7 +15352,7 @@ function AskGPT:_fireXrayAutoUpdate(opts)
   if opts.data_once then
     require("koassistant.request.privacy_gates").grantOnce(config_copy.features, file, opts.data_once)
   end
-  config_copy.features.is_book_context = true
+  self:_asBookRun(config_copy.features)
   config_copy.features._background_request = true
   config_copy.features._is_book_level_action = true
   -- A manual update started from a run option (B345) runs on the picked model
@@ -15951,13 +16043,16 @@ function AskGPT:_startXrayLadderBuild(build_opts)
     -- a private copy: the Allow once rides build_opts.data_once (2026-10-20)
     local da_feats = {}
     for k, v in pairs(cf) do da_feats[k] = v end
+    local build_amounts = { book_text = (build_opts and build_opts.one_shot)
+      and _("text from this book, in one background request")
+      or _("text from this book, read in checkpoints") }
     local da_opts = {
       features = da_feats, path = file, ui = self.ui,
       provider = Gates.dispatchProvider(cf, action, run_provider or action.provider or cf.provider),
-      action_name = action.text or _("X-Ray"), kinds = { "book_text" }, required = true,
-      amounts = { book_text = (build_opts and build_opts.one_shot)
-        and _("text from this book, in one background request")
-        or _("text from this book, read in checkpoints") },
+      action_name = action.text or _("X-Ray"),
+      kinds = self:_xrayBuildKinds(file, build_amounts, build_opts and build_opts.rebuild),
+      required = true,
+      amounts = build_amounts,
     }
     local da_needs = DA.needsFor(action, da_opts)
     local da_plan = DA.plan(da_needs)
@@ -16095,7 +16190,11 @@ function AskGPT:_startXrayLadderBuild(build_opts)
     end
     local state_line
     if chain_rebuild then
-      state_line = _("Replaces your current X-Ray from scratch. Nothing is touched until the first part of the new one arrives; the outgoing version is archived then.")
+      -- Honest about version archiving being off, as the foreground
+      -- rebuild's confirm is: the line promised an archive either way
+      state_line = ActionCache.checkpointLimitFromFeatures(features) ~= 0
+        and _("Replaces your current X-Ray from scratch. Nothing is touched until the first part of the new one arrives; the outgoing version is archived then.")
+        or _("Replaces your current X-Ray from scratch. Nothing is touched until the first part of the new one arrives; the outgoing version is replaced then: version archiving is off, so it will be gone.")
       -- The foreground rebuild confirm names the checkpoint deletion; this
       -- path routes past that ConfirmBox, so it has to say it itself. A
       -- rebuild clears the whole prepared ladder, and only the installed
@@ -16338,7 +16437,7 @@ function AskGPT:_fireXrayLadderRung()
   for k, v in pairs(configuration or {}) do config_copy[k] = v end
   config_copy.features = {}
   for k, v in pairs((configuration or {}).features or {}) do config_copy.features[k] = v end
-  config_copy.features.is_book_context = true
+  self:_asBookRun(config_copy.features)
   config_copy.features._background_request = true
   config_copy.features._background_create = create_mode or nil
   config_copy.features._is_book_level_action = true
@@ -17348,8 +17447,16 @@ function AskGPT:_executeBookLevelActionDirect(action, action_id, opts)
   -- The shared features carry the last chat's flags (a library chat's
   -- is_library_context, which getPromptContext tests before book; a chat's
   -- Spoiler chip): scrub the copy first, book_metadata and book_context are
-  -- rebuilt below (sweep 2026-11-06)
+  -- rebuilt below (sweep 2026-11-06). The scope popup's consent to read past
+  -- the position is THIS run's (set on the shared table just before it): it
+  -- rides the copy across the scrub and leaves the shared table, where the
+  -- next request would have spent it (audit 2026-11-12)
+  local scope_consent = config_copy.features._spoiler_scope_consent
   self:_scrubContextFeatures(config_copy.features)
+  config_copy.features._spoiler_scope_consent = scope_consent
+  if configuration and configuration.features then
+    configuration.features._spoiler_scope_consent = nil
+  end
   config_copy.features.is_book_context = true  -- Signal book context to getPromptContext()
   -- An allowance for this run (Allow once, B395) is only ever the one the
   -- popup's question handed over (opts.data_once, the kinds): a record left on
@@ -17449,10 +17556,11 @@ function AskGPT:executeFileBrowserAction(file, title, authors, book_props, actio
   configuration.features.is_general_context = nil
   configuration.features.is_book_context = true
   configuration.features.is_library_context = nil
-  configuration.features.book_metadata = buildBookMetadata(title, authors, file, getRawDocProps(file) or book_props)
+  local own_metadata = buildBookMetadata(title, authors, file, getRawDocProps(file) or book_props)
+  configuration.features.book_metadata = own_metadata
 
   -- Display/fallback book-context string, derived from the overridden metadata (title+author only).
-  local book_context = bookContextString(configuration.features.book_metadata)
+  local book_context = bookContextString(own_metadata)
   configuration.features.book_context = book_context
 
   NetworkMgr:runWhenConnected(function()
@@ -17477,9 +17585,11 @@ function AskGPT:executeFileBrowserAction(file, title, authors, book_props, actio
     for k, v in pairs((configuration or {}).features or {}) do
       config_copy.features[k] = v
     end
-    -- A chat's run allowance (B395) never rides a book-level run
-    config_copy.features._data_once = nil
-  
+    -- Nothing of the last dialog rides this run (its Spoiler chip value made
+    -- a protected book run unprotected, B651 b; a chat's run allowance, B395),
+    -- and the book is the one this entry was called for
+    self:_asBookRunFor(config_copy.features, own_metadata, book_context)
+
     -- Signal synthetic book metadata (same as _executeBookLevelActionDirect)
     config_copy.features._is_book_level_action = true
 
@@ -19706,6 +19816,10 @@ function AskGPT:translateCurrentPage()
   -- Mark this as full page translate so handlePredefinedPrompt can apply translate_hide_full_page setting
   -- Note: The actual hiding is handled in handlePredefinedPrompt which respects user's translate_hide_highlight_mode
   config_copy.features.is_full_page_translate = true
+  -- A PDF or DjVu page comes as its printed lines (the extractor says so):
+  -- the translate window then joins them, where it shows a reflowable page's
+  -- lines as the paragraphs they are
+  config_copy.features.page_printed_lines = page_result.printed_lines or nil
   -- Clear selection_data - there's no actual user highlight for page translation,
   -- so the "Save to Note" button should be disabled (prevents using stale data from prior highlights)
   config_copy.features.selection_data = nil
@@ -20206,7 +20320,42 @@ function AskGPT:syncDictionaryBypass()
     end
 
     local self_ref = self
+    -- KOReader's own Dictionary row in the highlight menu is a pick of
+    -- KOReader's dictionary by name (B716): its callback runs lookupDict while
+    -- the menu is still open, which is what tells it from the default
+    -- highlight action "Dictionary" (no menu; that one stays the bypass's).
+    -- The mark lives for that one call.
+    local hl = self.ui.highlight
+    if hl and hl.lookupDict and not hl._koassistant_original_lookupDict then
+      hl._koassistant_original_lookupDict = hl.lookupDict
+      hl.lookupDict = function(hl_self, ...)
+        local dict = hl_self.ui and hl_self.ui.dictionary
+        if dict and hl_self.highlight_dialog then
+          dict._koassistant_explicit_dictionary = true
+        end
+        local result = hl._koassistant_original_lookupDict(hl_self, ...)
+        if dict then dict._koassistant_explicit_dictionary = nil end
+        return result
+      end
+    end
     dictionary.onLookupWord = function(dict_self, word, is_sane, boxes, highlight, link, dict_close_callback)
+      -- KOReader's own window, past the X-Ray intercept and the bypass, for a
+      -- lookup the reader asked KOReader's dictionary for by name (B716) and
+      -- for a word under the Vocabulary Builder's review, whose Forgot and
+      -- Got it buttons live on that window (B583; the builder's own test for
+      -- "the word under review"). The lookup flags stay for the normal chain.
+      local explicit = dict_self._koassistant_explicit_dictionary
+      dict_self._koassistant_explicit_dictionary = nil
+      local vocab = self_ref.ui and self_ref.ui.vocabbuilder  -- the plugin, by its folder name
+      if explicit or (vocab and vocab.widget and vocab.widget.current_lookup_word == word) then
+        return dictionary._koassistant_original_onLookupWord(dict_self, word, is_sane, boxes, highlight, link, dict_close_callback)
+      end
+      -- A pick of Dictionary in the plugin's own selection popup (a chat
+      -- window, an X-Ray page): the dictionary flow the reader set up, the
+      -- bypass included, and never the X-Ray card, which has its own row in
+      -- that popup. The mark lives for that one call.
+      local skip_xray = dict_self._koassistant_skip_xray
+      dict_self._koassistant_skip_xray = nil
       -- KOReader's own lookup cleans the selection first (readerdictionary.lua
       -- onLookupWord → cleanSelection: edge punctuation, curly apostrophe,
       -- possessive 's, French elisions): a PDF word box arrives as "word." and
@@ -20230,7 +20379,7 @@ function AskGPT:syncDictionaryBypass()
         -- The raw word first (a name like "D'Arnel" matches as selected;
         -- cleaning drops its "D'"), then the cleaned one ("Voss's" → Voss).
         local hit_word
-        if i_file and self_ref:_xrayInterceptEnabled(i_file) then
+        if not skip_xray and i_file and self_ref:_xrayInterceptEnabled(i_file) then
           local matched, form = ActionCache.matchAnyXrayExact(i_file, word,
             { include_ahead = self_ref:_xrayAheadEnabled(i_file),
               position = self_ref:_xrayReaderPosition(i_file),
@@ -20312,6 +20461,15 @@ function AskGPT:syncDictionaryBypass()
             timeout = 5,
           })
         end
+        if dictionary._koassistant_original_onLookupWord then
+          return dictionary._koassistant_original_onLookupWord(dict_self, word, is_sane, boxes, highlight, link, dict_close_callback)
+        end
+        return
+      end
+
+      -- With Look up in X-Ray as the bypass action, Dictionary picked in the
+      -- selection popup still means the dictionary (its X-Ray row is beside it)
+      if skip_xray and bypass_action.local_handler == "xray_lookup" then
         if dictionary._koassistant_original_onLookupWord then
           return dictionary._koassistant_original_onLookupWord(dict_self, word, is_sane, boxes, highlight, link, dict_close_callback)
         end
@@ -20552,6 +20710,11 @@ function AskGPT:syncDictionaryBypass()
       dictionary.onLookupWord = dictionary._koassistant_original_onLookupWord
       dictionary._koassistant_original_onLookupWord = nil
       logger.dbg("KOAssistant: Dictionary bypass disabled, restored original dictionary lookup")
+    end
+    local hl = self.ui.highlight
+    if hl and hl._koassistant_original_lookupDict then
+      hl.lookupDict = hl._koassistant_original_lookupDict
+      hl._koassistant_original_lookupDict = nil
     end
   end
 end
@@ -20901,6 +21064,8 @@ function AskGPT:openXrayCard(query, opts)
     on_full = openFull,
     card_length = marking.card_length,
     ahead_card = marking.ahead_card,
+    -- the footnote panel's page takes the reader's Arabic font from it
+    features = features,
   })
 end
 
@@ -21143,6 +21308,75 @@ function AskGPT:_showXrayMarkingQuickSettings(opts)
   UIManager:show(dialog)
 end
 
+--- The kinds an X-Ray build asks for: the book's text, required, and what
+--- the saved X-Ray it continues was built with, optional (an X-Ray from when
+--- X-Rays read highlights carries that stamp). The update sends the saved
+--- X-Ray back with the new text and the dispatch withholds it unless every
+--- stamped kind is allowed: asked for the text alone, such an X-Ray was
+--- rebuilt in full by every update and never continued by a checkpoint step
+--- (audit 2026-11-12). `amounts` gains the question's line for each kind.
+--- @param file string the book
+--- @param amounts table the question's lines by kind (written to)
+--- @param fresh boolean|nil a rebuild or a build from nothing: no base is sent
+--- @return table kinds for DataAccess.withAccess
+function AskGPT:_xrayBuildKinds(file, amounts, fresh)
+  local kinds = { "book_text" }
+  if fresh or not file then return kinds end
+  local ActionCache = require("koassistant.artifacts.action_cache")
+  local DataAccess = require("koassistant.ui.data_access")
+  local seen = {}
+  for _idx, get in ipairs({
+    function() return ActionCache.get(file, "xray") end,
+    function() return ActionCache.getXrayCache(file) end,
+  }) do
+    local ok, entry = pcall(get)
+    if ok and type(entry) == "table" and entry.result then
+      local base_kinds, base_amounts = DataAccess.baseKinds(entry, _("X-Ray"))
+      for _j, k in ipairs(base_kinds) do
+        if not seen[k.kind] then
+          seen[k.kind] = true
+          kinds[#kinds + 1] = k
+          amounts[k.kind] = base_amounts[k.kind]
+        end
+      end
+    end
+  end
+  return kinds
+end
+
+--- A features copy for a run about ONE book, made from the shared table: the
+--- marks of every other context leave, the book's is set (B647). A library
+--- dialog, a group chat and the file browser's compare mark the shared table
+--- as a library run and nothing takes the mark off; getPromptContext reads
+--- library before book, and a library run has no book to save to. A run that
+--- copied the table and only added its own mark showed its answer and saved
+--- nothing: an X-Ray in one request was gone at the next open, and every
+--- checkpoint step stopped the build (issue #123, the second report). Narrower
+--- than _scrubContextFeatures on purpose: the run's own transients stay.
+function AskGPT:_asBookRun(features)
+  features.is_general_context = nil
+  features.is_library_context = nil
+  features.books_info = nil
+  features._group_launch = nil
+  features.is_book_context = true
+end
+
+--- A features copy for a run about ONE book that need not be the open one (a
+--- file-browser action, a closed book's Regenerate), made from the shared
+--- table: everything the last dialog left there goes (the full scrub), and
+--- the book is the one the entry built its identity for, handed over, never
+--- read back from the shared table (another entry can rewrite it while the
+--- network comes up).
+--- @param features table the run's own copy
+--- @param metadata table the book's identity (buildBookMetadata)
+--- @param book_context string|nil its display string
+function AskGPT:_asBookRunFor(features, metadata, book_context)
+  self:_scrubContextFeatures(features)
+  features.is_book_context = true
+  features.book_metadata = metadata
+  features.book_context = book_context
+end
+
 -- Scrub cross-context state from a features table before entering a new context.
 -- The module-level `configuration` is SHARED between the FileManager and ReaderUI
 -- plugin instances and across entry points: general/library/file-browser entries
@@ -21189,6 +21423,8 @@ function AskGPT:_scrubContextFeatures(features)
   -- An allowance for one run (Allow once, B395) is the request's, consumed at
   -- its dispatch; a stray on the shared table would let data out unasked
   features._data_once = nil
+  -- The book of an X-Ray entry's chat or wiki lives on that chat's own copy
+  features._xray_entry_book = nil
 end
 
 function AskGPT:executeHighlightBypassAction(action, selected_text, highlight_instance)
@@ -21945,7 +22181,7 @@ end
 -- Settings ▸ Display Settings ▸ Rendering ▸ "Right-to-left text font" (B558):
 -- the rows of its sub-menu, built when it opens (the installed fonts)
 function AskGPT:rtlFontMenuItems()
-  return require("koassistant.ui.rtl_font").menuItems(self)
+  return require("koassistant.ui.script_fonts").menuItems(self)
 end
 
 -- Settings ▸ Display Settings ▸ Emoji ▸ "Emoji Font" (B397): the bundled
@@ -23295,6 +23531,14 @@ function AskGPT:_performRestore(backup_manager, backup, options)
         -- back over the restored file. Reload in place, so every module
         -- holding this object reads the restored values (the sweep of 2026-11-06)
         self:_reloadSettingsFromDisk()
+        -- Two more stores held what was there before the restore and would
+        -- have written it back at their next change, before any restart: the
+        -- book groups' session handle (the next group change saved the old
+        -- groups over the restored file) and the action list's cache (a menu
+        -- build pruned the restored custom actions it did not know from the
+        -- menus' order lists). Both read the disk again (audit 2026-11-12).
+        require("koassistant.books.book_groups").reload()
+        if self.action_service then self.action_service.actions_cache = nil end
         if result.v1_chats_restored then
           -- The backup predates chat storage v2: its chats came back in the
           -- old hash-folder layout, which nothing reads any more. Import them
@@ -23525,9 +23769,13 @@ end
 --- plugin's own sidecar files for every book the plugin can find. Runs at
 --- plugin init while chat_storage_version == 2 (v1 installs go through the
 --- v1 import, which now writes straight into the new files and stamps 3).
---- Per book: copy, verify, then delete + flush — idempotent, so an
---- interrupted pass simply re-runs on the next start; the version stamp is
---- written only after a pass with zero failures. Once per process.
+--- Per book: copy, verify, then delete + flush (idempotent). ONE pass,
+--- whatever it met: the version stamp follows it even when a book failed or
+--- the pass stopped, because a book it did not move still holds its data in
+--- metadata.lua and moves on its next read (BookStore.wrap's check, the
+--- chats read's, the book's open). Stamping only after a pass with zero
+--- failures sent every start through every book again while one book kept
+--- failing (B700). Once per process.
 function AskGPT:_runBookStoreMigration()
   local version = G_reader_settings:readSetting("chat_storage_version", 1)
   if version ~= 2 then return end
@@ -23537,20 +23785,18 @@ function AskGPT:_runBookStoreMigration()
   local features = self.settings:readSetting("features") or {}
   logger.info("KOAssistant: moving per-book data out of metadata.lua (chat storage v2 -> v3)")
   local ok, report = pcall(BookStore.migrateAll, self.ui, features)
+  G_reader_settings:saveSetting("chat_storage_version", 3)
+  G_reader_settings:flush()
   if not ok then
-    logger.warn("KOAssistant: book store migration crashed:", report)
+    logger.warn("KOAssistant: book store migration crashed (the books it did not reach move on their next read):", report)
     return
   end
   logger.info("KOAssistant: book store migration:", report.candidates, "candidates,",
     report.moved, "moved (" .. report.chats .. " chats, " .. report.keys .. " keys),",
     report.clean, "clean,", report.skipped, "skipped,", report.failed, "failed")
   for _idx, f in ipairs(report.failures) do
-    logger.info("KOAssistant: book store migration failure:", f)
+    logger.info("KOAssistant: book store migration failure (moves on its next read):", f)
   end
-  if report.failed == 0 then
-    G_reader_settings:saveSetting("chat_storage_version", 3)
-  end
-  G_reader_settings:flush()
   if report.moved > 0 then
     local moved = report.moved
     UIManager:scheduleIn(2, function()
@@ -24447,6 +24693,28 @@ end
 
 -- Patch DocSettings.updateLocation() to handle sidecar files and indices on move/copy/delete
 -- Mirrors KOReader's own behavior: move on cut, copy on copy, delete on delete
+-- The notebooks kept from books deleted in one go (one book, a selection),
+-- said once on the next tick: where they are and where they are listed
+local kept_notebooks = {}
+local function announceKeptNotebooks()
+  local n = #kept_notebooks
+  if n == 0 then return end
+  local first = kept_notebooks[1]
+  kept_notebooks = {}
+  local text
+  if n == 1 then
+    text = T(_("The deleted book's KOAssistant notebook was kept. Browse Notebooks lists it. Its file:\n%1"), first)
+  else
+    text = T(_("The KOAssistant notebooks of %1 deleted books were kept. Browse Notebooks lists them. Their folder:\n%2"),
+      n, first:match("^(.*)/[^/]*$") or first)
+  end
+  UIManager:show(InfoMessage:new{ text = text })
+end
+local function noteKeptNotebook(path)
+  kept_notebooks[#kept_notebooks + 1] = path
+  if #kept_notebooks == 1 then UIManager:nextTick(announceKeptNotebooks) end
+end
+
 function AskGPT:patchDocSettingsForChatIndex()
   local DocSettings = require("docsettings")
 
@@ -24497,11 +24765,31 @@ function AskGPT:patchDocSettingsForChatIndex()
         end
       end
     else
-      -- Delete: remove our sidecar files so KOReader's purge() can rmdir the .sdr
+      -- Delete. The notebook first: it outlives its book (B756), moved to the
+      -- KOAssistant notebooks folder. It is the one file here that can hold
+      -- the reader's own writing, and KOReader's own notebook file survives a
+      -- deletion too. A notebook that could not be moved stays where it is:
+      -- never removed unsaved.
+      local Notebook = require("koassistant.chat.notebook")
+      local notebook_file = old_sidecar_dir .. "/" .. Notebook.SIDECAR_FILE
+      local notebook_stays = false
+      if lfs.attributes(notebook_file, "mode") == "file" then
+        local ok, kept, why = pcall(Notebook.keepDeleted, old_path, notebook_file)
+        if ok and kept then
+          logger.info("KOAssistant: Kept the notebook of a deleted book")
+          noteKeptNotebook(kept)
+        elseif not ok or why ~= "empty" then
+          notebook_stays = true
+          logger.warn("KOAssistant: could not move a deleted book's notebook, left in place:",
+            tostring(ok and why or kept))
+        end
+      end
+      -- Then remove our sidecar files so KOReader's purge() can rmdir the .sdr
       -- (purge only removes its own known files, then rmdir which needs empty dir)
       for _idx, filename in ipairs(KOASSISTANT_SIDECAR_FILES) do
         local sidecar_file = old_sidecar_dir .. "/" .. filename
-        if lfs.attributes(sidecar_file, "mode") == "file" then
+        if lfs.attributes(sidecar_file, "mode") == "file"
+            and not (notebook_stays and filename == Notebook.SIDECAR_FILE) then
           os.remove(sidecar_file)
           logger.dbg("KOAssistant: Removed sidecar file:", filename)
         end
@@ -24802,6 +25090,30 @@ function AskGPT:openNotebookViewer(notebook_path, document_path)
   end
 end
 
+--- A notebook whose book is not on this device (B756), shown as it is: the
+--- file by its own path. No editor and no chat about it: both work on a book.
+--- @param kept table a row of Notebook.keptNotebooks()
+function AskGPT:openKeptNotebook(kept)
+  local features = self.settings:readSetting("features") or {}
+  if (features.notebook_viewer or "chatviewer") == "reader" then
+    require("apps/reader/readerui"):showReader(kept.path)
+    return
+  end
+  local content = require("koassistant.chat.notebook").readKept(kept.path)
+  if not content or content == "" then
+    UIManager:show(InfoMessage:new{ text = _("Notebook is empty"), timeout = 2 })
+    return
+  end
+  UIManager:show(require("koassistant.ui.chatgptviewer"):new{
+    title = T(_("Notebook - %1"), kept.title or ""),
+    text = content,
+    simple_view = true,
+    configuration = { features = features },
+    _plugin = self,
+    _ui = self.ui,
+  })
+end
+
 --- Open notebook in ChatGPTViewer simple_view mode
 --- @param notebook_path string Full path to the notebook file
 --- @param document_path string The original document file path (for edit callback)
@@ -24909,8 +25221,12 @@ function AskGPT:openNotebookInChatViewer(notebook_path, document_path)
     on_export = on_export,
     -- Chat directly about the notebook content (controls parity slice (e) note C),
     -- reusing the artifact viewer's → Chat launcher with notebook-specific wording.
-    on_launch_chat = self_ref:_buildLaunchChatCallback(document_path, book_title, book_author, content, _("Notebook"),
-      { notebook = true }),
+    -- The window shows the notebook as it is; the chat is sent its entries
+    -- without the title line this plugin writes at its top, which names the
+    -- book whatever Book info says (B727: the extractor and Attach already
+    -- read it so; this path handed over the shown text).
+    on_launch_chat = self_ref:_buildLaunchChatCallback(document_path, book_title, book_author,
+      Notebook.stripHeader(content), _("Notebook"), { notebook = true }),
     launch_chat_title = _("Chat about this notebook"),
     launch_chat_hold_hint = _("Start a new chat about this notebook"),
     _plugin = self_ref,

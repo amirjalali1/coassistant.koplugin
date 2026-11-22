@@ -4,6 +4,8 @@
 local _ = require("koassistant.core.gettext")
 local InputText = require("ui/widget/inputtext")
 local InputDialog = require("ui/widget/inputdialog")
+local StreamMarkdown = require("koassistant.request.stream_markdown")
+local Waiting = require("koassistant.ui.waiting")
 local UIManager = require("ui/uimanager")
 local Font = require("ui/font")
 local Size = require("ui/size")
@@ -312,6 +314,32 @@ end
 
 -- Exposed for unit testing (the locals above are the canonical implementations).
 StreamHandler.extractApiError = extractApiError
+
+--- The reader's sentence for a refused request on the streaming path: the
+--- status from the fetch child's marker ("HTTP 401: ..." on macOS, "Error
+--- 401: ..." on the transport every device uses) and the provider's own
+--- sentence from the JSON body that streamed before it, read as a whole
+--- answer's error is (the sentence, the machine code, the quota facts). The
+--- marker's text when the body gives nothing.
+--- @param marker_text string what follows the marker's prefix
+--- @param body string|nil the error body's lines, joined
+--- @return string
+function StreamHandler.non200Message(marker_text, body)
+    marker_text = tostring(marker_text or ""):match("^%s*(.-)%s*$")
+    body = type(body) == "string" and body:match("^%s*(.-)%s*$") or ""
+    local clean = #body > 0 and extractApiError(body) or nil
+    if clean then
+        -- The status code is the marker's, the sentence the body's: keep both
+        local code = marker_text:match("^HTTP%s+(%d+)") or marker_text:match("^Error%s+(%d+)")
+        if code and not clean:match("^HTTP%s+%d+") then
+            clean = "HTTP " .. code .. ": " .. clean
+        end
+    else
+        clean = marker_text
+    end
+    if not clean or clean == "" then clean = "Request failed" end
+    return clean
+end
 StreamHandler.harvestWebSources = harvestWebSources
 StreamHandler.closeWebSearchSegment = closeWebSearchSegment
 
@@ -332,14 +360,35 @@ function StreamText:addChars(chars)
 end
 
 function StreamText:initTextBox(text, char_added)
+    local t0 = StreamMarkdown._now()
     self.for_measurement_only = true                -- trick the method from super class
     InputText.initTextBox(self, text, char_added)   -- skips `UIManager:setDirty`
-    -- use our own method of refresh, `fast` is suitable for stream responding
-    UIManager:setDirty(self.parent, function() return "fast", self.dimen end)
+    -- Our own refresh of the text area, the Markdown view's kind ("ui": "fast"
+    -- is black and white only on e-ink). This view asked for "fast" until
+    -- B752, and while it FOLLOWED the text most of its updates reached the
+    -- screen as "ui" all the same: a tick laid the text out twice (the text,
+    -- then the padded page), each new widget flipped the scroll buttons'
+    -- at-top state, InputDialog then refreshed its whole frame as "ui", and
+    -- UIManager joins overlapping requests under the higher type (measured in
+    -- the app, 2026-11-15: 86 of 103 updates as "ui"). A window that does not
+    -- follow, the default now, lays the text out once a tick and flips
+    -- nothing: 108 of its 110 updates reached the screen as "fast" (measured
+    -- 2026-11-19), rough text for as long as the answer arrived.
+    UIManager:setDirty(self.parent, function() return StreamMarkdown.REFRESH, self.dimen end)
     self.for_measurement_only = false
+    -- what the updates cost, for a report from a device (Console Debug)
+    self.koa_stats = self.koa_stats or StreamMarkdown.Stats.new()
+    self.koa_stats:work("layout", StreamMarkdown._now() - t0, #(text or self.text or ""))
+end
+
+function StreamText:paintTo(bb, x, y)
+    local t0 = StreamMarkdown._now()
+    if InputText.paintTo then InputText.paintTo(self, bb, x, y) end
+    if self.koa_stats then self.koa_stats:painted(t0, StreamMarkdown._now() - t0) end
 end
 
 function StreamText:onCloseWidget()
+    logger.dbg("KOAssistant: text stream closed:", (self.koa_stats or StreamMarkdown.Stats.new()):line())
     -- fast mode makes screen dirty, clean it with `flashui`
     UIManager:setDirty(self.parent, function() return "flashui", self.dimen end)
     return InputText.onCloseWidget(self)
@@ -349,25 +398,14 @@ end
 StreamHandler.StreamText = StreamText
 
 
---- Create a bouncing dot animation for waiting state
+--- The waiting dots: one source for every wait (koassistant/ui/waiting.lua, B709)
 function StreamHandler:createWaitingAnimation()
-    local frames = { ".", "..", "...", "..", "." }
-    local currentIndex = 1
-
-    return {
-        getNextFrame = function()
-            local frame = frames[currentIndex]
-            currentIndex = currentIndex + 1
-            if currentIndex > #frames then
-                currentIndex = 1
-            end
-            return frame
-        end,
-        reset = function()
-            currentIndex = 1
-        end
-    }
+    return Waiting.dots()
 end
+
+--- Quiet ticks (0.4 s each) after the last words before a stream shows the
+--- waiting dots after its text (B709, #126): about a second
+StreamHandler.PAUSE_TICKS = 2
 
 --- Keep an expanded-mode stream dialog clear of the status bar and aligned with
 --- the viewer that replaces it. InputDialog centres itself in a CenterContainer
@@ -382,6 +420,59 @@ local function clampDialogToChatRegion(dialog)
         container.dimen.h = container.dimen.h - reserve
     end
 end
+
+--- A stream window's title bar as the chat window's (B696): the same face on
+--- one line and the same space under its line, so the bar is as tall as the
+--- chat window's and its line stays where it is when that window takes the
+--- stream's place. InputDialog builds its bar in its own bold face, with room
+--- for several lines and no space under the line (seven pixels lower on a
+--- 300 dpi screen); the bar is laid out again with the chat window's values
+--- and the close button InputDialog has none of.
+local function titleBarLikeChat(dialog, close_callback)
+    local bar = dialog.title_bar
+    bar.close_callback = close_callback
+    bar.title_face = require("koassistant.ui.chatgptviewer").title_face or bar.title_face
+    bar.title_multilines = false
+    bar.bottom_v_padding = nil  -- the title bar's own default under its line, as the chat window's has
+    -- KOReader's own way to lay a title bar out again (TitleBar:setTitle):
+    -- without the clear, the first layout's title and line stay underneath
+    if bar.clear then bar:clear() end
+    bar:init()
+    if dialog.vgroup and dialog.vgroup.resetLayout then dialog.vgroup:resetLayout() end
+end
+
+-- What an InputDialog adds around its text (its border, the title bar, the
+-- input widget's insets, the button row), by the kind of its input widget:
+-- measured on the first window of a session, exact from then on
+local dialog_chrome = {}
+
+--- A stream window in the chat window's frame (B696): `build(text_height)`
+--- makes the InputDialog, `height` is the chat window's height (the inside of
+--- its frame; UIConstants), `kind` names the input widget ("markdown" |
+--- "plain"). The height of the text was the window's minus a guess at
+--- everything around it (120 scaled pixels), so the stream's frame stood a
+--- few pixels off the chat window's wherever the guess was not exact. What
+--- the dialog adds is read off the built window; one built on a wrong guess
+--- is built once more, and the measure serves every later window.
+local function buildInChatFrame(build, height, kind, close_callback)
+    local outer = height + 2 * Size.border.window
+    local text_height = outer - (dialog_chrome[kind] or (Screen:scaleBySize(120) + 2 * Size.border.window))
+    local dialog = build(text_height)
+    titleBarLikeChat(dialog, close_callback)
+    local frame = dialog.dialog_frame
+    if not (frame and frame.getSize) then return dialog end
+    local chrome = frame:getSize().h - text_height
+    if chrome ~= dialog_chrome[kind] then
+        dialog_chrome[kind] = chrome
+        if outer - chrome ~= text_height and outer - chrome > 0 then
+            if dialog.free then dialog:free() end
+            dialog = build(outer - chrome)
+            titleBarLikeChat(dialog, close_callback)
+        end
+    end
+    return dialog
+end
+StreamHandler._buildInChatFrame = buildInChatFrame   -- for tests
 
 --- Lightweight status dialog for the gather phase of tool workflows: same geometry and
 --- look as the streaming dialog, but with externally-pushed text (no subprocess of its
@@ -400,12 +491,10 @@ function StreamHandler.showToolStatusDialog(opts)
     opts = opts or {}
     local settings = opts.settings or {}
 
-    -- Mirror the stream dialog's sizing (chrome: title bar + 1 button row + padding)
-    local chrome_height = Screen:scaleBySize(120)
+    -- The stream dialog's size: the chat window's frame (buildInChatFrame)
     local large_dialog = settings.large_stream_dialog ~= false
     local width = UIConstants.CHAT_WIDTH({ compact = not large_dialog })
-    local text_height = (large_dialog and UIConstants.CHAT_HEIGHT()
-        or UIConstants.COMPACT_DIALOG_HEIGHT()) - chrome_height
+    local window_height = large_dialog and UIConstants.CHAT_HEIGHT() or UIConstants.COMPACT_DIALOG_HEIGHT()
     local font_size = settings.response_font_size or 20
 
     local closed = false
@@ -444,26 +533,26 @@ function StreamHandler.showToolStatusDialog(opts)
             end,
         })
     end
-    dialog = InputDialog:new{
-        title = opts.title or _("AI is responding"),
-        inputtext_class = StreamText,
-        input_face = Font:getFace("infofont", font_size),
-        width = width,
-        text_height = text_height,
-        is_movable = not large_dialog,
-        readonly = true,
-        fullscreen = false,
-        allow_newline = true,
-        add_nav_bar = false,
-        cursor_at_end = false,
-        add_scroll_buttons = true,
-        condensed = true,
-        auto_para_direction = true,
-        scroll_by_pan = true,
-        buttons = { button_row },
-    }
-    dialog.title_bar.close_callback = stop
-    dialog.title_bar:init()
+    dialog = buildInChatFrame(function(text_height)
+        return InputDialog:new{
+            title = opts.title or _("AI is responding"),
+            inputtext_class = StreamText,
+            input_face = Font:getFace("infofont", font_size),
+            width = width,
+            text_height = text_height,
+            is_movable = not large_dialog,
+            readonly = true,
+            fullscreen = false,
+            allow_newline = true,
+            add_nav_bar = false,
+            cursor_at_end = false,
+            add_scroll_buttons = true,
+            condensed = true,
+            auto_para_direction = true,
+            scroll_by_pan = true,
+            buttons = { button_row },
+        }
+    end, window_height, "plain", stop)
     if large_dialog then clampDialogToChatRegion(dialog) end
     UIManager:show(dialog)
 
@@ -502,6 +591,11 @@ function StreamHandler:showStreamDialog(backgroundQueryFunc, provider_name, mode
     local stream_finished = false  -- finishStream runs once, whoever calls it twice
     local ui_update_task = nil  -- Forward declaration for display throttling
     local first_content_received = false
+    -- A stream that pauses after its first words shows the waiting dots after
+    -- its text until words come again (B709, #126; display only, the answer
+    -- is never touched): what the pause tick saw last (n chunks, the web
+    -- status), its quiet ticks, the frame shown, its stop
+    local pause = { quiet = 0 }
 
     -- Stream processing state
     local pid, parent_read_fd = nil, nil
@@ -612,6 +706,10 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
     local interrupted_detail    -- Provider error that ended the stream early (not a token limit)
     -- Hidden streaming: accumulate data but show placeholder (for quiz etc.)
     local hidden_streaming = settings and settings.hidden_streaming
+    -- Markdown while streaming (B562): the rendered view stands in for the
+    -- plain widget; never for a hidden stream (its placeholder and Show/Hide
+    -- are plain text)
+    local markdown_stream = settings and settings.stream_markdown == true and not hidden_streaming or false
     -- The placeholder was hardcoded quiz wording, so every other hidden-output
     -- action (X-Ray merges since round 25) announced itself as "Generating
     -- quiz" (device report). Callers name their own work; quiz stays default.
@@ -697,6 +795,10 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
             UIManager:unschedule(animation_task)
             animation_task = nil
         end
+        if pause.stop then
+            pause.stop()
+            pause.stop = nil
+        end
         if poll_task then
             UIManager:unschedule(poll_task)
             poll_task = nil
@@ -749,6 +851,20 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
         end
         UIManager:close(streamDialog)
 
+        -- An error event that was a refused request's body (see the NDJSON
+        -- branch): with the status marker the drain collected, it is reported
+        -- as every other refused request, status and error code included. The
+        -- message alone named no status, and the tips read the wrong case (an
+        -- account out of credit got the rate-limit tip and Try again; seen in
+        -- the real app on the device transport, 2026-11-12).
+        if stream_error and not non200 and #error_body_lines > 0 and type(partial_data) == "string" then
+            local marker_text = partial_data:match("X%-NON%-200%-STATUS:([^\r\n]*)")
+            if marker_text then
+                stream_error = self.non200Message(marker_text, table.concat(error_body_lines))
+            end
+            for _idx = #error_body_lines, 1, -1 do error_body_lines[_idx] = nil end
+        end
+
         -- If unrecognized lines were buffered but no error marker fired, this was a
         -- genuine (if unusual) content stream — flush them so nothing is lost.
         if not non200 and #error_body_lines > 0 then
@@ -759,6 +875,10 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
         end
 
         local result = table.concat(result_buffer):match("^%s*(.-)%s*$") or "" -- trim
+        -- An emoji sent as an escape pair: each piece was joined as it came
+        -- (KOReader's JSON decoder leaves the pair as two invalid halves);
+        -- once more on the whole, for a pair split across two pieces
+        result = require("koassistant.request.scope_resolver").joinSurrogates(result)
         -- A search with no prose after it leaves a dangling trailing marker
         do
             local marker = require("koassistant.api.response_parser").WEB_SEARCH_MARKER
@@ -949,7 +1069,8 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
         end
 
         -- Pass reasoning content as 4th arg, web_search_used as 5th, usage as 6th.
-        local reasoning_content = #reasoning_buffer > 0 and table.concat(reasoning_buffer) or nil
+        local reasoning_content = #reasoning_buffer > 0
+            and require("koassistant.request.scope_resolver").joinSurrogates(table.concat(reasoning_buffer)) or nil
         -- Web-search slot: provenance table when source details were captured, else
         -- plain true (legacy shape). Bare Perplexity citation URLs are folded in only
         -- when no titled search_results arrived for the same response.
@@ -1003,26 +1124,24 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
         finishStream()
     end
 
-    -- Dialog size configuration (uses UIConstants for consistency)
-    local width, text_height, is_movable
+    -- Dialog size configuration (uses UIConstants for consistency): the chat
+    -- window's own frame, whose inside is window_height tall (buildInChatFrame)
+    local width, window_height, is_movable
     local large_dialog = settings and settings.large_stream_dialog ~= false
     if large_dialog then
         -- Large streaming dialog (95% of screen)
-        -- Streaming dialog chrome: title bar (~50px), 1 button row (~50px), borders/padding (~20px)
-        local chrome_height = Screen:scaleBySize(120)
         width = UIConstants.CHAT_WIDTH()
-        text_height = UIConstants.CHAT_HEIGHT() - chrome_height
+        window_height = UIConstants.CHAT_HEIGHT()
         is_movable = false
     else
         -- Compact streaming dialog (same size as compact chat view)
-        local chrome_height = Screen:scaleBySize(120)
         width = UIConstants.CHAT_WIDTH({ compact = true })
-        text_height = UIConstants.COMPACT_DIALOG_HEIGHT() - chrome_height
+        window_height = UIConstants.COMPACT_DIALOG_HEIGHT()
         is_movable = true
     end
 
     local font_size = (settings and settings.response_font_size) or 20
-    local auto_scroll = settings and settings.stream_auto_scroll ~= false
+    local auto_scroll = settings and settings.stream_auto_scroll == true
 
     -- Auto-scroll state: starts based on setting, can be toggled by user
     local auto_scroll_active = auto_scroll
@@ -1109,6 +1228,9 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
         if not keep_read_position or auto_scroll_active then return nil end
         if not first_content_received or hidden_streaming or in_reasoning_phase then return nil end
         local iw = streamDialog and streamDialog._input_widget
+        -- The Markdown view reads its page's first words (the viewer lands on
+        -- the page holding them, counting occurrences the same way)
+        if iw and iw.markdown_stream then return iw:capturePosition() end
         local stw = iw and iw.text_widget
         local tb = stw and stw.text_widget
         local vsl = tb and tb.vertical_string_list
@@ -1202,7 +1324,7 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
             if not completed and not stream_finished and streamDialog and streamDialog._input_widget then
                 local iw = streamDialog._input_widget
                 local keep_charpos, keep_top
-                if not auto_scroll_active then
+                if not auto_scroll_active and not iw.markdown_stream then
                     -- Preserve user's manual scroll position
                     iw:resyncPos()
                     -- Capture NOW: the unpadded setText below clamp-yanks the
@@ -1235,18 +1357,31 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
                         display = #display > 0 and (display .. "\n\n" .. status_suffix)
                             or status_suffix
                     end
+                    -- The pause dots, unless words came since the pause tick looked
+                    if pause.frame and #result_buffer + #reasoning_buffer == pause.n
+                            and web_search_status == pause.status then
+                        display = #display > 0 and (display .. "\n\n" .. pause.frame) or pause.frame
+                    end
                 end
-                iw:setText(display, true)
+                if iw.markdown_stream then
+                    -- The rendered view decides when to re-render (line ends, a
+                    -- floor between renders) and shows the last page while
+                    -- following, the reader's page otherwise
+                    iw.follow = auto_scroll_active
+                    iw:setText(display)
+                else
+                    iw:setText(display, true)
 
-                if not (hidden_streaming and not hidden_output_visible) then
-                    if auto_scroll_active then
-                        if page_scroll then
-                            applyPageScroll(iw, display)
-                        else
-                            iw:scrollToBottom()
+                    if not (hidden_streaming and not hidden_output_visible) then
+                        if auto_scroll_active then
+                            if page_scroll then
+                                applyPageScroll(iw, display)
+                            else
+                                iw:scrollToBottom()
+                            end
+                        elseif page_scroll then
+                            holdPageScroll(iw, display, keep_charpos, keep_top)
                         end
-                    elseif page_scroll then
-                        holdPageScroll(iw, display, keep_charpos, keep_top)
                     end
                 end
             end
@@ -1262,6 +1397,13 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
         if auto_scroll_active then
             auto_scroll_active = false
             logger.dbg("KOAssistant: stream autoscroll paused —", cause or "toggle")
+            -- The rendered view learns it now, not at the next tick: a
+            -- drawing it holds back (the floor between drawings) comes
+            -- before that tick whenever the answer stops arriving for a
+            -- moment, and showed the last page again right after the
+            -- reader's step up
+            local iw = streamDialog._input_widget
+            if iw and iw.markdown_stream then iw.follow = false end
             -- Update button to show current state (OFF)
             local btn = streamDialog.button_table:getButtonById("scroll_control")
             if btn then
@@ -1276,7 +1418,12 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
         auto_scroll_active = true
         logger.dbg("KOAssistant: stream autoscroll resumed — toggle")
         local iw = streamDialog._input_widget
-        if iw then
+        if iw and iw.markdown_stream then
+            -- The rendered view: the latest text, then its last page
+            iw.follow = true
+            iw:setText(in_reasoning_phase and table.concat(reasoning_buffer) or table.concat(result_buffer))
+            iw:jumpToEnd()
+        elseif iw then
             if page_scroll then
                 -- Page-based: jump to the last page of content. Compose the
                 -- hidden shape when a hidden stream's output is concealed —
@@ -1386,9 +1533,10 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
     end
 
     -- Title: the action being run, else the generic state line. Capped so the
-    -- title stays on one line: InputDialog's title bar wraps, and the dialog
-    -- height above is sized for a single title line. The cap counts display
-    -- width, a 3- or 4-byte character (CJK, kana, Hangul) as two units.
+    -- title ends on a whole character with its ellipsis: the title bar shows
+    -- one line (titleBarLikeChat) and would cut a longer one itself. The cap
+    -- counts display width, a 3- or 4-byte character (CJK, kana, Hangul) as
+    -- two units.
     local stream_title = _("AI is responding")
     local req_title = settings and settings.request_title
     if type(req_title) == "string" and req_title:find("%S") then
@@ -1405,32 +1553,38 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
         end
     end
 
-    streamDialog = InputDialog:new{
-        title = stream_title,
-        inputtext_class = StreamText,
-        input_face = Font:getFace("infofont", font_size),
+    -- The window in the chat window's frame, its title bar as that window's
+    -- and with the close button (buildInChatFrame)
+    streamDialog = buildInChatFrame(function(text_height)
+        return InputDialog:new{
+            title = stream_title,
+            inputtext_class = markdown_stream and StreamMarkdown or StreamText,
+            input_face = Font:getFace("infofont", font_size),
 
-        -- size parameters
-        width = width,
-        text_height = text_height,
-        is_movable = is_movable,
+            -- size parameters
+            width = width,
+            text_height = text_height,
+            is_movable = is_movable,
 
-        -- behavior parameters
-        readonly = true,
-        fullscreen = false,
-        allow_newline = true,
-        add_nav_bar = false,
-        cursor_at_end = true,
-        add_scroll_buttons = true,
-        condensed = true,
-        auto_para_direction = true,
-        scroll_by_pan = true,
-        buttons = dialog_buttons,
-    }
-
-    -- Add close button to title bar
-    streamDialog.title_bar.close_callback = _closeStreamDialog
-    streamDialog.title_bar:init()
+            -- behavior parameters
+            readonly = true,
+            fullscreen = false,
+            allow_newline = true,
+            add_nav_bar = false,
+            cursor_at_end = true,
+            add_scroll_buttons = true,
+            condensed = true,
+            auto_para_direction = true,
+            scroll_by_pan = true,
+            buttons = dialog_buttons,
+            -- The Markdown view's render options (koassistant/request/stream_markdown.lua)
+            koa_stream = markdown_stream and {
+                features = settings and settings.features,
+                text_align = settings and settings.text_align,
+                font_size = font_size,
+            } or nil,
+        }
+    end, window_height, markdown_stream and "markdown" or "plain", _closeStreamDialog)
     if large_dialog then clampDialogToChatRegion(streamDialog) end
     UIManager:show(streamDialog)
 
@@ -1442,16 +1596,23 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
     -- following is already off, so the hooks are inert until it matters.
     --
     -- Directional rule: an UPWARD step input (button, key, swipe) while
-    -- FOLLOWING pauses the follow AND scrolls up (maintainer 2026-11-06,
-    -- replacing the consumed first press of 2026-08-15: one press to look
-    -- back, not two); on the first page, where nothing is above, it only
-    -- pauses, and the view stays where it is. A DOWNWARD scroll pauses only when the
+    -- FOLLOWING pauses in place and is CONSUMED: "stop the page where it is"
+    -- (the maintainer, 2026-08-15, and again on a reader with page keys,
+    -- 2026-11-14: "while it does stop the autoscroll, it still ALSO scroll
+    -- back one page"); looking back is the NEXT press, which scrolls normally
+    -- once following is off. The same on every page, the first included.
+    -- (Between 2026-11-06 and 2026-11-14, never released, the first step
+    -- paused and scrolled in one press.) A DOWNWARD scroll pauses only when the
     -- view actually moved: page-down while sitting at the tail moves nothing,
     -- and silently stopping the follow there left the stream stalled exactly
     -- where the reader wanted it. Pan/drag is direct manipulation — it pauses
     -- AND honors the dragged position, never consumed.
     do
+        -- The view's position: the plain widget's top line, the Markdown
+        -- view's page (its inner widget is a ScrollHtmlWidget, with the same
+        -- scrollText and onScrollUp the hooks below wrap)
         local function innerLineNum(stw)
+            if stw and stw.htmlbox_widget then return stw.htmlbox_widget.page_number end
             local tb = stw and stw.text_widget
             return tb and tb.virtual_line_num
         end
@@ -1462,9 +1623,9 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
         local original_scrollUp = streamDialog._input_widget.scrollUp
         streamDialog._input_widget.scrollUp = function(self_widget, ...)
             if auto_scroll_active then
-                -- First upward press while following: pause, then scroll up
-                -- like any press (a no-op on the first page)
+                -- First upward press while following: stop in place, eat the scroll
                 turnOffAutoScroll("scroll-up button")
+                return
             end
             return original_scrollUp(self_widget, ...)
         end
@@ -1493,9 +1654,9 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
                 inner.scrollText = function(self_w, direction, ...)
                     if direction and direction < 0 then
                         if auto_scroll_active then
-                            -- First upward step while following: pause, then
-                            -- scroll up like any step (a no-op on the first page)
+                            -- First upward step while following: stop in place
                             turnOffAutoScroll("swipe/key up")
+                            return
                         end
                         return orig_scrollText(self_w, direction, ...)
                     end
@@ -1522,22 +1683,19 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
                 end
             end
 
-            -- Hook onScrollUp to catch page-up key when content fits on one page.
-            -- ScrollTextWidget.onScrollUp() only calls scrollText() when virtual_line_num > 1,
-            -- so on page 1 the scrollText hook above never fires — and upward
-            -- pauses even without movement.
+            -- Hook onScrollUp to catch the page-up key: a key press arrives
+            -- here first, and ScrollTextWidget.onScrollUp() only calls
+            -- scrollText() when virtual_line_num > 1, so on page 1 the
+            -- scrollText hook above never fires — and upward pauses even
+            -- without movement.
             local orig_onScrollUp = inner.onScrollUp
             if orig_onScrollUp then
                 inner.onScrollUp = function(self_w, ...)
                     if auto_scroll_active then
-                        -- First upward key while following: pause, then scroll
-                        -- up when there is anything above; on the first page
-                        -- the event is consumed (true = handled, no propagation)
-                        -- so the pause is all it does
+                        -- First upward key while following: stop in place,
+                        -- consume the event (true = handled, no propagation)
                         turnOffAutoScroll("page-up")
-                        local handled = orig_onScrollUp(self_w, ...)
-                        if handled == nil then return true end
-                        return handled
+                        return true
                     end
                     return orig_onScrollUp(self_w, ...)
                 end
@@ -1569,7 +1727,7 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
         if completed or stream_finished then return end
         if not first_content_received then
             streamDialog._input_widget:setText(getWaitingText(), true)
-            UIManager:scheduleIn(0.4, updateAnimation)
+            UIManager:scheduleIn(Waiting.INTERVAL, updateAnimation)
         elseif hidden_streaming then
             -- Sole frame owner for the hidden placeholder (B2). Keep ticking even
             -- while the output is revealed (Show pressed) so the dots resume
@@ -1578,14 +1736,52 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
             if not hidden_output_visible then
                 streamDialog._input_widget:setText(hiddenDisplay(), true)
             end
-            UIManager:scheduleIn(0.4, updateAnimation)
+            UIManager:scheduleIn(Waiting.INTERVAL, updateAnimation)
         end
     end
     -- Holds the FUNCTION (UIManager:scheduleIn returns nothing and unschedule
     -- takes the action, as for poll_task): cleanup and stopWaitingAnimation
     -- drop the pending tick through it
     animation_task = updateAnimation
-    UIManager:scheduleIn(0.4, updateAnimation)
+    UIManager:scheduleIn(Waiting.INTERVAL, updateAnimation)
+
+    -- After the first words the stream redraws only while words come: on an
+    -- e-reader that sleeps about 5 s after the last screen update, a pause
+    -- (a web search, a slow provider) waited for the next tap (B709, #126).
+    -- After PAUSE_TICKS quiet ticks the dots show after the text and move;
+    -- words arriving take them away
+    pause.dots = self:createWaitingAnimation()
+    -- The title carries the waiting dots from the first words to the end
+    -- (B752). A window that does not follow shows a page that stands still
+    -- while the answer grows under it, and the pause dots stand after the
+    -- text, off that page: nothing on screen said whether the answer was
+    -- still arriving, and an e-reader that sleeps after its last screen
+    -- update could doze in the middle of one. KOReader's own way to change a
+    -- one-line title in place (TitleBar:setTitle: the text widget's text and
+    -- a "ui" refresh of the bar alone).
+    local title_dots = self:createWaitingAnimation()
+    pause.stop = Waiting.tick(function()
+        if completed or stream_finished then return false end
+        if not first_content_received or hidden_streaming then return end
+        local bar = streamDialog and streamDialog.title_bar
+        if bar and bar.setTitle then
+            bar:setTitle(stream_title .. " " .. title_dots.getNextFrame())
+        end
+        local n = #result_buffer + #reasoning_buffer
+        if n ~= pause.n or web_search_status ~= pause.status then
+            pause.n, pause.status, pause.quiet = n, web_search_status, 0
+            if pause.frame then
+                pause.frame = nil
+                scheduleUIUpdate()
+            end
+            return
+        end
+        pause.quiet = pause.quiet + 1
+        if pause.quiet >= StreamHandler.PAUSE_TICKS then
+            pause.frame = pause.dots.getNextFrame()
+            scheduleUIUpdate()
+        end
+    end)
 
     -- Mark streaming as active (for update checker to defer popups)
     _G.KOAssistantStreaming = true
@@ -1667,7 +1863,12 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
 
     local function endStream()
         partial_data = harvestMarkers(partial_data)
-        if marker_seen or not parent_read_fd or drain_polls >= DRAIN_MAX_POLLS then
+        -- Behind an error event the status line may still be on its way (the
+        -- child writes it after the allowance marker): that marker alone does
+        -- not end the wait then
+        local awaiting_status = stream_error and not non200
+            and not (type(partial_data) == "string" and partial_data:find("X-NON-200-STATUS:", 1, true))
+        if (marker_seen and not awaiting_status) or not parent_read_fd or drain_polls >= DRAIN_MAX_POLLS then
             partial_data = dropHalfMarker(partial_data)
             finishStream()
             return
@@ -1947,7 +2148,7 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
 
                             -- Handle reasoning content (displayed with header, saved separately)
                             if type(reasoning) == "string" and #reasoning > 0 then
-                                table.insert(reasoning_buffer, reasoning)
+                                table.insert(reasoning_buffer, require("koassistant.request.scope_resolver").joinSurrogates(reasoning))
 
                                 -- Update UI with reasoning
                                 if not first_content_received then
@@ -2002,7 +2203,7 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
                                         if auto_scroll_active then page_top_line = 1 end
                                     end
 
-                                    table.insert(result_buffer, content)
+                                    table.insert(result_buffer, require("koassistant.request.scope_resolver").joinSurrogates(content))
                                     has_streamed_content = true
 
                                     -- Update UI
@@ -2070,6 +2271,13 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
                                 partial_data = data:sub(pos)
                                 completed = true
                                 stream_error = tostring(err_message)
+                                -- This line may be a REFUSED request's whole body
+                                -- (Anthropic, DeepSeek and OpenRouter answer a
+                                -- non-200 with one JSON line): on the transport
+                                -- every device uses it comes before the status
+                                -- marker. Kept for finishStream, which reads it
+                                -- with the marker's status once the drain has it.
+                                table.insert(error_body_lines, line)
                                 endStream()
                                 return
                             -- Check for Ollama done signal
@@ -2100,7 +2308,7 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
 
                                 -- Handle reasoning content (same logic as SSE handling)
                                 if type(reasoning) == "string" and #reasoning > 0 then
-                                    table.insert(reasoning_buffer, reasoning)
+                                    table.insert(reasoning_buffer, require("koassistant.request.scope_resolver").joinSurrogates(reasoning))
 
                                     if not first_content_received then
                                         first_content_received = true
@@ -2121,7 +2329,7 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
                                         if auto_scroll_active then page_top_line = 1 end
                                     end
 
-                                    table.insert(result_buffer, content)
+                                    table.insert(result_buffer, require("koassistant.request.scope_resolver").joinSurrogates(content))
                                     has_streamed_content = true
 
                                     if not first_content_received then
@@ -2135,7 +2343,19 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
                                 end
                             end
                         else
-                            logger.warn("Failed to parse NDJSON line:", line)
+                            -- Its length only (the line can be a piece of an
+                            -- answer), and at debug level: the "{" that opens an
+                            -- indented error body lands here on every such error
+                            logger.dbg("KOAssistant: unreadable NDJSON line,", #line, "bytes")
+                            -- The first line of an indented error body is a lone
+                            -- "{" (Gemini, OpenAI): kept with the lines that
+                            -- follow, so the body decodes whole at the status
+                            -- marker and keeps the provider's error code. It was
+                            -- dropped, and the sentence then came from a pattern,
+                            -- without the code the account-limit tip reads.
+                            if not has_streamed_content and #result_buffer == 0 then
+                                table.insert(error_body_lines, line)
+                            end
                         end
                     elseif line:sub(1, #PROTOCOL_NON_200) == PROTOCOL_NON_200 then
                         non200 = true
@@ -2144,20 +2364,8 @@ The provider read about %1% of it (%2 tokens) and answered from that part. The r
                         -- in koassistant/request/gpt_query.lua. macOS sends only the marker (no body), so
                         -- error_body_lines is empty and we fall back to the marker text, which is
                         -- already clean ("HTTP <code>: <message>" from BaseHandler.formatNon200).
-                        local marker_text = line:sub(#PROTOCOL_NON_200 + 1):match("^%s*(.-)%s*$")
-                        local body = table.concat(error_body_lines):match("^%s*(.-)%s*$") or ""
-                        local clean = #body > 0 and extractApiError(body) or nil
-                        if clean then
-                            -- The status code is the marker's, the sentence the body's:
-                            -- keep both, as the macOS path does
-                            local code = marker_text:match("^HTTP%s+(%d+)") or marker_text:match("^Error%s+(%d+)")
-                            if code and not clean:match("^HTTP%s+%d+") then
-                                clean = "HTTP " .. code .. ": " .. clean
-                            end
-                        else
-                            clean = marker_text
-                        end
-                        if not clean or clean == "" then clean = "Request failed" end
+                        local clean = self.non200Message(line:sub(#PROTOCOL_NON_200 + 1),
+                            table.concat(error_body_lines))
                         -- result_buffer must hold ONLY the clean message. Clear in place
                         -- (closures hold this upvalue by reference).
                         for _idx = #result_buffer, 1, -1 do result_buffer[_idx] = nil end
@@ -2214,9 +2422,11 @@ end
 --- @param event table: Parsed JSON event
 --- @return boolean truncated
 function StreamHandler:checkIfTruncated(event)
-    -- OpenAI/DeepSeek format: finish_reason = "length"
+    -- OpenAI/DeepSeek format: finish_reason = "length" (Mistral's
+    -- "model_length" too: the parser's one rule)
     local choice = event.choices and event.choices[1]
-    if choice and choice.finish_reason == "length" then
+    if type(choice) == "table"
+            and require("koassistant.api.response_parser").isCutReason(choice.finish_reason) then
         return true
     end
 

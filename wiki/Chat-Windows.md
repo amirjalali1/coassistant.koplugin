@@ -82,20 +82,22 @@ The draft is cleared when you send the message or start a new chat. Closing the 
 
 ![Streaming response](https://raw.githubusercontent.com/zeeyado/koassistant.koplugin/main/screenshots/streaming.png)
 
-With streaming on (the default), responses appear in real time as the AI generates them. It works with all providers that support streaming. The window's title names the action being run, or reads "AI is responding" for a question you typed.
+With streaming on (the default), responses appear in real time as the AI generates them. It works with all providers that support streaming. The window's title names the action being run, or reads "AI is responding" for a question you typed. From the first words until the answer is complete, dots move after the title: with the page standing still under your eyes, they are the sign that the rest is still arriving.
 
 **Buttons:**
 
 - **Stop** cancels the request.
-- **Autoscroll ON ↓** / **Autoscroll OFF ↓**: tap to stop or start auto-scrolling.
+- **Autoscroll OFF ↓** / **Autoscroll ON ↓**: the button says what the window does now. Tap it to make the window follow the arriving text for this response, or to stop it.
 - **⚡** (**Quick** without emoji icons): drops this answer and asks again with your Quick Answer preset's speed settings (by default reasoning, web search and book tools off), and the chat's replies stay quick. It is shown for questions you type and for actions that accept Quick Answer, not for X-Ray and other artifact actions, and is grayed out when the request already runs quick.
 - **△** / **▽** scroll the text.
 
 **How the text moves:**
 
-- **Auto-scroll** (default): follows new text as it appears. It pauses when you swipe, use page buttons, or tap the scroll controls: the first step up pauses it and scrolls back a page in the same press (on the first page, where there is nothing above, it only pauses), a step down pauses it only when the view actually moves, and dragging pauses it where you let go. Tap Autoscroll to follow again.
-- **Page-based scroll** (default): text fills the current page top-down, then advances to a blank page when full, minimizing full-screen e-ink refreshes. Turn it off for continuous bottom-scrolling. It needs Auto-scroll.
-- **Keep your place**: if auto-scroll is off or paused and you keep reading while the rest streams in, the finished chat opens at your spot instead of jumping to the newest reply (in Markdown it opens on the page holding your line; in Plain Text your line starts the view).
+- **From the first page** (default): the answer fills the first page and stays there while the rest arrives, so you read at your own pace. Turn the pages as you read (a swipe, the page buttons or keys, the scroll controls) and the page you are on stays put. The scroll bar and **▽** show that there is more below.
+- **Auto-scroll** (off by default: **Auto-scroll Streaming** in the settings below, or the window's Autoscroll button for one response): the window follows new text as it appears. It pauses when you swipe, use page buttons, or tap the scroll controls: the first step up stops the page where it is (the next one scrolls back), a step down pauses it only when the view actually moves, and dragging pauses it where you let go. Tap Autoscroll to follow again. An X-Ray build is always followed: its text is data nobody reads, and the movement shows that the build is running.
+- **Page-based scroll** (default): in the plain text view, while the window follows, text fills the current page top-down, then advances to a blank page when full, minimizing full-screen e-ink refreshes. Turn it off for continuous bottom-scrolling.
+- **Keep your place** (default): when the answer is complete, the finished chat opens on the page you are on (in Markdown the page holding your line; in Plain Text your line starts the view). If you never left the first page, it opens on the reply's first page.
+- **Markdown while streaming** (default): the answer is shown rendered as it streams, bold, headings, lists and every script in its own face, instead of plain text swapped for the rendered view at the end. It is drawn at the plain view's pace (the Display Refresh Interval below) where the device keeps up, and less often on a slow device or as the answer grows, since each time the whole answer is laid out again. A phrase is bold from its first letter, a link shows its words while its address arrives, and a table grows one whole row at a time. With Auto-scroll on it shows the last page, and a pause keeps your page while the rest arrives. When the answer is complete, the chat window takes the stream window's place in the same frame and with the text at the same place, so the first page you are reading does not move. It applies to an answer that will be shown in Markdown: a chat you switched with MD ON, else your View Mode, and in a dictionary window your Text Mode for Dictionary. An X-Ray build streams as plain text, since its answer is data, and hidden streams such as quizzes are never rendered: tap **Show** and their text arrives as plain text. The rendered window pages like a chat window (a swipe, a tap on the page's left or right half, the arrow buttons or page keys); dragging does not scroll it. Turn it off under **Settings → Chat & Export Settings → Streaming → Markdown While Streaming**: the window then streams plain text and the rendered view appears when the answer is complete.
 
 **While the AI searches the web**, the window shows "Searching the web..." and then each query, with a "Found:" line naming the sites that turn up (🔍 and 🔗 prefixes with Emoji Menu Icons). Any prose the AI writes before searching stays visible, followed by an inline *[Searched the web]* marker, so you can see where the search happened.
 
@@ -105,26 +107,35 @@ With streaming on (the default), responses appear in real time as the AI generat
 
 **Settings → Chat & Export Settings → Streaming**:
 
-- **Enable Streaming**, **Auto-scroll Streaming**, **Keep Reading Position** and **Page-based Scroll (e-ink)**, all on by default: the behavior above.
+- **Enable Streaming**, **Keep Reading Position** and **Page-based Scroll (e-ink)** (on) and **Auto-scroll Streaming** (off): the behavior above.
 - **Large Stream Dialog** (on): the streaming window takes the size of a chat window. Off, it is a smaller window you can move.
 - **Stream Poll Interval (ms)**: how often to check for new stream data (default 125 ms, range 25 to 1000). Lower values are snappier but use more battery.
 - **Display Refresh Interval (ms)**: how often to refresh the display during streaming (default 250 ms, range 100 to 500). Higher values improve performance on slower devices.
+- **Markdown While Streaming** (on): the rendered view while streaming, described above. Grayed out while Plain Text is your default view mode.
 
 Dictionary and translate lookups have their own switches (**Settings → Dictionary Settings → Enable Streaming**, **Settings → Translate Settings → Enable Streaming**), and [Minimal Popup](#minimal-popup) answers never stream.
 
+**If streaming does not look good on your e-ink screen**, these switches (all under **Settings → Chat & Export Settings → Streaming**) change it:
+
+- *The text arrives in big steps:* lower **Display Refresh Interval (ms)** to 100 or 150 for more, smaller steps. Raise it if the device feels busy while an answer streams.
+- *Parts of the answer shift as they complete* (a table when a wider row arrives, a formula when it closes): turn **Markdown While Streaming** off. The window then streams plain text and the rendered view appears when the answer is complete.
+- *Too much movement:* leave **Auto-scroll Streaming** off (the default) to read from the first page while the rest arrives, or turn **Enable Streaming** off to get the answer in one piece.
+
 ## Minimal Popup
 
-Short answers can skip the full-screen window entirely. With the minimal popup on (default: **When it fits**), answers from its registered actions land in a small popup with no buttons, anchored right at your selection (in EPUBs; centered elsewhere), instead of opening their usual window.
+Short answers can skip the full-screen window entirely. With the minimal popup on (default: **When it fits**), answers from its registered actions land in a small popup with no buttons instead of opening their usual window.
 
 - **Which actions:** Translate, Quick Define and Quick Explain by default. Pick the set under **Settings → Minimal Popup** (its **Actions Using Minimal Popup** row). Any highlight action that answers with text can join.
-- **When** (the **Minimal Popup View** row): **When it fits** (default) uses the popup only when the whole answer fits in it (the popup is up to about half the screen tall); longer answers open the usual window directly. **Always** keeps even long answers in the popup, trimmed, with a muted "Tap to show the full response" hint. **Off** disables the feature.
+- **When** (the **Minimal Popup View** row): **When it fits** (default) uses the popup only when the whole answer fits in it (the popup is up to about half the screen tall); longer answers open the usual window directly. **Always** keeps even long answers in the popup, where they scroll: swipe up or down, or use the page-turn keys. **Off** disables the feature.
+- **Where** (the **Popup Style** row): **Floating box** (the default) sits right at your selection (in EPUBs; centered elsewhere) and is as wide as the chat window. **Footnote panel** sits at the bottom of the screen from edge to edge, like KOReader's footnote popups.
+- **What it shows:** the answer the way the window it opens would show it. In the Markdown view that is bold, italics, lists, each script in its own face and each paragraph in its own direction; with your view on Plain Text it is the plain text ([Markdown and plain text](#markdown-and-plain-text)).
 - **Tap to expand:** tapping the popup opens the answer in the action's usual window (the translate window for Translate, the compact dictionary window for Quick Define, the chat window for Quick Explain), where replies and all the usual buttons live.
-- **Dismiss:** tap outside the popup, or press a page-turn or Back key.
+- **Hold a word:** a word held in the popup is looked up, and a longer selection or a long hold opens the selection popup (Copy, Dictionary, Translate and the rest), as in any KOAssistant window ([Selecting text in a window](#selecting-text-in-a-window)). The popup stays underneath.
+- **Dismiss:** tap outside the popup, or press Back. A page-turn key closes it too, once there is nothing more to scroll that way (at once for an answer that fits). The footnote panel also closes on a swipe down above it.
 - **No streaming:** these requests skip the streaming window. A small notice in the corner ("Translating…", or the action's name) keeps the page visible while the request runs; a tap, a key press or a swipe cancels it. Replies in the expanded window follow your streaming setting again.
 - It applies only to actions run on a highlight, and never to full-page translation.
-- The popup shows the answer as plain text, following **Apply Markdown Stripping** and the right-to-left rules of [Markdown and plain text](#markdown-and-plain-text).
 - The popup stands aside automatically when a dictionary window is covering the book.
-- A Quick Settings tile (**Minimal Popup: On** / **Off**) toggles the whole feature and remembers whether you had When it fits or Always. Hold the tile for the mode and the per-action toggles.
+- A Quick Settings tile (**Minimal Popup: On** / **Off**) toggles the whole feature and remembers whether you had When it fits or Always. Hold the tile for the mode, the style and the per-action toggles.
 
 ## Markdown and plain text
 
@@ -132,54 +143,55 @@ KOAssistant offers two view modes for displaying AI responses.
 
 **Markdown view** (default)
 
-- Full formatting: bold, italic, headers, lists, code blocks, tables
+- Full formatting: bold, italic, headers, lists, task lists (`- [ ]` and `- [x]` drawn as ☐ and ☑), code blocks, tables
+- A numbered list keeps the numbers the answer wrote: items with blank lines between them count on (1, 2, 3), and a list that goes on after a paragraph, a quote, a table or bullets, or that starts past 1, is shown with the answer's own numbers
+- A message you typed with line breaks in it shows each line as a paragraph of its own (Plain Text shows the lines as typed)
 - Best for most users with Latin scripts
 
 **Plain Text view**
 
 - Uses KOReader's interface fonts, which fall back letter by letter (Noto faces for Arabic, Devanagari and Bengali, FreeSans for Hebrew, and emoji once the emoji font is installed)
-- Recommended for scripts the Markdown view draws in its plain serif fallback (Hebrew, Devanagari, Bengali, Thai) and for emoji; Arabic and Persian read well in both views
+- Thai and the other scripts the Markdown view has no face of its own for read better here; Arabic and Hebrew read well in both views. Emoji need the installed emoji font here ([Troubleshooting](Troubleshooting#emoji-font-setup)); the Markdown view draws them on its own
 - Markdown is stripped to keep the text readable (**Settings → Display Settings → Rendering → Plain Text Options → Apply Markdown Stripping**, on by default; turn it off to see the raw markdown):
   - Headers → hierarchical symbols (`▉ **H1**`, `◤ **H2**`, `◆ **H3**`)
   - **Bold** → renders as actual bold
   - *Italics* (asterisks) → preserved as `*text*` for prose readability
   - _Italics_ (underscores) → bold (for dictionary part of speech)
-  - Lists → bullet points (•)
+  - Lists → bullet points (•); task items → ☐ and ☑
   - Code → `'quoted'`
   - Line spacing tuned to match the visual density of the Markdown view
-- **BiDi support**: mixed RTL/LTR content (e.g., Arabic headwords with English definitions) displays correctly; RTL-only headers align naturally to the right
+- **BiDi support**: a line that mixes right-to-left and Latin words is laid out by the rule of the Markdown view (below): an English definition that opens with an Arabic headword stays left-to-right, an Arabic sentence with an English name in it stays right-to-left. RTL-only headers align naturally to the right
 
 **How to switch:**
 
-- **This chat**: tap **MD ON / TXT ON** in the window's bottom row. The choice stays with the chat: replies, closing it and reopening it keep it.
+- **This chat**: tap **MD ON / TXT ON** in the window's bottom row. The window stays at the text you were reading, and the choice stays with the chat: replies, closing it and reopening it keep it.
 - **Your default**: **Settings → Display Settings → Rendering → View Mode**, or long-press **MD ON / TXT ON** and tap **Default view mode**. Every chat you have not switched follows it.
 
-Long-pressing **MD ON / TXT ON** opens the **Display** menu: **Default view mode**, **Latest reply on new page**, **Font Size**, **Alignment**, **Strip markdown in text mode** and **Auto RTL mode for Chat**, the same settings as in the gear menu and Display Settings.
+Long-pressing **MD ON / TXT ON** opens the **Display** menu: **Default view mode**, **Latest reply on new page**, **Font Size**, **Alignment** and **Strip markdown in text mode**, the same settings as in the gear menu and Display Settings.
 
-**If text does not render correctly in the Markdown view**, switch to Plain Text: the Markdown renderer picks one font per paragraph and draws a letter that font lacks in a fixed fallback face (no emoji there), while Plain Text uses KOReader's interface fonts letter by letter. See [Troubleshooting](Troubleshooting).
+**If text does not render correctly in the Markdown view**, switch to Plain Text: the Markdown renderer draws each script in its own face (Arabic, Persian and Urdu in the right-to-left font; Hebrew, Devanagari and emoji in fixed faces) and a letter none of those cover in a fallback face, while Plain Text uses KOReader's interface fonts letter by letter. See [Troubleshooting](Troubleshooting).
 
 **Math formulas:** in Markdown view, LaTeX math in responses (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`) is shown as readable formulas: Greek letters and operators as real symbols, superscripts and subscripts, vector arrows and hats, roots, fractions as `a/b`, and `$$` blocks on their own centered line. This is display-only: saved chats, copies, exports and notebook entries keep the original LaTeX, which apps like Obsidian render fully. Plain Text view shows the LaTeX as written. Toggle it under **Settings → Display Settings → Rendering → Render Math Formulas** (on by default; grayed out while Plain Text is your default). True typesetting (stacked fractions, matrices) is not possible in the window's renderer; those flatten to `a/b` and `(a, b; c, d)`.
 
-**Right-to-left text in the Markdown view.** Every paragraph, heading, list item, quote and table cell is laid out in its own direction, decided by the majority of its words (the first word when they tie), so a chat that mixes directions reads right block by block: an Arabic answer with a Latin name in it, an English answer quoting Arabic, an earlier right-to-left reply above a later English one. Arabic, Persian, Urdu, Syriac and the other right-to-left scripts all count. A right-to-left quote mirrors its border, and the Left and Right alignments keep their side for both directions. Left-to-right lists are real lists (nested ones indented); a list with a right-to-left item is shown as marked lines, since the renderer draws no markers for a right-to-left list. Right-to-left paragraphs, headings, list items, quotes and table cells are drawn in **Noto Naskh Arabic**, the face KOReader gives Arabic books, bold included, so an Arabic or Persian answer in the Markdown view looks like one in a book; a right-to-left word inside a left-to-right paragraph keeps the window's fallback face. The **Right-to-left text font** row below picks another face.
+**Right-to-left text in the Markdown view.** Every paragraph, heading, list item, quote and table cell is laid out in its own direction. A block that begins in the language direction of the message it belongs to keeps that direction (in an English answer, a line such as **Synonyms:** followed by Arabic words stays left-to-right; in an Arabic answer, a line that opens in Arabic and lists Latin terms stays right-to-left); any other block goes by the majority of its words (the first word when they tie). So a chat that mixes directions reads right block by block: an Arabic answer with a Latin name in it, an English answer quoting Arabic, an earlier right-to-left reply above a later English one. Arabic, Persian, Urdu, Syriac and the other right-to-left scripts all count. A right-to-left quote mirrors its border, and the Left and Right alignments keep their side for both directions. A table takes its direction by the same rule as a paragraph. A right-to-left table is laid out right-to-left as a whole: its first column on the right and each cell's text at the right of its cell, while every cell keeps the direction of its own words (an English cell in an Arabic table keeps its full stop at its end); a table with an Arabic column in an English answer keeps its order. A table too wide for the screen is shown as lines of header and value, which a right-to-left table writes right-to-left with its rule on the right. Left-to-right lists are real lists (nested ones indented); a list with a right-to-left item is shown as marked lines, since the renderer draws no markers for a right-to-left list. Arabic, Persian and Urdu letters are drawn in **Noto Naskh Arabic**, the face KOReader gives Arabic books, bold included, wherever they appear: a whole paragraph, or a word quoted inside an English sentence. Hebrew and Devanagari take the faces KOReader's own interface uses for them, and emoji are drawn with the plugin's bundled emoji font, no install needed. The **Right-to-left text font** row below picks another Arabic face. A dictionary window that shows the book's sentence above the answer judges the answer by its own words: an English definition under an Arabic sentence stays left-to-right, even where it opens with the Arabic headword.
 
 **Right-to-left text** (all under **Settings → Display Settings → Rendering**):
 
-- **Auto RTL mode for Chat** (off): when on, chat and artifact windows switch to right-aligned Plain Text when the latest response has more right-to-left letters (of any right-to-left script) than Latin ones; English text referencing Arabic stays in Markdown. Off by default: the Markdown view lays every paragraph out in its own direction and draws the right-to-left ones in the font above. Grayed out while Plain Text is your default. A chat whose **MD ON / TXT ON** you tapped keeps that choice across replies, a reopen and a rotation.
-- **Right-to-left text font** (Noto Naskh Arabic): the font of Arabic, Persian and other right-to-left text in the Markdown view. **Noto Sans Arabic UI** is the face of KOReader's own text windows; any font KOReader knows can be picked, each row drawn in its own face (a font you copy into KOReader's fonts folder appears after a restart); **None** keeps the window's fallback font. A script the chosen font lacks (Hebrew, in both shipped faces) stays in that fallback. Grayed out while Plain Text is your default.
-- **Text Mode for Dictionary** (off): dictionary windows always use Plain Text, regardless of your view mode; better for scripts the Markdown view draws in its plain fallback face (Hebrew, Devanagari, Bengali, Thai).
-- **Text Mode for RTL Dictionary** (on): dictionary windows use Plain Text when your dictionary language is RTL (Arabic, Classical Arabic, Persian or Urdu). Grayed out when Text Mode for Dictionary is on.
-- **Text Mode for RTL Translate** (off): when on, the translate window uses Plain Text when your translation language is RTL; off, the Markdown view shows the translation right-to-left in the right-to-left font and the original left-to-right.
+- **Right-to-left text font** (Noto Naskh Arabic): the font of Arabic, Persian and Urdu letters in the Markdown view, wherever they appear, and in the X-Ray card's footnote panel. **Noto Sans Arabic UI** is the face of KOReader's own text windows; any font KOReader knows can be picked, each row drawn in its own face (a font you copy into KOReader's fonts folder appears after a restart); **None** keeps the window's fallback font for those letters. Hebrew and Devanagari have their own fixed faces; Bengali keeps the window's fallback font. Grayed out while Plain Text is your default.
+- **Text Mode for Dictionary** (off): dictionary windows always use Plain Text, whatever your view mode.
+
+A chat whose **MD ON / TXT ON** you tapped keeps that choice across replies, a reopen and a rotation; no window switches to Plain Text on its own.
 
 The languages themselves are set on [Languages](Languages).
 
 **Where a chat opens** (also under **Settings → Display Settings → Rendering**):
 
-- **Latest Reply on New Page** (on): opens the newest reply on a fresh page. Your question, the usage line (reasoning, web search, book lookups) and the KOAssistant label stay on the page before, and the page you land on starts with the reply's first line, the first answer of a chat included (step back one page for the question). Markdown chats get a real page break (older exchanges stay compact; the break moves forward with each reply and never touches saves or exports); Plain Text chats align the view so the reply's first line starts the screen. Chat window only.
+- **Latest Reply on New Page** (on): opens the newest reply on a fresh page. Your question, the usage line (reasoning, web search, book lookups) and the KOAssistant label stay on the page before, and the page you land on starts with the reply's first line, the first answer of a chat included (step back one page for the question). A chat that opens at the top instead (Open Chats at Latest Exchange off, the Chat button of a dictionary or translate window) keeps the label with its reply: after a long question the two start a fresh page together, after a short one the reply stays under it. Markdown chats get a real page break (older exchanges stay compact; the break moves forward with each reply and never touches saves or exports); Plain Text chats align the view so the reply's first line starts the screen. Chat window only.
 - **Open Chats at Latest Exchange** (on): when you open a saved chat, it jumps to the newest reply instead of the top. Replies always land on the newest reply regardless. Independent of Latest Reply on New Page, which changes the page layout rather than the starting point.
 
 ## Quotes
 
-In a highlight chat the window shows the text you highlighted above the conversation.
+In a highlight chat the window shows the text you highlighted above the conversation. A highlight of several paragraphs is quoted with its paragraphs apart.
 
 - Tap **Hide Quote** / **Show Quote** to hide or show it in this chat (useful for long selections).
 - Long-press it for **Quote display (new chats)**: **Hide quotes by default**, and **Auto-hide long quotes** (used only while the first is off).
@@ -193,25 +205,25 @@ In a highlight chat the window shows the text you highlighted above the conversa
 - **Standard** (default): 95% of the screen.
 - **Expanded**: only a hairline around them, keeping KOReader's status bar visible while a book is open. It fits more text but leaves less room to tap outside.
 
-Changed from the gear menu, it redraws the window you are in where it can; otherwise it applies from the next window, and the notice says so. The streaming window follows it while Large Stream Dialog is on.
+Changed from the gear menu, it redraws the window you are in where it can, at the text you were reading; otherwise it applies from the next window, and the notice says so. The streaming window follows it while Large Stream Dialog is on.
 
 Some windows size themselves to their text:
 
 - **Translate and artifact windows** fit their text as laid out, up to the full height, without a band of empty space at the bottom.
 - **The compact dictionary popup** opens at 60% of the screen height and grows to fit a long answer, up to 80%. Window Size leaves it alone, so there is always room to tap outside it.
 
-**Rotation:** KOAssistant automatically resizes windows when you rotate your device, adapting the chat window and the input dialog to the new orientation. The chat window keeps your place, its view mode and your reply draft, and a compact popup stays compact, fitted to its text again.
+**Rotation:** KOAssistant's windows follow the screen when you turn your device. The chat window is laid out again and keeps your place (it shows the text you were reading), its view mode and your reply draft; a compact popup stays compact, fitted to its text again. The chat's input box, the reply box, Save Chat and New Tag stay open, on top, with what you typed. Two windows wait: turned while an answer streams, the stream window keeps its shape until the answer ends (the chat window that follows fits the screen), and the minimal popup stays where it was (a tap outside closes it).
 
 ## Selecting text in a window
 
-Text selection works the same in every KOAssistant window: chat, artifact, X-Ray browser, quiz, compact, dictionary and translate windows.
+Text selection works the same in every KOAssistant window: chat, artifact, X-Ray browser, quiz, compact, dictionary and translate windows, and the [Minimal Popup](#minimal-popup).
 
 | Selection | Short hold | Long hold |
 |---|---|---|
 | **1 word** | Dictionary lookup | Selection popup |
 | **2+ words** | Selection popup | Selection popup |
 
-**A single word** opens KOReader's built-in offline dictionary, or your KOAssistant dictionary action when the dictionary bypass is on ([Dictionary and Translation](Dictionary-and-Translation)), in artifact windows too. The current window stays open underneath: the dictionary popup opens on top, and you return to your window when you close it. **Long-pressing** a single word shows the selection popup instead, giving access to Copy, Translate and the rest. A run of more than four Chinese, Japanese or Korean characters counts as a selection, not a word, since such text has no spaces.
+**A single word** opens KOReader's built-in offline dictionary, or your KOAssistant dictionary action when the dictionary bypass is on ([Dictionary and Translation](Dictionary-and-Translation)), in artifact windows too. A word that is a name in the X-Ray of the window's book opens its X-Ray entry instead ([Using X-Ray](Using-X-Ray#matching-selections)); long-press it and pick **Dictionary** to look it up all the same. The current window stays open underneath: the dictionary popup opens on top, and you return to your window when you close it. **Long-pressing** a single word shows the selection popup instead, giving access to Copy, Translate and the rest. A run of more than four Chinese, Japanese or Korean characters counts as a selection, not a word, since such text has no spaces.
 
 A long hold is about three times KOReader's long-press interval: 1.5 seconds with KOReader's default of 500 ms. The interval is set in **KOReader's gear menu → Taps and gestures → Gesture intervals → Long-press interval**.
 
@@ -220,12 +232,12 @@ A long hold is about three times KOReader's long-press interval: 1.5 seconds wit
 | Button | Action |
 |---|---|
 | **Copy** | Copy to clipboard |
-| **Dictionary** | KOReader's offline dictionary lookup |
+| **Dictionary** | The dictionary, as for a held word: KOReader's offline dictionary, or your dictionary action when the bypass is on. Never the X-Ray entry, also for a word that is an X-Ray name |
 | **Wikipedia** | KOReader's Wikipedia lookup (when the reader offers it) |
 | **Look up in X-Ray** | Search the book's X-Ray for the selected text. Shown when the window's book has an X-Ray. The only entity lookup available from a chat opened out of the file browser, and the only one that handles multi-word names |
 | **Translate** | Translate via KOAssistant's Translate action |
 | **Add to Notebook** | Append the text with a timestamp to the book's notebook (created if needed). Book chats only, not general or library chats |
-| **Add to reply** | Quote the selected text into your reply draft and open the Reply box. Full chat windows only |
+| **Add to reply** | Quote the selected text into your reply draft and open the Reply box. Full chat windows only (not the Minimal Popup, which has no Reply box) |
 
 - **Highlight clearing**: the selection's highlight clears automatically after any action or when you dismiss the popup.
 - **Chaining lookups**: look up a word, see an unfamiliar word in the AI response, select it to look that up too. The window stays open underneath throughout.

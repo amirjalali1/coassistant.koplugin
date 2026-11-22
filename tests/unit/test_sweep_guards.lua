@@ -97,9 +97,15 @@ TestRunner:test("the checkpoint size safeguard reads the build flag where it liv
         "never the features copy the request's creation cleared")
 end)
 
-TestRunner:test("a rotated Save Chat or New Tag dialog becomes the one its buttons act on", function()
-    TestRunner:assertTrue(dialogs:find("save_dialog = new_dialog  -- the buttons close and read THIS dialog now\n        UIManager:show(new_dialog)", 1, true) ~= nil, "Save Chat")
-    TestRunner:assertTrue(dialogs:find("tag_input = new_tag_dialog  -- the buttons act on THIS dialog now\n                    UIManager:show(new_tag_dialog)", 1, true) ~= nil, "New Tag")
+TestRunner:test("a rotated Save Chat or New Tag dialog stays the one its buttons act on", function()
+    -- the buttons close and read `save_dialog` / `tag_input`. The dialog used
+    -- to be replaced by a new one at a turn, which the buttons had to be
+    -- pointed at; it is laid out again in place now (the same dialog, B713;
+    -- tests/unit/test_screen_change.lua), so nothing may reassign either name
+    TestRunner:assertTrue(dialogs:find("save_dialog = new_dialog", 1, true) == nil
+        and select(2, dialogs:gsub("\n    save_dialog = InputDialog:new{", "")) == 1, "Save Chat is built once")
+    TestRunner:assertTrue(dialogs:find("tag_input = new_tag_dialog", 1, true) == nil
+        and select(2, dialogs:gsub("\n%s*tag_input = InputDialog:new{", "")) == 1, "New Tag is built once")
 end)
 
 TestRunner:test("a library chat tags under its own store", function()
@@ -260,7 +266,15 @@ TestRunner:test("a restore reloads this instance's settings in place, the object
     TestRunner:assertEqual(data.highlight_menu_actions[1], "restored", "a top-level key replaced")
     TestRunner:assertEqual(data.stale_only, nil, "a key the restore does not have is gone")
     TestRunner:assertEqual(synced, 1, "the features merge and the configuration sync ran")
-    TestRunner:assertTrue(fnBody(main, "_performRestore"):find("self:_reloadSettingsFromDisk()\n        if result.v1_chats_restored then", 1, true) ~= nil,
+    -- first thing on a successful restore, before the two other stores are
+    -- reloaded (audit 2026-11-12) and before the v1 chats import
+    local body = fnBody(main, "_performRestore")
+    local ok_at = body:find("if result.success then", 1, true)
+    local reload_at = body:find("self:_reloadSettingsFromDisk()", 1, true)
+    local groups_at = body:find('require("koassistant.books.book_groups").reload()', 1, true)
+    local v1_at = body:find("if result.v1_chats_restored then", 1, true)
+    TestRunner:assertTrue(ok_at and reload_at and groups_at and v1_at
+        and ok_at < reload_at and reload_at < groups_at and groups_at < v1_at,
         "run first thing on a successful restore")
 end)
 
@@ -274,6 +288,66 @@ TestRunner:test("the Forced tool use step clears caps.tools on every failure ret
     local cleared = body:find("caps.tools = nil", 1, true)
     local first_false = body:find("return false", 1, true)
     TestRunner:assertTrue(cleared ~= nil and first_false ~= nil and cleared < first_false, "cleared before the failure returns")
+end)
+
+-- Audit 2026-11-12 (reviewer D2's storage findings), at the source where no
+-- harness drives them
+TestRunner:test("after a restore the stores that held the old state read the disk again", function()
+    local src = read("main.lua")
+    local a = src:find("self:_reloadSettingsFromDisk()", 1, true)
+    TestRunner:assertTrue(a ~= nil, "the restore's success branch")
+    local branch = src:sub(a, a + 1200)
+    TestRunner:assertTrue(branch:find('require("koassistant.books.book_groups").reload()', 1, true) ~= nil,
+        "the book groups' session handle is dropped (it wrote the old groups back at the next group change)")
+    TestRunner:assertTrue(branch:find("self.action_service.actions_cache = nil", 1, true) ~= nil,
+        "the action list's cache is dropped (a menu build pruned the restored custom actions)")
+    local groups = read("koassistant/books/book_groups.lua")
+    TestRunner:assertTrue(groups:find("function BookGroups.reload()", 1, true) ~= nil, "BookGroups.reload exists")
+end)
+
+TestRunner:test("Restore defaults on behaviors keeps the deleted ids reserved", function()
+    local src = read("koassistant/ui/behavior_manager.lua")
+    local a = src:find('_("Restore defaults")', 1, true)
+    TestRunner:assertTrue(a ~= nil, "the row")
+    local row = src:sub(a, a + 900)
+    local reserve = row:find("self_ref:reserveIds()", 1, true)
+    local save = row:find("self_ref:saveCustomBehaviors({})", 1, true)
+    TestRunner:assertTrue(reserve ~= nil and save ~= nil and reserve < save, "ids reserved before the list is emptied")
+end)
+
+TestRunner:test("a chat about an X-Ray entry is tagged whichever way it starts: a typed question or a tapped action", function()
+    -- the X-Ray browser's "X-Ray chats" row counts chats by this tag; the
+    -- dialog's actions run through handlePredefinedPrompt, which makes its own
+    -- history, and a chat started that way was missing from the row
+    local dialogs = read("koassistant/ui/dialogs.lua")
+    TestRunner:assertTrue(dialogs:find('history.launched_from = is_xray_chat and "xray_chat" or nil', 1, true) ~= nil,
+        "the Send path tags the chat")
+    local a = dialogs:find("local xray_prefix = config.features and config.features._xray_context_prefix", 1, true)
+    TestRunner:assertTrue(a ~= nil, "the action path reads the entry's framing")
+    local near = dialogs:sub(a, a + 700)
+    TestRunner:assertTrue(near:find('if xray_prefix then history.launched_from = "xray_chat" end', 1, true) ~= nil,
+        "and tags its history when the framing is there")
+    -- the framing is set for a chat about an entry and for nothing else
+    local browser = read("koassistant/xray/xray_browser.lua")
+    local sets = 0
+    for _m in browser:gmatch("config%.features%._xray_context_prefix = ") do sets = sets + 1 end
+    TestRunner:assertEqual(sets, 1, "one place sets the framing: Chat about this")
+    TestRunner:assertTrue(browser:find('if c.launched_from == "xray_chat" then xchat_n = xchat_n + 1 end', 1, true) ~= nil,
+        "the row counts by the tag")
+end)
+
+TestRunner:test("a failed restore names its reason without a source position or the chats' text", function()
+    local src = read("koassistant/storage/backup_manager.lua")
+    for line in src:gmatch("[^\n]+") do
+        if line:find('error(e or', 1, true) or line:find('error(err_w or', 1, true) then
+            TestRunner:assertTrue(line:find(", 0) end", 1, true) ~= nil,
+                "error level 0, so the reader's message carries no file and line: " .. line:match("^%s*(.-)%s*$"))
+        end
+    end
+    TestRunner:assertTrue(src:find('"Failed to decode chat JSON: " .. tostring(all_chats)', 1, true) == nil,
+        "the decoder's message (it quotes the chats) is not passed on")
+    TestRunner:assertTrue(src:find('"Failed to decode chat JSON (" .. tostring(#content) .. " bytes)"', 1, true) ~= nil,
+        "only the size is")
 end)
 
 return TestRunner:summary()

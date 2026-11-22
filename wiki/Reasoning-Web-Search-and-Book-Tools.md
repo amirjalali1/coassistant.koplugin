@@ -25,19 +25,18 @@ The Reasoning tile in Quick Settings shows the effective state for the current m
 | Claude Sonnet 5, Opus 5, Haiku 5.5 | adaptive, on by default | Off / effort low to max, xhigh included |
 | Claude Opus 5.5 | adaptive, on by default | effort low to max, xhigh included; cannot be fully disabled |
 | Claude Fable 5.1 | adaptive, off by default (thinks when asked) | Off / effort low to max, xhigh included |
-| Claude Fable 5 | adaptive, always on | effort low to max, xhigh included; cannot be fully disabled |
+| Claude Fable 5.2, Fable 5 | adaptive, always on | effort low to max, xhigh included; cannot be fully disabled |
 | Claude Opus 4.8 / 4.7 / 4.6, Sonnet 4.6 | adaptive, off by default | Off / effort low to high; Opus adds xhigh, max |
-| Gemini 4 Argon, Gemini 3 (3.8 / 3.6 flash, 3.1 pro) | thinks by default | effort low to high (3.6 flash also minimal); cannot be fully disabled |
+| Gemini 4 (Carbon, Hydrogen, Argon), Gemini 3 (3.8 / 3.6 flash, 3.1 pro) | thinks by default | effort low to high (3.6 flash also minimal); cannot be fully disabled |
 | Gemini 3 flash-lite (3.5, 3.1) | off by default | Off / effort minimal to high |
-| Gemini 2.5 flash | thinks by default | Off / budget, dynamic to max |
 | OpenAI GPT-6 sol / luna | reasons by default | Off / effort low to xhigh |
-| OpenAI GPT-6 astra, GPT-6.1 sol | reasons by default | effort low to xhigh; cannot be fully disabled |
+| OpenAI GPT-6.2 sol / astra, GPT-6.1 sol, GPT-6 astra | reasons by default | effort low to xhigh; cannot be fully disabled |
 | OpenAI GPT-6.1 terra (the default), GPT-5.6 terra, GPT-5.6 family | reasons by default (medium) | Off / effort low to xhigh |
 | OpenAI GPT-5.4 family | off by default (gated) | Off / effort low to xhigh |
 | OpenAI GPT-5.5 | reasons by default | effort low / medium / high; cannot be fully disabled |
 | DeepSeek V4 and Flash, Z.AI GLM-4.7 to 5.2 | thinks by default | On / Off |
 | Z.AI GLM-5.3 family | always thinks | no control |
-| Qwen 3.8 / 3.7 / 3.5 (the Qwen provider) | reasons by default | Off / On |
+| Qwen4-Max, Qwen 3.8 / 3.7 / 3.5 (the Qwen provider) | reasons by default | Off / On |
 | xAI Grok 4.7, 4.6, 4.5 | reasons by default | effort minimal to xhigh; cannot be fully disabled |
 | xAI Grok 4.3 | reasons by default | Off / effort low / medium / high |
 | xAI Grok 4.20 reasoning | always reasons | no control |
@@ -46,11 +45,14 @@ The Reasoning tile in Quick Settings shows the effective state for the current m
 | Fireworks models | reason by default | Off / effort (GLM-5.3: effort only) |
 | Mistral Large 4 | thinks by default | no control on Mistral's own wire (low / medium / high through OpenCode Zen and OpenRouter) |
 | Mistral Magistral | always reasons | no control; the thinking is extracted and viewable |
+| Kimi K3 | thinks by default | On / Off |
 | Kimi K3.1 Pro | always thinks | no control |
-| NVIDIA Step 5 preview, nemotron-3 family | reason by default | Off / effort low / medium / high |
+| NVIDIA Step 5 preview and the Nemotron 3 and 3.5 models | reason by default | Off / effort low / medium / high |
+| NVIDIA Nemotron 3.5 Bolt | does not reason | no control |
+| Mistral Large 4 through NVIDIA | reasons by default | effort low / medium / high, no Off |
 | A2Agent DeepSeek-V4.1-Flash, MiniMax-M3.1-Flash | reason by default | Off / effort (MiniMax: effort only) |
 
-Temperature is forced to 1.0 where a model's reasoning requires it (Claude adaptive and extended thinking, Z.AI thinking). Sonnet 5.5, Opus 5.5, Haiku 5.5, Opus 5, Fable 5.1, Fable 5, Sonnet 5, Opus 4.8 and Opus 4.7 reject sampling parameters outright, and Google deprecated them for every Gemini 3 model and Gemini 4 Argon, so those requests carry none; **Settings → Advanced → Temperature** says "ignored by this model" for them.
+Temperature is forced to 1.0 where a model's reasoning requires it (Claude adaptive and extended thinking, Z.AI thinking). Sonnet 5.5, Opus 5.5, Haiku 5.5, Opus 5, Fable 5.2, Fable 5.1, Fable 5, Sonnet 5, Opus 4.8 and Opus 4.7 reject sampling parameters outright, and Google deprecated them for every Gemini 3 and Gemini 4 model, so those requests carry none; **Settings → Advanced → Temperature** says "ignored by this model" for them.
 
 **Viewing the reasoning.** When a model returns its thinking (Anthropic, Gemini, DeepSeek, Z.AI, Mistral, Kimi, Qwen, OpenRouter, and the `<think>`-tag models on Groq, Together, Fireworks, SambaNova, Ollama and Perplexity), it is captured and shown by **Show Reasoning** in the chat window's gear menu. The answer's usage line names it ("Reasoning/Thinking was used") when **Settings → Advanced → Reasoning → Show Indicator in Chat** is on (the default); on OpenAI, which keeps its reasoning hidden, it says "Reasoning requested" with the effort sent instead, and dictionary windows leave reasoning out of that line ([Chat Windows](Chat-Windows#show-sources-and-show-reasoning)).
 
@@ -63,7 +65,7 @@ Supported providers can search the web and use current information in their answ
 | **Anthropic** | the web search tool | all models; the effort dial sets the maximum number of searches (2 / 5 / 10) |
 | **OpenAI** | native web search (the Responses API) | GPT-5 and newer models; the effort dial sets the search context size |
 | **OpenAI Subscription** | native web search (Responses through the Codex backend) | the same models and effort mapping; which models answer depends on the ChatGPT plan |
-| **Gemini** | Google Search grounding | search-grounding-capable models; the search count is automatic. **Free-tier keys: grounding on Gemini 3.x models is rejected** (an instant "quota exceeded" error even when plain requests work): use a 2.5 model for web search on a free key (only on Google accounts old enough to still have them), switch provider, or add paid credits (confirmed to lift the limit). The error dialog offers "Try again without web search" |
+| **Gemini** | Google Search grounding | search-grounding-capable models; the search count is automatic. **Free-tier keys: grounding on Gemini 3.x models is rejected** (an instant "quota exceeded" error even when plain requests work): switch provider or add paid credits (confirmed to lift the limit); a 2.5 Flash or Pro pick no longer helps, since Google is retiring those models and such a pick is sent as a 3.x model. The error dialog offers "Try again without web search" |
 | **xAI** | the web search tool (the Responses API) | Grok-4 models; search decided automatically |
 | **OpenRouter** | Exa search through the `:online` suffix | every model (about $0.007 per searched request); the effort dial sets the result count (3 on Light, the provider default on Standard, 10 on Thorough) |
 | **Z.AI** | the `web_search` tool on the chat wire | all models; results return with links and titles; the engine is pickable (**Settings → Advanced → Provider Settings → Z.AI Search Engine**; the API's own default returns poor sources for non-Chinese queries) |
@@ -99,7 +101,7 @@ When you chat about an open book, the AI can call local tools to look things up 
 
 **Lookup effort** (**Settings → Advanced → Book Tools Lookup Effort**): **Quick** (2 rounds, 4 lookups), **Standard** (4 rounds, 8 lookups) or **Thorough** (6 rounds, 16 lookups, a larger passage budget) caps how much the AI may look up per question and tells the model its remaining budget, so it plans its searches from broad to narrow instead of being cut off mid-search.
 
-**Providers:** Gemini, Claude (Anthropic), OpenAI (API or Subscription), Amazon Bedrock (the models the contributor probed: [Providers and Models](Providers-and-Models)) and OpenRouter, plus DeepSeek, Mistral, Groq, xAI, Fireworks, Qwen, Kimi, OpenCode Zen, OpenCode Go and A2Agent on tool-capable models, and Ollama locally (a local model's capabilities are derived from the model menu, on pick or with "Refresh model capabilities", before the Tools chip lights up). Each round of lookups normally requires the model to call a tool. A few models refuse that (Claude Sonnet 5.5, Opus 5.5 and Fable 5.1, and some Qwen 3.7 and 3.8 models through OpenRouter, OpenCode and A2Agent), so they are asked without the requirement and decide when to search; rarely, one answers without searching. On DeepSeek, Kimi and the Qwen provider, reasoning is turned off during the lookups (some of their models refuse the forced step while they reason); in the default gather mode the answer written after the lookups reasons as usual. Most community hosts, and custom providers, can use them for a model once **Test provider...** has recorded that it calls tools ([Providers and Models](Providers-and-Models#fetching-and-testing-models)). Providers and models without tool support fall back to normal chat.
+**Providers:** Gemini, Claude (Anthropic), OpenAI (API or Subscription), Amazon Bedrock (the models the contributor probed: [Providers and Models](Providers-and-Models)) and OpenRouter, plus DeepSeek, Mistral, Groq, xAI, Fireworks, Qwen, Kimi, OpenCode Zen, OpenCode Go and A2Agent on tool-capable models, and Ollama locally (a local model's capabilities are derived from the model menu, on pick or with "Refresh model capabilities", before the Tools chip lights up). Each round of lookups normally requires the model to call a tool. A few models refuse that (Claude Sonnet 5.5, Opus 5.5, Fable 5.1 and Fable 5.2, and some Qwen 3.7 and 3.8 models through OpenRouter, OpenCode and A2Agent), so they are asked without the requirement and decide when to search; rarely, one answers without searching. On DeepSeek, Kimi and the Qwen provider, reasoning is turned off during the lookups (some of their models refuse the forced step while they reason); in the default gather mode the answer written after the lookups reasons as usual. Most community hosts, and custom providers, can use them for a model once **Test provider...** has recorded that it calls tools ([Providers and Models](Providers-and-Models#fetching-and-testing-models)). Providers and models without tool support fall back to normal chat.
 
 **Requires** the book's text: the tools read it ([Privacy and Data](Privacy-and-Data)). On Ask the Send asks the first time (**Allow for this book** keeps your answer); a trusted provider follows its own column, and a book's own **Book text** row (Book Settings → Privacy & Data) wins either way.
 

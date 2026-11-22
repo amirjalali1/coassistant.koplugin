@@ -1442,9 +1442,17 @@ function XrayParser.formatItemDetail(item, category_key, opts)
             table.insert(parts, item.significance)
             table.insert(parts, "")
         end
-        local characters = ensure_array(item.characters) or ensure_array(item.references)
+        -- Who or what the event involves: people in a story's timeline
+        -- ("characters"), key figures and concepts in a nonfiction work's
+        -- argument development ("references"), each under its own word. On
+        -- the browser's page they are buttons and a list, as connections are.
+        local characters = not omit_connections and ensure_array(item.characters)
+        local refs = not omit_connections and not (characters and #characters > 0)
+            and ensure_array(item.references)
         if characters and #characters > 0 then
             table.insert(parts, _("Characters:") .. " " .. table.concat(characters, ", "))
+        elseif refs and #refs > 0 then
+            table.insert(parts, _("References:") .. " " .. table.concat(refs, ", "))
         end
 
     elseif category_key == "current_state" or category_key == "current_position" then
@@ -1842,8 +1850,14 @@ function XrayParser.searchAll(data, query, opts)
 
     local categories = XrayParser.getCategories(data)
     -- A pasted "_" spelling finds the dotted entry (#90)
-    local query_lower = XrayParser.normalizeArabic(XrayParser.foldCase(repairSeparators(query)))
-    local normalize = XrayParser.normalizeArabic
+    -- Typeset apostrophes and hyphens fold like the plain ones on both sides
+    -- (B596 did it for the exact lookups and the marks; this substring path
+    -- still said "No results" for a word the page underlines, audit 2026-11-12)
+    local query_lower = XrayParser.normalizeArabic(XrayParser.foldCase(
+        XrayParser.foldPunctuation(repairSeparators(query))))
+    local function normalize(text)
+        return XrayParser.normalizeArabic(XrayParser.foldPunctuation(text))
+    end
     -- Arabic: also try ال-stripped query so "النار" finds "نار" and vice versa
     local query_stripped = nil
     if XrayParser.containsArabic(query_lower) then
@@ -2474,6 +2488,14 @@ local function isWordCharAt(text, pos, scan_back)
     -- maqaf, paseq, sof pasuq, geresh and gershayim (the sweep of 2026-11-06)
     if cp == 0x0964 or cp == 0x0965 then return false end
     if cp == 0x05BE or cp == 0x05C0 or cp == 0x05C3 or cp == 0x05F3 or cp == 0x05F4 then return false end
+    -- the Armenian marks (apostrophe to abbreviation mark, the full stop and
+    -- the hyphen), the Ethiopic ones (wordspace to paragraph separator) and
+    -- the Georgian paragraph separator: once these scripts took the boundary
+    -- check (the sweep of 2026-11-06), a name before its script's own comma
+    -- or full stop no longer matched (audit 2026-11-12)
+    if (cp >= 0x055A and cp <= 0x055F) or cp == 0x0589 or cp == 0x058A then return false end
+    if cp >= 0x1361 and cp <= 0x1368 then return false end
+    if cp == 0x10FB then return false end
 
     -- Everything else (accented letters, Cyrillic, Greek, etc.): word character
     return true
@@ -2656,6 +2678,8 @@ do
     if ok and type(Utf8Proc) == "table" and type(Utf8Proc.lowercase) == "function" then
         foldCase = function(text)
             if not text:find("[\128-\255]") then return text:lower() end
+            -- never invalid UTF-8 into utf8proc: it ends the app (utf8Mask)
+            text = require("koassistant.request.scope_resolver").utf8Mask(text)
             local folded_ok, folded = pcall(Utf8Proc.lowercase, text, true)
             if folded_ok and type(folded) == "string" then return folded end
             return text:lower()
@@ -2724,6 +2748,7 @@ do
         if type(Utf8Proc.normalize_NFC) == "function" then
             composeNFC = function(text)
                 if not text:find("[\128-\255]") then return text end
+                text = require("koassistant.request.scope_resolver").utf8Mask(text)
                 local nok, out = pcall(Utf8Proc.normalize_NFC, text)
                 if nok and type(out) == "string" then return out end
                 return text
@@ -2786,6 +2811,25 @@ local function alignRun(piece, out)
     end
     local mid = charStart(piece, math.floor(#piece / 2) + 1)
     if mid <= 1 or mid > #piece then
+        -- One character whose fold changes its length. A capital keeps its
+        -- capital: the fold with its first letter upper-cased, when that has
+        -- the fold's length and folds back to it (the dotted capital I
+        -- becomes "I" and the combining dot, a full-width capital its plain
+        -- capital). Taking the fold as it is read every such capital as
+        -- lowercase: a name set to capitals only stopped matching wherever
+        -- its first letter was one, and the automatic rule counted its
+        -- capitalized uses as lowercase (audit 2026-11-12).
+        if lowerChar(piece) ~= piece then
+            local c = folded:byte(1)
+            local n = c and (c < 0x80 and 1 or c < 0xE0 and 2 or c < 0xF0 and 3 or 4) or 0
+            if n > 0 then
+                local capital = upperChar(folded:sub(1, n)) .. folded:sub(n + 1)
+                if #capital == #folded and capital ~= folded and XrayParser.foldCase(capital) == folded then
+                    out[#out + 1] = capital
+                    return
+                end
+            end
+        end
         out[#out + 1] = folded
         return
     end
@@ -4115,7 +4159,46 @@ local function renameTarget(new_item, lookup, never_set, new_key)
     return target
 end
 
-local function mergeArrayCategory(old_items, new_items, never_set)
+--- B732: whether an incoming entry that carries only an ALIAS of a stored
+--- entry as its name is that entry. An alias is a weaker claim than a name:
+--- two people of one name are the common case (a maid with her mistress's
+--- first name, a grandfather with the title and surname his grandson was
+--- first met under), and folding them replaced one person's entry with the
+--- other's, silently. The fold stands when the update itself joins the two
+--- names (the stored main name among the incoming aliases, the bridge the
+--- prompt asks for at a rename), or when the alias is the READER's on that
+--- entry (a name they renamed away from, a name the duplicate review folded
+--- in, a name they added: `reader_names`, ActionCache.readerNamesFrom).
+--- Otherwise the incoming entry is its own entry; a true duplicate is then
+--- two visible entries that share a name, which the duplicate review finds.
+local function aliasIsSameEntry(keep, new_item, key, reader_names)
+    local keep_name = getItemSearchName(keep)
+    local keep_key = keep_name and keep_name:lower()
+    if not keep_key then return false end
+    if type(new_item.aliases) == "table" then
+        for _ai, alias in ipairs(new_item.aliases) do
+            if type(alias) == "string" and alias:lower() == keep_key then return true end
+        end
+    end
+    local theirs = type(reader_names) == "table" and reader_names[keep_key]
+    return type(theirs) == "table" and theirs[key] == true
+end
+
+--- B733: a re-emitted text that is no description: missing, blank, or a
+--- small fraction of a long stored one (an update wrote two words of
+--- housekeeping over an entry's description, and seven later updates left it
+--- so). Such a text never replaces the stored one.
+local STUB_MIN_STORED = 200   -- bytes of stored text from which a fraction is judged
+local STUB_PERCENT = 15       -- a new text under this share of the stored one is a stub
+local function isStubOf(new_text, old_text)
+    if type(old_text) ~= "string" or old_text:match("^%s*$") then return false end
+    if type(new_text) ~= "string" or new_text:match("^%s*$") then return true end
+    return #old_text >= STUB_MIN_STORED and #new_text * 100 < #old_text * STUB_PERCENT
+end
+
+--- @param guard table|nil { alias_needs_bridge = bool, reader_names = table }:
+---   the model update's own rules (XrayParser.merge opts)
+local function mergeArrayCategory(old_items, new_items, never_set, guard)
     local lookup = {}
     for i, item in ipairs(old_items) do
         local name = getItemSearchName(item)
@@ -4149,6 +4232,12 @@ local function mergeArrayCategory(old_items, new_items, never_set)
         if not idx and key then
             idx = alias_of[key]
             via_alias = idx ~= nil
+            if via_alias and guard and guard.alias_needs_bridge
+                    and not aliasIsSameEntry(old_items[idx], new_item, key, guard.reader_names) then
+                -- another holder of the name: its own entry (B732)
+                idx, via_alias = nil, false
+                logger.info("KOAssistant: X-Ray merge kept an entry apart from the one that lists its name as an alias")
+            end
         end
         local via_rename = false
         if not idx and key then
@@ -4183,6 +4272,14 @@ local function mergeArrayCategory(old_items, new_items, never_set)
             -- strings, nil when both sides are empty, dedup absorbs overlap.
             new_item.connections = unionStringArrays(new_item.connections, keep.connections)
             new_item.references = unionStringArrays(new_item.references, keep.references)
+            -- A stub never replaces a description (B733)
+            for _fi, field in ipairs({ "description", "definition" }) do
+                if isStubOf(new_item[field], keep[field]) then
+                    logger.info("KOAssistant: X-Ray merge kept a stored " .. field .. " of " .. #keep[field]
+                        .. " bytes; the update's was " .. (type(new_item[field]) == "string" and #new_item[field] or 0))
+                    new_item[field] = keep[field]
+                end
+            end
             if via_rename then
                 -- Rename fold: the new name IS the point — it stays primary
                 -- (the old one rides in aliases, it is the bridge we matched on)
@@ -5343,7 +5440,11 @@ end
 --- The AI outputs only new/changed entries; this merges them into the full dataset.
 --- @param old_data table Complete existing X-Ray data (mutated in place)
 --- @param new_data table Partial update from AI
---- @param opts table|nil { never_pairs = ActionCache.getNeverMergePairs output }
+--- @param opts table|nil { never_pairs = ActionCache.getNeverMergePairs output,
+---   alias_needs_bridge = bool, reader_names = ActionCache.readerNamesFrom output }:
+---   the last two are the reading-along update's (ActionCache.updateMergeOptions,
+---   B732); a merge of two books' X-Rays leaves them out, since the same person
+---   under a shorter name in another book is what such a merge is for
 ---   — reader-ruled non-identical pairs the rename fold must not merge
 --- @return table old_data The merged result
 function XrayParser.merge(old_data, new_data, opts)
@@ -5382,7 +5483,7 @@ function XrayParser.merge(old_data, new_data, opts)
                 end
             else
                 if type(new_data[key]) == "table" then
-                    old_data[key] = mergeArrayCategory(old_data[key] or {}, new_data[key], never_set)
+                    old_data[key] = mergeArrayCategory(old_data[key] or {}, new_data[key], never_set, opts)
                 end
             end
         end

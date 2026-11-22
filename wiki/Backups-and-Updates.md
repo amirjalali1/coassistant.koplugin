@@ -26,7 +26,7 @@ Your settings and data are not touched by an update, automatic or manual:
 - all settings (provider, model, features, privacy and the rest) live outside the plugin folder;
 - API keys entered in Settings live outside the plugin folder;
 - chat history, notebooks and saved results live in KOReader's settings and sidecar files;
-- backups, exports and generated images live under KOReader's data folder (`koassistant_backups/`, `koassistant_exports/`, `koassistant_images/`).
+- backups, exports and generated images live under KOReader's data folder (`koassistant_backups/`, `koassistant_exports/`, `koassistant_images/`), next to `koassistant_fonts/`, the Markdown view's copies of the fonts it draws Arabic, Hebrew, Devanagari and emoji with (not part of a backup; refilled when needed).
 
 The updater also preserves the optional files inside the plugin folder listed above.
 
@@ -73,6 +73,30 @@ To turn the automatic check off: **Settings → Auto-check for updates on startu
 
 **Settings → Check for Updates** always shows a result, an update or "You are running the latest version", with a longer 15-second timeout. A version newer than the latest release says "You are running a development version". Pre-releases order as alpha < beta < rc < release, and a final release outranks its own pre-releases.
 
+## Where KOAssistant keeps your data
+
+Everything is on your device, in three places. KOReader's data folder is `.adds/koreader/` on a Kobo (a hidden folder when the device is plugged into a Mac or a Linux computer) and `koreader/` at the top of the storage on Android and Kindle; its settings folder is `settings/` inside it. A book's `.sdr` folder sits beside the book, or in KOReader's `docsettings` or `hashdocsettings` folder, by KOReader's Book metadata location setting.
+
+| What | Where | In a backup |
+|---|---|---|
+| Settings, and API keys entered in Settings | settings folder: `koassistant_settings.lua` | yes (API keys only when included) |
+| General and library chats | settings folder: `koassistant_general_chats.lua`, `koassistant_library_chats.lua` | with Chat History |
+| General and library pinned items, book groups | settings folder: `koassistant_pinned_general.lua`, `koassistant_pinned_library.lua`, `koassistant_book_groups.lua` | yes |
+| A book's chats | the book's `.sdr` folder: `koassistant_chats.lua` | with Chat History |
+| A book's settings (its Book Settings picks, its privacy values) | `.sdr`: `koassistant_book_settings.lua` | yes |
+| A book's saved results (X-Rays, summaries and the rest), its X-Ray checkpoints and versions, the names you gave X-Ray entries | `.sdr`: `koassistant_cache.lua`, `koassistant_xray_checkpoints.lua`, `koassistant_xray_ladder.lua`, `koassistant_user_aliases.lua` | no |
+| A book's pinned items | `.sdr`: `koassistant_pinned.lua` | no |
+| A book's notebook | `.sdr`: `koassistant_notebook.md` by default; or `koassistant_notebooks/` in the data folder; or a folder you pick ([Save Location](Conversations-Notebooks-and-Export)) | no |
+| The name index behind the X-Ray underlines | `.sdr`: `koassistant_xray_index.lua` (built again from the book when missing) | no |
+| Exported chats and results | data folder: `koassistant_exports/`, or a folder you pick | no |
+| Generated images | data folder: `koassistant_images/` | no |
+| Backups | data folder: `koassistant_backups/` | |
+| Your own files: `apikeys.lua`, `configuration.lua`, `custom_actions.lua`, `custom_models.lua`, `behaviors/`, `domains/` | the plugin folder | yes (`apikeys.lua` only when API keys are included) |
+
+**Moving a book.** When KOReader moves, renames or copies a book, or a folder of books, the files in its `.sdr` folder go with it and every browser follows. A move made outside KOReader (over USB, by a sync tool) carries them only if the tool moves the `.sdr` folder too; **Rebuild Data Indexes** below finds them again.
+
+**Deleting a book.** When you delete a book in KOReader, the KOAssistant files in its `.sdr` folder are deleted with it, as KOReader deletes the book's highlights and notes: its chats, saved results, pinned items and settings. Its **notebook is kept**: a notebook stored beside the book is moved to `koassistant_notebooks/` in the data folder under the book's name, a message says so, and **Browse Notebooks** lists it as a book that is not on this device, where you can read or delete it (an empty notebook is not kept). A notebook already in the notebooks folder or in a folder of your own stays where it is, and so do generated images and exports. Two limits: a whole folder deleted in KOReader takes the notebooks stored inside it along, as it takes KOReader's own; and a kept notebook is not attached again by itself when the book returns. To keep a chat or a result from a book you are about to delete, export it first ([Conversations, Notebooks and Export](Conversations-Notebooks-and-Export)).
+
 ## Backup and restore
 
 ### What can be backed up
@@ -112,7 +136,9 @@ A restore point, a full backup with your API keys and chats, is created before e
 
 **Replace** replaces the current settings with the backup, after the restore point: what you backed up is exactly what you get. Restoring settings this way without API keys keeps the keys you have (entered in Settings, in `apikeys.lua`, or the OpenAI Subscription sign-in).
 
-**Merge** combines the backup with the current settings: feature toggles take the backup's values; custom content (providers, models, actions) is taken from the backup wholesale, so anything you created after the backup was made is removed; API keys merge by provider with the backup winning; domains and behaviors merge by filename.
+**Merge** combines the backup with what is on the device. Plain settings take the backup's values. The things you made that are kept one by one are joined: custom domains, behaviors and providers created in the app, book groups, general and library pinned answers and chats made after the backup stay, and one that both hold takes the backup's version. Custom actions and the custom model list are taken from the backup wholesale, so an action you made after the backup is removed. API keys merge by provider with the backup winning; domain and behavior files merge by filename.
+
+In both modes a restore never hands out an old id again: a custom domain, behavior or book group you create after a restore gets a new id, even when the backup is older than the last one you had made (a book set to a domain or following a group that the restore removed must not silently take a new one).
 
 ### Managing backups
 

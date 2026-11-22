@@ -1670,7 +1670,6 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
 
     config = config or {}
     config.features = config.features or {}
-    config.document_path = document_path  -- Needed for notebook save
     -- Shared-table hygiene: clear per-chat Send transients that persist on the
     -- shared module-level configuration (underscore keys survive disk sync) —
     -- the resumed chat's OWN state is restored from chat.control_state below
@@ -1719,6 +1718,11 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
         config.features._quick_reply_private = true
         -- A resumed chat keeps its saved id as its conversation id (B285 / #107)
         config.conversation_id = chat.id
+        -- The chat's book, for its notebook save and its selection tools: on
+        -- the private copy alone. Written on the passed table (the plugin's
+        -- shared one) it stayed there, and every artifact window opened later
+        -- took it for its own book (the shared-state map, 2026-11-12)
+        config.document_path = document_path
     end
 
     -- Reactivate the chat's saved control state (parity §8c persistence,
@@ -2047,7 +2051,7 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
     end
 
     -- Function to create and show the chat viewer
-    -- state param for rotation: {text, scroll_ratio, scroll_to_last_question}
+    -- state param for rotation: the viewer's captureState()
     -- session_web_search param: preserved session web search override (nil/true/false)
     local function showChatViewer(content_text, state, session_web_search, session_tools, render_mode)
         -- Always close existing viewer first
@@ -2447,8 +2451,9 @@ function ChatHistoryDialog:continueChat(ui, document_path, chat, chat_history_ma
                 -- This preserves all the same callbacks and settings through closure
                 showChatViewer(nil, captured_state)
             end,
-            -- Restore scroll position if provided (from rotation)
-            _initial_scroll_ratio = state and state.scroll_ratio or nil,
+            -- where the reader was before a rotation or a size toggle (the
+            -- viewer lands there before its first paint)
+            _initial_place = state and state.place or nil,
         }
 
         self_ref.current_chat_viewer = viewer

@@ -61,7 +61,7 @@ Long-press an action button in the highlight menu, the dictionary popup, the Qui
 **Run it once another way.** The buttons at the top run the action this one time with a change, and change no setting:
 
 - **Quick answer**, or **Without Quick** where Quick is already on, for an action that accepts the Quick Answer posture (among the built-ins: Explain, Quick Explain, ELI5, Elaborate and Explain in Context). See [Contexts and Chat](Contexts-and-Chat#quick-answer-and-its-preset).
-- **Without book info**, or **With book info** where None is in effect (the book's own level, Settings → Privacy & Data → Book info, or the dialog's **Send book info** switch), for any action that names the book (a book action, or a highlight action that sends the book info or names the title; the artifact builders included; not Translate, Quick Define, Dictionary, Deep Analysis or Grammar, which never do): nothing that names the book goes with that one run, or the title and author do. Not offered for the actions that answer from what the AI knows about the book, which cannot run without the title ([Privacy and Data](Privacy-and-Data#what-gets-sent)).
+- **Without book info**, or **With book info** where None is in effect (the book's own level, Settings → Privacy & Data → Book info, or the dialog's **Send book info** switch), for any action that names the book (a book action, or a highlight action that sends the book info or names the title; the artifact builders included; not Translate, Quick Define, Dictionary, Deep Analysis or Grammar, which never do): nothing that names the book goes with that one run, or the title and author do. Not offered for the actions that answer from what the AI knows about the book, which cannot run without the title, nor for X-Ray, which is built and updated by many requests where this choice is for one: set Book info for that book instead ([Privacy and Data](Privacy-and-Data#what-gets-sent)).
 - Up to three model buttons: your favorite models first, then the models you picked lately through **More models…** (newest first), then your provider's fast model while a spot is free. A model whose provider has no API key, or the model a plain tap would use anyway, is left out.
 - **No reasoning**, when the action would reason, its model can turn reasoning off, and the action doesn't set reasoning itself.
 - **With web search** or **Without web search**, when the model can search and the action doesn't decide that itself.
@@ -86,7 +86,7 @@ A long-press on **Send** (in an input dialog, the reply window, or a chat about 
 Don't like how a built-in action behaves? Change its settings, or make a copy you can rewrite. Both start from its details screen (hold it in Manage Actions) or from a menu's long-press.
 
 - **Edit Settings** (**Edit…** in a long-press menu) customizes a built-in's settings without creating a new action: provider and model, tier, behavior, domain, temperature, reasoning, web search, background, view, and the checkboxes. The action is then marked ⚙, and **Reset to Default** restores its original settings. A built-in's prompt can't be changed there: duplicate the action instead.
-- **Duplicate** saves a copy at once as your own action, named "Explain Copy" for Explain (then "Explain Copy (2)" and so on), to use as a template for a slightly different variant. The copy keeps the prompt, behavior, model settings, view and data-access boxes, but it is a plain chat action: the menu placements, the Quick Answer opt-in, the source popup, smart retrieval, and saving the result as an artifact stay with the original. The details screens of X-Ray, Look up in X-Ray, Generate Image and the model button offer no Duplicate.
+- **Duplicate** saves a copy at once as your own action, named "Explain Copy" for Explain (then "Explain Copy (2)" and so on), to use as a template for a slightly different variant. The copy keeps the prompt, behavior, domain, model settings, the Quick preset switch, the spoiler and surrounding-text settings, and the view and data-access boxes, but it is a plain chat action: the menu placements, the source popup, smart retrieval, and saving the result as an artifact stay with the original. The details screens of X-Ray, Look up in X-Ray, Generate Image and the model button offer no Duplicate.
 
 **Common tweaks:**
 
@@ -96,8 +96,8 @@ Don't like how a built-in action behaves? Change its settings, or make a copy yo
    - standard models for Explain, Summarize and ELI5 (balanced quality and cost);
    - reasoning models for Deep Analysis, Key Arguments and academic tasks (complex thinking). Deep Analysis turns reasoning off for itself; set its **Reasoning** to **Global (use setting)** to let the model reason.
 
-   For example claude-haiku-5-5, gpt-6-luna or llama3.2:3b for lookups; claude-sonnet-5-5, gpt-5.6-terra or llama3.3 for general use; claude-opus-5-5, gpt-6.1-sol or deepseek-v4-pro for analysis.
-3. **An action without the domain or your languages?** A translation action you created gives unexpected results because of your domain, for example: domain context can alter the style and register of a translation. Set its **Domain** to **None (no domain)**, and tick **Skip language** to leave out your language preferences. Translate, Dictionary, Quick Define, Deep Analysis and Grammar already skip the domain.
+   For example claude-haiku-5-5, gpt-6-luna or llama3.2:3b for lookups; claude-sonnet-5-5, gpt-6.1-terra or llama3.3 for general use; claude-opus-5-5, gpt-6.2-sol or deepseek-v4-pro for analysis.
+3. **An action without the domain or your languages?** A translation action you created gives unexpected results because of your domain, for example: domain context can alter the style and register of a translation. Set its **Domain** to **None (no domain)**, and tick **Skip language** to leave out your language preferences. Translate, Dictionary, Quick Define, Deep Analysis and Grammar already skip the domain. The other way round works too: to give your domain to a built-in that leaves it out (Fact Check on a specialist text, for example), set its **Domain** to **Global** ([the full list](Prompts-Behaviors-and-Domains)).
 4. **Compare approaches.** Duplicate an action several times with different prompts, name the copies "Explain (brief)", "Explain (detailed)" and "Explain (ELI5)", and test which works best for your reading.
 
 **Quick workflow:**
@@ -130,7 +130,7 @@ Tap **+ Add Action** at the top of Manage Actions. The editor takes three steps:
 
 **Create** saves the action, turned on and marked ★.
 
-**Editing your own action later:** hold it in Manage Actions for **Quick Edit** (the name and every setting of step 3 on one screen, with **Full Editor** for the context or the prompt), **Duplicate** or **Delete**. In a menu, long-press it and tap **Edit…** for the full editor.
+**Editing your own action later:** hold it in Manage Actions for **Quick Edit** (the name and every setting of step 3 on one screen, with **Full Editor** for the context or the prompt), **Duplicate** or **Delete**. In a menu, long-press it and tap **Edit…** for the full editor. A Save writes only what you changed on that screen: every other setting of the action stays as it was, including ones no screen shows (a maximum length or a requirement set in a file, for instance). The same holds for a built-in action: saved with nothing changed it stores nothing, and keeps following new releases.
 
 ## Tips for custom actions
 
@@ -208,7 +208,7 @@ What the request includes:
 - `enable_web_search`: override the global web search setting (`true` forces it on, `false` off, unset follows the global setting).
 - `include_book_context`: send the book's title and author with a highlight action, as far as Settings → Privacy & Data → Book info allows (at None nothing names the book).
 - `skip_language_instruction`: leave the language instruction out of the system message (default off; Translate and Dictionary set it, since the target language is in their prompt).
-- `skip_domain`: leave the domain out of the system message (default off; Translate and Dictionary set it).
+- `skip_domain`: leave the domain out of the system message (default off; Translate, the dictionary actions and the other built-ins listed on [Prompts, Behaviors and Domains](Prompts-Behaviors-and-Domains) set it).
 - `skip_background`: whether the action sends the per-book Background note (your standing note about the book). Unset follows `skip_domain`, `true` never sends it, `false` always does.
 - `skip_spoiler`: `true` leaves the action out of spoiler protection. The artifact, translation and dictionary actions do this, since their scope or their prompt handles spoilers ([Spoiler Protection](Spoiler-Protection)).
 

@@ -1146,5 +1146,95 @@ TestRunner:test("the chapter finders count without the containing handles first,
     TestRunner:eq(XrayParser.countItemOccurrences(k, norm, XrayParser.containingMatchHandles(data, k), keep), 1)
 end)
 
+-- Audit 2026-11-12 (the matching reviewer). What needs KOReader's own fold
+-- (invalid bytes in it, a capital whose fold changes length) is checked on
+-- the real runtime by tests/scenarios/s11_matching_runtime.lua; here the
+-- parts that are plain byte logic.
+TestRunner:test("audit: the marks of Armenian and Ethiopic end a word, so a name before them matches", function()
+    local function hits(text, name)
+        local set = XrayParser.matchTermSet({ name = name }, "all")
+        return #XrayParser.occurrencesIn(XrayParser.matchNormalize(text), set)
+    end
+    local ARM = "\212\177\214\128\214\130\213\189\213\181\213\161\213\175"
+    TestRunner:eq(hits(ARM .. "\214\137 " .. ARM .. "\213\157 " .. ARM, ARM), 3)
+    local ETH = "\225\138\160\225\137\160\225\137\160"
+    TestRunner:eq(hits(ETH .. "\225\141\163 " .. ETH .. "\225\141\162 " .. ETH, ETH), 3)
+    -- a longer word of the script is still no hit
+    TestRunner:eq(hits(ARM .. "\213\171\214\129", ARM), 0)
+end)
+
+TestRunner:test("audit: a lookup folds typeset apostrophes and hyphens on its substring path too", function()
+    local data = { characters = { { name = "O'Brannagh", description = "A pilot." },
+        { name = "R2\226\128\145D9", description = "A machine." } } }
+    TestRunner:eq(#XrayParser.searchAll(data, "O\226\128\153Brannagh", { skip_description = true }), 1)
+    TestRunner:eq(#XrayParser.searchAll(data, "R2-D9", { skip_description = true }), 1)
+    TestRunner:eq(#XrayParser.searchAll(data, "Nobody", { skip_description = true }), 0)
+end)
+
+TestRunner:test("audit: no text reaches KOReader's utf8proc without its invalid bytes masked", function()
+    local SR = require("koassistant.request.scope_resolver")
+    TestRunner:eq(SR.utf8Mask("Ann\255a"), "Ann?a")
+    TestRunner:eq(SR.utf8Mask("caf\195"), "caf?")
+    TestRunner:eq(SR.utf8Mask("a\237\160\189b"), "a???b")
+    TestRunner:eq(SR.utf8Mask("\192\175"), "??")
+    local clean = "caf\195\169 \228\184\173 \240\159\148\141"
+    TestRunner:ok(SR.utf8Mask(clean) == clean)
+    TestRunner:eq(#SR.utf8Mask("x\255\254y\128"), 5)
+    -- every call of the wrapper's two NULL-returning functions is behind the mask
+    local function read(rel)
+        local here = debug.getinfo(1, "S").source:match("@?(.*)")
+        local root = here:match("(.+)/tests/unit/[^/]+$") or "."
+        local f = assert(io.open(root .. "/" .. rel, "r"))
+        local text = f:read("*a")
+        f:close()
+        return text
+    end
+    for _i, rel in ipairs({ "koassistant/xray/xray_parser.lua", "koassistant/tools/book_tools.lua" }) do
+        local src = read(rel)
+        local calls, guarded = 0, 0
+        for line_start in src:gmatch("()pcall%(Utf8Proc%.[%w_]+, text") do
+            local call = src:sub(line_start, line_start + 60)
+            if call:find("Utf8Proc.lowercase, text", 1, true) or call:find("Utf8Proc.normalize_NFC, text", 1, true) then
+                calls = calls + 1
+                local before = src:sub(math.max(1, line_start - 260), line_start)
+                if before:find('utf8Mask(text)', 1, true) then guarded = guarded + 1 end
+            end
+        end
+        TestRunner:ok(calls > 0 and guarded == calls)
+    end
+end)
+
+TestRunner:suite("formatItemDetail: who an event involves")
+TestRunner:test("a story's event lists its characters, an argument's step its references, each under its own word", function()
+    local story = XrayParser.formatItemDetail(
+        { event = "The bridge falls", chapter = "Chapter 4", significance = "The road north is cut.",
+            characters = { "Sella Varn", "Old Brask" } }, "timeline")
+    TestRunner:ok(story:find("Characters: Sella Varn, Old Brask", 1, true), "a timeline event names its characters")
+    local step = XrayParser.formatItemDetail(
+        { event = "The second objection", chapter = "Part II", significance = "The first reply no longer holds.",
+            references = { "Deferred cost", "Halden" } }, "argument_development")
+    TestRunner:ok(step:find("References: Deferred cost, Halden", 1, true), "an argument's step names its references")
+    TestRunner:ok(not step:find("Characters:", 1, true), "and never calls concepts characters")
+    -- an empty characters list does not hide the references
+    local mixed = XrayParser.formatItemDetail(
+        { event = "A turn", characters = {}, references = { "Deferred cost" } }, "argument_development")
+    TestRunner:ok(mixed:find("References: Deferred cost", 1, true), "an empty list is no list")
+end)
+TestRunner:test("the browser's page leaves the line out: the names are its buttons and its list", function()
+    for _idx, case in ipairs({
+        { key = "timeline", item = { event = "The bridge falls", significance = "Cut off.", characters = { "Sella Varn" } } },
+        { key = "argument_development", item = { event = "The second objection", significance = "A turn.",
+            references = { "Deferred cost" } } },
+    }) do
+        local page = XrayParser.formatItemDetail(case.item, case.key, { omit_connections = true })
+        TestRunner:ok(not page:find("Characters:", 1, true) and not page:find("References:", 1, true),
+            case.key .. ": no names line on the page")
+        TestRunner:ok(page:find(case.item.significance, 1, true), case.key .. ": the text stays")
+        -- what a chat about the entry sends keeps them
+        local sent = XrayParser.formatItemDetail(case.item, case.key)
+        TestRunner:ok(sent:find((case.item.characters or case.item.references)[1], 1, true), case.key .. ": the chat's text keeps the names")
+    end
+end)
+
 print(string.format("  Results: %d passed, %d failed", TestRunner.passed, TestRunner.failed))
 return TestRunner.failed == 0

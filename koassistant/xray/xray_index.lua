@@ -541,6 +541,42 @@ function XrayIndex.entityPages(layout, set, handles, first, last)
     return counts, total
 end
 
+--- The first and the last page one entity is written on within [first, last]
+--- (both optional): what an entry page's "First appears" and "Last seen" read
+--- (B748). The candidate pages are walked from both ends, so a name on
+--- hundreds of pages costs two page counts, not hundreds.
+--- @return number|nil first_page, number|nil last_page, boolean indexed
+---   (false: a form is not in this layout; true with nil pages: never written
+---   in that range)
+function XrayIndex.firstLast(layout, set, handles, first, last)
+    if not XrayIndex.covers(layout, set, handles) then return nil, nil, false end
+    local seen, pages = {}, {}
+    for _i, f in ipairs(set.all) do
+        for _k, p in ipairs(XrayIndex.decode(layout, f).pages) do
+            if (not first or p >= first) and (not last or p <= last) and not seen[p] then
+                seen[p] = true
+                pages[#pages + 1] = p
+            end
+        end
+    end
+    table.sort(pages)
+    local lo, hi
+    for i = 1, #pages do
+        if countOnPage(layout, set, handles, pages[i]) > 0 then
+            lo = pages[i]
+            break
+        end
+    end
+    if not lo then return nil, nil, true end
+    for i = #pages, 1, -1 do
+        if countOnPage(layout, set, handles, pages[i]) > 0 then
+            hi = pages[i]
+            break
+        end
+    end
+    return lo, hi, true
+end
+
 --- The entity's nearest page before `before` with an occurrence: a page
 --- number, nil when there is none, false when a form is not indexed.
 function XrayIndex.prevPage(layout, set, handles, before)
@@ -827,7 +863,10 @@ startPass = function()
     logger.dbg("KOAssistant XrayIndex: background pass for", #missing, "forms")
     local chunk_size = 65536
     local chunk = ffi.new("char[?]", chunk_size)
-    local pointer = ffi.cast("void*", chunk)
+    -- The reads below take the buffer itself: a pointer cast from it keeps
+    -- nothing alive, and the poll runs long after this function returned,
+    -- when the buffer's own variable is gone and LuaJIT may have freed it
+    -- (the child's bytes then land in memory that is in use: B769)
     local parts = {}
     local function finish()
         ffi.C.close(read_fd)
@@ -862,18 +901,18 @@ startPass = function()
         while true do
             local available = ffiutil.getNonBlockingReadSize(read_fd) or 0
             if available > 0 then
-                local bytes = tonumber(ffi.C.read(read_fd, pointer, chunk_size))
+                local bytes = tonumber(ffi.C.read(read_fd, chunk, chunk_size))
                 if bytes and bytes > 0 then
-                    parts[#parts + 1] = ffi.string(pointer, bytes)
+                    parts[#parts + 1] = ffi.string(chunk, bytes)
                 else
                     finish()
                     return
                 end
             elseif ffiutil.isSubProcessDone(pid) then
                 while true do
-                    local bytes = tonumber(ffi.C.read(read_fd, pointer, chunk_size))
+                    local bytes = tonumber(ffi.C.read(read_fd, chunk, chunk_size))
                     if not bytes or bytes <= 0 then break end
-                    parts[#parts + 1] = ffi.string(pointer, bytes)
+                    parts[#parts + 1] = ffi.string(chunk, bytes)
                 end
                 finish()
                 return
@@ -958,8 +997,7 @@ function XrayIndex.buildNow(ui, forms, opts)
             return { stamp = stamp, forms = XrayIndex.scan(doc, forms, span[1], span[2]), span = span }
         end
         local Trapper = require("ui/trapper")
-        local InfoMessage = require("ui/widget/infomessage")
-        local info = InfoMessage:new{ text = _("Finding the X-Ray names in this section… (tap to cancel)") }
+        local info = require("koassistant.ui.waiting").message{ text = _("Finding the X-Ray names in this section… (tap to cancel)") }
         UIManager:show(info)
         UIManager:forceRePaint()
         UIManager:unschedule(startPass)
@@ -985,8 +1023,7 @@ function XrayIndex.buildNow(ui, forms, opts)
     if running and running.file == file then XrayIndex.stop() end
     UIManager:unschedule(startPass)
     local Trapper = require("ui/trapper")
-    local InfoMessage = require("ui/widget/infomessage")
-    local info = InfoMessage:new{ text = _("Finding the X-Ray names in the book… (tap to cancel)") }
+    local info = require("koassistant.ui.waiting").message{ text = _("Finding the X-Ray names in the book… (tap to cancel)") }
     UIManager:show(info)
     UIManager:forceRePaint()
     local started = os.time()

@@ -130,6 +130,45 @@ function MessageHistory:getMessages()
     return self.messages
 end
 
+--- The messages a request sends: the stored ones minus the shown copy of the
+--- first question. A chat opens with its context message, which already holds
+--- what the reader typed (under "[User Question]" or "[Additional user input]",
+--- or inside the prompt of an action with {user_input}); once the answer is in,
+--- the same text is stored again as a message of its own so the chat shows it.
+--- Sent too, every reply carried the first question twice. The shape is exact:
+--- the context message first, any attachment messages after it, the shown copy,
+--- then the answer. A chat whose stored context is left out keeps its question.
+--- Pure; returns the given table when there is nothing to leave out.
+function MessageHistory.wireMessages(messages)
+    if type(messages) ~= "table" then return messages end
+    local start = 1
+    while type(messages[start]) == "table" and messages[start].role == MessageHistory.ROLES.SYSTEM do
+        start = start + 1
+    end
+    local first = messages[start]
+    if type(first) ~= "table" or first.role ~= MessageHistory.ROLES.USER
+            or not first.is_context or type(first.content) ~= "string" then
+        return messages
+    end
+    local at = start + 1
+    while type(messages[at]) == "table" and messages[at].role == MessageHistory.ROLES.USER
+            and messages[at].is_context do
+        at = at + 1
+    end
+    local shown, answer = messages[at], messages[at + 1]
+    if type(shown) ~= "table" or shown.role ~= MessageHistory.ROLES.USER or shown.is_context
+            or type(shown.content) ~= "string" or shown.content == ""
+            or type(answer) ~= "table" or answer.role ~= MessageHistory.ROLES.ASSISTANT
+            or not first.content:find(shown.content, 1, true) then
+        return messages
+    end
+    local out = {}
+    for i, message in ipairs(messages) do
+        if i ~= at then out[#out + 1] = message end
+    end
+    return out
+end
+
 function MessageHistory:getLastMessage()
     if #self.messages > 0 then
         return self.messages[#self.messages]
@@ -493,8 +532,14 @@ function MessageHistory:createResultText(highlightedText, config)
             -- views; display only)
             table.insert(result, self.source_excerpt .. "\n\n")
         else
-            -- Default: highlighted text from reader
-            table.insert(result, "Highlighted text: \"" .. highlightedText .. "\"\n\n")
+            -- Default: highlighted text from reader. KOReader hands a selection
+            -- over with ONE line break between its paragraphs, which the
+            -- Markdown view reads as a space: a blank line between them shows
+            -- them apart in both views (display only; the request is built
+            -- elsewhere). A PDF selection has no line break at all
+            local lead, core, trail = highlightedText:match("^(%s*)(.-)(%s*)$")
+            core = core:gsub("[ \t]*\n[ \t\n]*", "\n\n")
+            table.insert(result, "Highlighted text: \"" .. lead .. core .. trail .. "\"\n\n")
         end
     end
 
@@ -517,6 +562,7 @@ function MessageHistory:createResultText(highlightedText, config)
 
             -- Use stored debug info if available, otherwise fall back to current config
             local provider, model, temp, behavior, domain, reasoning_info
+            local background = false
 
             if stored_debug then
                 -- Use what was ACTUALLY used for this chat
@@ -525,6 +571,7 @@ function MessageHistory:createResultText(highlightedText, config)
                 temp = stored_debug.temperature or 0.7
                 behavior = stored_debug.behavior or "standard"
                 domain = stored_debug.domain or "none"
+                background = stored_debug.background == true
 
                 -- Build reasoning info from stored data
                 reasoning_info = ""
@@ -543,8 +590,18 @@ function MessageHistory:createResultText(highlightedText, config)
             else
                 -- Fall back to current config (for chats created before debug storage)
                 provider = config.provider or config.default_provider or "unknown"
-                behavior = config.features.selected_behavior or "standard"
-                domain = config.features.selected_domain or "none"
+                -- what this config's own system text carries, when it has one
+                local ConfigHelper = require("koassistant.core.config_helper")
+                local sent = ConfigHelper.domainSent(config)
+                behavior = (type(config.system) == "table" and config.system.behavior_id)
+                    or config.features.selected_behavior or "standard"
+                if sent == false then
+                    domain = config.features.selected_domain or "none"
+                else
+                    domain = sent or "none"
+                end
+                background = type(config.system) == "table" and type(config.system.components) == "table"
+                    and config.system.components.book_background ~= nil
 
                 -- Get actual model from provider settings if available
                 model = config.model
@@ -591,7 +648,8 @@ function MessageHistory:createResultText(highlightedText, config)
             -- Format temperature display (simple for stored, with constraints check for fallback)
             local temp_display = string.format("%.1f", temp)
 
-            table.insert(result, string.format("● Config: provider=%s, behavior=%s, domain=%s\n", provider, behavior, domain))
+            table.insert(result, string.format("● Config: provider=%s, behavior=%s, domain=%s%s\n", provider, behavior, domain,
+                background and ", background=yes" or ""))
             table.insert(result, string.format("  model=%s, temp=%s%s\n\n", model, temp_display, reasoning_info))
         end
 

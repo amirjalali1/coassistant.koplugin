@@ -247,7 +247,7 @@ local SettingsSchema = {
                                 { value = true, label = _("Markdown") },
                                 { value = false, label = _("Plain Text") },
                             },
-                            help_text = _("Markdown renders formatting; it draws Arabic and Persian in the right-to-left font, each paragraph in its own direction. Plain Text uses KOReader's interface fonts, which draw more scripts in their own face (Hebrew, Devanagari, Bengali) and show emoji."),
+                            help_text = _("Markdown renders formatting, lays every paragraph out in its own direction and draws each script in its own face: Arabic and Persian in the right-to-left font, Hebrew and Devanagari in KOReader's interface faces, emoji with the bundled emoji font. Plain Text uses KOReader's interface fonts and keeps headers, bold and lists readable."),
                         },
                         {
                             id = "render_math",
@@ -268,13 +268,13 @@ local SettingsSchema = {
                             callback = "rtlFontMenuItems",
                             text_func = function(plugin)
                                 local f = plugin.settings:readSetting("features") or {}
-                                return T(_("Right-to-left text font: %1"), require("koassistant.ui.rtl_font").label(f))
+                                return T(_("Right-to-left text font: %1"), require("koassistant.ui.script_fonts").label(f))
                             end,
                             enabled_func = function(plugin)
                                 local f = plugin.settings:readSetting("features") or {}
                                 return f.render_markdown ~= false
                             end,
-                            help_text = _("The font of right-to-left paragraphs (Arabic, Persian and the other right-to-left scripts) in the Markdown view. Noto Naskh Arabic, the default, is the face KOReader gives Arabic books; Noto Sans Arabic UI is the face of its plain-text windows; any font KOReader knows can be picked (a font copied into KOReader's fonts folder appears after a restart). None shows those letters in the window's own fallback font, as before. Hebrew and other scripts the chosen font lacks keep that fallback."),
+                            help_text = _("The font of Arabic, Persian and Urdu letters in the Markdown view, wherever they appear: a whole paragraph or a word inside an English sentence. Noto Naskh Arabic, the default, is the face KOReader gives Arabic books; Noto Sans Arabic UI is the face of its plain-text windows; any font KOReader knows can be picked (a font copied into KOReader's fonts folder appears after a restart). None shows those letters in the window's own fallback font. Hebrew and Devanagari have their own fixed faces, the ones KOReader's interface uses."),
                         },
                         {
                             id = "chat_exchange_page_breaks",
@@ -314,39 +314,7 @@ local SettingsSchema = {
                             text = _("Text Mode for Dictionary"),
                             path = "features.dictionary_text_mode",
                             default = false,
-                            help_text = _("Use Plain Text mode for dictionary popup. Better for scripts the Markdown view draws in its plain fallback face (Hebrew, Devanagari, Bengali, Thai)."),
-                        },
-                        {
-                            id = "rtl_dictionary_text_mode",
-                            type = "toggle",
-                            text = _("Text Mode for RTL Dictionary"),
-                            path = "features.rtl_dictionary_text_mode",
-                            default = true,
-                            enabled_func = function(plugin)
-                                local f = plugin.settings:readSetting("features") or {}
-                                return not f.dictionary_text_mode
-                            end,
-                            help_text = _("Use Plain Text mode for dictionary popup when dictionary language is Arabic, Classical Arabic, Persian or Urdu. Grayed out when Text Mode for Dictionary is enabled."),
-                        },
-                        {
-                            id = "rtl_translate_text_mode",
-                            type = "toggle",
-                            text = _("Text Mode for RTL Translate"),
-                            path = "features.rtl_translate_text_mode",
-                            default = false,
-                            help_text = _("Use Plain Text mode for the translate window when the translation language is Arabic, Classical Arabic, Persian or Urdu. Off by default: the Markdown view draws those languages in the right-to-left font, the translated text right-to-left and the original left-to-right."),
-                        },
-                        {
-                            id = "rtl_chat_text_mode",
-                            type = "toggle",
-                            text = _("Auto RTL mode for Chat"),
-                            path = "features.rtl_chat_text_mode",
-                            default = false,
-                            enabled_func = function(plugin)
-                                local f = plugin.settings:readSetting("features") or {}
-                                return f.render_markdown ~= false
-                            end,
-                            help_text = _("Switch chat and artifact windows to right-aligned Plain Text when the latest response has more right-to-left than Latin letters. Off by default: the Markdown view lays every paragraph out in its own direction and draws Arabic and Persian in the right-to-left font. Disabling removes all automatic RTL adjustments. Grayed out when markdown is disabled."),
+                            help_text = _("Use Plain Text in dictionary windows whatever the View Mode."),
                         },
                     },
                 },
@@ -572,9 +540,9 @@ local SettingsSchema = {
                             type = "toggle",
                             text = _("Auto-scroll Streaming"),
                             path = "features.stream_auto_scroll",
-                            default = true,
+                            default = false,
                             depends_on = { id = "enable_streaming", value = true },
-                            help_text = _("Follow the arriving text while a response streams. Scrolling up pauses the follow for that response so you can read in place while the rest arrives; the Autoscroll button in the streaming window turns it back on."),
+                            help_text = _("Off: a response fills the first page and stays there while the rest arrives. You turn the pages as you read, and the finished chat opens on the page you are on. On: the window follows the arriving text, and a step up stops it for that response. Either way, the Autoscroll button in the streaming window switches it for one response. A result that is data (an X-Ray being built) is always followed."),
                         },
                         {
                             id = "stream_keep_read_position",
@@ -591,11 +559,21 @@ local SettingsSchema = {
                             text = _("Page-based Scroll (e-ink)"),
                             path = "features.stream_page_scroll",
                             default = true,
-                            depends_on = {
-                                { id = "enable_streaming", value = true },
-                                { id = "stream_auto_scroll", value = true },
-                            },
-                            help_text = _("Stream text into empty page space instead of scrolling from the bottom. Reduces full-screen refreshes on e-ink. Disable for continuous bottom-scrolling."),
+                            depends_on = { id = "enable_streaming", value = true },
+                            help_text = _("While the window follows a response in the plain text view: stream text into empty page space instead of scrolling from the bottom. Reduces full-screen refreshes on e-ink. Disable for continuous bottom-scrolling."),
+                        },
+                        {
+                            id = "stream_markdown",
+                            type = "toggle",
+                            text = _("Markdown While Streaming"),
+                            path = "features.stream_markdown",
+                            default = true,
+                            depends_on = { id = "enable_streaming", value = true },
+                            enabled_func = function(plugin)
+                                local f = plugin.settings:readSetting("features") or {}
+                                return f.render_markdown ~= false
+                            end,
+                            help_text = _("Show the answer rendered while it streams (bold, headings, lists, the fonts of every script) instead of plain text swapped for the rendered view at the end. It is drawn again several times a second where the device keeps up, and less often on a slow device or as the answer grows, since each time the whole answer is laid out again. Grayed out while Plain Text is your default."),
                         },
                         {
                             id = "large_stream_dialog",
@@ -1071,7 +1049,7 @@ local SettingsSchema = {
                             text = _("Preset for New X-Rays"),
                             callback = "showXrayDefaultPresetPicker",
                             keep_menu_open = true,
-                            help_text = _("One tap for the three settings below it: what a new X-Ray tracks, whether it keeps the status block (\"Where things stand\"), and how much each entry carries. Characters only is the cheapest (the cast, no status block); Reference is the default (people, places, ideas and terms); Everything adds the story arc; Light companion and Deep study change the depth as well. Each setting can still be changed on its own; the preset then reads Custom. A book can pick its own preset in Book Settings and a group in its Group Settings. Applies when an X-Ray is created or rebuilt."),
+                            help_text = _("One tap for the three settings below it: the categories a new X-Ray tracks, whether it keeps Current State (the section that says where things stand), and how much each entry carries. Who's who is the shortest and cheapest (the cast, one line each, no Current State); Characters only gives the cast a few sentences each; Reference is the default (people, places, ideas and terms); Everything adds the story arc; Light companion and Deep study change the depth as well. Each setting can still be changed on its own; the preset then reads Custom. A book can pick its own preset in Book Settings and a group in its Group Settings. Applies when an X-Ray is created or rebuilt."),
                         },
                         {
                             id = "xray_default_categories_picker",
@@ -1079,7 +1057,7 @@ local SettingsSchema = {
                             text = _("Categories for New X-Rays"),
                             callback = "showXrayDefaultCategoriesPicker",
                             keep_menu_open = true,
-                            help_text = _("Which category groups a new X-Ray tracks by default. Reference (everything except the timeline) unless changed here; All categories adds the timeline or argument development, Characters only is the lightest. The last checkbox, \"Where things stand\", is the status block (current state, or the conclusion of a whole-book X-Ray): every update rewrites it, so an X-Ray without it has shorter updates. Applies when an X-Ray is created or rebuilt; individual books can pick their own categories in Book Settings."),
+                            help_text = _("Which categories a new X-Ray tracks by default: people, places, ideas and terms unless changed here. The timeline (the story arc or the argument's development) can be added, and people alone is the lightest. The last checkbox, Current State, is the section that says where things stand (Current Position in nonfiction, the Conclusion of a whole-book X-Ray): every update rewrites it, so an X-Ray without it has shorter updates. Applies when an X-Ray is created or rebuilt; individual books can pick their own categories in Book Settings."),
                         },
                         {
                             id = "xray_default_depth_picker",
@@ -1205,7 +1183,7 @@ local SettingsSchema = {
                                 { value = "sentence", text = _("First sentence only") },
                                 { value = "full", text = _("Full entry") },
                             },
-                            help_text = _("How much of an entry the card shows for entities already in your installed X-Ray. First sentence keeps the card to a one-line identification, with the full entry a tap away. Full entry shows the whole description (swipe to scroll the footnote panel; the floating popup cuts it where it runs out of room). Can be overridden per book."),
+                            help_text = _("How much of an entry the card shows for entities already in your installed X-Ray. First sentence keeps the card to a one-line identification, with the full entry a tap away. Full entry shows the entry's own text: its description and what its page has under it, such as its other names and its Significance (swipe to scroll it). Its connections stay on the entry's page. Can be overridden per book."),
                         },
                         {
                             id = "xray_card_landing",
@@ -1848,7 +1826,19 @@ local SettingsSchema = {
                         { value = "short", label = _("When it fits") },
                         { value = "always", label = _("Always") },
                     },
-                    help_text = _("Show responses from the actions below in a small popup next to the highlighted text: just the response, no buttons. Tap the popup to open the full window; tap outside to dismiss. 'When it fits' shows the popup only when the whole response fits inside it; longer responses open the full window directly. 'Always' shows the popup regardless, trimmed with an ellipsis. Streaming is skipped for these requests. Never applies to full-page translation."),
+                    help_text = _("Show responses from the actions below in a small popup: just the response, no buttons. Tap the popup to open the full window; tap outside to dismiss. 'When it fits' shows the popup only when the whole response fits inside it; longer responses open the full window directly. 'Always' shows the popup for any response; one that is too long scrolls inside it (swipe up or down, or use the page-turn keys). Streaming is skipped for these requests. Never applies to full-page translation."),
+                },
+                {
+                    id = "minimal_popup_style",
+                    type = "dropdown",
+                    text = _("Popup Style"),
+                    path = "features.minimal_popup_style",
+                    default = "box",
+                    options = {
+                        { value = "box", label = _("Floating box (near the selection)") },
+                        { value = "panel", label = _("Footnote panel (bottom of the screen)") },
+                    },
+                    help_text = _("Where the popup appears. The floating box sits next to the selected text and is as wide as the chat window. The footnote panel sits at the bottom of the screen from edge to edge, like KOReader's footnote popups. Either one is as tall as the response needs, up to about half the screen."),
                 },
                 {
                     id = "minimal_popup_actions",
@@ -2243,7 +2233,7 @@ local SettingsSchema = {
                     text = _("Reading position"),
                     path = "features.enable_basic_stats",
                     default = true,
-                    help_text = _("Your reading progress (percentage), the current chapter, chapters read and the time since you last read. On by default: spoiler protection relies on it. Sent or not; never asked. Used by X-Ray, Recap."),
+                    help_text = _("Your reading progress (percentage), the current chapter, chapters read and the time since you last read. A permission, on or off, never asked; on by default, since spoiler protection relies on it. It is sent only where something uses it: an action that asks for it (X-Ray, Recap, Reading Guide and others), the spoiler line of a book chat while spoiler protection is on, and every request when Book info is set to \"Title, author & position\"."),
                 },
                 {
                     id = "enable_library_scanning",
@@ -3080,7 +3070,7 @@ local SettingsSchema = {
                                 local f = plugin.settings:readSetting("features") or {}
                                 return T(_("OpenAI model: %1"), imageModelLabel("openai", f.image_gen_model_openai))
                             end,
-                            help_text = _("gpt-image-2.6-flare is fast (about 10 s at low quality) and cheap; gpt-image-2.6-sunburst gives the finest detail but is slower (about 25 s). The 2.5 pair and gpt-image-2 stay listed; gpt-image-1-mini shuts down on 2026-12-01."),
+                            help_text = _("gpt-image-2.6-flare is fast (about 10 s at low quality) and cheap; gpt-image-2.6-sunburst gives the finest detail but is slower (about 25 s). The 2.5 pair and gpt-image-2 stay listed."),
                             path = "features.image_gen_model_openai",
                             default = "default",
                             options = imageModelOptions("openai"),

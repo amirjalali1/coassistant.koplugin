@@ -170,7 +170,6 @@ end
 ---        four routine routes (audit F3) and lands in the "?" bucket.
 local function handleNonStreamingBackground(background_fn, provider, on_complete, response_parser, config, dispatch_model)
     local UIManager = require("ui/uimanager")
-    local InfoMessage = require("ui/widget/infomessage")
     local BaseHandler = require("koassistant.api.base")
     local T = require("ffi/util").template
 
@@ -278,25 +277,19 @@ local function handleNonStreamingBackground(background_fn, provider, on_complete
         local minimal_trap = config and config.features
             and config.features._minimal_popup_eligible == true
             and config.features.loading_message ~= nil
-        if minimal_trap then
-            local TrapWidget = require("ui/widget/trapwidget")
-            loading_dialog = TrapWidget:new{
-                text = loading_text,
-                dismiss_callback = function()
-                    user_cancelled = true
-                    finish(false, nil, _("Request cancelled by user."))
-                end,
-            }
-        else
-            loading_dialog = InfoMessage:new{
-                text = loading_text,
-                dismissable = true,
-            }
-            loading_dialog.dismiss_callback = function()
-                user_cancelled = true
-                finish(false, nil, _("Request cancelled by user."))
-            end
+        -- Either one keeps moving while it waits (B709, #126): some Android
+        -- e-readers sleep about 5 s after the last screen update and the
+        -- request waited for the next tap
+        local cancel = function()
+            user_cancelled = true
+            finish(false, nil, _("Request cancelled by user."))
         end
+        loading_dialog = require("koassistant.ui.waiting").message{
+            text = loading_text,
+            corner = minimal_trap == true,
+            dismissable = true,
+            dismiss_callback = cancel,
+        }
         UIManager:show(loading_dialog)
         UIManager:forceRePaint()
     end
@@ -946,7 +939,12 @@ It is about %1 tokens (an estimate) and your %2 plan allows about %3 tokens a mi
 
         -- Get streaming settings
         local stream_settings = {
-            stream_auto_scroll = config.features and config.features.stream_auto_scroll ~= false,
+            -- Off unless the reader turned it on (B752): an answer is read
+            -- from its first page while the rest arrives. An answer that is
+            -- data (an X-Ray build's JSON) is read by nobody: its window
+            -- follows the text, which is the only sign the build is alive
+            stream_auto_scroll = config.features and (config.features.stream_auto_scroll == true
+                or config.features.plain_streaming == true),
             stream_page_scroll = config.features and config.features.stream_page_scroll ~= false,
             stream_keep_read_position = config.features and config.features.stream_keep_read_position ~= false,
             large_stream_dialog = config.features and config.features.large_stream_dialog ~= false,
@@ -984,6 +982,13 @@ It is about %1 tokens (an estimate) and your %2 plan allows about %3 tokens a mi
             quick_retry_available = (config.features and config.features._quick_eligible == true)
                 and not (config.features and config.features.hidden_streaming) or false,
             quick_already_active = config.features and config.features._session_quick_answer == true,
+            -- Markdown while streaming (B562): the answer rendered as it streams,
+            -- unless the setting is off, the answer is data or its window shows
+            -- Plain Text (StreamMarkdown.applies has the rule); the render reads
+            -- the features (the fonts, math) and the alignment
+            stream_markdown = require("koassistant.request.stream_markdown").applies(config.features),
+            features = config.features,
+            text_align = config.features and config.features.text_align,
         }
 
         -- Streaming is async - show dialog and call on_complete when done
